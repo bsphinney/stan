@@ -58,12 +58,12 @@ pip install -e ".[dev]"
 stan init
 ```
 
-This creates `~/.stan/` with default configuration files:
+Creates `~/.stan/` and copies default configuration templates into it. **(Note: default config templates in `config/` are not yet shipped -- you will need to create these files manually for now. See [Configuration](#configuration) below for the format.)**
+
+The three config files you need:
 - `instruments.yml` -- instrument watch directories and settings
 - `thresholds.yml` -- QC pass/warn/fail thresholds per instrument model
 - `community.yml` -- HuggingFace token and community benchmark preferences
-
-Edit `~/.stan/instruments.yml` to configure your instruments (see [Configuration](#configuration) below).
 
 ### Watch
 
@@ -71,7 +71,7 @@ Edit `~/.stan/instruments.yml` to configure your instruments (see [Configuration
 stan watch
 ```
 
-Starts the watcher daemon. It monitors directories configured in `instruments.yml`, detects new raw files, determines acquisition mode, and dispatches search jobs to your HPC cluster via SLURM.
+Starts the watcher daemon. It monitors directories configured in `instruments.yml`, detects new raw files, determines acquisition mode, and dispatches search jobs via SLURM or locally. **(Requires a working `instruments.yml` in `~/.stan/` -- see [Configuration](#configuration).)**
 
 ### Dashboard
 
@@ -79,7 +79,7 @@ Starts the watcher daemon. It monitors directories configured in `instruments.ym
 stan dashboard
 ```
 
-Serves the local QC dashboard at [http://localhost:8421](http://localhost:8421). Views include live instrument status, run history, trend charts, column health, and the community benchmark leaderboard.
+Serves the FastAPI backend at [http://localhost:8421](http://localhost:8421). The API is fully functional -- browse `/docs` for Swagger UI. **(The React frontend is planned; currently a placeholder page is shown. Use the API endpoints directly or via the Swagger UI.)**
 
 ### Other Commands
 
@@ -109,9 +109,9 @@ detector.py -- reads .d/analysis.tdf or .raw metadata
                                         |              |
                                 SQLite (Hive)    queue.py (HOLD flag)
                                         |
-                                dashboard (FastAPI + React, port 8421)
-                                        |
-                                community/submit.py --> HF Dataset
+                                dashboard (FastAPI backend, port 8421)
+                                        |               (React frontend planned)
+                                community/submit.py --> HF Dataset (planned)
 ```
 
 **Data flow**: The watcher daemon detects new raw files and checks for file stability (size stops changing). Once stable, the detector reads instrument metadata to determine DIA or DDA mode. A SLURM job is submitted to the HPC cluster running DIA-NN (for DIA) or Sage (for DDA) with standardized parameters. After the search completes, STAN extracts QC metrics from the results, evaluates them against per-instrument thresholds, writes a HOLD flag if the run fails, stores everything in SQLite for longitudinal tracking, and optionally submits to the community benchmark.
@@ -204,7 +204,7 @@ DDA_Score = 35 x percentile_rank(n_psms)
           + 20 x percentile_rank(ms2_scan_rate)
 ```
 
-Scores are computed nightly within each cohort. A score of 75 means your instrument outperformed 75% of comparable submissions.
+Scores are computed nightly within each cohort by a GitHub Actions workflow. A score of 75 means your instrument outperformed 75% of comparable submissions. **(Nightly consolidation is implemented but will not run until the HF Dataset has live submissions.)**
 
 ### Privacy
 
@@ -219,7 +219,9 @@ Scores are computed nightly within each cohort. A score of 75 means your instrum
 
 ## Configuration
 
-All configuration files live in `~/.stan/` (created by `stan init`). They are YAML files that can be edited with any text editor or through the dashboard UI. The watcher daemon hot-reloads `instruments.yml` every 30 seconds without requiring a restart.
+All configuration files live in `~/.stan/`. They are YAML files that can be edited with any text editor. The watcher daemon hot-reloads `instruments.yml` every 30 seconds without requiring a restart. **(Dashboard UI editing is planned; for now edit the YAML files directly.)**
+
+Until the default config templates are shipped, create these files manually in `~/.stan/` using the examples below.
 
 ### instruments.yml
 
@@ -334,7 +336,7 @@ GRS = 40 x shape_r_scaled
 | 50-69 | Watch -- performance declining, investigate soon |
 | Below 50 | Investigate -- likely LC or source issue |
 
-GRS is stored for every run in the local SQLite database and displayed as a badge on the dashboard. It is included in community benchmark submissions and contributes to the DIA composite score.
+GRS is stored for every run in the local SQLite database. It is included in community benchmark submissions and contributes to the DIA composite score. **(Dashboard GRS badge display is planned with the React frontend.)**
 
 ---
 
@@ -344,7 +346,7 @@ GRS is stored for every run in the local SQLite database and displayed as a badg
 
 STAN uses DIA-NN for all DIA searches. Both Bruker `.d` and Thermo `.raw` files are passed directly to DIA-NN without conversion (DIA-NN 2.1+ has native support for both formats on Linux).
 
-Community benchmark submissions use a frozen HeLa-specific predicted spectral library (one for timsTOF TIMS-CID fragmentation, one for Orbitrap HCD fragmentation) and a pinned FASTA, both hosted in the HF Dataset repository.
+Community benchmark submissions use a frozen HeLa-specific predicted spectral library (one for timsTOF TIMS-CID fragmentation, one for Orbitrap HCD fragmentation) and a pinned FASTA, both hosted in the HF Dataset repository. **(Library generation is in progress -- the HF Dataset assets are not yet uploaded.)**
 
 ### DDA: Sage
 
