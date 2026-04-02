@@ -52,7 +52,7 @@ SUBMISSION_SCHEMA = pa.schema([
 def submit_to_benchmark(
     run: dict,
     gradient_length_min: int = 60,
-    amount_ng: float = 200.0,
+    amount_ng: float = 50.0,
     hela_source: str = "Pierce HeLa Protein Digest Standard",
     asset_hashes: dict[str, str] | None = None,
 ) -> dict:

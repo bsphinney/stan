@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS runs (
     failed_gates     TEXT,
     diagnosis        TEXT,
 
+    -- Run metadata
+    amount_ng        REAL DEFAULT 50.0,
+    gradient_length_min INTEGER,
+
     -- Community
     submitted_to_benchmark INTEGER DEFAULT 0,
     submission_id    TEXT
@@ -71,14 +75,30 @@ def get_db_path() -> Path:
 
 
 def init_db(db_path: Path | None = None) -> None:
-    """Initialize the database schema."""
+    """Initialize the database schema and apply any pending migrations."""
     if db_path is None:
         db_path = get_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(str(db_path)) as con:
         con.executescript(_SCHEMA)
+        _migrate(con)
     logger.info("Database initialized: %s", db_path)
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """Apply schema migrations for columns added after initial release."""
+    existing = {row[1] for row in con.execute("PRAGMA table_info(runs)").fetchall()}
+
+    migrations: list[tuple[str, str]] = [
+        ("amount_ng", "ALTER TABLE runs ADD COLUMN amount_ng REAL DEFAULT 50.0"),
+        ("gradient_length_min", "ALTER TABLE runs ADD COLUMN gradient_length_min INTEGER"),
+    ]
+
+    for col, ddl in migrations:
+        if col not in existing:
+            con.execute(ddl)
+            logger.info("Migration: added column '%s' to runs table", col)
 
 
 def insert_run(
@@ -90,6 +110,8 @@ def insert_run(
     gate_result: str = "",
     failed_gates: list[str] | None = None,
     diagnosis: str = "",
+    amount_ng: float = 50.0,
+    gradient_length_min: int | None = None,
     db_path: Path | None = None,
 ) -> str:
     """Insert a QC run record into the database.
@@ -103,6 +125,8 @@ def insert_run(
         gate_result: "pass", "warn", or "fail".
         failed_gates: List of failed metric names.
         diagnosis: Plain-English diagnosis string.
+        amount_ng: HeLa injection amount in nanograms (default 50).
+        gradient_length_min: LC gradient length in minutes.
         db_path: Optional override for database path.
 
     Returns:
@@ -145,6 +169,9 @@ def insert_run(
         "peak_rt_min": metrics.get("peak_rt_min"),
         "irt_max_deviation_min": metrics.get("irt_max_deviation_min"),
         "ms2_fill_time_median_ms": metrics.get("ms2_fill_time_median_ms"),
+        # Run metadata
+        "amount_ng": amount_ng,
+        "gradient_length_min": gradient_length_min,
         # Gating
         "gate_result": gate_result,
         "failed_gates": json.dumps(failed_gates or []),

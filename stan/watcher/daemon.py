@@ -21,7 +21,7 @@ from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
 from stan.config import CONFIG_POLL_INTERVAL, ConfigWatcher, resolve_config_path
-from stan.watcher.detector import AcquisitionMode, detect_mode
+from stan.watcher.detector import AcquisitionMode, detect_mode, is_dia
 from stan.watcher.stability import StabilityTracker
 
 logger = logging.getLogger(__name__)
@@ -182,13 +182,48 @@ class InstrumentWatcher:
         from stan.search.dispatcher import dispatch_search
 
         try:
-            dispatch_search(
+            result_path = dispatch_search(
                 raw_path=path,
                 mode=mode,
                 instrument_config=self._config,
             )
+            if result_path is not None:
+                self._store_run(path, mode, result_path)
         except Exception:
             logger.exception("Search dispatch failed for %s", path.name)
+
+    def _store_run(
+        self, raw_path: Path, mode: AcquisitionMode, result_path: Path
+    ) -> None:
+        """Extract metrics and store in the local database."""
+        from stan.db import insert_run
+        from stan.gating.evaluator import evaluate_gates
+        from stan.metrics.extractor import extract_dda_metrics, extract_dia_metrics
+
+        try:
+            if is_dia(mode):
+                metrics = extract_dia_metrics(str(result_path))
+            else:
+                metrics = extract_dda_metrics(str(result_path))
+
+            gate_result, failed, diagnosis = evaluate_gates(
+                metrics, mode.value, self._config.get("model", ""),
+            )
+
+            insert_run(
+                instrument=self._config.get("name", "unknown"),
+                run_name=raw_path.name,
+                raw_path=str(raw_path),
+                mode=mode.value,
+                metrics=metrics,
+                gate_result=gate_result,
+                failed_gates=failed,
+                diagnosis=diagnosis,
+                amount_ng=self._config.get("hela_amount_ng", 50.0),
+                gradient_length_min=self._config.get("gradient_length_min"),
+            )
+        except Exception:
+            logger.exception("Failed to store run for %s", raw_path.name)
 
 
 class WatcherDaemon:

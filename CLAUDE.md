@@ -598,6 +598,23 @@ synthetic data won't catch format changes between tool versions.
 | watchdog docs | https://python-watchdog.readthedocs.io/ |
 | DE-LIMP (sibling project) | https://github.com/bsphinney/DE-LIMP |
 
+### Public Astral HeLa DIA Datasets (PRIDE/ProteomeXchange)
+
+These are publicly available datasets with Orbitrap Astral HeLa DIA data, useful for
+library building, validation, and benchmarking reference ranges.
+
+| Dataset | PXD ID | Description | Search SW | Notes |
+|---------|--------|-------------|-----------|-------|
+| Searle et al. 2023 | PXD042704 | Astral DIA benchmark, HeLa, multiple gradients | EncyclopeDIA | On Panorama Public, not PRIDE |
+| Stewart et al. 2024 ("Inflection Point") | PXD054015 | Astral HeLa DIA + biofluids/tissues, 200 ng | DIA-NN v1.8.1 lib-free | Best candidate — HeLa + Astral + DIA-NN |
+| "$10 Proteome" 2025 | PXD066701 | Astral + timsTOF Ultra 2 HeLa QC, 200 pg–10 ng | DIA-NN | Has DIA-NN pg_matrix TSVs + zip archives |
+| Stewart et al. 2024 (DDA) | PXD045838 | Astral DDA HeLa, 125 ng | Mascot | DDA only — useful for Track A reference |
+
+Papers:
+- Searle: https://pubs.acs.org/doi/10.1021/acs.jproteome.3c00357
+- Stewart: https://pubs.acs.org/doi/10.1021/acs.jproteome.4c00384
+- Nat Biotech nDIA: https://www.nature.com/articles/s41587-023-02099-7
+
 ---
 
 ## Questions? Ambiguities?

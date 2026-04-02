@@ -183,24 +183,37 @@ async def api_community_cohort() -> dict:
 class CommunitySubmitRequest(BaseModel):
     run_id: str
     gradient_length_min: int = 60
-    amount_ng: float = 200.0
+    amount_ng: float = 50.0
     hela_source: str = "Pierce HeLa Protein Digest Standard"
 
 
 @app.post("/api/community/submit")
 async def api_community_submit(body: CommunitySubmitRequest) -> dict:
-    """Submit a QC run to the community benchmark."""
+    """Submit a QC run to the community benchmark.
+
+    If amount_ng is not provided in the request, falls back to the value
+    stored in the run record (from the instrument config), then to 50 ng.
+    """
     run = get_run(body.run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
+
+    # Use stored amount/gradient from the run if caller didn't override
+    amount = body.amount_ng
+    if amount == 50.0 and run.get("amount_ng"):
+        amount = run["amount_ng"]
+
+    gradient = body.gradient_length_min
+    if gradient == 60 and run.get("gradient_length_min"):
+        gradient = run["gradient_length_min"]
 
     try:
         from stan.community.submit import submit_to_benchmark
 
         result = submit_to_benchmark(
             run=run,
-            gradient_length_min=body.gradient_length_min,
-            amount_ng=body.amount_ng,
+            gradient_length_min=gradient,
+            amount_ng=amount,
             hela_source=body.hela_source,
         )
         return result

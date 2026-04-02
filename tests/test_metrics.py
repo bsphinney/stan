@@ -67,15 +67,17 @@ def test_gradient_bucket():
 
 
 def test_amount_bucket():
+    assert amount_bucket(10) == "ultra-low"
     assert amount_bucket(50) == "low"
-    assert amount_bucket(200) == "mid"
+    assert amount_bucket(100) == "mid"
+    assert amount_bucket(200) == "standard"
     assert amount_bucket(500) == "high"
     assert amount_bucket(1000) == "very-high"
 
 
 def test_cohort_id():
     cid = compute_cohort_id("timsTOF", 60, 200)
-    assert cid == "timsTOF_standard-1h_mid"
+    assert cid == "timsTOF_standard-1h_standard"
 
 
 # ── Community Scores ──────────────────────────────────────────────────

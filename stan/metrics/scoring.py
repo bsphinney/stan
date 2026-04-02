@@ -27,11 +27,21 @@ def gradient_bucket(minutes: int) -> str:
 
 
 def amount_bucket(ng: float) -> str:
-    """Classify injection amount (ng) into a cohort bucket."""
-    if ng <= 100:
-        return "low"
-    if ng <= 300:
+    """Classify injection amount (ng) into a cohort bucket.
+
+    Buckets reflect modern proteomics workflows where many labs inject
+    10–200 ng on Astral/timsTOF platforms.  Submissions are compared
+    only within the same bucket so that a 50 ng run isn't penalised
+    against a 500 ng run.
+    """
+    if ng <= 25:
+        return "ultra-low"  # single-cell / very low input
+    if ng <= 75:
+        return "low"  # 50 ng standard QC (default)
+    if ng <= 150:
         return "mid"
+    if ng <= 300:
+        return "standard"
     if ng <= 600:
         return "high"
     return "very-high"
