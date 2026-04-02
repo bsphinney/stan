@@ -468,6 +468,8 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | HF Dataset assets (FASTA + speclibs) | **Planned** | Library generation in progress, MD5 hashes TODO |
 | HF Space public dashboard | **Planned** | Space repo exists but not deployed |
 | Community benchmark live data | **Planned** | Requires HF Dataset assets + first submissions |
+| Outlier detection (amount mismatch) | **Planned** | Flag submissions where metrics don't match declared amount/SPD |
+| Failed run rejection | **Planned** | Block near-zero results from entering benchmark (failed injection, empty spray) |
 
 ---
 
@@ -482,6 +484,8 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [ ] Build React frontend for dashboard (run history, trend charts, community leaderboard)
 - [ ] Deploy HF Space public community dashboard
 - [ ] Publish to PyPI
+- [ ] Outlier detection for community submissions — flag runs where metrics are wildly inconsistent with declared amount/SPD (e.g., someone declares 50 ng but IDs suggest 500 ng injection)
+- [ ] Failed run rejection — detect near-zero results (failed injection, empty file, broken spray) and block them from entering the benchmark; these should never pollute cohort percentiles
 - [ ] Add Thermo `.raw` mode detection integration tests on Hive
 - [ ] End-to-end watcher integration test with real instrument data
 - [ ] Add `spd` field to instruments.yml example configs and user guide
