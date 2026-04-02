@@ -530,6 +530,22 @@ Do not introduce MSConvert as a dependency.
 
 ---
 
+## Documentation Maintenance
+
+**When you implement a new feature or complete a TODO item, update the docs immediately.**
+
+1. Check `README.md` — move the item from the TODO list to the Implementation Status table.
+   Remove any **(planned)** markers from the feature description.
+2. Check `docs/user_guide.md` — remove **(planned)** markers and update instructions
+   to reflect actual working behavior.
+3. If the feature changes config format, update the YAML examples in both files.
+4. If the feature adds a new CLI command, add it to the Quick Start and user guide.
+
+The README has an [Implementation Status](#implementation-status) table and a [TODO](#todo)
+checklist. These are the source of truth for what works vs what's planned. Keep them current.
+
+---
+
 ## Code Style
 
 - Python 3.10+, type hints everywhere

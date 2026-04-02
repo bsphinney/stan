@@ -20,10 +20,12 @@ STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap
 - **Gradient Reproducibility Score (GRS)** -- a single 0-100 composite number for LC health, updated every run
 - **Column health tracking** -- longitudinal TIC trend analysis detects column aging before it affects your data
 - **Precursor-first metrics** -- benchmarks on precursor count (DIA) and PSM count (DDA), not protein count, because protein count is confounded by FASTA choice and inference settings
-- **Community HeLa benchmark** -- compare your instrument against labs worldwide via an open HuggingFace Dataset (CC BY 4.0)
+- **Community HeLa benchmark** **(planned)** -- compare your instrument against labs worldwide via an open HuggingFace Dataset (CC BY 4.0)
 - **Instrument health fingerprint** -- dual-mode DDA+DIA radar chart for rapid visual diagnosis
 - **Plain-English failure diagnosis** -- templated alerts explain what failed and what to check, no guesswork
 - **Privacy by design** -- raw files are never uploaded; only aggregate QC metrics leave your lab
+
+> **Status note**: The Python backend (watcher, search dispatch, metric extraction, gating, scoring, DB) is implemented and tested. The React dashboard frontend, community HF Dataset assets, and PyPI packaging are in progress. See [Implementation Status](#implementation-status) below.
 
 ## Supported Instruments
 
@@ -39,10 +41,10 @@ STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap
 ### Install
 
 ```bash
-pip install stan-proteomics
+pip install stan-proteomics          # coming soon — not yet on PyPI
 ```
 
-Or install from source for development:
+Install from source (recommended for now):
 
 ```bash
 git clone https://github.com/bsphinney/stan.git
@@ -136,7 +138,7 @@ Protein count is intentionally excluded from primary benchmarking. It is heavily
 
 STAN powers an open, crowdsourced HeLa digest benchmark hosted on HuggingFace. Labs worldwide submit aggregate QC metrics (never raw files) from their HeLa standard runs, enabling cross-lab instrument performance comparisons.
 
-Browse the community dashboard: [huggingface.co/spaces/brettsp/stan](https://huggingface.co/spaces/brettsp/stan)
+Browse the community dashboard **(planned)**: [huggingface.co/spaces/brettsp/stan](https://huggingface.co/spaces/brettsp/stan)
 
 ### How It Works
 
@@ -154,17 +156,20 @@ Track C unlocks when a lab submits both a DDA and a DIA run from the same instru
 
 ### Cohort Bucketing
 
-Submissions are compared only within their cohort, defined by three dimensions: **instrument family**, **gradient length**, and **injection amount**. This ensures a 50 ng run on a timsTOF Ultra is compared against other 50 ng timsTOF Ultra runs, not against a 500 ng Astral run.
+Submissions are compared only within their cohort, defined by three dimensions: **instrument family**, **throughput (SPD)**, and **injection amount**. This ensures a 50 ng run on a timsTOF Ultra at 60 SPD is compared against other 50 ng timsTOF Ultra 60 SPD runs, not against a 500 ng Astral at 200 SPD.
 
-**Gradient buckets:**
+**Throughput buckets (SPD -- samples per day):**
 
-| Bucket | Range |
-|--------|-------|
-| ultra-short | 30 min or less |
-| short | 31-45 min |
-| standard-1h | 46-75 min |
-| long-2h | 76-120 min |
-| extended | over 120 min |
+SPD is the primary throughput unit. Labs set their Evosep, Vanquish Neo, or equivalent method by SPD in `instruments.yml`. Gradient length in minutes is accepted as a fallback for custom LC methods.
+
+| Bucket | SPD Range | Evosep Method | Traditional Equivalent |
+|--------|-----------|---------------|----------------------|
+| `200+spd` | 200 or more | 500/300/200 SPD | ~2-5 min gradient |
+| `100spd` | 80-199 | 100 SPD | ~11 min gradient |
+| `60spd` | 40-79 | 60 SPD (most popular), Whisper 40 | ~21-31 min gradient |
+| `30spd` | 25-39 | 30 SPD | ~44 min gradient |
+| `15spd` | 10-24 | Extended | ~60-88 min gradient |
+| `deep` | under 10 | -- | >2h gradient |
 
 **Amount buckets (injection amount in ng):**
 
@@ -243,7 +248,8 @@ instruments:
     hive_account: "your-account-grp"
     community_submit: true       # auto-submit QC metrics to community benchmark
     hela_amount_ng: 50           # injection amount in ng (default: 50)
-    gradient_length_min: 60      # gradient length in minutes
+    spd: 30                      # samples per day (Evosep 30 SPD)
+    gradient_length_min: 44      # gradient length in minutes (fallback)
 
   - name: "Astral"
     vendor: "thermo"
@@ -260,7 +266,8 @@ instruments:
     hive_account: "your-account-grp"
     community_submit: true
     hela_amount_ng: 50
-    gradient_length_min: 60
+    spd: 60                      # Evosep 60 SPD
+    gradient_length_min: 21      # ~21 min active gradient
 ```
 
 **Vendor-specific file stability detection:**
@@ -399,6 +406,55 @@ ruff check stan/ --fix
 ```
 
 Tests marked `@pytest.mark.integration` require Hive SLURM access and real instrument files. They are skipped in CI and can be run manually on the HPC cluster.
+
+---
+
+## Implementation Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| CLI (`stan init/watch/dashboard/status/column-health/version`) | Done | All commands wired up and working |
+| Watcher daemon (file stability, hot-reload config) | Done | Bruker `.d` and Thermo `.raw` stability detection |
+| Acquisition mode detection (Bruker `.d`) | Done | Reads `MsmsType` from `analysis.tdf` |
+| Acquisition mode detection (Thermo `.raw`) | Done | Via ThermoRawFileParser metadata |
+| DIA-NN SLURM job builder | Done | Community-standardized params, asset download |
+| Sage SLURM job builder | Done | JSON config, Thermo mzML conversion |
+| Local search runners (no SLURM) | Done | Subprocess-based DIA-NN and Sage execution |
+| Metric extraction (DIA + DDA) | Done | Polars-based, from `report.parquet` and `results.sage.parquet` |
+| GRS scoring | Done | 4-component composite, 0-100 scale |
+| QC gating + HOLD flag | Done | Hard gates, plain-English diagnosis |
+| Column health assessment | Done | Longitudinal TIC trend analysis |
+| SQLite database + migrations | Done | Stores all metrics, gate results, amount_ng, spd |
+| Community validation + submission | Done | Hard gates, soft flags, asset hash verification |
+| Community scoring (DIA + DDA) | Done | Percentile-based within SPD/amount cohorts |
+| Instrument fingerprint (Track C) | Done | 6-axis radar, failure pattern matching |
+| Nightly consolidation script | Done | GitHub Actions, recomputes cohort percentiles |
+| FastAPI dashboard backend | Done | API routes for runs, trends, instruments, thresholds, submission |
+| SPD-first cohort bucketing | Done | Evosep 500-30 SPD, Vanquish Neo, traditional LC |
+| Default config files (`config/`) | **Planned** | `stan init` needs YAML templates to copy |
+| Test fixtures (real DIA-NN/Sage output) | **Planned** | `tests/fixtures/` is empty — need small real output files |
+| React dashboard frontend | **Planned** | Only a placeholder HTML page exists |
+| PyPI publishing (`pip install stan-proteomics`) | **Planned** | `pyproject.toml` is ready, not yet published |
+| HF Dataset assets (FASTA + speclibs) | **Planned** | Library generation in progress, MD5 hashes TODO |
+| HF Space public dashboard | **Planned** | Space repo exists but not deployed |
+| Community benchmark live data | **Planned** | Requires HF Dataset assets + first submissions |
+
+---
+
+## TODO
+
+- [ ] Ship default config YAML templates in `config/` so `stan init` works out of the box
+- [ ] Add small real DIA-NN and Sage output files to `tests/fixtures/`
+- [ ] Generate and upload Astral HeLa predicted spectral library to HF Dataset
+- [ ] Generate and upload timsTOF HeLa predicted spectral library to HF Dataset
+- [ ] Upload pinned community FASTA to HF Dataset
+- [ ] Populate MD5 hashes in `stan/community/validate.py`
+- [ ] Build React frontend for dashboard (run history, trend charts, community leaderboard)
+- [ ] Deploy HF Space public community dashboard
+- [ ] Publish to PyPI
+- [ ] Add Thermo `.raw` mode detection integration tests on Hive
+- [ ] End-to-end watcher integration test with real instrument data
+- [ ] Add `spd` field to instruments.yml example configs and user guide
 
 ---
 

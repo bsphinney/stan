@@ -6,6 +6,8 @@ This guide covers installation, configuration, daily use, and troubleshooting fo
 
 **Audience**: Proteomics core facility staff, instrument operators, and researchers who want automated QC monitoring and community benchmarking for their mass spectrometers.
 
+> **Status note**: The Python backend (watcher, search dispatch, metric extraction, gating, scoring, DB) is implemented and tested. Items marked **(planned)** below are not yet available. See the [Implementation Status](../README.md#implementation-status) table in the README for the full breakdown.
+
 ---
 
 ## Table of Contents
@@ -32,10 +34,10 @@ This guide covers installation, configuration, daily use, and troubleshooting fo
 - SSH access to the cluster (STAN uses `paramiko` for job submission)
 - For Thermo DDA runs: ThermoRawFileParser installed on the cluster (requires .NET 8 runtime)
 
-### Install from PyPI
+### Install from PyPI (coming soon)
 
 ```bash
-pip install stan-proteomics
+pip install stan-proteomics          # not yet published — use source install below
 ```
 
 ### Install from Source (Development)
@@ -101,7 +103,8 @@ instruments:
     hive_mem: "32G"               # SLURM memory request
     community_submit: true        # auto-submit to community benchmark
     hela_amount_ng: 50            # injection amount in ng (default: 50)
-    gradient_length_min: 60       # gradient length in minutes
+    spd: 60                       # samples per day (primary — Evosep/Vanquish method)
+    gradient_length_min: 21       # gradient length in minutes (fallback if spd not set)
 ```
 
 **Key fields explained:**
@@ -248,6 +251,18 @@ API documentation is available at `http://localhost:8421/docs` (Swagger UI).
 
 ### Dashboard Views
 
+The dashboard currently serves a FastAPI backend with JSON API endpoints. The React frontend is **(planned)**. In the meantime, you can access the API directly:
+
+- `/api/runs` -- list recent QC runs
+- `/api/runs/{run_id}` -- full metric detail for a run
+- `/api/trends/{instrument}` -- time-series metrics for trend analysis
+- `/api/instruments` -- current instrument config (hot-reloaded)
+- `/api/thresholds` -- current QC thresholds
+- `/api/community/submit` -- submit a run to the community benchmark
+- `/docs` -- Swagger UI for interactive API exploration
+
+**Planned frontend views:**
+
 **Live Runs** -- Status cards for each instrument showing the most recent run, GRS badge, gate result (PASS/WARN/FAIL), and time since last acquisition.
 
 **Run History** -- Sortable, scrollable table of all runs. Click any run to see full metric detail.
@@ -287,13 +302,13 @@ Submissions must pass minimum quality thresholds to be accepted. These prevent c
 - At least 50% of PSMs with mass error under 5 ppm
 - MS2 scan rate at least 5 scans per minute
 
-### Automatic Submission
+### Automatic Submission **(planned)**
 
-When `community_submit: true` and `submit_by_default: true`, STAN automatically submits after every QC run that passes hard gates. No manual intervention required.
+When `community_submit: true` and `submit_by_default: true`, STAN will automatically submit after every QC run that passes hard gates. No manual intervention required. (The submission code is implemented; auto-triggering from the watcher is not yet wired up.)
 
 ### Manual Submission
 
-From the dashboard, navigate to a completed run and click the "Submit to Benchmark" button. You can review the metrics before confirming.
+Via the API: `POST /api/community/submit` with your `run_id`. Once the React frontend is built **(planned)**, a "Submit to Benchmark" button will be available on each run detail page.
 
 ### What Gets Submitted
 
