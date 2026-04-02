@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STAN — Know Your Instrument</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a; --surface: #1e293b; --border: #334155;
+      --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;
+      --pass: #22c55e; --warn: #eab308; --fail: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 1rem; }
+    header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 0; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem; }
+    header h1 { font-size: 1.5rem; font-weight: 700; }
+    header h1 span { color: var(--accent); }
+    .version { color: var(--muted); font-size: 0.85rem; }
+    .tabs { display: flex; gap: 0.25rem; margin-bottom: 1.5rem; }
+    .tab { padding: 0.5rem 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: 0.5rem; cursor: pointer; color: var(--muted); font-size: 0.9rem; transition: all 0.15s; }
+    .tab:hover { color: var(--text); }
+    .tab.active { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.25rem; margin-bottom: 1rem; }
+    .card h3 { font-size: 1rem; margin-bottom: 0.75rem; color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+    .metric { display: flex; justify-content: space-between; padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
+    .metric:last-child { border: none; }
+    .metric-label { color: var(--muted); font-size: 0.85rem; }
+    .metric-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; }
+    .badge-pass { background: var(--pass); color: #052e16; }
+    .badge-warn { background: var(--warn); color: #422006; }
+    .badge-fail { background: var(--fail); color: #450a0a; }
+    .badge-grs { background: var(--accent); color: var(--bg); min-width: 2.5rem; text-align: center; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { text-align: left; padding: 0.5rem; color: var(--muted); border-bottom: 2px solid var(--border); font-weight: 600; }
+    td { padding: 0.5rem; border-bottom: 1px solid var(--border); }
+    tr:hover { background: rgba(56, 189, 248, 0.05); }
+    .empty { text-align: center; color: var(--muted); padding: 3rem; }
+    .diagnosis { font-size: 0.85rem; color: var(--warn); margin-top: 0.5rem; font-style: italic; }
+    textarea { width: 100%; min-height: 300px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.75rem; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 0.85rem; resize: vertical; }
+    button { padding: 0.5rem 1rem; background: var(--accent); color: var(--bg); border: none; border-radius: 0.5rem; font-weight: 600; cursor: pointer; }
+    button:hover { opacity: 0.9; }
+    .status-msg { margin-top: 0.5rem; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+
+    const API = '';
+
+    function useFetch(url, deps = []) {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const reload = useCallback(() => {
+        setLoading(true);
+        fetch(API + url).then(r => r.json()).then(d => { setData(d); setLoading(false); }).catch(() => setLoading(false));
+      }, [url]);
+      useEffect(() => { reload(); }, deps);
+      return { data, loading, reload };
+    }
+
+    function GrsBadge({ score }) {
+      if (score == null) return null;
+      return <span className="badge badge-grs">GRS {score}</span>;
+    }
+
+    function GateBadge({ result }) {
+      if (!result) return null;
+      const cls = result === 'pass' ? 'badge-pass' : result === 'warn' ? 'badge-warn' : 'badge-fail';
+      return <span className={`badge ${cls}`}>{result.toUpperCase()}</span>;
+    }
+
+    function LiveRuns() {
+      const { data: runs, loading, reload } = useFetch('/api/runs?limit=20');
+      useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [reload]);
+
+      if (loading && !runs) return <div className="empty">Loading...</div>;
+      if (!runs || runs.length === 0) return <div className="empty">No QC runs yet. Start the watcher to begin monitoring.</div>;
+
+      const byInstrument = {};
+      for (const r of runs) {
+        if (!byInstrument[r.instrument]) byInstrument[r.instrument] = r;
+      }
+
+      return (
+        <div className="grid">
+          {Object.entries(byInstrument).map(([name, run]) => (
+            <div className="card" key={name}>
+              <h3>{name}</h3>
+              <div className="metric"><span className="metric-label">Last run</span><span className="metric-value">{run.run_name}</span></div>
+              <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
+              <div className="metric"><span className="metric-label">Gate</span><GateBadge result={run.gate_result} /></div>
+              <div className="metric"><span className="metric-label">GRS</span><GrsBadge score={run.grs_score} /></div>
+              {run.mode === 'DIA' && <div className="metric"><span className="metric-label">Precursors</span><span className="metric-value">{run.n_precursors?.toLocaleString()}</span></div>}
+              {run.mode === 'DDA' && <div className="metric"><span className="metric-label">PSMs</span><span className="metric-value">{run.n_psms?.toLocaleString()}</span></div>}
+              <div className="metric"><span className="metric-label">Time</span><span className="metric-value">{new Date(run.run_date).toLocaleString()}</span></div>
+              {run.diagnosis && <div className="diagnosis">{run.diagnosis}</div>}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function RunHistory() {
+      const { data: runs, loading } = useFetch('/api/runs?limit=100');
+      if (loading) return <div className="empty">Loading...</div>;
+      if (!runs || runs.length === 0) return <div className="empty">No runs recorded yet.</div>;
+
+      return (
+        <div className="card" style={{overflowX: 'auto'}}>
+          <table>
+            <thead><tr>
+              <th>Run</th><th>Instrument</th><th>Mode</th><th>Gate</th><th>GRS</th>
+              <th>Precursors</th><th>Peptides</th><th>PSMs</th><th>CV%</th><th>Date</th>
+            </tr></thead>
+            <tbody>
+              {runs.map(r => (
+                <tr key={r.id}>
+                  <td>{r.run_name}</td>
+                  <td>{r.instrument}</td>
+                  <td>{r.mode}</td>
+                  <td><GateBadge result={r.gate_result} /></td>
+                  <td><GrsBadge score={r.grs_score} /></td>
+                  <td>{r.n_precursors?.toLocaleString() || '—'}</td>
+                  <td>{(r.n_peptides || r.n_peptides_dda)?.toLocaleString() || '—'}</td>
+                  <td>{r.n_psms?.toLocaleString() || '—'}</td>
+                  <td>{r.median_cv_precursor?.toFixed(1) || '—'}</td>
+                  <td>{new Date(r.run_date).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
+    function TrendCharts() {
+      const { data: instruments } = useFetch('/api/instruments');
+      const [selected, setSelected] = useState(null);
+      const [trends, setTrends] = useState(null);
+
+      const names = instruments?.instruments?.map(i => i.name) || [];
+      useEffect(() => { if (names.length && !selected) setSelected(names[0]); }, [names]);
+      useEffect(() => {
+        if (!selected) return;
+        fetch(API + `/api/trends/${encodeURIComponent(selected)}?limit=50`).then(r => r.json()).then(setTrends);
+      }, [selected]);
+
+      return (
+        <div>
+          <div className="tabs" style={{marginBottom: '1rem'}}>
+            {names.map(n => <div key={n} className={`tab ${n === selected ? 'active' : ''}`} onClick={() => setSelected(n)}>{n}</div>)}
+          </div>
+          {!trends || trends.length === 0
+            ? <div className="empty">No trend data for {selected || 'this instrument'}.</div>
+            : <div className="grid">
+                <div className="card"><h3>Precursors / PSMs</h3>{trends.map((r, i) => <div key={i} className="metric"><span className="metric-label">{r.run_name}</span><span className="metric-value">{(r.n_precursors || r.n_psms || 0).toLocaleString()}</span></div>)}</div>
+                <div className="card"><h3>GRS Score</h3>{trends.map((r, i) => <div key={i} className="metric"><span className="metric-label">{r.run_name}</span><GrsBadge score={r.grs_score} /></div>)}</div>
+                <div className="card"><h3>CV %</h3>{trends.map((r, i) => <div key={i} className="metric"><span className="metric-label">{r.run_name}</span><span className="metric-value">{r.median_cv_precursor?.toFixed(1) || '—'}</span></div>)}</div>
+              </div>
+          }
+        </div>
+      );
+    }
+
+    function ConfigEditor() {
+      const { data: instruments, reload: reloadInst } = useFetch('/api/instruments');
+      const { data: thresholds, reload: reloadThr } = useFetch('/api/thresholds');
+      const [instYaml, setInstYaml] = useState('');
+      const [thrYaml, setThrYaml] = useState('');
+      const [msg, setMsg] = useState('');
+
+      useEffect(() => { if (instruments) setInstYaml(jsyaml(instruments)); }, [instruments]);
+      useEffect(() => { if (thresholds) setThrYaml(jsyaml(thresholds)); }, [thresholds]);
+
+      function jsyaml(obj) { return JSON.stringify(obj, null, 2); }
+
+      async function saveInstruments() {
+        setMsg('Saving...');
+        const r = await fetch(API + '/api/instruments', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ yaml_content: instYaml }) });
+        setMsg(r.ok ? 'Instruments saved.' : 'Error saving instruments.');
+        reloadInst();
+      }
+      async function saveThresholds() {
+        setMsg('Saving...');
+        const r = await fetch(API + '/api/thresholds', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ yaml_content: thrYaml }) });
+        setMsg(r.ok ? 'Thresholds saved.' : 'Error saving thresholds.');
+        reloadThr();
+      }
+
+      return (
+        <div className="grid">
+          <div className="card">
+            <h3>instruments.yml</h3>
+            <textarea value={instYaml} onChange={e => setInstYaml(e.target.value)} />
+            <button onClick={saveInstruments} style={{marginTop: '0.5rem'}}>Save Instruments</button>
+          </div>
+          <div className="card">
+            <h3>thresholds.yml</h3>
+            <textarea value={thrYaml} onChange={e => setThrYaml(e.target.value)} />
+            <button onClick={saveThresholds} style={{marginTop: '0.5rem'}}>Save Thresholds</button>
+          </div>
+          {msg && <div className="status-msg">{msg}</div>}
+        </div>
+      );
+    }
+
+    function CommunityTab() {
+      const { data: cohort, loading } = useFetch('/api/community/cohort');
+      if (loading) return <div className="empty">Loading community data...</div>;
+
+      return (
+        <div className="card">
+          <h3>Community Benchmark</h3>
+          {cohort?.error
+            ? <p className="empty">{cohort.error}</p>
+            : <div>
+                <p style={{color: 'var(--muted)', marginBottom: '1rem'}}>
+                  Primary metrics: precursor count (DIA, Track B) and PSM count (DDA, Track A) at 1% FDR.
+                  Protein count is contextual only — not used for ranking.
+                </p>
+                {Object.keys(cohort?.cohorts || {}).length === 0
+                  ? <p className="empty">No community data available yet. Submit a QC run to contribute.</p>
+                  : Object.entries(cohort.cohorts).map(([id, c]) => (
+                      <div key={id} style={{marginBottom: '1rem'}}>
+                        <strong>{id}</strong> ({c.n_submissions} submissions)
+                      </div>
+                    ))
+                }
+              </div>
+          }
+        </div>
+      );
+    }
+
+    function App() {
+      const [tab, setTab] = useState('live');
+      const { data: ver } = useFetch('/api/version');
+
+      return (
+        <div className="container">
+          <header>
+            <h1><span>STAN</span> — Know Your Instrument</h1>
+            <span className="version">{ver ? `v${ver.version}` : ''}</span>
+          </header>
+          <div className="tabs">
+            {[['live', 'Live Runs'], ['history', 'Run History'], ['trends', 'Trends'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
+              <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
+            )}
+          </div>
+          {tab === 'live' && <LiveRuns />}
+          {tab === 'history' && <RunHistory />}
+          {tab === 'trends' && <TrendCharts />}
+          {tab === 'config' && <ConfigEditor />}
+          {tab === 'community' && <CommunityTab />}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
