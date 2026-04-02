@@ -153,6 +153,8 @@ Protein count is intentionally excluded from primary benchmarking. It is heavily
 
 STAN powers an open, crowdsourced HeLa digest benchmark hosted on HuggingFace. Labs worldwide submit aggregate QC metrics (never raw files) from their HeLa standard runs, enabling cross-lab instrument performance comparisons.
 
+**Community submission is entirely opt-in.** By default, `community_submit` is `false` and nothing leaves your machine. STAN works fully standalone for local QC monitoring, gating, and longitudinal tracking without ever contacting an external service. Set `community_submit: true` per instrument only if you want to participate in the benchmark.
+
 Browse the community dashboard **(planned)**: [huggingface.co/spaces/brettsp/stan](https://huggingface.co/spaces/brettsp/stan)
 
 ### How It Works
@@ -258,6 +260,7 @@ instruments:
     enabled: true
     hela_amount_ng: 50           # injection amount in ng (default: 50)
     spd: 30                      # samples per day (Evosep 30 SPD)
+    community_submit: false      # set true to share QC metrics with community benchmark
 
   - name: "Astral"
     vendor: "thermo"
@@ -269,6 +272,7 @@ instruments:
     enabled: true
     hela_amount_ng: 50
     spd: 60                      # Evosep 60 SPD
+    community_submit: false      # set true to opt in
 
 # ── Optional: SLURM HPC execution ──────────────────────────────────
 # Uncomment to run searches on a remote cluster instead of locally.
