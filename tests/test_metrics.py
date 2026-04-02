@@ -58,12 +58,20 @@ def test_grs_range():
 # ── Cohort Bucketing ──────────────────────────────────────────────────
 
 def test_gradient_bucket():
-    assert gradient_bucket(20) == "ultra-short"
-    assert gradient_bucket(30) == "ultra-short"
-    assert gradient_bucket(45) == "short"
-    assert gradient_bucket(60) == "standard-1h"
-    assert gradient_bucket(90) == "long-2h"
-    assert gradient_bucket(180) == "extended"
+    # Evosep SPD methods
+    assert gradient_bucket(2) == "sprint"  # 500 SPD (~2.2 min)
+    assert gradient_bucket(3) == "sprint"  # 300 SPD (~2.3 min)
+    assert gradient_bucket(5) == "sprint"  # 200 SPD (~4.8 min)
+    assert gradient_bucket(11) == "ultra-short"  # 100 SPD (~11 min)
+    assert gradient_bucket(21) == "short"  # 60 SPD (~21 min)
+    assert gradient_bucket(31) == "mid"  # Whisper 40 SPD (~31 min)
+    assert gradient_bucket(44) == "standard"  # 30 SPD (~44 min)
+    assert gradient_bucket(88) == "long"  # Extended (~88 min)
+    # Traditional LC gradients
+    assert gradient_bucket(60) == "standard"  # classic 1h
+    assert gradient_bucket(90) == "long"  # classic 90 min
+    assert gradient_bucket(120) == "long"  # classic 2h
+    assert gradient_bucket(180) == "extended"  # >2h
 
 
 def test_amount_bucket():
@@ -77,7 +85,7 @@ def test_amount_bucket():
 
 def test_cohort_id():
     cid = compute_cohort_id("timsTOF", 60, 200)
-    assert cid == "timsTOF_standard-1h_standard"
+    assert cid == "timsTOF_standard_standard"
 
 
 # ── Community Scores ──────────────────────────────────────────────────

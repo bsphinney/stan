@@ -14,16 +14,44 @@ COHORT_MINIMUM = 5  # minimum submissions before leaderboard appears
 
 
 def gradient_bucket(minutes: int) -> str:
-    """Classify gradient length into a cohort bucket."""
-    if minutes <= 30:
-        return "ultra-short"
-    if minutes <= 45:
-        return "short"
-    if minutes <= 75:
-        return "standard-1h"
+    """Classify gradient length into a cohort bucket.
+
+    Boundaries are chosen so that each Evosep SPD method and equivalent
+    Vanquish Neo/EASY-nLC method lands in its own natural bucket.
+
+    Evosep mapping (confirmed from evosep.com, April 2026):
+        500 SPD  ~2.2 min gradient  → sprint
+        300 SPD  ~2.3 min gradient  → sprint
+        200 SPD  ~4.8 min gradient  → sprint
+        100 SPD  ~11 min gradient   → ultra-short
+        60 SPD   ~21 min gradient   → short
+        Whisper 40 SPD  ~31 min     → mid
+        Whisper Zoom 40 ~32.5 min   → mid
+        30 SPD   ~44 min gradient   → standard
+        Extended ~88 min gradient   → long
+
+    Traditional LC mapping:
+        5-10 min high-throughput     → sprint
+        15 min gradient              → ultra-short
+        20-25 min gradient           → short
+        30-40 min gradient           → mid
+        45-60 min gradient           → standard
+        90-120 min gradient          → long
+        >120 min gradient            → extended
+    """
+    if minutes <= 8:
+        return "sprint"  # Evosep 500/300/200 SPD, Vanquish Neo 180 SPD
+    if minutes <= 18:
+        return "ultra-short"  # Evosep 100 SPD, ~15 min traditional
+    if minutes <= 28:
+        return "short"  # Evosep 60 SPD, ~20-25 min traditional
+    if minutes <= 42:
+        return "mid"  # Evosep Whisper 40/Zoom, ~30-40 min traditional
+    if minutes <= 65:
+        return "standard"  # Evosep 30 SPD, traditional 1h gradient
     if minutes <= 120:
-        return "long-2h"
-    return "extended"
+        return "long"  # Evosep Extended, traditional 90-120 min
+    return "extended"  # >2h gradients
 
 
 def amount_bucket(ng: float) -> str:
