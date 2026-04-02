@@ -8,7 +8,9 @@ from stan.metrics.scoring import (
     compute_cohort_id,
     compute_dia_score,
     compute_dda_score,
-    gradient_bucket,
+    gradient_min_to_spd,
+    spd_bucket,
+    throughput_bucket,
 )
 
 
@@ -57,21 +59,41 @@ def test_grs_range():
 
 # ── Cohort Bucketing ──────────────────────────────────────────────────
 
-def test_gradient_bucket():
-    # Evosep SPD methods
-    assert gradient_bucket(2) == "sprint"  # 500 SPD (~2.2 min)
-    assert gradient_bucket(3) == "sprint"  # 300 SPD (~2.3 min)
-    assert gradient_bucket(5) == "sprint"  # 200 SPD (~4.8 min)
-    assert gradient_bucket(11) == "ultra-short"  # 100 SPD (~11 min)
-    assert gradient_bucket(21) == "short"  # 60 SPD (~21 min)
-    assert gradient_bucket(31) == "mid"  # Whisper 40 SPD (~31 min)
-    assert gradient_bucket(44) == "standard"  # 30 SPD (~44 min)
-    assert gradient_bucket(88) == "long"  # Extended (~88 min)
-    # Traditional LC gradients
-    assert gradient_bucket(60) == "standard"  # classic 1h
-    assert gradient_bucket(90) == "long"  # classic 90 min
-    assert gradient_bucket(120) == "long"  # classic 2h
-    assert gradient_bucket(180) == "extended"  # >2h
+def test_spd_bucket():
+    # Evosep standard methods
+    assert spd_bucket(500) == "200+spd"
+    assert spd_bucket(300) == "200+spd"
+    assert spd_bucket(200) == "200+spd"
+    assert spd_bucket(100) == "100spd"
+    assert spd_bucket(60) == "60spd"
+    assert spd_bucket(40) == "60spd"  # Whisper 40 SPD → same bucket as 60
+    assert spd_bucket(30) == "30spd"
+    assert spd_bucket(15) == "15spd"  # Evosep Extended
+    assert spd_bucket(5) == "deep"  # traditional 2h+
+
+
+def test_throughput_bucket_spd_preferred():
+    """SPD takes priority over gradient_min when both are provided."""
+    assert throughput_bucket(spd=60) == "60spd"
+    assert throughput_bucket(spd=60, gradient_min=88) == "60spd"
+
+
+def test_throughput_bucket_gradient_fallback():
+    """Falls back to gradient_min → estimated SPD when spd is None."""
+    # 21 min gradient → ~55 SPD → 60spd bucket
+    assert throughput_bucket(gradient_min=21) == "60spd"
+    # 44 min gradient → ~26 SPD → 30spd bucket
+    assert throughput_bucket(gradient_min=44) == "30spd"
+    # 88 min gradient → ~13 SPD → 15spd bucket
+    assert throughput_bucket(gradient_min=88) == "15spd"
+
+
+def test_gradient_min_to_spd():
+    # Evosep-like cycle times (gradient + ~25% overhead)
+    assert gradient_min_to_spd(2) >= 200  # ~2 min → very high SPD
+    assert 40 <= gradient_min_to_spd(21) <= 80  # ~21 min → 60 SPD range
+    assert 20 <= gradient_min_to_spd(44) <= 35  # ~44 min → 30 SPD range
+    assert 8 <= gradient_min_to_spd(88) <= 15  # ~88 min → Extended range
 
 
 def test_amount_bucket():
@@ -84,8 +106,13 @@ def test_amount_bucket():
 
 
 def test_cohort_id():
-    cid = compute_cohort_id("timsTOF", 60, 200)
-    assert cid == "timsTOF_standard_standard"
+    # SPD-based
+    cid = compute_cohort_id("timsTOF", 200, spd=60)
+    assert cid == "timsTOF_60spd_standard"
+
+    # Gradient fallback
+    cid2 = compute_cohort_id("Astral", 50.0, gradient_min=44)
+    assert cid2 == "Astral_30spd_low"
 
 
 # ── Community Scores ──────────────────────────────────────────────────

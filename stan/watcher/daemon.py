@@ -220,6 +220,7 @@ class InstrumentWatcher:
                 failed_gates=failed,
                 diagnosis=diagnosis,
                 amount_ng=self._config.get("hela_amount_ng", 50.0),
+                spd=self._config.get("spd"),
                 gradient_length_min=self._config.get("gradient_length_min"),
             )
         except Exception:

@@ -33,6 +33,7 @@ SUBMISSION_SCHEMA = pa.schema([
     pa.field("instrument_family", pa.string()),
     pa.field("instrument_model", pa.string()),
     pa.field("acquisition_mode", pa.string()),
+    pa.field("spd", pa.int32()),
     pa.field("gradient_length_min", pa.int32()),
     pa.field("amount_ng", pa.float32()),
     pa.field("n_precursors", pa.int32()),
@@ -51,7 +52,8 @@ SUBMISSION_SCHEMA = pa.schema([
 
 def submit_to_benchmark(
     run: dict,
-    gradient_length_min: int = 60,
+    spd: int | None = None,
+    gradient_length_min: int | None = None,
     amount_ng: float = 50.0,
     hela_source: str = "Pierce HeLa Protein Digest Standard",
     asset_hashes: dict[str, str] | None = None,
@@ -60,7 +62,9 @@ def submit_to_benchmark(
 
     Args:
         run: Run dict from the local SQLite database.
-        gradient_length_min: Gradient length in minutes.
+        spd: Samples per day (primary throughput — e.g. 60 for Evosep 60 SPD).
+            If not provided, falls back to gradient_length_min.
+        gradient_length_min: Gradient length in minutes (fallback for custom LC).
         amount_ng: Amount of HeLa digest injected (ng).
         hela_source: HeLa digest source/vendor.
         asset_hashes: MD5 hashes of the speclib and FASTA used in the search.
@@ -102,7 +106,9 @@ def submit_to_benchmark(
     instrument = run.get("instrument", "")
     instrument_family = _instrument_family(instrument)
 
-    cohort_id = compute_cohort_id(instrument_family, gradient_length_min, amount_ng)
+    cohort_id = compute_cohort_id(
+        instrument_family, amount_ng, spd=spd, gradient_min=gradient_length_min,
+    )
 
     row = {
         "submission_id": [submission_id],
@@ -112,7 +118,8 @@ def submit_to_benchmark(
         "instrument_family": [instrument_family],
         "instrument_model": [instrument],
         "acquisition_mode": [run.get("mode", "")],
-        "gradient_length_min": [gradient_length_min],
+        "spd": [spd or 0],
+        "gradient_length_min": [gradient_length_min or 0],
         "amount_ng": [amount_ng],
         "n_precursors": [run.get("n_precursors") or 0],
         "n_peptides": [run.get("n_peptides") or 0],

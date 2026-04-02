@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS runs (
 
     -- Run metadata
     amount_ng        REAL DEFAULT 50.0,
+    spd              INTEGER,
     gradient_length_min INTEGER,
 
     -- Community
@@ -92,6 +93,7 @@ def _migrate(con: sqlite3.Connection) -> None:
 
     migrations: list[tuple[str, str]] = [
         ("amount_ng", "ALTER TABLE runs ADD COLUMN amount_ng REAL DEFAULT 50.0"),
+        ("spd", "ALTER TABLE runs ADD COLUMN spd INTEGER"),
         ("gradient_length_min", "ALTER TABLE runs ADD COLUMN gradient_length_min INTEGER"),
     ]
 
@@ -111,6 +113,7 @@ def insert_run(
     failed_gates: list[str] | None = None,
     diagnosis: str = "",
     amount_ng: float = 50.0,
+    spd: int | None = None,
     gradient_length_min: int | None = None,
     db_path: Path | None = None,
 ) -> str:
@@ -126,7 +129,8 @@ def insert_run(
         failed_gates: List of failed metric names.
         diagnosis: Plain-English diagnosis string.
         amount_ng: HeLa injection amount in nanograms (default 50).
-        gradient_length_min: LC gradient length in minutes.
+        spd: Samples per day (primary throughput measure).
+        gradient_length_min: LC gradient length in minutes (fallback).
         db_path: Optional override for database path.
 
     Returns:
@@ -171,6 +175,7 @@ def insert_run(
         "ms2_fill_time_median_ms": metrics.get("ms2_fill_time_median_ms"),
         # Run metadata
         "amount_ng": amount_ng,
+        "spd": spd,
         "gradient_length_min": gradient_length_min,
         # Gating
         "gate_result": gate_result,
