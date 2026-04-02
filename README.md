@@ -6,7 +6,9 @@
 [![Dataset: CC BY 4.0](https://img.shields.io/badge/Data_License-CC_BY_4.0-green.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap mass spectrometers. It watches your raw data directories for new acquisitions, auto-detects DIA or DDA mode, submits standardized search jobs (DIA-NN for DIA, Sage for DDA) to your HPC cluster, computes instrument health metrics, gates your sample queue automatically on QC failure, tracks longitudinal performance in a local database, serves a real-time dashboard, and optionally benchmarks your instrument against the global proteomics community through a crowdsourced HeLa digest dataset.
+STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap mass spectrometers. It watches your raw data directories for new acquisitions, auto-detects DIA or DDA mode, runs standardized search jobs (DIA-NN for DIA, Sage for DDA) directly on your instrument workstation, computes instrument health metrics, gates your sample queue automatically on QC failure, tracks longitudinal performance in a local database, serves a dashboard, and optionally benchmarks your instrument against the global proteomics community through a crowdsourced HeLa digest dataset.
+
+**No HPC cluster required.** STAN runs DIA-NN and Sage locally on the same machine as your instrument. For labs with SLURM cluster access, remote HPC execution is available as an option.
 
 **Built at the UC Davis Proteomics Core by Brett Stanley Phinney.**
 
@@ -38,7 +40,16 @@ STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap
 
 ## Quick Start
 
-### Install
+### Prerequisites
+
+STAN runs search engines locally on your instrument workstation. Install these first:
+
+1. **Python 3.10+**
+2. **DIA-NN** -- download from [github.com/vdemichev/DiaNN/releases](https://github.com/vdemichev/DiaNN/releases) and add to PATH
+3. **Sage** -- download from [github.com/lazear/sage/releases](https://github.com/lazear/sage/releases) and add to PATH
+4. **ThermoRawFileParser** (only if running DDA on Thermo instruments) -- [github.com/compomics/ThermoRawFileParser](https://github.com/compomics/ThermoRawFileParser)
+
+### Install STAN
 
 ```bash
 pip install stan-proteomics          # coming soon — not yet on PyPI
@@ -71,7 +82,7 @@ The three config files you need:
 stan watch
 ```
 
-Starts the watcher daemon. It monitors directories configured in `instruments.yml`, detects new raw files, determines acquisition mode, and dispatches search jobs via SLURM or locally. **(Requires a working `instruments.yml` in `~/.stan/` -- see [Configuration](#configuration).)**
+Starts the watcher daemon. It monitors directories configured in `instruments.yml`, detects new raw files, determines acquisition mode, and runs DIA-NN or Sage locally on your machine. **(Requires a working `instruments.yml` in `~/.stan/` -- see [Configuration](#configuration). DIA-NN and Sage must be installed and on your PATH.)**
 
 ### Dashboard
 
@@ -100,21 +111,25 @@ Raw data directory (watched by watcher daemon)
         v
 detector.py -- reads .d/analysis.tdf or .raw metadata
         |
-        +-- DIA --> diann.py --> SLURM job --> report.parquet
-        +-- DDA --> sage.py  --> SLURM job --> results.sage.parquet
-                                        |
-                                extractor.py + chromatography.py
-                                        |
-                                evaluator.py --> PASS / WARN / FAIL
-                                        |              |
-                                SQLite (Hive)    queue.py (HOLD flag)
-                                        |
-                                dashboard (FastAPI backend, port 8421)
-                                        |               (React frontend planned)
-                                community/submit.py --> HF Dataset (planned)
+        +-- DIA --> local DIA-NN --> report.parquet
+        +-- DDA --> local Sage   --> results.sage.parquet
+                         |
+                 extractor.py + chromatography.py
+                         |
+                 evaluator.py --> PASS / WARN / FAIL
+                         |              |
+                    SQLite DB     queue.py (HOLD flag)
+                         |
+                 dashboard (FastAPI, port 8421)
+                         |               (React frontend planned)
+                 community/submit.py --> HF Dataset (planned)
 ```
 
-**Data flow**: The watcher daemon detects new raw files and checks for file stability (size stops changing). Once stable, the detector reads instrument metadata to determine DIA or DDA mode. A SLURM job is submitted to the HPC cluster running DIA-NN (for DIA) or Sage (for DDA) with standardized parameters. After the search completes, STAN extracts QC metrics from the results, evaluates them against per-instrument thresholds, writes a HOLD flag if the run fails, stores everything in SQLite for longitudinal tracking, and optionally submits to the community benchmark.
+**Data flow**: The watcher daemon detects new raw files and checks for file stability (size stops changing). Once stable, the detector reads instrument metadata to determine DIA or DDA mode. STAN runs DIA-NN (for DIA) or Sage (for DDA) **locally on your instrument workstation** as a subprocess with standardized parameters. After the search completes, STAN extracts QC metrics from the results, evaluates them against per-instrument thresholds, writes a HOLD flag if the run fails, stores everything in SQLite for longitudinal tracking, and optionally submits to the community benchmark.
+
+**Execution modes:**
+- **Local (default)** -- DIA-NN and Sage run as subprocesses on the same machine. Install them once, add to PATH, and STAN handles the rest. A typical QC HeLa run searches in 5-15 minutes on a modern workstation.
+- **SLURM (optional)** -- For labs with HPC cluster access, set `execution_mode: "slurm"` in `instruments.yml`. STAN submits batch jobs via SSH/paramiko and polls for completion.
 
 ---
 
@@ -231,45 +246,42 @@ Defines which instruments to monitor, where their raw files land, and instrument
 # STAN instrument watcher configuration
 # Hot-reloaded every 30 seconds -- no restart needed after edits
 
-hive:
-  host: "hive.ucdavis.edu"
-  user: "your_username"
-
 instruments:
 
   - name: "timsTOF Ultra"
     vendor: "bruker"
     model: "timsTOF Ultra"
-    watch_dir: "/mnt/instruments/timstof-ultra/raw"
-    output_dir: "/mnt/instruments/timstof-ultra/stan_out"
+    watch_dir: "D:/Data/raw"           # where .d directories appear
+    output_dir: "D:/Data/stan_out"     # STAN writes results + HOLD flags here
     extensions: [".d"]
     stable_secs: 60              # seconds of no size change before processing
     enabled: true
-    qc_modes: ["dia", "dda"]     # auto-detected from analysis.tdf
-    hive_partition: "high"
-    hive_account: "your-account-grp"
-    community_submit: true       # auto-submit QC metrics to community benchmark
     hela_amount_ng: 50           # injection amount in ng (default: 50)
     spd: 30                      # samples per day (Evosep 30 SPD)
-    gradient_length_min: 44      # gradient length in minutes (fallback)
 
   - name: "Astral"
     vendor: "thermo"
     model: "Astral"
-    watch_dir: "/mnt/instruments/astral/raw"
-    output_dir: "/mnt/instruments/astral/stan_out"
+    watch_dir: "D:/Data/raw"
+    output_dir: "D:/Data/stan_out"
     extensions: [".raw"]
     stable_secs: 30
     enabled: true
-    qc_modes: ["dia"]
-    raw_handling: "native"       # "native" (DIA-NN 2.1+ reads .raw) or "convert_mzml"
-    trfp_path: "/path/to/ThermoRawFileParser.dll"   # needed if raw_handling is convert_mzml
-    hive_partition: "high"
-    hive_account: "your-account-grp"
-    community_submit: true
     hela_amount_ng: 50
     spd: 60                      # Evosep 60 SPD
-    gradient_length_min: 21      # ~21 min active gradient
+
+# ── Optional: SLURM HPC execution ──────────────────────────────────
+# Uncomment to run searches on a remote cluster instead of locally.
+# Most labs do NOT need this — local execution is the default.
+#
+# hive:
+#   host: "hive.ucdavis.edu"
+#   user: "your_username"
+#
+# Then add to each instrument:
+#   execution_mode: "slurm"      # default is "local"
+#   hive_partition: "high"
+#   hive_account: "your-account-grp"
 ```
 
 **Vendor-specific file stability detection:**
@@ -342,17 +354,33 @@ GRS is stored for every run in the local SQLite database. It is included in comm
 
 ## Search Engines
 
+STAN depends on two external search engines that you install separately. Both run locally on your instrument workstation by default.
+
 ### DIA: DIA-NN
 
-STAN uses DIA-NN for all DIA searches. Both Bruker `.d` and Thermo `.raw` files are passed directly to DIA-NN without conversion (DIA-NN 2.1+ has native support for both formats on Linux).
+[DIA-NN](https://github.com/vdemichev/DiaNN) handles all DIA searches. Both Bruker `.d` and Thermo `.raw` files are passed directly to DIA-NN without conversion (DIA-NN 2.1+ has native support for both formats on Linux and Windows).
 
-Community benchmark submissions use a frozen HeLa-specific predicted spectral library (one for timsTOF TIMS-CID fragmentation, one for Orbitrap HCD fragmentation) and a pinned FASTA, both hosted in the HF Dataset repository. **(Library generation is in progress -- the HF Dataset assets are not yet uploaded.)**
+**Install:** Download from https://github.com/vdemichev/DiaNN/releases and add to PATH, or place the executable and set `diann_path` in `instruments.yml`.
+
+**License:** DIA-NN is free for academic and non-commercial use. Commercial use requires a license from Vadim Demichev. See the [DIA-NN license](https://github.com/vdemichev/DiaNN/blob/master/LICENSE.txt) for details.
+
+Community benchmark submissions use a frozen HeLa-specific predicted spectral library and a pinned FASTA, both hosted in the HF Dataset repository. **(Library generation is in progress -- the HF Dataset assets are not yet uploaded.)**
 
 ### DDA: Sage
 
-STAN uses Sage for all DDA searches. Bruker `.d` files are read natively by Sage (confirmed working for ddaPASEF). Thermo `.raw` files require conversion to mzML via ThermoRawFileParser before Sage can process them -- this is the only conversion step in the entire STAN pipeline.
+[Sage](https://github.com/lazear/sage) handles all DDA searches. Bruker `.d` files are read natively by Sage (confirmed working for ddaPASEF). Thermo `.raw` files require conversion to mzML via ThermoRawFileParser before Sage can process them -- this is the only conversion step in the entire STAN pipeline.
+
+**Install:** Download from https://github.com/lazear/sage/releases and add to PATH, or place the executable and set `sage_path` in `instruments.yml`.
+
+**License:** Sage is open source under the [MIT license](https://github.com/lazear/sage/blob/master/LICENSE).
 
 Sage includes built-in LDA rescoring that is sufficient for QC-level FDR estimation.
+
+### ThermoRawFileParser (Thermo DDA only)
+
+If you run DDA on a Thermo instrument, STAN needs [ThermoRawFileParser](https://github.com/compomics/ThermoRawFileParser) to convert `.raw` to mzML before Sage can search it. This is only needed for Thermo DDA -- not for Thermo DIA (DIA-NN reads `.raw` natively) and not for any Bruker workflows.
+
+**License:** ThermoRawFileParser is open source under the [Apache 2.0 license](https://github.com/compomics/ThermoRawFileParser/blob/master/LICENSE).
 
 ---
 
@@ -419,9 +447,9 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | Watcher daemon (file stability, hot-reload config) | Done | Bruker `.d` and Thermo `.raw` stability detection |
 | Acquisition mode detection (Bruker `.d`) | Done | Reads `MsmsType` from `analysis.tdf` |
 | Acquisition mode detection (Thermo `.raw`) | Done | Via ThermoRawFileParser metadata |
-| DIA-NN SLURM job builder | Done | Community-standardized params, asset download |
-| Sage SLURM job builder | Done | JSON config, Thermo mzML conversion |
-| Local search runners (no SLURM) | Done | Subprocess-based DIA-NN and Sage execution |
+| Local DIA-NN execution (default) | Done | Subprocess-based, community-standardized params |
+| Local Sage execution (default) | Done | JSON config, Thermo mzML conversion via TRFP |
+| SLURM HPC execution (optional) | Done | SSH/paramiko job submission for labs with clusters |
 | Metric extraction (DIA + DDA) | Done | Polars-based, from `report.parquet` and `results.sage.parquet` |
 | GRS scoring | Done | 4-component composite, 0-100 scale |
 | QC gating + HOLD flag | Done | Hard gates, plain-English diagnosis |
