@@ -223,6 +223,19 @@ DDA_Score = 35 x percentile_rank(n_psms)
 
 Scores are computed nightly within each cohort by a GitHub Actions workflow. A score of 75 means your instrument outperformed 75% of comparable submissions. **(Nightly consolidation is implemented but will not run until the HF Dataset has live submissions.)**
 
+### Annual Community Awards **(planned)**
+
+To encourage participation and make QC a point of pride (or healthy shame), STAN will recognize top and bottom performers each year:
+
+| Award | Criteria | Prize |
+|-------|----------|-------|
+| Golden Spray Tip | Highest median community score across all cohorts, minimum 50 submissions | Trophy + bragging rights |
+| Most Consistent | Lowest CV of community scores over the year (the lab that never has a bad day) | Trophy |
+| Most Improved | Largest year-over-year score increase | Trophy |
+| The Clogged Emitter | Lowest median community score, minimum 50 submissions | Trophy of Shame (opt-in -- you have to claim it) |
+
+Awards are computed from the community benchmark dataset and announced annually. Labs must have `community_submit: true` and at least 50 submissions in the calendar year to qualify. The Clogged Emitter is opt-in -- your lab is never publicly shamed without consent. All awards are meant in good fun and to motivate better instrument maintenance across the field.
+
 ### Privacy
 
 - Raw files are **never uploaded** -- only aggregate QC metrics
