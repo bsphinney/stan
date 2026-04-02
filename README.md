@@ -71,7 +71,7 @@ stan init
 
 Creates `~/.stan/` and copies default configuration templates into it. **(Note: default config templates in `config/` are not yet shipped -- you will need to create these files manually for now. See [Configuration](#configuration) below for the format.)**
 
-The three config files you need:
+A visual setup wizard (`stan setup`) is **(planned)** that will let you pick your instrument from a gallery, browse for your data directory, and select your LC method from a dropdown -- no YAML editing required. Until then, the three config files you need:
 - `instruments.yml` -- instrument watch directories and settings
 - `thresholds.yml` -- QC pass/warn/fail thresholds per instrument model
 - `community.yml` -- HuggingFace token and community benchmark preferences
@@ -485,6 +485,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | HF Dataset assets (FASTA + speclibs) | **Planned** | Library generation in progress, MD5 hashes TODO |
 | HF Space public dashboard | **Planned** | Space repo exists but not deployed |
 | Community benchmark live data | **Planned** | Requires HF Dataset assets + first submissions |
+| Setup wizard (`stan setup`) | **Planned** | Visual instrument picker, guided config, no YAML editing needed |
 | Outlier detection (amount mismatch) | **Planned** | Flag submissions where metrics don't match declared amount/SPD |
 | Failed run rejection | **Planned** | Block near-zero results from entering benchmark (failed injection, empty spray) |
 
@@ -501,6 +502,14 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [ ] Build React frontend for dashboard (run history, trend charts, community leaderboard)
 - [ ] Deploy HF Space public community dashboard
 - [ ] Publish to PyPI
+- [ ] Setup wizard (`stan setup`) — guided CLI + dashboard UI for first-time configuration:
+  - Pick your instrument from a visual gallery (timsTOF Ultra, Astral, Exploris, etc.)
+  - Browse/paste your raw data watch directory
+  - Select your Evosep/Vanquish method from a dropdown (auto-sets SPD)
+  - Enter HeLa injection amount with a slider (default 50 ng)
+  - Auto-detect DIA-NN and Sage on PATH, prompt to install if missing
+  - Writes `instruments.yml` for you — no YAML editing required
+  - Optional: enter HF token and lab name for community benchmark opt-in
 - [ ] Outlier detection for community submissions — flag runs where metrics are wildly inconsistent with declared amount/SPD (e.g., someone declares 50 ng but IDs suggest 500 ng injection)
 - [ ] Failed run rejection — detect near-zero results (failed injection, empty file, broken spray) and block them from entering the benchmark; these should never pollute cohort percentiles
 - [ ] Add Thermo `.raw` mode detection integration tests on Hive
