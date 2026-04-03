@@ -496,8 +496,9 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [ ] Add small real DIA-NN and Sage output files to `tests/fixtures/`
 - [ ] Generate and upload Astral HeLa predicted spectral library to HF Dataset
 - [ ] Generate and upload timsTOF HeLa predicted spectral library to HF Dataset
-- [ ] Upload pinned community FASTA to HF Dataset
-- [ ] Populate MD5 hashes in `stan/community/validate.py`
+- [ ] Upload pinned human UniProt reviewed FASTA to HF Dataset (hash-verified, shipped with STAN for community mode)
+- [ ] Populate MD5 hashes in `stan/community/validate.py` — submissions with wrong FASTA hash are rejected
+- [ ] Auto-download community FASTA on first community submission if not cached locally
 - [ ] Build React frontend for dashboard (run history, trend charts, community leaderboard)
 - [ ] Deploy HF Space public community dashboard
 - [ ] Publish to PyPI
