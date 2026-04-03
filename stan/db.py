@@ -43,7 +43,9 @@ CREATE TABLE IF NOT EXISTS runs (
     pct_charge_2    REAL,
     pct_charge_3    REAL,
 
-    -- Chromatography
+    -- Chromatography / peak shape
+    median_peak_width_sec REAL,
+    median_points_across_peak REAL,
     grs_score        INTEGER,
     tic_auc          REAL,
     peak_rt_min      REAL,
@@ -99,6 +101,8 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("gradient_length_min", "ALTER TABLE runs ADD COLUMN gradient_length_min INTEGER"),
         ("column_vendor", "ALTER TABLE runs ADD COLUMN column_vendor TEXT"),
         ("column_model", "ALTER TABLE runs ADD COLUMN column_model TEXT"),
+        ("median_peak_width_sec", "ALTER TABLE runs ADD COLUMN median_peak_width_sec REAL"),
+        ("median_points_across_peak", "ALTER TABLE runs ADD COLUMN median_points_across_peak REAL"),
     ]
 
     for col, ddl in migrations:

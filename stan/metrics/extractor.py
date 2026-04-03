@@ -26,23 +26,35 @@ def extract_dia_metrics(report_path: Path, q_cutoff: float = 0.01) -> dict:
     Returns:
         Dict of metric name → value.
     """
-    # TODO: verify column names against current DIA-NN docs before production use
-    df = pl.read_parquet(
-        report_path,
-        columns=[
-            "Precursor.Id",
-            "Stripped.Sequence",
-            "Protein.Group",
-            "Q.Value",
-            "PG.Q.Value",
-            "Fragment.Info",
-            "Fragment.Quant.Corrected",
-            "Precursor.Charge",
-            "Missed.Cleavages",
-            "File.Name",
-            "Precursor.Normalised",
-        ],
-    )
+    # Read all available columns first to discover RT-related columns
+    all_cols = pl.read_parquet_schema(report_path)
+    available = set(all_cols.keys()) if hasattr(all_cols, 'keys') else set(all_cols)
+
+    # Required columns
+    want = [
+        "Precursor.Id", "Stripped.Sequence", "Protein.Group",
+        "Q.Value", "PG.Q.Value", "Fragment.Info", "Fragment.Quant.Corrected",
+        "Precursor.Charge", "Missed.Cleavages", "File.Name", "Precursor.Normalised",
+    ]
+
+    # Optional RT columns for points-across-peak (column names vary by DIA-NN version)
+    rt_cols: list[str] = []
+    for candidate in ["RT", "RT.Start", "RT.Stop", "iRT", "Predicted.RT"]:
+        if candidate in available:
+            rt_cols.append(candidate)
+
+    # Evidence column (number of MS2 scans supporting the ID)
+    evidence_col = None
+    for candidate in ["Evidence", "Ms2.Scan.Count", "Scan.Evidence"]:
+        if candidate in available:
+            evidence_col = candidate
+            break
+
+    cols_to_read = [c for c in want if c in available] + rt_cols
+    if evidence_col:
+        cols_to_read.append(evidence_col)
+
+    df = pl.read_parquet(report_path, columns=cols_to_read)
 
     filt = df.filter(pl.col("Q.Value") <= q_cutoff)
 
@@ -92,6 +104,41 @@ def extract_dia_metrics(report_path: Path, q_cutoff: float = 0.01) -> dict:
     total_frag_extracted = filt["n_frag_extracted"].sum()
     total_frag_quantified = filt["n_frag_quantified"].sum()
 
+    # ── Points across peak (Matthews & Hayes 1976) ────────────────
+    # Compute from RT.Start/RT.Stop if available, or estimate from RT + Evidence
+    median_peak_width_sec: float | None = None
+    median_points_across_peak: float | None = None
+
+    if "RT.Start" in filt.columns and "RT.Stop" in filt.columns:
+        # Direct peak width from elution window boundaries
+        peak_widths = filt.with_columns(
+            ((pl.col("RT.Stop") - pl.col("RT.Start")) * 60).alias("peak_width_sec")
+        ).filter(pl.col("peak_width_sec") > 0)
+
+        if peak_widths.height > 0:
+            median_peak_width_sec = float(peak_widths["peak_width_sec"].median())
+
+            # Estimate cycle time from consecutive RTs in the same file
+            if "RT" in filt.columns and "File.Name" in filt.columns:
+                cycle_times = (
+                    filt.sort(["File.Name", "RT"])
+                    .with_columns(
+                        (pl.col("RT").diff().over("File.Name") * 60).alias("dt_sec")
+                    )
+                    .filter(pl.col("dt_sec") > 0)
+                    .filter(pl.col("dt_sec") < 10)  # filter outliers (>10s gaps)
+                )
+                if cycle_times.height > 0:
+                    median_cycle_sec = float(cycle_times["dt_sec"].median())
+                    if median_cycle_sec > 0:
+                        median_points_across_peak = median_peak_width_sec / median_cycle_sec
+
+    elif "RT" in filt.columns and evidence_col and evidence_col in filt.columns:
+        # Fallback: use Evidence column (number of scans supporting the ID)
+        evidence_vals = filt[evidence_col].drop_nulls()
+        if evidence_vals.len() > 0:
+            median_points_across_peak = float(evidence_vals.median())
+
     return {
         "n_precursors": filt["Precursor.Id"].n_unique(),
         "n_peptides": filt["Stripped.Sequence"].n_unique(),
@@ -112,6 +159,8 @@ def extract_dia_metrics(report_path: Path, q_cutoff: float = 0.01) -> dict:
         "pct_charge_2": charge_pct(2),
         "pct_charge_3": charge_pct(3),
         "pct_charge_4plus": sum(charge_pct(z) for z in range(4, 10)),
+        "median_peak_width_sec": median_peak_width_sec,
+        "median_points_across_peak": median_points_across_peak,
     }
 
 
@@ -166,6 +215,51 @@ def extract_dda_metrics(
         median_delta_mass = 0.0
         pct_lt5ppm = 0.0
 
+    # ── Points across peak for DDA ─────────────────────────────────
+    # Sage reports retention_time per PSM. For DDA, we estimate peak width
+    # from the spread of PSM RTs per peptide (multiple PSMs from the same
+    # peptide across its elution window).
+    median_peak_width_sec: float | None = None
+    median_points_across_peak: float | None = None
+
+    rt_col = _find_column(df, ["retention_time", "rt", "RT"])
+    if rt_col and peptide_col:
+        # Group PSMs by peptide and compute RT spread per peptide
+        pep_rt = (
+            filt.group_by(peptide_col)
+            .agg(
+                pl.col(rt_col).min().alias("rt_min"),
+                pl.col(rt_col).max().alias("rt_max"),
+                pl.len().alias("n_scans"),
+            )
+            .filter(pl.col("n_scans") >= 3)  # need 3+ PSMs to estimate width
+            .with_columns(
+                ((pl.col("rt_max") - pl.col("rt_min")) * 60).alias("peak_width_sec")
+            )
+            .filter(pl.col("peak_width_sec") > 0)
+        )
+
+        if pep_rt.height > 0:
+            median_peak_width_sec = float(pep_rt["peak_width_sec"].median())
+            median_points_across_peak = float(pep_rt["n_scans"].median())
+
+    elif rt_col:
+        # Fallback: estimate MS1 cycle time from consecutive scan RTs
+        sorted_rts = filt.sort(rt_col)
+        diffs = sorted_rts.with_columns(
+            (pl.col(rt_col).diff() * 60).alias("dt_sec")
+        ).filter(pl.col("dt_sec") > 0).filter(pl.col("dt_sec") < 5)
+
+        if diffs.height > 0:
+            median_cycle = float(diffs["dt_sec"].median())
+            # Estimate: typical DDA peak ~10-15s, points = peak_width / cycle
+            if median_cycle > 0 and gradient_min > 0:
+                # Rough estimate from total PSMs and gradient
+                estimated_peak_width = gradient_min * 60 / (n_psms / 10) if n_psms > 0 else 10.0
+                estimated_peak_width = max(3.0, min(30.0, estimated_peak_width))
+                median_peak_width_sec = estimated_peak_width
+                median_points_across_peak = estimated_peak_width / median_cycle
+
     return {
         "n_psms": n_psms,
         "n_peptides_dda": n_peptides,
@@ -174,6 +268,8 @@ def extract_dda_metrics(
         "ms2_scan_rate": ms2_scan_rate,
         "median_delta_mass_ppm": median_delta_mass,
         "pct_delta_mass_lt5ppm": pct_lt5ppm,
+        "median_peak_width_sec": median_peak_width_sec,
+        "median_points_across_peak": median_points_across_peak,
     }
 
 
@@ -208,6 +304,8 @@ def _empty_dia_metrics() -> dict:
         "pct_charge_2": 0.0,
         "pct_charge_3": 0.0,
         "pct_charge_4plus": 0.0,
+        "median_peak_width_sec": None,
+        "median_points_across_peak": None,
     }
 
 
@@ -221,4 +319,6 @@ def _empty_dda_metrics() -> dict:
         "ms2_scan_rate": 0.0,
         "median_delta_mass_ppm": 0.0,
         "pct_delta_mass_lt5ppm": 0.0,
+        "median_peak_width_sec": None,
+        "median_points_across_peak": None,
     }

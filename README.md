@@ -505,7 +505,9 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [ ] Outlier detection for community submissions — flag runs where metrics are wildly inconsistent with declared amount/SPD (e.g., someone declares 50 ng but IDs suggest 500 ng injection)
 - [ ] Failed run rejection — detect near-zero results (failed injection, empty file, broken spray) and block them from entering the benchmark; these should never pollute cohort percentiles
 - [ ] Add Thermo `.raw` mode detection integration tests on Hive
-- [ ] Points-across-peak metric: compute median FWHM, cycle time, and data points per elution peak from DIA-NN report (quantitation quality diagnostic, per Matthews & Hayes 1976)
+- [ ] Points-across-peak metric (DIA + DDA): compute median FWHM, cycle time, and data points per elution peak (quantitation quality diagnostic, per Matthews & Hayes 1976)
+- [ ] Community dashboard figures: SPD vs. points-across-peak (shows the quantitation cliff), faceted/colored by LC column model
+- [ ] LC column as a dimension in all community dashboard figures (color, facet, or filter)
 - [ ] End-to-end watcher integration test with real instrument data
 - [ ] Add `spd` field to instruments.yml example configs and user guide
 
