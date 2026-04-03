@@ -530,6 +530,21 @@ Do not introduce MSConvert as a dependency.
 
 ---
 
+## Implementation Rules
+
+**Never guess what data is available — always read the code first.**
+
+Before implementing any new feature or metric, read the actual extractor functions
+(`stan/metrics/extractor.py`) and search engine output schemas to confirm what columns
+and values are available. Do not assume a field exists because it "should" be there.
+The GRS score was designed with components (TIC reference, carryover from blanks) that
+could never actually be computed from the data STAN collects. This wasted time.
+
+**Verify end-to-end before shipping:** trace the data path from raw file → search →
+extraction → DB → dashboard to confirm every value is actually populated.
+
+---
+
 ## Documentation Maintenance
 
 **When you implement a new feature or complete a TODO item, update the docs immediately.**

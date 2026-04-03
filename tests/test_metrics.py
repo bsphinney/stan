@@ -1,8 +1,8 @@
-"""Tests for metrics extraction, GRS scoring, and community scoring."""
+"""Tests for metrics extraction, IPS scoring, and community scoring."""
 
 from __future__ import annotations
 
-from stan.metrics.chromatography import compute_grs
+from stan.metrics.chromatography import compute_ips_dia, compute_ips_dda
 from stan.metrics.scoring import (
     amount_bucket,
     compute_cohort_id,
@@ -14,47 +14,73 @@ from stan.metrics.scoring import (
 )
 
 
-# ── GRS Score ─────────────────────────────────────────────────────────
+# ── IPS Score ────────────────────────────────────────────────────────
 
-def test_grs_perfect():
-    """Perfect TIC data should produce a high GRS score."""
-    tic_data = {
-        "shape_correlation": 0.98,
-        "tic_auc": 1000.0,
-        "tic_auc_reference": 1000.0,
-        "peak_rt_min": 30.0,
-        "peak_rt_reference": 30.0,
-        "carryover_ratio": 0.01,
+def test_ips_dia_excellent():
+    """Excellent DIA metrics should produce a high IPS score."""
+    metrics = {
+        "n_precursors": 22000,
+        "median_fragments_per_precursor": 10.0,
+        "median_points_across_peak": 15.0,
+        "pct_fragments_quantified": 0.92,
+        "missed_cleavage_rate": 0.08,
     }
-    score = compute_grs(tic_data)
-    assert 90 <= score <= 100
+    score = compute_ips_dia(metrics)
+    assert 85 <= score <= 100
 
 
-def test_grs_poor():
-    """Poor TIC data should produce a low GRS score."""
-    tic_data = {
-        "shape_correlation": 0.3,
-        "tic_auc": 200.0,
-        "tic_auc_reference": 1000.0,
-        "peak_rt_min": 45.0,
-        "peak_rt_reference": 30.0,
-        "carryover_ratio": 0.8,
+def test_ips_dia_poor():
+    """Poor DIA metrics should produce a low IPS score."""
+    metrics = {
+        "n_precursors": 3000,
+        "median_fragments_per_precursor": 3.0,
+        "median_points_across_peak": 4.0,
+        "pct_fragments_quantified": 0.40,
+        "missed_cleavage_rate": 0.35,
     }
-    score = compute_grs(tic_data)
-    assert score < 50
+    score = compute_ips_dia(metrics)
+    assert score < 40
 
 
-def test_grs_range():
-    """GRS should always be 0–100."""
-    for shape in [0.0, 0.5, 1.0]:
-        for carry in [0.0, 0.5, 1.0]:
-            score = compute_grs({
-                "shape_correlation": shape,
-                "tic_auc": 500, "tic_auc_reference": 1000,
-                "peak_rt_min": 30, "peak_rt_reference": 30,
-                "carryover_ratio": carry,
-            })
+def test_ips_dda_excellent():
+    """Excellent DDA metrics should produce a high IPS score."""
+    metrics = {
+        "n_psms": 65000,
+        "pct_delta_mass_lt5ppm": 0.97,
+        "median_points_across_peak": 14.0,
+        "median_hyperscore": 34.0,
+        "missed_cleavage_rate": 0.09,
+    }
+    score = compute_ips_dda(metrics)
+    assert 85 <= score <= 100
+
+
+def test_ips_range():
+    """IPS should always be 0-100, even with extreme inputs."""
+    for n in [0, 1000, 50000]:
+        for pts in [None, 2.0, 8.0, 20.0]:
+            metrics = {
+                "n_precursors": n,
+                "median_fragments_per_precursor": 5.0,
+                "median_points_across_peak": pts,
+                "pct_fragments_quantified": 0.5,
+                "missed_cleavage_rate": 0.2,
+            }
+            score = compute_ips_dia(metrics)
             assert 0 <= score <= 100
+
+
+def test_ips_no_points_across_peak():
+    """IPS should still work when points-across-peak is unavailable."""
+    metrics = {
+        "n_precursors": 15000,
+        "median_fragments_per_precursor": 8.0,
+        "median_points_across_peak": None,
+        "pct_fragments_quantified": 0.85,
+        "missed_cleavage_rate": 0.12,
+    }
+    score = compute_ips_dia(metrics)
+    assert 40 <= score <= 80  # should be reasonable even without sampling data
 
 
 # ── Cohort Bucketing ──────────────────────────────────────────────────

@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS runs (
     -- Chromatography / peak shape
     median_peak_width_sec REAL,
     median_points_across_peak REAL,
-    grs_score        INTEGER,
+    ips_score        INTEGER,
     tic_auc          REAL,
     peak_rt_min      REAL,
     irt_max_deviation_min REAL,
@@ -103,6 +103,7 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("column_model", "ALTER TABLE runs ADD COLUMN column_model TEXT"),
         ("median_peak_width_sec", "ALTER TABLE runs ADD COLUMN median_peak_width_sec REAL"),
         ("median_points_across_peak", "ALTER TABLE runs ADD COLUMN median_points_across_peak REAL"),
+        ("ips_score", "ALTER TABLE runs ADD COLUMN ips_score INTEGER"),
     ]
 
     for col, ddl in migrations:
@@ -176,7 +177,7 @@ def insert_run(
         "pct_charge_2": metrics.get("pct_charge_2"),
         "pct_charge_3": metrics.get("pct_charge_3"),
         # Chromatography
-        "grs_score": metrics.get("grs_score"),
+        "ips_score": metrics.get("ips_score"),
         "tic_auc": metrics.get("tic_auc"),
         "peak_rt_min": metrics.get("peak_rt_min"),
         "irt_max_deviation_min": metrics.get("irt_max_deviation_min"),

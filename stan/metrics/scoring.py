@@ -167,7 +167,7 @@ def compute_dia_score(
       40 × percentile_rank(n_precursors)
     + 25 × percentile_rank(n_peptides)
     + 20 × (100 - percentile_rank(median_cv_precursor))  # lower CV = better
-    + 15 × percentile_rank(grs_score)
+    + 15 × percentile_rank(ips_score)
     """
     pr = _percentile_rank
 
@@ -178,7 +178,7 @@ def compute_dia_score(
             metrics.get("median_cv_precursor", 0),
             cohort_percentiles.get("median_cv_precursor", []),
         ))
-        + 0.15 * pr(metrics.get("grs_score", 0), cohort_percentiles.get("grs_score", []))
+        + 0.15 * pr(metrics.get("ips_score", 0), cohort_percentiles.get("ips_score", []))
     )
     return round(score, 1)
 

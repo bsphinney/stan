@@ -42,7 +42,7 @@ SUBMISSION_SCHEMA = pa.schema([
     pa.field("n_psms", pa.int32()),
     pa.field("median_cv_precursor", pa.float32()),
     pa.field("median_fragments_per_precursor", pa.float32()),
-    pa.field("grs_score", pa.int32()),
+    pa.field("ips_score", pa.int32()),
     pa.field("missed_cleavage_rate", pa.float32()),
     pa.field("community_score", pa.float32()),
     pa.field("cohort_id", pa.string()),
@@ -129,7 +129,7 @@ def submit_to_benchmark(
         "n_psms": [run.get("n_psms") or 0],
         "median_cv_precursor": [run.get("median_cv_precursor") or 0.0],
         "median_fragments_per_precursor": [run.get("median_fragments_per_precursor") or 0.0],
-        "grs_score": [run.get("grs_score") or 0],
+        "ips_score": [run.get("ips_score") or 0],
         "missed_cleavage_rate": [run.get("missed_cleavage_rate") or 0.0],
         "community_score": [0.0],  # computed by nightly consolidation
         "cohort_id": [cohort_id],

@@ -203,8 +203,12 @@ class InstrumentWatcher:
         try:
             if is_dia(mode):
                 metrics = extract_dia_metrics(str(result_path))
+                from stan.metrics.chromatography import compute_ips_dia
+                metrics["ips_score"] = compute_ips_dia(metrics)
             else:
                 metrics = extract_dda_metrics(str(result_path))
+                from stan.metrics.chromatography import compute_ips_dda
+                metrics["ips_score"] = compute_ips_dda(metrics)
 
             # Resolve acquisition mode string for threshold lookup
             acq_mode = "dia" if is_dia(mode) else "dda"

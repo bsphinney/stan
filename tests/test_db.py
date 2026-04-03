@@ -27,7 +27,7 @@ def test_insert_and_get_run(tmp_path: Path):
     db_path = tmp_path / "test.db"
     init_db(db_path)
 
-    metrics = {"n_precursors": 15000, "n_peptides": 10000, "grs_score": 85}
+    metrics = {"n_precursors": 15000, "n_peptides": 10000, "ips_score": 85}
     run_id = insert_run(
         instrument="timsTOF Ultra",
         run_name="HeLa_QC_001",
@@ -94,7 +94,7 @@ def test_get_trends(tmp_path: Path):
             run_name=f"run_{i}",
             raw_path=f"/data/run_{i}.d",
             mode="DIA",
-            metrics={"grs_score": 70 + i},
+            metrics={"ips_score": 70 + i},
             db_path=db_path,
         )
 

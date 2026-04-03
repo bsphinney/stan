@@ -16,7 +16,7 @@ MOCK_THRESHOLDS = {
         "dia": {
             "n_precursors_min": 5000,
             "median_cv_precursor_max": 20.0,
-            "grs_score_min": 50,
+            "ips_score_min": 50,
         },
         "dda": {
             "n_psms_min": 10000,
@@ -28,7 +28,7 @@ MOCK_THRESHOLDS = {
 @patch("stan.gating.evaluator.load_thresholds", return_value=MOCK_THRESHOLDS)
 def test_evaluate_pass(mock_load):
     """Metrics above all thresholds should pass."""
-    metrics = {"n_precursors": 15000, "median_cv_precursor": 8.0, "grs_score": 85}
+    metrics = {"n_precursors": 15000, "median_cv_precursor": 8.0, "ips_score": 85}
     decision = evaluate_gates(metrics, "default", "dia")
     assert decision.result == GateResult.PASS
     assert len(decision.failed_gates) == 0
@@ -37,7 +37,7 @@ def test_evaluate_pass(mock_load):
 @patch("stan.gating.evaluator.load_thresholds", return_value=MOCK_THRESHOLDS)
 def test_evaluate_fail(mock_load):
     """Metrics below minimums should fail."""
-    metrics = {"n_precursors": 2000, "median_cv_precursor": 8.0, "grs_score": 85}
+    metrics = {"n_precursors": 2000, "median_cv_precursor": 8.0, "ips_score": 85}
     decision = evaluate_gates(metrics, "default", "dia")
     assert decision.result == GateResult.FAIL
     assert "n_precursors" in decision.failed_gates
@@ -46,7 +46,7 @@ def test_evaluate_fail(mock_load):
 @patch("stan.gating.evaluator.load_thresholds", return_value=MOCK_THRESHOLDS)
 def test_evaluate_fail_cv_too_high(mock_load):
     """CV above maximum should fail."""
-    metrics = {"n_precursors": 15000, "median_cv_precursor": 25.0, "grs_score": 85}
+    metrics = {"n_precursors": 15000, "median_cv_precursor": 25.0, "ips_score": 85}
     decision = evaluate_gates(metrics, "default", "dia")
     assert decision.result == GateResult.FAIL
     assert "median_cv_precursor" in decision.failed_gates
@@ -63,7 +63,7 @@ def test_evaluate_dda(mock_load):
 @patch("stan.gating.evaluator.load_thresholds", return_value=MOCK_THRESHOLDS)
 def test_evaluate_diagnosis_generated(mock_load):
     """Failed gates should produce a diagnosis string."""
-    metrics = {"n_precursors": 2000, "median_cv_precursor": 8.0, "grs_score": 30}
+    metrics = {"n_precursors": 2000, "median_cv_precursor": 8.0, "ips_score": 30}
     decision = evaluate_gates(metrics, "default", "dia")
     assert decision.result == GateResult.FAIL
     assert len(decision.diagnosis) > 0
@@ -74,7 +74,7 @@ def test_evaluate_diagnosis_generated(mock_load):
 @patch("stan.gating.evaluator.load_thresholds", return_value=MOCK_THRESHOLDS)
 def test_write_hold_flag_on_fail(mock_load, tmp_path: Path):
     """HOLD flag should be written when gate result is FAIL."""
-    metrics = {"n_precursors": 1000, "median_cv_precursor": 8.0, "grs_score": 85}
+    metrics = {"n_precursors": 1000, "median_cv_precursor": 8.0, "ips_score": 85}
     decision = evaluate_gates(metrics, "default", "dia")
     assert decision.result == GateResult.FAIL
 
@@ -89,7 +89,7 @@ def test_write_hold_flag_on_fail(mock_load, tmp_path: Path):
 @patch("stan.gating.evaluator.load_thresholds", return_value=MOCK_THRESHOLDS)
 def test_no_hold_flag_on_pass(mock_load, tmp_path: Path):
     """No HOLD flag should be written when gate result is PASS."""
-    metrics = {"n_precursors": 15000, "median_cv_precursor": 8.0, "grs_score": 85}
+    metrics = {"n_precursors": 15000, "median_cv_precursor": 8.0, "ips_score": 85}
     decision = evaluate_gates(metrics, "default", "dia")
     assert decision.result == GateResult.PASS
 

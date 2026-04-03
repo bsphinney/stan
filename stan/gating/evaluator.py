@@ -36,11 +36,11 @@ DIAGNOSIS_TEMPLATES: dict[tuple[str, ...], str] = {
         "Low ID count with normal chromatography suggests a search/library issue. "
         "Check spectral library version, FASTA, or DIA window scheme."
     ),
-    ("n_precursors", "grs_score"): (
+    ("n_precursors", "ips_score"): (
         "Low IDs with poor GRS score — likely LC or source problem. "
         "Check column condition, trap column, spray stability."
     ),
-    ("n_psms", "grs_score"): (
+    ("n_psms", "ips_score"): (
         "Low PSMs with poor GRS score — likely LC or source problem. "
         "Check column condition, trap column, spray stability."
     ),
@@ -60,8 +60,8 @@ DIAGNOSIS_TEMPLATES: dict[tuple[str, ...], str] = {
         "Poor mass accuracy — instrument may need recalibration. "
         "Run a calibration file before next sample injection."
     ),
-    ("grs_score",): (
-        "Low GRS score indicates chromatographic instability. "
+    ("ips_score",): (
+        "Low IPS score indicates chromatographic instability. "
         "Check column, LC plumbing, gradient program, and mobile phase preparation."
     ),
     ("irt_max_deviation",): (

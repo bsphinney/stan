@@ -109,7 +109,7 @@ def _compute_cohort_percentiles(df: pl.DataFrame) -> dict:
         if n >= COHORT_MINIMUM:
             for metric in [
                 "n_precursors", "n_peptides", "n_psms", "n_peptides_dda",
-                "median_cv_precursor", "grs_score", "pct_delta_mass_lt5ppm",
+                "median_cv_precursor", "ips_score", "pct_delta_mass_lt5ppm",
                 "ms2_scan_rate",
             ]:
                 if metric in cohort_df.columns:
@@ -152,7 +152,7 @@ def _dia_score(row: dict, cohort: dict) -> float:
         0.40 * _pctile(row.get("n_precursors", 0), cohort.get("n_precursors", []))
         + 0.25 * _pctile(row.get("n_peptides", 0), cohort.get("n_peptides", []))
         + 0.20 * (100 - _pctile(row.get("median_cv_precursor", 0), cohort.get("median_cv_precursor", [])))
-        + 0.15 * _pctile(row.get("grs_score", 0), cohort.get("grs_score", []))
+        + 0.15 * _pctile(row.get("ips_score", 0), cohort.get("ips_score", []))
     )
 
 
