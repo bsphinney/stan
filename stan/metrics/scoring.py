@@ -102,23 +102,59 @@ def amount_bucket(ng: float) -> str:
     return "very-high"
 
 
+def _normalize_column_name(column_model: str) -> str:
+    """Normalize a column model string for cohort grouping.
+
+    Strips whitespace, lowercases, removes vendor prefixes that might
+    vary between submissions of the same column.
+    """
+    if not column_model:
+        return ""
+    # Keep the essential info: dimensions + chemistry
+    return column_model.strip().lower().replace("  ", " ")
+
+
 def compute_cohort_id(
     instrument_family: str,
     amount_ng: float,
     spd: int | None = None,
     gradient_min: int | None = None,
+    column_model: str = "",
 ) -> str:
-    """Build a cohort ID string for grouping benchmark submissions.
+    """Build a column-specific cohort ID for benchmark grouping.
+
+    Returns the most specific cohort that includes the LC column.
+    The broader cohort (without column) can be derived by splitting on
+    the last underscore group.
 
     Args:
         instrument_family: e.g. "timsTOF", "Astral", "Exploris".
         amount_ng: HeLa injection amount in nanograms.
         spd: Samples per day (primary throughput measure).
         gradient_min: Gradient length in minutes (fallback if spd not set).
+        column_model: LC column model string (e.g. "Aurora Ultimate 25cm x 75um").
     """
     tb = throughput_bucket(spd=spd, gradient_min=gradient_min)
     ab = amount_bucket(amount_ng)
-    return f"{instrument_family}_{tb}_{ab}"
+    base = f"{instrument_family}_{tb}_{ab}"
+
+    if column_model:
+        col_norm = _normalize_column_name(column_model)
+        return f"{base}_{col_norm}"
+    return base
+
+
+def compute_broad_cohort_id(cohort_id: str) -> str:
+    """Strip the column suffix from a cohort ID to get the broad cohort.
+
+    A column-specific cohort like 'Astral_60spd_low_aurora ultimate 25cm...'
+    maps to broad cohort 'Astral_60spd_low'.
+
+    Used for fallback when column-specific cohort has < COHORT_MINIMUM submissions.
+    """
+    # Broad cohort is always the first 3 segments: family_spd_amount
+    parts = cohort_id.split("_", 3)
+    return "_".join(parts[:3])
 
 
 def compute_dia_score(

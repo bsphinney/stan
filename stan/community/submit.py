@@ -106,8 +106,10 @@ def submit_to_benchmark(
     instrument = run.get("instrument", "")
     instrument_family = _instrument_family(instrument)
 
+    column_model = run.get("column_model", "")
     cohort_id = compute_cohort_id(
         instrument_family, amount_ng, spd=spd, gradient_min=gradient_length_min,
+        column_model=column_model,
     )
 
     row = {

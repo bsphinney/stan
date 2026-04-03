@@ -106,13 +106,23 @@ def test_amount_bucket():
 
 
 def test_cohort_id():
-    # SPD-based
+    # SPD-based, no column
     cid = compute_cohort_id("timsTOF", 200, spd=60)
     assert cid == "timsTOF_60spd_standard"
 
-    # Gradient fallback
+    # Gradient fallback, no column
     cid2 = compute_cohort_id("Astral", 50.0, gradient_min=44)
     assert cid2 == "Astral_30spd_low"
+
+    # With column — column-specific cohort
+    cid3 = compute_cohort_id("Astral", 50.0, spd=60, column_model="Aurora Ultimate 25cm")
+    assert cid3 == "Astral_60spd_low_aurora ultimate 25cm"
+
+
+def test_broad_cohort_id():
+    from stan.metrics.scoring import compute_broad_cohort_id
+    assert compute_broad_cohort_id("Astral_60spd_low_aurora ultimate 25cm") == "Astral_60spd_low"
+    assert compute_broad_cohort_id("timsTOF_30spd_standard") == "timsTOF_30spd_standard"
 
 
 # ── Community Scores ──────────────────────────────────────────────────
