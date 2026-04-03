@@ -22,7 +22,7 @@ from stan.metrics.scoring import compute_cohort_id
 
 logger = logging.getLogger(__name__)
 
-HF_DATASET_REPO = "bsphinney/stan-community-benchmark"
+HF_DATASET_REPO = "brettsp/stan-benchmark"
 
 # Submission parquet schema
 SUBMISSION_SCHEMA = pa.schema([

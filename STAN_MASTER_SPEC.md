@@ -5,7 +5,7 @@
 > **Tagline**: *Know your instrument.*  
 > **GitHub**: `bsphinney/stan`  
 > **HF Space**: `brettsp/stan`  
-> **HF Dataset**: `bsphinney/stan-community-benchmark`  
+> **HF Dataset**: `brettsp/stan-benchmark`  
 > **Status**: Ready for Claude Code implementation  
 > **Date**: April 2026
 
@@ -263,11 +263,11 @@ api = HfApi()
 
 # Create the dataset repo under bsphinney
 api.create_repo(
-    repo_id="bsphinney/stan-community-benchmark",
+    repo_id="brettsp/stan-benchmark",
     repo_type="dataset",
     private=False,
 )
-print("Created HF Dataset: https://huggingface.co/datasets/bsphinney/stan-community-benchmark")
+print("Created HF Dataset: https://huggingface.co/datasets/brettsp/stan-benchmark")
 EOF
 
 # Write dataset card
@@ -311,7 +311,7 @@ and search settings.
 ## License
 
 CC BY 4.0. Use freely with attribution:
-> STAN Community Benchmark. bsphinney/stan-community-benchmark. Hugging Face (2026).
+> STAN Community Benchmark. brettsp/stan-benchmark. Hugging Face (2026).
 
 ## Contributing
 
@@ -324,7 +324,7 @@ api = HfApi()
 api.upload_file(
     path_or_fileobj="/tmp/hf_dataset_readme.md",
     path_in_repo="README.md",
-    repo_id="bsphinney/stan-community-benchmark",
+    repo_id="brettsp/stan-benchmark",
     repo_type="dataset",
 )
 print("HF Dataset README uploaded")
@@ -372,7 +372,7 @@ buf.seek(0)
 api.upload_file(
     path_or_fileobj=buf,
     path_in_repo="benchmark_latest.parquet",
-    repo_id="bsphinney/stan-community-benchmark",
+    repo_id="brettsp/stan-benchmark",
     repo_type="dataset",
 )
 
@@ -380,19 +380,19 @@ api.upload_file(
 api.upload_file(
     path_or_fileobj=io.BytesIO(b"# STAN community FASTA files stored here\n"),
     path_in_repo="community_fasta/.gitkeep",
-    repo_id="bsphinney/stan-community-benchmark",
+    repo_id="brettsp/stan-benchmark",
     repo_type="dataset",
 )
 api.upload_file(
     path_or_fileobj=io.BytesIO(b"# Individual submission parquets stored here\n"),
     path_in_repo="submissions/.gitkeep",
-    repo_id="bsphinney/stan-community-benchmark",
+    repo_id="brettsp/stan-benchmark",
     repo_type="dataset",
 )
 api.upload_file(
     path_or_fileobj=io.BytesIO(b"{}"),
     path_in_repo="cohort_stats/cohort_percentiles_latest.json",
-    repo_id="bsphinney/stan-community-benchmark",
+    repo_id="brettsp/stan-benchmark",
     repo_type="dataset",
 )
 
@@ -448,7 +448,7 @@ cat >> docs/setup.md << 'EOF'
 
 After creating the repos, add the following secret to bsphinney/stan on GitHub:
 
-- `HF_TOKEN`: Hugging Face token with write access to bsphinney/stan-community-benchmark
+- `HF_TOKEN`: Hugging Face token with write access to brettsp/stan-benchmark
   Settings → Secrets and variables → Actions → New repository secret
 EOF
 
@@ -520,7 +520,7 @@ echo "=== HF Dataset ==="
 python3 -c "
 from huggingface_hub import HfApi
 api = HfApi()
-info = api.dataset_info('bsphinney/stan-community-benchmark')
+info = api.dataset_info('brettsp/stan-benchmark')
 print(f'Dataset: {info.id}, License: {info.license}')
 "
 
@@ -528,7 +528,7 @@ echo ""
 echo "Setup complete. Links:"
 echo "  GitHub:    https://github.com/bsphinney/stan"
 echo "  HF Space:  https://huggingface.co/spaces/brettsp/stan"
-echo "  HF Dataset: https://huggingface.co/datasets/bsphinney/stan-community-benchmark"
+echo "  HF Dataset: https://huggingface.co/datasets/brettsp/stan-benchmark"
 ```
 
 ---
@@ -1279,7 +1279,7 @@ Expected values:
 
 ## 13. HF Dataset Infrastructure
 
-### Repository: `bsphinney/stan-community-benchmark`
+### Repository: `brettsp/stan-benchmark`
 
 ```
 stan-community-benchmark/
@@ -1386,7 +1386,7 @@ instruments:
 
 ```yaml
 # Community benchmark settings
-hf_token: ""              # paste HF token here (write access to bsphinney/stan-community-benchmark)
+hf_token: ""              # paste HF token here (write access to brettsp/stan-benchmark)
 display_name: "UC Davis Proteomics Core"   # shown on leaderboard; "" for anonymous
 submit_by_default: false  # if true, auto-submit without review prompt
 hela_source: "Pierce HeLa Protein Digest Standard"
@@ -1420,7 +1420,7 @@ institution_type: "core_facility"   # "core_facility" | "academic_lab" | "indust
 ### Phase 0 — Repository bootstrap (§2 above)
 - [x] Create `bsphinney/stan` GitHub repo
 - [x] Create `brettsp/stan` HF Space
-- [x] Create `bsphinney/stan-community-benchmark` HF Dataset
+- [x] Create `brettsp/stan-benchmark` HF Dataset
 - [x] Initialize directory structure + pyproject.toml
 - [x] Set up GitHub Actions (CI + nightly consolidation)
 

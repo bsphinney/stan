@@ -8,7 +8,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-HF_DATASET_REPO = "bsphinney/stan-community-benchmark"
+HF_DATASET_REPO = "brettsp/stan-benchmark"
 
 
 def fetch_cohort_percentiles() -> dict:

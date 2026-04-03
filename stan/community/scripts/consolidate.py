@@ -27,7 +27,7 @@ import pyarrow.parquet as pq
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-HF_DATASET_REPO = "bsphinney/stan-community-benchmark"
+HF_DATASET_REPO = "brettsp/stan-benchmark"
 COHORT_MINIMUM = 5
 
 

@@ -515,7 +515,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 |----------|-----|
 | STAN GitHub | [github.com/bsphinney/stan](https://github.com/bsphinney/stan) |
 | STAN Community Dashboard | [huggingface.co/spaces/brettsp/stan](https://huggingface.co/spaces/brettsp/stan) |
-| STAN Community Dataset | [huggingface.co/datasets/bsphinney/stan-community-benchmark](https://huggingface.co/datasets/bsphinney/stan-community-benchmark) |
+| STAN Community Dataset | [huggingface.co/datasets/brettsp/stan-benchmark](https://huggingface.co/datasets/brettsp/stan-benchmark) |
 | DE-LIMP (sibling project) | [github.com/bsphinney/DE-LIMP](https://github.com/bsphinney/DE-LIMP) |
 
 STAN handles QC and instrument health monitoring. For differential expression analysis and full quantitative proteomics workflows, see [DE-LIMP](https://github.com/bsphinney/DE-LIMP).

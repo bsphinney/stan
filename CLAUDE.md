@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > **Author**: Brett Stanley Phinney, UC Davis Proteomics Core  
 > **GitHub**: https://github.com/bsphinney/stan  
 > **HF Space**: https://huggingface.co/spaces/brettsp/stan  
-> **HF Dataset**: https://huggingface.co/datasets/bsphinney/stan-community-benchmark  
+> **HF Dataset**: https://huggingface.co/datasets/brettsp/stan-benchmark  
 > **Master spec**: `STAN_MASTER_SPEC.md` — read this first, it is the authoritative design doc  
 > **Last updated**: April 2026
 
@@ -258,7 +258,7 @@ a core facility staff member quotes when telling a PI about run quality.
 |------|-----|---------|
 | GitHub code | https://github.com/bsphinney/stan | Application code, CI, spec |
 | HF Space | https://huggingface.co/spaces/brettsp/stan | Public community dashboard |
-| HF Dataset | https://huggingface.co/datasets/bsphinney/stan-community-benchmark | Community benchmark data |
+| HF Dataset | https://huggingface.co/datasets/brettsp/stan-benchmark | Community benchmark data |
 
 ### HPC: Hive (UC Davis)
 
@@ -586,7 +586,7 @@ synthetic data won't catch format changes between tool versions.
 
 ### Required secrets (GitHub repo settings → Secrets)
 
-- `HF_TOKEN` — Hugging Face token with write access to `bsphinney/stan-community-benchmark`
+- `HF_TOKEN` — Hugging Face token with write access to `brettsp/stan-benchmark`
 
 ---
 
@@ -596,7 +596,7 @@ synthetic data won't catch format changes between tool versions.
 |----------|-----|
 | STAN GitHub | https://github.com/bsphinney/stan |
 | STAN HF Space | https://huggingface.co/spaces/brettsp/stan |
-| STAN HF Dataset | https://huggingface.co/datasets/bsphinney/stan-community-benchmark |
+| STAN HF Dataset | https://huggingface.co/datasets/brettsp/stan-benchmark |
 | DIA-NN GitHub | https://github.com/vdemichev/DiaNN |
 | DIA-NN wiki | https://github.com/vdemichev/DiaNN/wiki |
 | DIA-NN discussions | https://github.com/vdemichev/DiaNN/discussions |

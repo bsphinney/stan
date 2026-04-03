@@ -27,7 +27,7 @@ PINNED_TOOL_VERSIONS = {
 }
 
 # HF Dataset repo where frozen community assets live
-HF_DATASET_REPO = "bsphinney/stan-community-benchmark"
+HF_DATASET_REPO = "brettsp/stan-benchmark"
 
 # ── Frozen community FASTA (shared by both tracks) ────────────────────
 
