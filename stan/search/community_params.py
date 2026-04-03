@@ -33,18 +33,22 @@ HF_DATASET_REPO = "brettsp/stan-benchmark"
 
 COMMUNITY_FASTA_HF_PATH = "community_fasta/human_hela_202604.fasta"
 
-# ── Frozen HeLa-specific predicted spectral libraries (Track B, DIA) ─
-# These are SMALL — HeLa-only, not full human proteome. This keeps search
-# fast (minutes, not hours) and results standardized across labs.
+# ── Frozen HeLa-specific empirical spectral libraries (Track B, DIA) ──
+# Built from real HeLa DIA runs — empirical RTs, fragment intensities, and
+# (for timsTOF) ion mobility values. HeLa-only (~45k precursors), not full
+# human proteome. This keeps search fast (minutes, not hours).
+#
+# Format: .parquet (DIA-NN 2.0+ empirical library format, also accepted
+# by --lib for searching). NOT .predicted.speclib (binary predicted format).
 
 COMMUNITY_SPECLIB = {
     "bruker": {
-        "hf_path": "community_library/hela_timstof_202604.predicted.speclib",
-        "description": "HeLa predicted speclib for timsTOF (TIMS-CID fragmentation)",
+        "hf_path": "community_library/hela_timstof_202604.parquet",
+        "description": "HeLa empirical library for timsTOF (TIMS-CID, with IM)",
     },
     "thermo": {
-        "hf_path": "community_library/hela_orbitrap_202604.predicted.speclib",
-        "description": "HeLa predicted speclib for Orbitrap (HCD fragmentation)",
+        "hf_path": "community_library/hela_orbitrap_202604.parquet",
+        "description": "HeLa empirical library for Orbitrap/Astral (HCD)",
     },
 }
 

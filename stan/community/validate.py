@@ -22,10 +22,10 @@ logger = logging.getLogger(__name__)
 EXPECTED_ASSET_HASHES: dict[str, str] = {
     # FASTA (shared)
     "human_hela_202604.fasta": "",  # TODO: populate after uploading to HF Dataset
-    # timsTOF speclib
-    "hela_timstof_202604.predicted.speclib": "",  # TODO: populate
-    # Orbitrap speclib
-    "hela_orbitrap_202604.predicted.speclib": "",  # TODO: populate
+    # timsTOF empirical library (.parquet, DIA-NN 2.0+ format)
+    "hela_timstof_202604.parquet": "",  # TODO: populate after library build
+    # Orbitrap/Astral empirical library (.parquet)
+    "hela_orbitrap_202604.parquet": "",  # TODO: populate after library build
 }
 
 # Hard gates: submissions below these are rejected outright
