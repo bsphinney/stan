@@ -56,6 +56,9 @@ def _dispatch_local(
     from stan.search.local import run_diann_local, run_sage_local
 
     vendor = instrument_config.get("vendor", "")
+    search_mode = instrument_config.get("search_mode", "local")
+    fasta_path = instrument_config.get("fasta_path")
+    lib_path = instrument_config.get("lib_path")
 
     if is_dia(mode):
         logger.info("Local DIA-NN search for %s", raw_path.name)
@@ -64,6 +67,9 @@ def _dispatch_local(
             output_dir=output_dir,
             vendor=vendor,
             diann_exe=instrument_config.get("diann_path", "diann"),
+            fasta_path=fasta_path,
+            lib_path=lib_path,
+            search_mode=search_mode,
         )
 
     if is_dda(mode):
@@ -75,6 +81,8 @@ def _dispatch_local(
             sage_exe=instrument_config.get("sage_path", "sage"),
             trfp_exe=instrument_config.get("trfp_path"),
             keep_mzml=instrument_config.get("keep_mzml", False),
+            fasta_path=fasta_path,
+            search_mode=search_mode,
         )
 
     logger.error("Cannot dispatch search for mode: %s", mode)

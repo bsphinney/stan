@@ -206,8 +206,13 @@ class InstrumentWatcher:
             else:
                 metrics = extract_dda_metrics(str(result_path))
 
-            gate_result, failed, diagnosis = evaluate_gates(
-                metrics, mode.value, self._config.get("model", ""),
+            # Resolve acquisition mode string for threshold lookup
+            acq_mode = "dia" if is_dia(mode) else "dda"
+
+            decision = evaluate_gates(
+                metrics=metrics,
+                instrument_model=self._config.get("model", ""),
+                acquisition_mode=acq_mode,
             )
 
             insert_run(
@@ -216,13 +221,23 @@ class InstrumentWatcher:
                 raw_path=str(raw_path),
                 mode=mode.value,
                 metrics=metrics,
-                gate_result=gate_result,
-                failed_gates=failed,
-                diagnosis=diagnosis,
+                gate_result=decision.result.value,
+                failed_gates=decision.failed_gates,
+                diagnosis=decision.diagnosis,
                 amount_ng=self._config.get("hela_amount_ng", 50.0),
                 spd=self._config.get("spd"),
                 gradient_length_min=self._config.get("gradient_length_min"),
             )
+
+            if decision.result.value == "fail":
+                from stan.gating.hold import write_hold_flag
+                write_hold_flag(
+                    output_dir=Path(self._config.get("output_dir", "")) / raw_path.stem,
+                    run_name=raw_path.name,
+                    failed_gates=decision.failed_gates,
+                    diagnosis=decision.diagnosis,
+                )
+
         except Exception:
             logger.exception("Failed to store run for %s", raw_path.name)
 

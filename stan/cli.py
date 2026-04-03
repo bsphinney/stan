@@ -76,6 +76,18 @@ def init() -> None:
 
 
 @app.command()
+def setup() -> None:
+    """Interactive setup wizard — configure your instrument without editing YAML.
+
+    Walks you through instrument selection, directory configuration,
+    LC method, and FASTA path. Writes instruments.yml to ~/.stan/.
+    """
+    from stan.setup import run_setup
+
+    run_setup()
+
+
+@app.command()
 def watch() -> None:
     """Start the instrument watcher daemon.
 

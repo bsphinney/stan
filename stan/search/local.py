@@ -1,7 +1,14 @@
 """Local search execution — runs DIA-NN and Sage directly on this machine.
 
-For labs without HPC/SLURM access. DIA-NN and Sage run as local subprocesses
-instead of being submitted as SLURM batch jobs.
+This is the default execution mode. DIA-NN and Sage run as local subprocesses
+on the instrument workstation. No SLURM cluster required.
+
+Two search modes:
+  - "local" (default): User provides their own FASTA via fasta_path in
+    instruments.yml. DIA-NN runs library-free (predicted from FASTA) unless
+    the user also provides a lib_path.
+  - "community": Uses frozen community search assets from the HF Dataset.
+    Requires assets to be cached locally.
 
 Conversion pipeline for Thermo DDA:
   .raw → ThermoRawFileParser → .mzML → Sage
@@ -19,13 +26,63 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from stan.search.community_params import (
-    get_community_diann_params,
-    get_community_sage_params,
-)
 from stan.search.convert import get_mzml_path
 
 logger = logging.getLogger(__name__)
+
+
+def _build_local_diann_params(
+    fasta_path: str,
+    lib_path: str | None = None,
+) -> dict:
+    """Build DIA-NN parameters for local mode with user-provided FASTA.
+
+    If no lib_path is provided, DIA-NN runs in library-free mode:
+    it generates a predicted spectral library from the FASTA.
+    """
+    params: dict = {
+        "fasta": fasta_path,
+        "qvalue": 0.01,
+        "protein-q": 0.01,
+        "min-pep-len": 7,
+        "max-pep-len": 30,
+        "missed-cleavages": 1,
+        "min-pr-charge": 2,
+        "max-pr-charge": 4,
+        "cut": "K*,R*",
+    }
+
+    if lib_path:
+        params["lib"] = lib_path
+    else:
+        # Library-free mode: predict from FASTA
+        params["fasta-search"] = ""
+        params["predictor"] = ""
+
+    return params
+
+
+def _build_local_sage_params(
+    fasta_path: str,
+) -> dict:
+    """Build Sage JSON config for local mode with user-provided FASTA."""
+    return {
+        "database": {
+            "fasta": fasta_path,
+            "enzyme": {"cleave_at": "KR", "restrict": "P", "missed_cleavages": 1},
+            "min_len": 7,
+            "max_len": 30,
+            "static_mods": {"C": 57.0215},
+            "variable_mods": {"M": [15.9949]},
+        },
+        "precursor_tol": {"ppm": [-10, 10]},
+        "fragment_tol": {"ppm": [-20, 20]},
+        "precursor_charge": [2, 4],
+        "min_peaks": 8,
+        "max_peaks": 150,
+        "report_psms": 1,
+        "wide_window": False,
+    }
 
 
 def run_diann_local(
@@ -34,6 +91,9 @@ def run_diann_local(
     vendor: str,
     diann_exe: str = "diann",
     threads: int = 0,
+    fasta_path: str | None = None,
+    lib_path: str | None = None,
+    search_mode: str = "local",
 ) -> Path | None:
     """Run DIA-NN locally as a subprocess.
 
@@ -43,21 +103,39 @@ def run_diann_local(
         vendor: "bruker" or "thermo".
         diann_exe: Path to diann executable (or just "diann" if on PATH).
         threads: Number of threads (0 = let DIA-NN decide).
+        fasta_path: Path to FASTA file (required for local mode).
+        lib_path: Path to spectral library (optional — DIA-NN runs library-free if omitted).
+        search_mode: "local" (user FASTA) or "community" (frozen HF assets).
 
     Returns:
         Path to report.parquet, or None on failure.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    params = get_community_diann_params(vendor, cache_dir=str(output_dir.parent / "_community_assets"))
+    if search_mode == "community":
+        from stan.search.community_params import get_community_diann_params
+        params = get_community_diann_params(vendor, cache_dir=str(output_dir.parent / "_community_assets"))
+    else:
+        if not fasta_path:
+            logger.error(
+                "No fasta_path configured for instrument. "
+                "Set fasta_path in instruments.yml or run `stan setup`."
+            )
+            return None
+        if not Path(fasta_path).exists():
+            logger.error("FASTA file not found: %s", fasta_path)
+            return None
+        params = _build_local_diann_params(fasta_path, lib_path)
 
     cmd = [diann_exe, "--f", str(raw_path), "--out", str(output_dir)]
 
     for key, val in params.items():
-        cmd.extend([f"--{key}", str(val)])
+        if val == "":
+            cmd.append(f"--{key}")  # flag-only params like --fasta-search
+        else:
+            cmd.extend([f"--{key}", str(val)])
 
     if threads > 0:
-        # Override thread count for local execution
         cmd.extend(["--threads", str(threads)])
 
     logger.info("Running DIA-NN locally: %s", raw_path.name)
@@ -102,6 +180,8 @@ def run_sage_local(
     trfp_exe: str | None = None,
     keep_mzml: bool = False,
     threads: int = 0,
+    fasta_path: str | None = None,
+    search_mode: str = "local",
 ) -> Path | None:
     """Run Sage locally as a subprocess.
 
@@ -116,6 +196,8 @@ def run_sage_local(
         trfp_exe: Path to ThermoRawFileParser.exe (needed for Thermo DDA only).
         keep_mzml: Keep converted mzML files after search.
         threads: Number of threads (0 = let Sage decide).
+        fasta_path: Path to FASTA file (required for local mode).
+        search_mode: "local" (user FASTA) or "community" (frozen HF assets).
 
     Returns:
         Path to results.sage.parquet, or None on failure.
@@ -132,7 +214,21 @@ def run_sage_local(
         input_path = str(raw_path)
 
     # Build Sage JSON config
-    params = get_community_sage_params(cache_dir=str(output_dir.parent / "_community_assets"))
+    if search_mode == "community":
+        from stan.search.community_params import get_community_sage_params
+        params = get_community_sage_params(cache_dir=str(output_dir.parent / "_community_assets"))
+    else:
+        if not fasta_path:
+            logger.error(
+                "No fasta_path configured for instrument. "
+                "Set fasta_path in instruments.yml or run `stan setup`."
+            )
+            return None
+        if not Path(fasta_path).exists():
+            logger.error("FASTA file not found: %s", fasta_path)
+            return None
+        params = _build_local_sage_params(fasta_path)
+
     params["mzml_paths"] = [input_path]
     params["output_directory"] = str(output_dir)
 
