@@ -18,7 +18,7 @@ This guide covers installation, configuration, daily use, and troubleshooting fo
 4. [Dashboard](#dashboard)
 5. [Community Benchmark Submission](#community-benchmark-submission)
 6. [QC Metric Reference](#qc-metric-reference)
-7. [Gradient Reproducibility Score (GRS)](#gradient-reproducibility-score-grs)
+7. [Instrument Performance Score (IPS)](#gradient-reproducibility-score-grs)
 8. [Run and Done Gating](#run-and-done-gating)
 9. [Column Health Monitoring](#column-health-monitoring)
 10. [Troubleshooting](#troubleshooting)
@@ -158,7 +158,7 @@ thresholds:
       median_cv_precursor_max: 20.0    # maximum median CV (percent)
       missed_cleavage_rate_max: 0.20   # maximum missed cleavage fraction
       pct_charge_1_max: 0.30           # maximum fraction of +1 precursors
-      grs_score_min: 50                # minimum GRS score
+      ips_score_min: 50                # minimum IPS score
       irt_max_deviation_max: 5.0       # maximum iRT deviation (minutes)
     dda:
       n_psms_min: 10000                # minimum PSMs at 1% FDR
@@ -169,7 +169,7 @@ thresholds:
     dia:
       n_precursors_min: 10000          # tighter -- this instrument should hit 15k+
       median_cv_precursor_max: 15.0
-      grs_score_min: 65
+      ips_score_min: 65
     dda:
       n_psms_min: 30000
       pct_delta_mass_lt5ppm_min: 0.90
@@ -263,11 +263,11 @@ The dashboard currently serves a FastAPI backend with JSON API endpoints. The Re
 
 **Planned frontend views:**
 
-**Live Runs** -- Status cards for each instrument showing the most recent run, GRS badge, gate result (PASS/WARN/FAIL), and time since last acquisition.
+**Live Runs** -- Status cards for each instrument showing the most recent run, IPS badge, gate result (PASS/WARN/FAIL), and time since last acquisition.
 
 **Run History** -- Sortable, scrollable table of all runs. Click any run to see full metric detail.
 
-**Trend Charts** -- Time-series plots of precursor count, peptide count, CV, and GRS over time for each instrument. Includes LOESS trendlines for detecting gradual drift.
+**Trend Charts** -- Time-series plots of precursor count, peptide count, CV, and IPS over time for each instrument. Includes LOESS trendlines for detecting gradual drift.
 
 **Column Health** -- TIC AUC and peak retention time plotted over calendar time. Highlights periods of degradation.
 
@@ -321,7 +321,7 @@ Only aggregate metrics are submitted -- never raw files, never patient data. Eac
 - Precursor count, peptide count, protein count
 - PSM count (DDA)
 - Median CV, median fragments per precursor
-- GRS score, missed cleavage rate
+- IPS score, missed cleavage rate
 - Cohort ID (instrument family + gradient bucket + amount bucket)
 
 ### Deletion
@@ -376,7 +376,7 @@ Protein count                <-- contextual only (heavily confounded)
 
 | Metric | Description | Interpretation |
 |--------|-------------|----------------|
-| `grs_score` | Gradient Reproducibility Score (0-100) | See GRS section below |
+| `ips_score` | Instrument Performance Score (0-100) | See IPS section below |
 | `tic_auc` | Total ion chromatogram area under curve | Track longitudinally, not absolute |
 | `peak_rt_min` | Retention time of TIC peak (minutes) | Should be consistent run-to-run |
 | `irt_max_deviation_min` | Maximum iRT peptide RT deviation (minutes) | <3 min for healthy column |
@@ -384,31 +384,38 @@ Protein count                <-- contextual only (heavily confounded)
 
 ---
 
-## Gradient Reproducibility Score (GRS)
+## Instrument Performance Score (IPS)
 
-The GRS condenses LC chromatography health into a single number from 0 to 100.
+IPS is a 0-100 composite computed entirely from search output — no reference run, no blank runs, no historical data needed. It works from the very first QC injection.
 
 ### Components
 
+**DIA:**
 ```
-GRS = 40 x shape_r_scaled      (TIC peak shape correlation to reference)
-    + 25 x auc_scaled           (TIC AUC z-score, clamped to 0-1)
-    + 20 x peak_rt_scaled       (peak RT deviation from expected)
-    + 15 x carryover_scaled     (inter-run carryover assessment)
+IPS = 30% precursor depth + 25% spectral quality (fragments/precursor)
+    + 20% sampling quality (points across peak) + 15% quant coverage
+    + 10% digestion quality (1 - missed cleavage rate)
+```
+
+**DDA:**
+```
+IPS = 30% identification depth (PSMs) + 25% mass accuracy (<5 ppm fraction)
+    + 20% sampling quality (points across peak) + 15% scoring (hyperscore)
+    + 10% digestion quality (1 - missed cleavage rate)
 ```
 
 ### Interpretation
 
 | Score | Status | Action |
 |-------|--------|--------|
-| 90-100 | Excellent | System is performing optimally. No action needed. |
-| 70-89 | Good | Normal operating range. Continue monitoring. |
-| 50-69 | Watch | Performance is declining. Inspect column condition, buffer freshness, and spray stability in the near future. |
-| Below 50 | Investigate | Likely LC or source problem. Check column, trap column, spray tip, and mobile phases before running more samples. |
+| 90-100 | Excellent | Instrument performing optimally. No action needed. |
+| 80-89 | Good | Normal operating range. Continue monitoring. |
+| 60-79 | Marginal | Performance may be declining. Investigate column, spray, and buffers soon. |
+| Below 60 | Investigate | Likely instrument or LC problem. Check before running valuable samples. |
 
 ### Longitudinal Tracking
 
-GRS is stored in the SQLite database for every run. The dashboard trend view plots GRS over time with a LOESS trendline. A steady downward trend in GRS, even if individual runs still pass thresholds, typically indicates column aging and should prompt column replacement.
+IPS is stored in the SQLite database for every run. A steady downward trend in IPS, even if individual runs still pass thresholds, typically indicates column aging or source degradation.
 
 ---
 
@@ -426,8 +433,8 @@ The file contains the run name, which gates failed, and a plain-English diagnosi
 
 | Failed Metrics | Diagnosis |
 |---------------|-----------|
-| Low ID count, normal GRS | Search or library issue. Check spectral library version, FASTA, or DIA window scheme. |
-| Low IDs, low GRS | LC or source problem. Check column condition, trap column, spray stability. |
+| Low ID count, normal IPS | Search or library issue. Check spectral library version, FASTA, or DIA window scheme. |
+| Low IDs, low IPS | LC or source problem. Check column condition, trap column, spray stability. |
 | High missed cleavages | Incomplete digestion. Check trypsin activity, digestion time, or protein denaturation. |
 | Elevated +1 charge | Source contamination, buffer impurity, or electrospray instability. |
 | High CV, normal IDs | LC reproducibility issue. Check injection volume consistency, carryover, or column equilibration. |
@@ -492,7 +499,7 @@ ls -la ~/.stan/
 - For DIA: check that the DIA window scheme matches the community library
 - For DDA: check MS2 scan rate -- low scan rate may indicate a method configuration issue
 - Compare against expected reference ranges for your instrument model (see appendix in STAN_MASTER_SPEC.md)
-- Check GRS score -- if GRS is also low, the issue is likely LC or source, not search
+- Check IPS score -- if IPS is also low, the issue is likely LC or source, not search
 
 ### Community submission rejected
 

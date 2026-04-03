@@ -19,7 +19,7 @@ STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap
 - **Multi-instrument monitoring** -- Bruker timsTOF and Thermo Orbitrap in a single dashboard
 - **DIA and DDA mode intelligence** -- auto-detects acquisition mode and routes to the right search engine with the right metrics
 - **Run and Done gating** -- automatically pauses your sample queue (HOLD flag) when a QC run fails thresholds
-- **Gradient Reproducibility Score (GRS)** -- a single 0-100 composite number for LC health, updated every run
+- **Instrument Performance Score (IPS)** -- a single 0-100 composite number for LC health, updated every run
 - **Column health tracking** -- longitudinal TIC trend analysis detects column aging before it affects your data
 - **Precursor-first metrics** -- benchmarks on precursor count (DIA) and PSM count (DDA), not protein count, because protein count is confounded by FASTA choice and inference settings
 - **Community HeLa benchmark** **(planned)** -- compare your instrument against labs worldwide via an open HuggingFace Dataset (CC BY 4.0)
@@ -166,7 +166,7 @@ All community benchmark submissions use a **frozen, standardized search** with p
 | Track | Mode | Search Engine | Primary Metric | Secondary Metrics |
 |-------|------|---------------|----------------|-------------------|
 | **Track A** | DDA | Sage | PSM count @ 1% FDR | Peptide count, mass accuracy, MS2 scan rate |
-| **Track B** | DIA | DIA-NN | Precursor count @ 1% FDR | Peptide count, median CV, GRS |
+| **Track B** | DIA | DIA-NN | Precursor count @ 1% FDR | Peptide count, median CV, IPS |
 | **Track C** | Both | Both | Instrument fingerprint | Radar chart (6 axes), peptide recovery ratio |
 
 Track C unlocks when a lab submits both a DDA and a DIA run from the same instrument within 24 hours. The resulting six-axis radar chart provides a comprehensive instrument health fingerprint covering mass accuracy, duty cycle, spectral quality, precursor depth, quantitative reproducibility, and fragment sensitivity.
@@ -210,7 +210,7 @@ A minimum of 5 submissions per cohort is required before the leaderboard activat
 DIA_Score = 40 x percentile_rank(n_precursors)
           + 25 x percentile_rank(n_peptides)
           + 20 x (100 - percentile_rank(median_cv_precursor))
-          + 15 x percentile_rank(grs_score)
+          + 15 x percentile_rank(ips_score)
 ```
 
 **DDA Score** (Track A):
@@ -317,7 +317,7 @@ thresholds:
       n_precursors_min: 5000
       median_cv_precursor_max: 20.0
       missed_cleavage_rate_max: 0.20
-      grs_score_min: 50
+      ips_score_min: 50
     dda:
       n_psms_min: 10000
       pct_delta_mass_lt5ppm_min: 0.70
@@ -327,7 +327,7 @@ thresholds:
     dia:
       n_precursors_min: 10000
       median_cv_precursor_max: 15.0
-      grs_score_min: 65
+      ips_score_min: 65
     dda:
       n_psms_min: 30000
       pct_delta_mass_lt5ppm_min: 0.90
@@ -345,25 +345,30 @@ institution_type: "core_facility"          # core_facility | academic_lab | indu
 
 ---
 
-## Gradient Reproducibility Score (GRS)
+## Instrument Performance Score (IPS)
 
-The GRS is a single 0-100 composite number summarizing LC chromatography health:
+IPS is a 0-100 composite computed entirely from search output. No reference run, no blank runs, no historical data needed — works from the very first QC injection.
 
+**DIA:**
 ```
-GRS = 40 x shape_r_scaled
-    + 25 x auc_scaled
-    + 20 x peak_rt_scaled
-    + 15 x carryover_scaled
+IPS = 30 x precursor_depth + 25 x spectral_quality (frags/precursor)
+    + 20 x sampling_quality (pts/peak) + 15 x quant_coverage + 10 x digestion
+```
+
+**DDA:**
+```
+IPS = 30 x identification_depth + 25 x mass_accuracy
+    + 20 x sampling_quality (pts/peak) + 15 x scoring_quality + 10 x digestion
 ```
 
 | Score Range | Interpretation |
 |-------------|----------------|
-| 90-100 | Excellent -- system performing optimally |
-| 70-89 | Good -- normal operating range |
-| 50-69 | Watch -- performance declining, investigate soon |
-| Below 50 | Investigate -- likely LC or source issue |
+| 90-100 | Excellent -- instrument performing optimally |
+| 80-89 | Good -- normal operating range |
+| 60-79 | Marginal -- investigate soon |
+| Below 60 | Investigate -- likely instrument or LC issue |
 
-GRS is stored for every run in the local SQLite database. It is included in community benchmark submissions and contributes to the DIA composite score. **(Dashboard GRS badge display is planned with the React frontend.)**
+IPS is stored for every run in the local SQLite database and included in community benchmark submissions.
 
 ---
 
@@ -414,7 +419,7 @@ stan/
 |   +-- watcher/                   # watchdog daemon, stability, mode detection
 |   +-- search/                    # DIA-NN + Sage SLURM job builders
 |   |   +-- community_params.py    # frozen community search parameters
-|   +-- metrics/                   # metric extraction, GRS, iRT, scoring
+|   +-- metrics/                   # metric extraction, IPS, iRT, scoring
 |   +-- gating/                    # threshold evaluation, HOLD flag, queue control
 |   +-- community/                 # HF Dataset submit/fetch/validate
 |   |   +-- scripts/consolidate.py # nightly GitHub Actions consolidation
@@ -466,7 +471,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | Local Sage execution (default) | Done | JSON config, Thermo mzML conversion via TRFP |
 | SLURM HPC execution (optional) | Done | SSH/paramiko job submission for labs with clusters |
 | Metric extraction (DIA + DDA) | Done | Polars-based, from `report.parquet` and `results.sage.parquet` |
-| GRS scoring | Done | 4-component composite, 0-100 scale |
+| IPS scoring | Done | 4-component composite, 0-100 scale |
 | QC gating + HOLD flag | Done | Hard gates, plain-English diagnosis |
 | Column health assessment | Done | Longitudinal TIC trend analysis |
 | SQLite database + migrations | Done | Stores all metrics, gate results, amount_ng, spd |
