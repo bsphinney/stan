@@ -545,8 +545,18 @@ For questions about the spec or design decisions, open a discussion on GitHub be
 
 **Community benchmark dataset**: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
-## Citation
+## Citations
 
-If STAN is useful for your work, please cite:
+If STAN is useful for your work, please cite STAN and the search engines it depends on:
 
+**STAN:**
 > Phinney BS. STAN: Standardized proteomic Throughput ANalyzer. UC Davis Proteomics Core (2026). https://github.com/bsphinney/stan
+
+**DIA-NN (DIA search engine):**
+> Demichev V, Messner CB, Vernardis SI, Lilley KS, Ralser M. DIA-NN: neural networks and interference correction enable deep proteome coverage in high throughput. *Nature Methods*. 2020;17:41-44. https://doi.org/10.1038/s41592-019-0638-x
+
+**Sage (DDA search engine):**
+> Lazear MR. Sage: An Open-Source Tool for Fast Proteomics Searching and Quantification at Scale. *Journal of Proteome Research*. 2023;22(11):3652-3659. https://doi.org/10.1021/acs.jproteome.3c00486
+
+**Points-across-peak quantitation quality metric:**
+> Matthews DE, Hayes JM. Systematic Errors in Gas Chromatography-Mass Spectrometry Isotope Ratio Measurements. *Analytical Chemistry*. 1976;48(9):1375-1382.
