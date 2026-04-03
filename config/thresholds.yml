@@ -1,0 +1,58 @@
+# STAN QC Thresholds
+# ──────────────────
+# Model-specific entries override the defaults.
+
+thresholds:
+
+  default:
+    dia:
+      n_precursors_min: 5000
+      median_cv_precursor_max: 20.0
+      missed_cleavage_rate_max: 0.20
+      pct_charge_1_max: 0.30
+    dda:
+      n_psms_min: 10000
+      pct_delta_mass_lt5ppm_min: 0.70
+      ms2_scan_rate_min: 10.0
+
+  "timsTOF Ultra 2":
+    dia:
+      n_precursors_min: 12000
+      median_cv_precursor_max: 12.0
+    dda:
+      n_psms_min: 40000
+
+  "timsTOF Ultra":
+    dia:
+      n_precursors_min: 10000
+      median_cv_precursor_max: 15.0
+    dda:
+      n_psms_min: 30000
+      pct_delta_mass_lt5ppm_min: 0.90
+
+  "timsTOF Pro 2":
+    dia:
+      n_precursors_min: 8000
+    dda:
+      n_psms_min: 20000
+
+  "Astral":
+    dia:
+      n_precursors_min: 12000
+      median_cv_precursor_max: 10.0
+    dda:
+      n_psms_min: 30000
+      pct_delta_mass_lt5ppm_min: 0.95
+
+  "Exploris 480":
+    dia:
+      n_precursors_min: 8000
+    dda:
+      n_psms_min: 20000
+      pct_delta_mass_lt5ppm_min: 0.95
+
+  "Exploris 240":
+    dia:
+      n_precursors_min: 6000
+    dda:
+      n_psms_min: 15000

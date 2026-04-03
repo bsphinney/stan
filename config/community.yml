@@ -1,0 +1,8 @@
+# STAN Community Benchmark Configuration
+# ───────────────────────────────────────
+# No HuggingFace account or token is needed.
+# STAN submits through a relay API automatically.
+
+display_name: ""
+hela_source: "Pierce HeLa Protein Digest Standard"
+institution_type: "core_facility"
