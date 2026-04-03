@@ -547,7 +547,7 @@ extraction → DB → dashboard to confirm every value is actually populated.
 
 ## Documentation Maintenance
 
-**When you implement a new feature or complete a TODO item, update the docs immediately.**
+**When you implement a new feature or complete a TODO item, update ALL of the following:**
 
 1. Check `README.md` — move the item from the TODO list to the Implementation Status table.
    Remove any **(planned)** markers from the feature description.
@@ -558,6 +558,12 @@ extraction → DB → dashboard to confirm every value is actually populated.
 
 The README has an [Implementation Status](#implementation-status) table and a [TODO](#todo)
 checklist. These are the source of truth for what works vs what's planned. Keep them current.
+
+5. Check the **HF Space relay API** (`app.py` on `brettsp/stan`) — if schemas, field names,
+   or metrics changed, the relay must be updated and redeployed. The submission schema in
+   the relay MUST match the client-side submission code in `stan/community/submit.py`.
+6. Check the **HF Space dashboard HTML** — if metrics are renamed, added, or removed,
+   update the figures, table columns, reference range cards, and info cards on the dashboard.
 
 ---
 
