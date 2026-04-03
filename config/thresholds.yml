@@ -1,0 +1,8 @@
+# STAN QC Thresholds
+thresholds:
+  default:
+    dia:
+      n_precursors_min: 5000
+      median_cv_precursor_max: 20.0
+    dda:
+      n_psms_min: 10000
