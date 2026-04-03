@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS runs (
     amount_ng        REAL DEFAULT 50.0,
     spd              INTEGER,
     gradient_length_min INTEGER,
+    column_vendor    TEXT,
+    column_model     TEXT,
 
     -- Community
     submitted_to_benchmark INTEGER DEFAULT 0,
@@ -95,6 +97,8 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("amount_ng", "ALTER TABLE runs ADD COLUMN amount_ng REAL DEFAULT 50.0"),
         ("spd", "ALTER TABLE runs ADD COLUMN spd INTEGER"),
         ("gradient_length_min", "ALTER TABLE runs ADD COLUMN gradient_length_min INTEGER"),
+        ("column_vendor", "ALTER TABLE runs ADD COLUMN column_vendor TEXT"),
+        ("column_model", "ALTER TABLE runs ADD COLUMN column_model TEXT"),
     ]
 
     for col, ddl in migrations:

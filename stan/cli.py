@@ -88,6 +88,18 @@ def setup() -> None:
 
 
 @app.command()
+def baseline() -> None:
+    """Build baseline QC data from existing HeLa standard directories.
+
+    Point STAN at a directory of existing .d or .raw files to process them
+    retroactively and build historical performance data.
+    """
+    from stan.baseline import run_baseline
+
+    run_baseline()
+
+
+@app.command()
 def watch() -> None:
     """Start the instrument watcher daemon.
 

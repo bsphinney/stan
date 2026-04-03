@@ -99,11 +99,14 @@ def run_setup() -> None:
         console.print(f"  [yellow]Warning:[/yellow] File not found: {fasta_path}")
         console.print("  You can update this later in ~/.stan/instruments.yml")
 
-    # ── 7. Search engine detection ───────────────────────────────
+    # ── 7. LC column ─────────────────────────────────────────────
+    column = _pick_column()
+
+    # ── 8. Search engine detection ───────────────────────────────
     console.print()
     _check_search_engines()
 
-    # ── 8. Community benchmark ───────────────────────────────────
+    # ── 9. Community benchmark ───────────────────────────────────
     console.print()
     community = Confirm.ask(
         "Participate in the community HeLa benchmark? (anonymous, no account needed)",
@@ -111,7 +114,7 @@ def run_setup() -> None:
         console=console,
     )
 
-    # ── 9. Instrument name ───────────────────────────────────────
+    # ── 10. Instrument name ──────────────────────────────────────
     name = Prompt.ask(
         "Give this instrument a name",
         default=instrument["model"],
@@ -131,6 +134,8 @@ def run_setup() -> None:
         "hela_amount_ng": amount,
         "spd": lc["spd"] if lc["spd"] > 0 else None,
         "fasta_path": fasta_path or None,
+        "column_vendor": column.get("vendor") if column.get("vendor") != "other" else None,
+        "column_model": column.get("model") if column.get("model") != "custom" else None,
         "community_submit": community,
     }
 
@@ -180,6 +185,7 @@ def run_setup() -> None:
     table.add_row("Output directory", output_dir)
     table.add_row("LC method", lc["name"])
     table.add_row("HeLa amount", f"{amount} ng")
+    table.add_row("LC Column", f"{column.get('vendor', '')} {column.get('model', '')}".strip() or "(not set)")
     table.add_row("FASTA", fasta_path or "(not set)")
     table.add_row("Community benchmark", "Yes" if community else "No")
     console.print(table)
@@ -248,6 +254,42 @@ def _pick_lc_method() -> dict:
         console.print(f"  Estimated throughput: ~{estimated_spd} SPD")
 
     return method
+
+
+def _pick_column() -> dict:
+    """Prompt user to pick their LC column."""
+    from stan.columns import COLUMN_CATALOG, parse_column_choice
+
+    console.print()
+    console.print("[bold]Step 7: LC column[/bold]")
+
+    # Show vendors first
+    vendors = list(COLUMN_CATALOG.keys()) + ["Other"]
+    for i, v in enumerate(vendors, 1):
+        console.print(f"  [{i}] {v}")
+    v_choice = Prompt.ask("Select column vendor", choices=[str(i) for i in range(1, len(vendors) + 1)], console=console)
+    vendor = vendors[int(v_choice) - 1]
+
+    if vendor == "Other":
+        custom = Prompt.ask("Column description (e.g. 'In-house packed 25cm C18')", default="", console=console)
+        return {"vendor": "other", "model": custom or "custom"}
+
+    # Show columns for selected vendor
+    columns = COLUMN_CATALOG[vendor]
+    console.print()
+    for i, col in enumerate(columns, 1):
+        console.print(f"  [{i}] {col['model']}")
+    console.print(f"  [{len(columns) + 1}] Other {vendor} column")
+
+    choices = [str(i) for i in range(1, len(columns) + 2)]
+    c_choice = Prompt.ask("Select column", choices=choices, console=console)
+    idx = int(c_choice) - 1
+
+    if idx >= len(columns):
+        custom = Prompt.ask("Column description", default="", console=console)
+        return {"vendor": vendor, "model": custom or "custom"}
+
+    return {"vendor": vendor, "model": columns[idx]["model"]}
 
 
 def _check_search_engines() -> None:
