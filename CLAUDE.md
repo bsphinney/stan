@@ -12,6 +12,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## Golden Rule: Document Everything As You Go
+
+**Every change to this project must be documented in the same commit.**
+
+This means:
+- Code change → update README.md (Implementation Status / TODO) + docs/user_guide.md
+- Schema change → update HF Space relay API + dashboard
+- New metric → update README, user guide, dashboard figures, submission schema
+- HPC discovery → update memory files + docs/HPC_PATHS.md
+- Bug found → add to docs/GOTCHAS_DELIMP.md or memory
+- Design decision → save to memory with rationale (why, not just what)
+
+If you can't explain where the documentation lives for a change you just made,
+the change is not done yet.
+
+**Reference files to always check before HPC work:**
+- `docs/HPC_PATHS.md` — container paths, FASTA locations, storage layout
+- `docs/GOTCHAS_DELIMP.md` — 50+ hard-learned lessons (DIA-NN, SLURM, data)
+- `docs/QUEUE_SWITCHING.md` — auto partition switching logic
+
+---
+
 ## Build, Test, Lint Commands
 
 ```bash
