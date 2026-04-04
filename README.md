@@ -402,6 +402,10 @@ If you run DDA on a Thermo instrument, STAN needs [ThermoRawFileParser](https://
 
 **License:** ThermoRawFileParser is open source under the [Apache 2.0 license](https://github.com/compomics/ThermoRawFileParser/blob/master/LICENSE).
 
+### Running on an HPC Cluster (optional)
+
+For labs with SLURM cluster access, STAN can submit search jobs via SSH instead of running locally. See the [HPC Guide](docs/hpc_guide.md) for setup, container paths, bind mount patterns, and common errors. This includes critical gotchas about DIA-NN containers, symlinks, and invalid flags that will save you hours of debugging.
+
 ---
 
 ## Repository Layout
