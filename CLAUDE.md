@@ -120,6 +120,35 @@ web_fetch("https://github.com/vdemichev/DiaNN/releases/latest")
 implement it.** Instead, add a `# TODO: verify flag name against DIA-NN vX.X docs` comment
 and note it in your response so Brett can check manually.
 
+### DIA-NN containers on Hive — CRITICAL
+
+There are TWO DIA-NN containers on Hive with nearly identical names. Only one works
+for Thermo `.raw` files:
+
+| Container | Path | `.raw` support |
+|-----------|------|----------------|
+| `diann_2.3.0.sif` (underscore) | `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif` | **YES** — has .NET bundled, reads `.raw` natively |
+| `diann2.3.0.sif` (no underscore) | `/quobyte/proteomics-grp/apptainers/diann2.3.0.sif` | **NO** — missing .NET, only works for Bruker `.d` |
+
+**Always use the `dia-nn/` directory version with the underscore.** The `apptainers/` version
+will silently skip all `.raw` files and only process the FASTA, producing a predicted library
+instead of an empirical one. The error message ("please install .NET Runtime") is misleading —
+the fix is using the correct container, not installing .NET on the host.
+
+Binary path inside the container: `/diann-2.3.0/diann-linux` (NOT just `diann` on PATH).
+
+Bind mount pattern (from DE-LIMP):
+```bash
+apptainer exec \
+    --bind "${DATA_DIR}:/work/data,${FASTA_DIR}:/work/fasta,${OUT_DIR}:/work/out" \
+    /quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif \
+    /diann-2.3.0/diann-linux \
+    --f /work/data/file.raw \
+    --fasta /work/fasta/database.fasta \
+    --out /work/out/report.parquet \
+    ...
+```
+
 ### Current known versions (verify these are still current before use)
 
 - DIA-NN: 2.3.1 (December 2025, preview release channel) — stable: 2.2.0 (May 2025)
