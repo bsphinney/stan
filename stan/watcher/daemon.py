@@ -147,13 +147,33 @@ class InstrumentWatcher:
             self._stop_event.wait(timeout=10)
 
     def _on_acquisition_complete(self, path: Path) -> None:
-        """Handle a completed acquisition: detect mode and dispatch search.
+        """Handle a completed acquisition: validate, detect mode, dispatch search.
 
         Mode resolution order:
         1. forced_mode in config (recommended for Thermo — use separate watch dirs)
         2. Auto-detect from raw file metadata (reliable for Bruker .d)
         """
         logger.info("Acquisition complete: %s", path.name)
+
+        # Validate the raw file BEFORE attempting search — incomplete or
+        # corrupt files cause DIA-NN/Sage to crash with cryptic errors.
+        from stan.watcher.validate_raw import RawFileValidationError, validate_raw_file
+        try:
+            validate_raw_file(path, vendor=self._config.get("vendor"))
+        except RawFileValidationError as e:
+            logger.error("Invalid raw file, skipping: %s", e)
+            # Write a HOLD flag with the validation failure reason
+            try:
+                from stan.gating.hold import write_hold_flag
+                write_hold_flag(
+                    output_dir=Path(self._config.get("output_dir", "")) / path.stem,
+                    run_name=path.name,
+                    failed_gates=["raw_file_invalid"],
+                    diagnosis=str(e),
+                )
+            except Exception:
+                logger.exception("Failed to write HOLD flag for invalid file")
+            return
 
         forced = self._config.get("forced_mode", "").lower()
         if forced:

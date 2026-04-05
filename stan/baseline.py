@@ -148,6 +148,9 @@ def run_baseline() -> None:
 
     processed = 0
     failed = 0
+    invalid = 0
+
+    from stan.watcher.validate_raw import RawFileValidationError, validate_raw_file
 
     with Progress(
         SpinnerColumn(),
@@ -161,6 +164,16 @@ def run_baseline() -> None:
         for raw_file in all_files:
             progress.update(task, description=f"Processing {raw_file.name}...")
             output_dir = output_base / raw_file.stem
+
+            # Validate file before search
+            try:
+                validate_raw_file(raw_file, vendor=vendor)
+            except RawFileValidationError as e:
+                logger.warning("Skipping invalid file: %s", e)
+                console.print(f"  [yellow]skip[/yellow] {raw_file.name}: {e}")
+                invalid += 1
+                progress.advance(task)
+                continue
 
             try:
                 # Detect mode
@@ -228,6 +241,8 @@ def run_baseline() -> None:
     console.print()
     console.print(f"[bold]Baseline complete:[/bold]")
     console.print(f"  [green]Processed:[/green] {processed}")
+    if invalid:
+        console.print(f"  [yellow]Invalid (skipped):[/yellow] {invalid}")
     if failed:
         console.print(f"  [red]Failed:[/red] {failed}")
     console.print(f"  Database: {get_user_config_dir() / 'stan.db'}")
