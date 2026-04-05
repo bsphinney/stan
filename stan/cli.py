@@ -87,6 +87,74 @@ def setup() -> None:
     run_setup()
 
 
+@app.command("export")
+def export_cmd(
+    format: str = typer.Option(
+        "archive",
+        "--format", "-f",
+        help="archive | json | parquet | claude",
+    ),
+    output: Path = typer.Option(None, "--output", "-o", help="Output path"),
+    limit: int = typer.Option(None, "--limit", help="Max runs to export (newest first)"),
+) -> None:
+    """Export QC data for backup, migration, or AI analysis.
+
+    Formats:
+
+      archive  — .tar.gz with DB + config, for moving between STAN installations
+
+      json     — flat JSON with schema docs, for LLMs and external tools
+
+      parquet  — columnar parquet, for Python/R/DuckDB analysis
+
+      claude   — .zip bundle with a ready-made prompt that makes Claude
+                 produce a full QC report with figures. Drop the zip into
+                 Claude/ChatGPT and get instant analysis.
+    """
+    from stan.export import export_archive, export_claude, export_json, export_parquet
+
+    if format == "archive":
+        path = export_archive(output_path=output)
+    elif format == "json":
+        path = export_json(output_path=output, limit=limit)
+    elif format == "parquet":
+        path = export_parquet(output_path=output, limit=limit)
+    elif format == "claude":
+        path = export_claude(output_path=output, limit=limit)
+    else:
+        console.print(f"[red]Unknown format: {format}[/red]")
+        console.print("Valid: archive, json, parquet, claude")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Exported to {path}[/green]")
+    if format == "claude":
+        console.print()
+        console.print("[bold]Next steps:[/bold]")
+        console.print(f"  1. Open Claude (or ChatGPT / Gemini) in your browser")
+        console.print(f"  2. Drag [cyan]{path}[/cyan] into the chat")
+        console.print(f"  3. Say: [italic]\"Please analyze my STAN QC data\"[/italic]")
+        console.print(f"  4. Claude will read the prompt and produce a full report with figures")
+
+
+@app.command("import")
+def import_cmd(
+    archive: Path = typer.Argument(..., help="Path to stan_export_*.tar.gz"),
+    overwrite: bool = typer.Option(False, "--overwrite", help="Overwrite duplicates instead of skipping"),
+) -> None:
+    """Import QC data from a previously exported archive.
+
+    Merges runs with your existing database. Duplicate runs (matching
+    instrument + run_name + run_date) are skipped by default.
+    """
+    from stan.export import import_archive
+
+    result = import_archive(archive, skip_duplicates=not overwrite)
+    console.print(f"[bold]Import complete:[/bold]")
+    console.print(f"  [green]Imported:[/green] {result['imported']} runs")
+    console.print(f"  [yellow]Skipped (duplicates):[/yellow] {result['skipped']}")
+    console.print(f"  Total in archive: {result['total']}")
+
+
 @app.command()
 def baseline() -> None:
     """Build baseline QC data from existing HeLa standard directories.
