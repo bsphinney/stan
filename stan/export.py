@@ -132,6 +132,23 @@ community benchmark, and make actionable recommendations.
      in the Nth percentile of the STAN community benchmark for comparable setups
      (instrument family × throughput × injection amount)."
 
+4. **Cross-platform comparison for grant justification** (IMPORTANT — this
+   supports instrument upgrade requests):
+   - Compare the user's current instruments against OTHER instrument platforms
+     in the community data, matched by SPD and injection amount.
+   - Example: "Your Exploris 480 identifies ~3,100 proteins per HeLa QC at
+     60 SPD / 50 ng. The community median for Orbitrap Astral at the same
+     throughput and load is ~4,700 proteins — a 52% improvement. For timsTOF
+     Ultra 2 it is ~5,200 proteins (68% improvement)."
+   - Phrase this in language suitable for a grant Specific Aims or Facilities
+     & Equipment section. Include absolute numbers, fold improvements, and
+     cite the STAN community benchmark as the source.
+   - Note realistic caveats (e.g., "community medians assume standardized
+     search against the frozen community library; actual improvements depend
+     on sample complexity and project-specific methods").
+   - This section must be factual and sourced from the bundled data or live
+     community API — do not fabricate numbers or cite papers you haven't seen.
+
 ## Metric hierarchy — important context
 
 STAN uses a deliberate metric hierarchy:
