@@ -384,7 +384,9 @@ STAN depends on two external search engines that you install separately. Both ru
 
 **Install:** Download from https://github.com/vdemichev/DiaNN/releases and add to PATH, or place the executable and set `diann_path` in `instruments.yml`.
 
-**License:** DIA-NN is free for **academic and non-commercial use** only. **Commercial use requires a paid license** from [Aptila Biotech](https://aptila.com) or Thermo Fisher Scientific. STAN does not modify this — you are responsible for obtaining the appropriate license for your use case. See the official [DIA-NN GitHub](https://github.com/vdemichev/DiaNN) for current licensing terms.
+**License:** DIA-NN is **free for academic research use**. Since STAN is designed for academic core facilities and research labs, this is the intended use case. Commercial users need to obtain a paid license separately from [Aptila Biotech](https://aptila.bio) or Thermo Fisher Scientific — STAN does not modify the licensing terms.
+
+Historical note: DIA-NN versions up to 1.9.1 were free for all users (academic and commercial). Starting with 1.9.2, commercial use requires a paid license while academic use remains free. DIA-NN 2.x follows the same model. STAN recommends the latest academic release.
 
 **Citation required:** If STAN is useful for your work, please cite the DIA-NN paper: Demichev V, Messner CB, Vernardis SI, Lilley KS, Ralser M. *Nature Methods* (2020).
 
