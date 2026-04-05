@@ -15,6 +15,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from stan import __version__
+from stan.community.fingerprint_dedup import compute_submission_fingerprint
 from stan.community.validate import validate_submission
 from stan.config import load_community
 from stan.db import mark_submitted
@@ -47,6 +48,7 @@ SUBMISSION_SCHEMA = pa.schema([
     pa.field("community_score", pa.float32()),
     pa.field("cohort_id", pa.string()),
     pa.field("is_flagged", pa.bool_()),
+    pa.field("fingerprint", pa.string()),  # for dedup
 ])
 
 
@@ -112,6 +114,16 @@ def submit_to_benchmark(
         column_model=column_model,
     )
 
+    # Compute fingerprint for dedup — same (lab, instrument, run_name, amount, spd)
+    # will always produce the same fingerprint so resubmissions are detectable
+    fingerprint = compute_submission_fingerprint(
+        display_name=display_name,
+        instrument_model=instrument,
+        run_name=run.get("run_name", ""),
+        amount_ng=amount_ng,
+        spd=spd,
+    )
+
     row = {
         "submission_id": [submission_id],
         "submitted_at": [datetime.now(timezone.utc)],
@@ -134,6 +146,7 @@ def submit_to_benchmark(
         "community_score": [0.0],  # computed by nightly consolidation
         "cohort_id": [cohort_id],
         "is_flagged": [len(validation.flags) > 0],
+        "fingerprint": [fingerprint],
     }
 
     table = pa.table(row, schema=SUBMISSION_SCHEMA)

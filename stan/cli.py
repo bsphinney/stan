@@ -100,6 +100,78 @@ def baseline() -> None:
 
 
 @app.command()
+def baseline_download(
+    instrument_family: str = typer.Option(None, "--instrument", "-i", help="e.g. Astral, timsTOF, Exploris"),
+    spd: int = typer.Option(None, "--spd", help="Samples per day"),
+    amount_ng: float = typer.Option(None, "--amount", help="HeLa amount in ng"),
+    cache: bool = typer.Option(False, "--cache", help="Cache full baseline locally"),
+) -> None:
+    """Download baseline statistics from the STAN community benchmark.
+
+    Instead of building a baseline from your own QC history, pull community
+    reference ranges directly. Useful for new instruments or labs without
+    historical data.
+    """
+    from stan.community.fetch_baseline import cache_baseline_locally, fetch_community_baseline
+
+    if cache:
+        path = cache_baseline_locally()
+        console.print(f"[green]Cached community baseline to {path}[/green]")
+        return
+
+    console.print("[bold]Fetching community baseline...[/bold]")
+    stats = fetch_community_baseline(
+        instrument_family=instrument_family,
+        spd=spd,
+        amount_ng=amount_ng,
+    )
+
+    if not stats or stats.get("matching_submissions") == 0:
+        console.print("[yellow]No matching community data found.[/yellow]")
+        console.print("Try removing filters or checking back later as more labs contribute.")
+        return
+
+    n = stats.get("n_submissions", 0)
+    console.print(f"\n[bold]Community baseline ({n} matching submissions)[/bold]")
+    console.print()
+
+    from rich.table import Table
+    t = Table(show_header=True, header_style="bold", border_style="blue")
+    t.add_column("Metric")
+    t.add_column("25th", justify="right")
+    t.add_column("Median", justify="right")
+    t.add_column("75th", justify="right")
+
+    metrics_display = [
+        ("n_precursors", "Precursors (DIA)"),
+        ("n_peptides", "Peptides"),
+        ("n_proteins", "Proteins"),
+        ("n_psms", "PSMs (DDA)"),
+        ("ips_score", "IPS"),
+        ("median_fragments_per_precursor", "Fragments/precursor"),
+        ("median_points_across_peak", "Points/peak"),
+    ]
+    for key, label in metrics_display:
+        q25 = stats.get(f"{key}_q25")
+        med = stats.get(f"{key}_median")
+        q75 = stats.get(f"{key}_q75")
+        if med is not None:
+            def fmt(v):
+                if v is None:
+                    return "--"
+                return f"{int(v):,}" if v >= 10 else f"{v:.2f}"
+            t.add_row(label, fmt(q25), fmt(med), fmt(q75))
+
+    console.print(t)
+    console.print()
+
+    if "instrument_breakdown" in stats:
+        console.print("[dim]Instruments in this cohort:[/dim]")
+        for model, count in sorted(stats["instrument_breakdown"].items(), key=lambda x: -x[1]):
+            console.print(f"  {model}: {count}")
+
+
+@app.command()
 def watch() -> None:
     """Start the instrument watcher daemon.
 
