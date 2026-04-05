@@ -20,18 +20,23 @@ logger = logging.getLogger(__name__)
 # These are checked client-side before submission and server-side during
 # nightly consolidation. If a submission's hashes don't match, it's rejected.
 EXPECTED_ASSET_HASHES: dict[str, str] = {
-    # FASTA (shared)
-    "human_hela_202604.fasta": "",  # TODO: populate after uploading to HF Dataset
-    # timsTOF empirical library (.parquet, DIA-NN 2.0+ format)
-    "hela_timstof_202604.parquet": "",  # TODO: populate after library build
-    # Orbitrap/Astral empirical library (.parquet)
-    "hela_orbitrap_202604.parquet": "",  # TODO: populate after library build
+    # FASTA (shared) — TODO: upload UniProt human + contaminants to HF Dataset
+    "human_hela_202604.fasta": "",
+    # timsTOF empirical library — built from UCD longitudinal HeLa QC (6 files, 54K precursors)
+    "hela_timstof_202604.parquet": "ad72bfb2730644c69147ba8f34bfe982",
+    # Orbitrap/Astral empirical library — built from PXD054015 (8 files, 170K precursors)
+    "hela_orbitrap_202604.parquet": "ac84e40f5b2f23e1286f28a7baeccec2",
 }
 
-# Hard gates: submissions below these are rejected outright
+# Hard gates: submissions below these are rejected outright.
+# These catch clearly failed runs that should NOT contribute to community
+# reference ranges. A run with <5000 precursors on HeLa is broken, not
+# just underperforming.
 HARD_GATES: dict[str, float] = {
-    # DIA
-    "n_precursors_min": 1000,
+    # DIA — raised to 5000 to exclude failed runs from baseline
+    "n_precursors_min": 5000,
+    "n_peptides_min": 3000,
+    "n_proteins_min": 1500,
     "median_cv_precursor_max": 60.0,
     "pct_charge_1_max": 0.50,
     "missed_cleavage_rate_max": 0.60,
@@ -99,7 +104,7 @@ def validate_submission(
         # Skip gates not relevant to this mode
         if mode == "dia" and metric_name in ("n_psms", "n_peptides_dda", "pct_delta_mass_lt5ppm", "ms2_scan_rate"):
             continue
-        if mode == "dda" and metric_name in ("n_precursors", "median_cv_precursor", "pct_charge_1", "missed_cleavage_rate"):
+        if mode == "dda" and metric_name in ("n_precursors", "n_peptides", "n_proteins", "median_cv_precursor", "pct_charge_1", "missed_cleavage_rate"):
             continue
 
         value = metrics.get(metric_name)

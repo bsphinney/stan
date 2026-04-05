@@ -9,6 +9,8 @@ def test_validate_dia_pass():
     """Valid DIA metrics should pass validation."""
     metrics = {
         "n_precursors": 15000,
+        "n_peptides": 10000,
+        "n_proteins": 3000,
         "median_cv_precursor": 8.0,
         "pct_charge_1": 0.05,
         "missed_cleavage_rate": 0.10,
@@ -21,7 +23,9 @@ def test_validate_dia_pass():
 def test_validate_dia_fail_low_precursors():
     """DIA with precursors below hard gate should be rejected."""
     metrics = {
-        "n_precursors": 500,  # below 1000 minimum
+        "n_precursors": 500,  # below 5000 minimum
+        "n_peptides": 300,
+        "n_proteins": 100,
         "median_cv_precursor": 8.0,
         "pct_charge_1": 0.05,
         "missed_cleavage_rate": 0.10,
@@ -35,6 +39,8 @@ def test_validate_dia_fail_high_cv():
     """DIA with CV above hard gate should be rejected."""
     metrics = {
         "n_precursors": 15000,
+        "n_peptides": 10000,
+        "n_proteins": 3000,
         "median_cv_precursor": 65.0,  # above 60.0 maximum
         "pct_charge_1": 0.05,
         "missed_cleavage_rate": 0.10,
@@ -71,6 +77,8 @@ def test_validate_dia_skips_dda_gates():
     """DIA validation should not apply DDA-specific gates."""
     metrics = {
         "n_precursors": 15000,
+        "n_peptides": 10000,
+        "n_proteins": 3000,
         "median_cv_precursor": 8.0,
         "pct_charge_1": 0.05,
         "missed_cleavage_rate": 0.10,
@@ -84,6 +92,8 @@ def test_validate_soft_flag():
     """Unusually high precursor count should be flagged but not rejected."""
     metrics = {
         "n_precursors": 55000,  # above soft flag of 50000
+        "n_peptides": 40000,
+        "n_proteins": 8000,
         "median_cv_precursor": 8.0,
         "pct_charge_1": 0.05,
         "missed_cleavage_rate": 0.10,
