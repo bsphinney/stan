@@ -20,6 +20,7 @@ from stan.community.validate import validate_submission
 from stan.config import load_community
 from stan.db import mark_submitted
 from stan.metrics.scoring import compute_cohort_id
+from stan.search.community_params import check_diann_version_compatible
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ SUBMISSION_SCHEMA = pa.schema([
     pa.field("cohort_id", pa.string()),
     pa.field("is_flagged", pa.bool_()),
     pa.field("fingerprint", pa.string()),  # for dedup
+    pa.field("diann_version", pa.string()),  # pinned for reproducibility
 ])
 
 
@@ -59,6 +61,7 @@ def submit_to_benchmark(
     amount_ng: float = 50.0,
     hela_source: str = "Pierce HeLa Protein Digest Standard",
     asset_hashes: dict[str, str] | None = None,
+    diann_version: str | None = None,
 ) -> dict:
     """Submit a QC run to the community benchmark.
 
@@ -102,6 +105,17 @@ def submit_to_benchmark(
         raise ValueError(
             f"Submission rejected: {'; '.join(validation.rejected_gates)}"
         )
+
+    # Version check — community benchmark requires the pinned DIA-NN version
+    # because different versions produce non-comparable results
+    if diann_version is None:
+        # Try to detect from run metadata or system
+        from stan.search.version_detect import detect_diann_version
+        diann_version = run.get("diann_version") or detect_diann_version() or "unknown"
+
+    is_compat, msg = check_diann_version_compatible(diann_version)
+    if not is_compat:
+        raise ValueError(f"Submission rejected: {msg}")
 
     # Build submission
     submission_id = str(uuid.uuid4())
@@ -147,6 +161,7 @@ def submit_to_benchmark(
         "cohort_id": [cohort_id],
         "is_flagged": [len(validation.flags) > 0],
         "fingerprint": [fingerprint],
+        "diann_version": [diann_version],
     }
 
     table = pa.table(row, schema=SUBMISSION_SCHEMA)

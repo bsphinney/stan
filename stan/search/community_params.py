@@ -19,12 +19,50 @@ Do not change any value below without:
 SEARCH_PARAMS_VERSION = "v1.0.0"
 
 # Pinned search engine versions for community benchmark reproducibility.
-# Do not upgrade these without also incrementing SEARCH_PARAMS_VERSION.
+# Submissions that did not use these exact versions are rejected by the
+# community relay. This is the only way to ensure cross-lab comparability —
+# different DIA-NN versions produce meaningfully different results.
+#
+# For commercial users who cannot use DIA-NN 2.x (which requires a paid
+# license for commercial use), STAN still works for local QC with any
+# DIA-NN version — only community benchmark submission requires the
+# pinned version.
+#
+# Do not upgrade these without also incrementing SEARCH_PARAMS_VERSION
+# and rebuilding/re-uploading the community libraries.
 PINNED_TOOL_VERSIONS = {
-    "diann": "2.3.2",
+    "diann": "2.3.0",   # used to build hela_orbitrap_202604.parquet and hela_timstof_202604.parquet
     "sage": "0.14.7",
     "thermorawfileparser": "1.4.5",
 }
+
+
+def check_diann_version_compatible(version: str | None) -> tuple[bool, str]:
+    """Check if a DIA-NN version matches the pinned community version.
+
+    Returns (is_compatible, message).
+    """
+    if not version:
+        return False, "DIA-NN version could not be detected"
+
+    required = PINNED_TOOL_VERSIONS["diann"]
+
+    # Match major.minor at minimum — allow patch differences within same minor
+    req_parts = required.split(".")
+    ver_parts = version.split(".")
+
+    if len(req_parts) < 2 or len(ver_parts) < 2:
+        return False, f"Invalid version format: {version}"
+
+    if req_parts[0] != ver_parts[0] or req_parts[1] != ver_parts[1]:
+        return False, (
+            f"DIA-NN version mismatch: submission used {version}, "
+            f"community benchmark requires {required}. "
+            f"Different DIA-NN versions produce different results and cannot be "
+            f"compared. Use DIA-NN {required} for community submissions."
+        )
+
+    return True, f"DIA-NN {version} matches pinned version {required}"
 
 # HF Dataset repo where frozen community assets live
 HF_DATASET_REPO = "brettsp/stan-benchmark"
