@@ -64,7 +64,11 @@ def run_setup() -> None:
     console.print(Panel(
         "[bold]STAN Setup Wizard[/bold]\n\n"
         "This will configure your instrument for QC monitoring.\n"
-        "No YAML editing required.",
+        "No YAML editing required.\n\n"
+        "[yellow]Note:[/yellow] STAN calls DIA-NN and Sage as external tools.\n"
+        "You must install them separately under their own licenses:\n"
+        "  [dim]DIA-NN: free academic / commercial license required[/dim]\n"
+        "  [dim]Sage: MIT (open source)[/dim]",
         title="STAN",
         border_style="blue",
     ))

@@ -376,13 +376,17 @@ IPS is stored for every run in the local SQLite database and included in communi
 
 STAN depends on two external search engines that you install separately. Both run locally on your instrument workstation by default.
 
+> **License note:** STAN does **not** bundle, redistribute, or include any part of DIA-NN, Sage, or ThermoRawFileParser. It calls them as external subprocesses, the same way a Makefile calls `gcc`. Users must install each tool separately under its own license. This is required for DIA-NN in particular because commercial use requires a paid license from Aptila Biotech or Thermo Fisher Scientific.
+
 ### DIA: DIA-NN
 
 [DIA-NN](https://github.com/vdemichev/DiaNN) handles all DIA searches. Both Bruker `.d` and Thermo `.raw` files are passed directly to DIA-NN without conversion (DIA-NN 2.1+ has native support for both formats on Linux and Windows).
 
 **Install:** Download from https://github.com/vdemichev/DiaNN/releases and add to PATH, or place the executable and set `diann_path` in `instruments.yml`.
 
-**License:** DIA-NN is free for academic and non-commercial use. Commercial use requires a license from Vadim Demichev. See the [DIA-NN license](https://github.com/vdemichev/DiaNN/blob/master/LICENSE.txt) for details.
+**License:** DIA-NN is free for **academic and non-commercial use** only. **Commercial use requires a paid license** from [Aptila Biotech](https://aptila.com) or Thermo Fisher Scientific. STAN does not modify this — you are responsible for obtaining the appropriate license for your use case. See the official [DIA-NN GitHub](https://github.com/vdemichev/DiaNN) for current licensing terms.
+
+**Citation required:** If STAN is useful for your work, please cite the DIA-NN paper: Demichev V, Messner CB, Vernardis SI, Lilley KS, Ralser M. *Nature Methods* (2020).
 
 Community benchmark submissions use a frozen HeLa-specific predicted spectral library and a pinned FASTA, both hosted in the HF Dataset repository. **(Library generation is in progress -- the HF Dataset assets are not yet uploaded.)**
 
