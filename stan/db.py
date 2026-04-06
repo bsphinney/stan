@@ -436,9 +436,13 @@ def get_column_lifetime(instrument: str, db_path: Path | None = None) -> dict:
     filenames (e.g., _6205.d) to give the REAL total injection count on the
     column, including non-QC samples STAN doesn't see.
 
-    For Thermo instruments: can only count QC runs STAN has seen (the .raw
-    file doesn't embed a global injection counter). Reports days-on-column
-    and QC metric trend instead.
+    For Thermo instruments: does NOT attempt to count injections because
+    STAN only sees QC runs while the instrument runs hundreds of real
+    samples between them — showing "5 injections" when the column has
+    done 500 would be misleading. Instead, tracks days-on-column +
+    QC depth trend (% decline per week). The user logs column changes
+    via `stan log column-change` and STAN shows "47 days on column,
+    precursor trend: -2.1%/week".
 
     Returns:
         {
