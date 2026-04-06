@@ -27,6 +27,29 @@ echo.
 echo  Press any key to start, or close this window to cancel.
 pause >nul
 
+:: ── DIA-NN License Agreement ────────────────────────────────────
+echo.
+echo  STAN uses DIA-NN for DIA searches and Sage for DDA searches.
+echo.
+echo  DIA-NN (by Vadim Demichev) is free for academic use.
+echo  Commercial use requires a separate license from Vadim Demichev.
+echo  DIA-NN license: https://github.com/vdemichev/DiaNN/blob/master/LICENSE
+echo.
+echo  Sage (by Michael Lazear) is open source under the MIT license.
+echo  Sage license: https://github.com/lazear/sage/blob/master/LICENSE
+echo.
+set /p ACCEPT_LICENSE="  Do you accept the DIA-NN and Sage license terms? (Y/n): "
+if /i "%ACCEPT_LICENSE%"=="n" (
+    echo.
+    echo  License not accepted. Installation cancelled.
+    echo  STAN can still be used without DIA-NN/Sage for metadata
+    echo  extraction and dashboard features, but QC searches require
+    echo  acceptance of these licenses.
+    pause
+    exit /b 0
+)
+echo  License accepted ✓
+
 :: ── Check Python ────────────────────────────────────────────────
 echo.
 echo  [1/5] Checking for Python...
