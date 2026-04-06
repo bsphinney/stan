@@ -59,19 +59,7 @@ def run_setup() -> None:
     console.print()
     console.print("[bold]2. What LC column is installed?[/bold]")
     console.print("  [dim]This is the one thing STAN can't read from raw files.[/dim]")
-    column_desc = Prompt.ask(
-        "  Column (e.g. 'PepSep 25cm x 150um', 'IonOpticks Aurora 25cm')",
-        default="",
-        console=console,
-    )
-
-    # Parse vendor from common names
-    column_vendor = ""
-    column_model = column_desc
-    for vendor in ["PepSep", "IonOpticks", "Thermo", "Waters", "Phenomenex", "Agilent"]:
-        if vendor.lower() in column_desc.lower():
-            column_vendor = vendor
-            break
+    column_vendor, column_model = _pick_column()
 
     # ── 3. HeLa amount ───────────────────────────────────────────
     console.print()
@@ -209,17 +197,62 @@ def run_setup() -> None:
     console.print(table)
 
     console.print()
-    console.print("[bold]Next steps:[/bold]")
-    console.print("  1. Start the watcher:  [cyan]stan watch[/cyan]")
-    console.print("  2. Run a HeLa QC on your instrument")
-    console.print("  3. STAN auto-detects everything and runs the search")
-    console.print("  4. Check results:      [cyan]stan dashboard[/cyan]")
-    console.print()
-    console.print(
-        "  [dim]When the first raw file arrives, STAN will print what it"
-        " auto-detected (instrument, LC, gradient, windows).[/dim]"
+
+    # Offer to start the watcher + dashboard right now
+    start_now = Confirm.ask(
+        "[bold]Start STAN now?[/bold] (watcher + dashboard)",
+        default=True,
+        console=console,
     )
-    console.print()
+    if start_now:
+        console.print()
+        console.print("  Starting dashboard at [cyan]http://localhost:8421[/cyan]")
+        console.print("  Starting watcher on [cyan]{watch_dir}[/cyan]")
+        console.print("  [dim]Press Ctrl+C to stop both.[/dim]")
+        console.print()
+
+        import threading
+
+        # Start dashboard in a background thread
+        def _run_dashboard():
+            try:
+                import uvicorn
+                uvicorn.run("stan.dashboard.server:app", host="127.0.0.1", port=8421, log_level="warning")
+            except Exception:
+                pass
+
+        dash_thread = threading.Thread(target=_run_dashboard, daemon=True)
+        dash_thread.start()
+
+        # Open the dashboard in the default browser after a short delay
+        def _open_browser():
+            import time
+            import webbrowser
+            time.sleep(2)
+            webbrowser.open("http://localhost:8421")
+
+        browser_thread = threading.Thread(target=_open_browser, daemon=True)
+        browser_thread.start()
+
+        # Run the watcher in the foreground (blocks until Ctrl+C)
+        from stan.watcher.daemon import WatcherDaemon
+        daemon = WatcherDaemon()
+        try:
+            daemon.run()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Shutting down...[/yellow]")
+            daemon.stop()
+    else:
+        console.print()
+        console.print("[bold]To start later:[/bold]")
+        console.print("  [cyan]stan watch[/cyan]       — start monitoring")
+        console.print("  [cyan]stan dashboard[/cyan]   — open the QC dashboard")
+        console.print()
+        console.print(
+            "  [dim]When the first raw file arrives, STAN auto-detects"
+            " instrument, LC, gradient, and windows.[/dim]"
+        )
+        console.print()
 
 
 def _probe_existing_files(watch_dir: str) -> None:
@@ -297,6 +330,42 @@ def _probe_existing_files(watch_dir: str) -> None:
                         console.print(f"  [green]Instrument:[/green] {models[0]}")
     except Exception:
         pass  # Don't block setup on a probe failure
+
+
+def _pick_column() -> tuple[str, str]:
+    """Show a numbered list of popular LC columns. Returns (vendor, model)."""
+    from stan.columns import COLUMN_CATALOG
+
+    # Build flat numbered list grouped by vendor
+    all_choices: list[tuple[str, str]] = []
+    for vendor, columns in COLUMN_CATALOG.items():
+        for col in columns:
+            all_choices.append((vendor, col["model"]))
+
+    # Show grouped by vendor with numbers
+    i = 1
+    for vendor, columns in COLUMN_CATALOG.items():
+        console.print(f"  [bold]{vendor}[/bold]")
+        for col in columns:
+            console.print(f"    [{i:2d}] {col['model']}")
+            i += 1
+    console.print(f"    [{i:2d}] [dim]Other / custom column[/dim]")
+    console.print()
+
+    choices = [str(n) for n in range(1, len(all_choices) + 2)]
+    pick = Prompt.ask("  Select column", choices=choices, console=console)
+    idx = int(pick) - 1
+
+    if idx >= len(all_choices):
+        # Custom
+        custom = Prompt.ask("  Describe your column", default="", console=console)
+        # Try to parse vendor
+        for vendor in COLUMN_CATALOG:
+            if vendor.lower() in custom.lower():
+                return vendor, custom
+        return "", custom
+
+    return all_choices[idx]
 
 
 def _check_search_engines() -> None:
