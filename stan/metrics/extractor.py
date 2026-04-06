@@ -348,6 +348,37 @@ def extract_dia_metrics(
         if evidence_vals.len() > 0:
             median_points_across_peak = float(evidence_vals.median())
 
+    # ── Literature-survey metrics (added 2026-04) ──────────────────
+    # These are all free from data DIA-NN already produces.
+
+    # Dynamic range: log10(p99/p01) of precursor intensity
+    dyn_range = _dynamic_range(filt)
+
+    # Peak capacity: single-number LC separation quality
+    peak_cap = _peak_capacity(median_peak_width_sec, gradient_min)
+
+    # RT-decile peak widths: early/middle/late FWHM
+    rt_deciles = _rt_decile_peak_widths(filt)
+
+    # C-2A: gradient utilization (middle 50% RT band)
+    c2a = _c2a_band(filt)
+
+    # Missed cleavages ≥2 (more sensitive than ≥1 for digestion quality)
+    mc2_rate = float(
+        filt.filter(pl.col("Missed.Cleavages") >= 2).height / filt.height
+    ) if filt.height > 0 else 0.0
+
+    # Median precursor intensity
+    median_intensity = None
+    if "Precursor.Normalised" in filt.columns:
+        vals = filt["Precursor.Normalised"].drop_nulls()
+        if len(vals) > 0:
+            median_intensity = float(vals.median())
+
+    # Parse report.stats.tsv for mass accuracy + FWHM + signal
+    stats_path = Path(report_path).parent / "report.stats.tsv"
+    stats = _parse_diann_stats_tsv(stats_path)
+
     return {
         "n_precursors": filt["Precursor.Id"].n_unique(),
         "n_peptides": filt["Stripped.Sequence"].n_unique(),
@@ -364,12 +395,20 @@ def extract_dia_metrics(
         "missed_cleavage_rate": float(
             filt.filter(pl.col("Missed.Cleavages") >= 1).height / filt.height
         ),
+        "missed_cleavage_rate_2plus": mc2_rate,
         "pct_charge_1": charge_pct(1),
         "pct_charge_2": charge_pct(2),
         "pct_charge_3": charge_pct(3),
         "pct_charge_4plus": sum(charge_pct(z) for z in range(4, 10)),
         "median_peak_width_sec": median_peak_width_sec,
         "median_points_across_peak": median_points_across_peak,
+        # Literature-survey metrics
+        "dynamic_range_log10": dyn_range,
+        "peak_capacity": peak_cap,
+        "median_precursor_intensity": median_intensity,
+        **rt_deciles,
+        **c2a,
+        **stats,
     }
 
 
@@ -509,12 +548,30 @@ def _empty_dia_metrics() -> dict:
         "pct_fragments_quantified": 0.0,
         "median_cv_precursor": 0.0,
         "missed_cleavage_rate": 0.0,
+        "missed_cleavage_rate_2plus": 0.0,
         "pct_charge_1": 0.0,
         "pct_charge_2": 0.0,
         "pct_charge_3": 0.0,
         "pct_charge_4plus": 0.0,
         "median_peak_width_sec": None,
         "median_points_across_peak": None,
+        "dynamic_range_log10": None,
+        "peak_capacity": None,
+        "median_precursor_intensity": None,
+        "peak_width_early_sec": None,
+        "peak_width_middle_sec": None,
+        "peak_width_late_sec": None,
+        "c2a_rt_start_min": None,
+        "c2a_rt_stop_min": None,
+        "c2a_width_min": None,
+        "ids_per_minute_in_c2a": None,
+        "median_mass_acc_ms1_ppm": None,
+        "median_mass_acc_ms2_ppm": None,
+        "fwhm_scans": None,
+        "fwhm_rt_min": None,
+        "ms1_signal": None,
+        "ms2_signal": None,
+        "normalisation_factor": None,
     }
 
 
