@@ -77,8 +77,141 @@
       return <span className={`badge ${cls}`}>{result.toUpperCase()}</span>;
     }
 
+    /* ── Gas Gauge: 3-second instrument health at a glance ──────── */
+
+    function GasGauge({ value, min, max, mean, sd, label }) {
+      // SVG inline gauge: 200 x 28. Shows a bar from min→max with zone
+      // coloring (green near mean, amber ±2σ, red beyond) and a white
+      // triangle pointer at `value`.
+      const W = 200, H = 28, BAR_Y = 8, BAR_H = 12;
+      const range = max - min || 1;
+      const pct = v => Math.max(0, Math.min(1, (v - min) / range));
+
+      // Zone boundaries as fractions of the bar
+      const meanPct = pct(mean);
+      const lo1 = pct(mean - sd),   hi1 = pct(mean + sd);
+      const lo2 = pct(mean - 2*sd), hi2 = pct(mean + 2*sd);
+      const valPct = pct(value);
+
+      // Decide overall color for the label badge
+      const z = Math.abs(value - mean) / (sd || 1);
+      const statusColor = z < 1 ? 'var(--pass)' : z < 2 ? 'var(--warn)' : 'var(--fail)';
+
+      // Triangle x position
+      const tx = 4 + valPct * (W - 8);
+      // Mean line x
+      const mx = 4 + meanPct * (W - 8);
+
+      return (
+        <div style={{display:'inline-flex', alignItems:'center', gap:'0.4rem'}}>
+          <span style={{color:'var(--muted)', fontSize:'0.72rem', width:'52px', textAlign:'right', flexShrink:0}}>{label}</span>
+          <svg width={W} height={H} style={{display:'block'}}>
+            {/* Full range background */}
+            <rect x={4} y={BAR_Y} width={W-8} height={BAR_H} rx={3} fill="#1e293b" />
+            {/* Red zones (beyond 2σ) */}
+            <rect x={4} y={BAR_Y} width={(lo2)*(W-8)} height={BAR_H} rx={3} fill="rgba(239,68,68,0.25)" />
+            <rect x={4 + hi2*(W-8)} y={BAR_Y} width={(1-hi2)*(W-8)} height={BAR_H} rx={3} fill="rgba(239,68,68,0.25)" />
+            {/* Amber zones (1-2σ) */}
+            <rect x={4 + lo2*(W-8)} y={BAR_Y} width={(lo1-lo2)*(W-8)} height={BAR_H} fill="rgba(234,179,8,0.2)" />
+            <rect x={4 + hi1*(W-8)} y={BAR_Y} width={(hi2-hi1)*(W-8)} height={BAR_H} fill="rgba(234,179,8,0.2)" />
+            {/* Green zone (within 1σ) */}
+            <rect x={4 + lo1*(W-8)} y={BAR_Y} width={(hi1-lo1)*(W-8)} height={BAR_H} fill="rgba(34,197,94,0.2)" />
+            {/* Mean dashed line */}
+            <line x1={mx} x2={mx} y1={BAR_Y-1} y2={BAR_Y+BAR_H+1} stroke="var(--muted)" strokeWidth={1} strokeDasharray="2,2" />
+            {/* Value triangle pointer */}
+            <polygon points={`${tx-5},${BAR_Y-1} ${tx+5},${BAR_Y-1} ${tx},${BAR_Y+4}`} fill={statusColor} />
+            <polygon points={`${tx-5},${BAR_Y+BAR_H+1} ${tx+5},${BAR_Y+BAR_H+1} ${tx},${BAR_Y+BAR_H-4}`} fill={statusColor} />
+          </svg>
+          <span style={{color:statusColor, fontSize:'0.75rem', fontWeight:700, width:'50px', fontVariantNumeric:'tabular-nums'}}>
+            {value >= 1e6 ? (value/1e6).toFixed(1)+'M' : value >= 1000 ? (value/1000).toFixed(1)+'k' : value?.toFixed?.(0) || '—'}
+          </span>
+        </div>
+      );
+    }
+
+    function QuickStatus({ runs }) {
+      // Show the most recent 5 runs with gas gauges for 3 key metrics.
+      // Stats (min/max/mean/sd) are computed from ALL runs for the same
+      // instrument so the gauge reflects that instrument's own history.
+      if (!runs || runs.length === 0) return null;
+
+      // Build per-instrument stats from all available runs
+      const byInst = {};
+      for (const r of runs) {
+        if (!byInst[r.instrument]) byInst[r.instrument] = [];
+        byInst[r.instrument].push(r);
+      }
+      function stats(arr) {
+        if (!arr.length) return { min:0, max:1, mean:0.5, sd:0.1 };
+        const min = Math.min(...arr), max = Math.max(...arr);
+        const mean = arr.reduce((a,b)=>a+b,0)/arr.length;
+        const sd = Math.sqrt(arr.reduce((a,v)=>a+(v-mean)**2,0)/Math.max(1,arr.length-1));
+        return { min, max, mean, sd: sd || mean*0.1 || 1 };
+      }
+      const instStats = {};
+      for (const [inst, instRuns] of Object.entries(byInst)) {
+        instStats[inst] = {
+          peptides: stats(instRuns.map(r => r.n_peptides || r.n_peptides_dda || 0).filter(v=>v>0)),
+          proteins: stats(instRuns.map(r => r.n_proteins || 0).filter(v=>v>0)),
+          precursors: stats(instRuns.map(r => r.n_precursors || r.n_psms || 0).filter(v=>v>0)),
+        };
+      }
+
+      // Most recent 5 runs
+      const recent = runs.slice(0, 5);
+
+      return (
+        <div className="card" style={{marginBottom:'1.5rem'}}>
+          <h3 style={{marginBottom:'0.75rem'}}>
+            Quick Health Check
+            <span style={{fontWeight:400, fontSize:'0.8rem', color:'var(--muted)', marginLeft:'0.75rem'}}>
+              Last {recent.length} runs vs. instrument history
+            </span>
+          </h3>
+          <div style={{display:'flex', flexDirection:'column', gap:'0.5rem'}}>
+            {recent.map((r, i) => {
+              const s = instStats[r.instrument] || {};
+              const depth = r.n_precursors || r.n_psms || 0;
+              const pep = r.n_peptides || r.n_peptides_dda || 0;
+              const pro = r.n_proteins || 0;
+              const depthLabel = r.n_precursors ? 'Prec' : 'PSMs';
+              const z_depth = s.precursors ? Math.abs(depth - s.precursors.mean) / (s.precursors.sd || 1) : 0;
+              const z_pep = s.peptides ? Math.abs(pep - s.peptides.mean) / (s.peptides.sd || 1) : 0;
+              const z_pro = s.proteins ? Math.abs(pro - s.proteins.mean) / (s.proteins.sd || 1) : 0;
+              const worst = Math.max(z_depth, z_pep, z_pro);
+              const rowColor = worst < 1 ? 'rgba(34,197,94,0.06)' : worst < 2 ? 'rgba(234,179,8,0.06)' : 'rgba(239,68,68,0.08)';
+
+              return (
+                <div key={i} style={{
+                  display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.3rem 0.5rem',
+                  background: rowColor, borderRadius:'0.5rem', flexWrap:'wrap',
+                }}>
+                  <div style={{width:'140px', flexShrink:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                    <GateBadge result={r.gate_result} />
+                    <span style={{marginLeft:'0.3rem', fontSize:'0.8rem'}}>{r.run_name}</span>
+                  </div>
+                  <div style={{display:'flex', gap:'0.75rem', flexWrap:'wrap'}}>
+                    {s.precursors && <GasGauge value={depth} {...s.precursors} label={depthLabel} />}
+                    {s.peptides && <GasGauge value={pep} {...s.peptides} label="Pep" />}
+                    {s.proteins && <GasGauge value={pro} {...s.proteins} label="Pro" />}
+                  </div>
+                  <span style={{fontSize:'0.7rem', color:'var(--muted)', marginLeft:'auto'}}>
+                    {r.instrument} &middot; {new Date(r.run_date).toLocaleDateString()}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{marginTop:'0.5rem', fontSize:'0.72rem', color:'var(--muted)'}}>
+            Gauges: green = within 1&sigma; of instrument mean &middot; amber = 1-2&sigma; &middot; red = &gt;2&sigma;
+            &nbsp;&middot;&nbsp; Dashed line = mean &nbsp;&middot;&nbsp; Triangles = this run
+          </div>
+        </div>
+      );
+    }
+
     function LiveRuns() {
-      const { data: runs, loading, reload } = useFetch('/api/runs?limit=20');
+      const { data: runs, loading, reload } = useFetch('/api/runs?limit=50');
       useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [reload]);
 
       if (loading && !runs) return <div className="empty">Loading...</div>;
@@ -90,20 +223,23 @@
       }
 
       return (
-        <div className="grid">
-          {Object.entries(byInstrument).map(([name, run]) => (
-            <div className="card" key={name}>
-              <h3>{name}</h3>
-              <div className="metric"><span className="metric-label">Last run</span><span className="metric-value">{run.run_name}</span></div>
-              <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
-              <div className="metric"><span className="metric-label">Gate</span><GateBadge result={run.gate_result} /></div>
-              <div className="metric"><span className="metric-label">GRS</span><GrsBadge score={run.grs_score} /></div>
-              {run.mode === 'DIA' && <div className="metric"><span className="metric-label">Precursors</span><span className="metric-value">{run.n_precursors?.toLocaleString()}</span></div>}
-              {run.mode === 'DDA' && <div className="metric"><span className="metric-label">PSMs</span><span className="metric-value">{run.n_psms?.toLocaleString()}</span></div>}
-              <div className="metric"><span className="metric-label">Time</span><span className="metric-value">{new Date(run.run_date).toLocaleString()}</span></div>
-              {run.diagnosis && <div className="diagnosis">{run.diagnosis}</div>}
-            </div>
-          ))}
+        <div>
+          <QuickStatus runs={runs} />
+          <div className="grid">
+            {Object.entries(byInstrument).map(([name, run]) => (
+              <div className="card" key={name}>
+                <h3>{name}</h3>
+                <div className="metric"><span className="metric-label">Last run</span><span className="metric-value">{run.run_name}</span></div>
+                <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
+                <div className="metric"><span className="metric-label">Gate</span><GateBadge result={run.gate_result} /></div>
+                <div className="metric"><span className="metric-label">IPS</span><span className="badge badge-grs">IPS {run.ips_score || '—'}</span></div>
+                {run.mode === 'DIA' && <div className="metric"><span className="metric-label">Precursors</span><span className="metric-value">{run.n_precursors?.toLocaleString()}</span></div>}
+                {run.mode === 'DDA' && <div className="metric"><span className="metric-label">PSMs</span><span className="metric-value">{run.n_psms?.toLocaleString()}</span></div>}
+                <div className="metric"><span className="metric-label">Time</span><span className="metric-value">{new Date(run.run_date).toLocaleString()}</span></div>
+                {run.diagnosis && <div className="diagnosis">{run.diagnosis}</div>}
+              </div>
+            ))}
+          </div>
         </div>
       );
     }

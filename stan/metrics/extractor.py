@@ -4,11 +4,24 @@ DIA metrics extracted from report.parquet (DIA-NN output).
 DDA metrics extracted from results.sage.parquet (Sage output).
 
 Uses Polars for fast, memory-efficient parquet reads with predicate pushdown.
+
+Scope note on literature-survey metrics added 2026-04: the extractor pulls
+every single-run metric from DIA-NN outputs that the NIST MSQC / QCloud2 /
+PTXQC / 2024 Framework literature considers standard AND that is free from
+data DIA-NN already writes. This covers mass-accuracy drift (report.stats.tsv),
+chromatographic shape across the gradient (RT-decile peak widths from
+report.parquet), gradient utilization (C-2A middle-50% band), peak capacity
+(single-number LC health), dynamic range, and digestion-quality shape
+(≥2 missed cleavage fraction). Cross-run metrics (intensity-binned CV,
+data-completeness across replicates) are deliberately NOT in here — they
+live at a different layer because they need multi-run cohort context.
 """
 
 from __future__ import annotations
 
+import csv
 import logging
+import math
 from pathlib import Path
 
 import polars as pl
@@ -16,12 +29,208 @@ import polars as pl
 logger = logging.getLogger(__name__)
 
 
-def extract_dia_metrics(report_path: Path, q_cutoff: float = 0.01) -> dict:
+# ── DIA-NN report.stats.tsv parser ──────────────────────────────────
+
+def _parse_diann_stats_tsv(stats_path: Path) -> dict[str, float | None]:
+    """Read DIA-NN's per-run stats file.
+
+    DIA-NN writes `report.stats.tsv` alongside `report.parquet` with one row
+    per input raw file and ~20 columns of chromatography + mass-accuracy
+    metrics that are not repeated in report.parquet. Column names vary
+    slightly across DIA-NN versions, so we match flexibly.
+
+    Returns a dict with the fields STAN cares about, averaged across all
+    rows in the file (one row = one run; averaging lets a multi-run batch
+    report produce a single summary). Missing fields return None so
+    downstream code can distinguish "not measured" from "zero".
+    """
+    empty = {
+        "median_mass_acc_ms1_ppm": None,
+        "median_mass_acc_ms2_ppm": None,
+        "fwhm_scans": None,
+        "fwhm_rt_min": None,
+        "ms1_signal": None,
+        "ms2_signal": None,
+        "normalisation_factor": None,
+    }
+    if not stats_path.exists():
+        return empty
+
+    # DIA-NN uses slightly different header spellings between versions;
+    # we try every known variant and take the first match.
+    aliases = {
+        "median_mass_acc_ms1_ppm": [
+            "Median.Mass.Acc.MS1.Corrected", "Median.Mass.Acc.MS1",
+            "MS1 mass accuracy", "Mass accuracy MS1",
+        ],
+        "median_mass_acc_ms2_ppm": [
+            "Median.Mass.Acc.MS2.Corrected", "Median.Mass.Acc.MS2",
+            "MS2 mass accuracy", "Mass accuracy MS2",
+        ],
+        "fwhm_scans":            ["FWHM.Scans", "Median.FWHM.Scans"],
+        "fwhm_rt_min":           ["FWHM.RT", "Median.FWHM.RT"],
+        "ms1_signal":            ["MS1.Signal", "MS1 signal"],
+        "ms2_signal":            ["MS2.Signal", "MS2 signal"],
+        "normalisation_factor":  ["Normalisation.Factor", "Normalisation factor"],
+    }
+
+    collected: dict[str, list[float]] = {k: [] for k in aliases}
+    try:
+        with stats_path.open() as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                for out_key, candidates in aliases.items():
+                    for col in candidates:
+                        v = row.get(col)
+                        if v is None or v == "":
+                            continue
+                        try:
+                            collected[out_key].append(float(v))
+                            break  # first match wins per row
+                        except ValueError:
+                            pass
+    except Exception:
+        logger.exception("Failed to parse %s", stats_path)
+        return empty
+
+    return {
+        k: (sum(v) / len(v)) if v else None
+        for k, v in collected.items()
+    }
+
+
+# ── Chromatographic shape aggregations on report.parquet ────────────
+
+def _rt_decile_peak_widths(df: pl.DataFrame) -> dict[str, float | None]:
+    """Median peak width in early / middle / late thirds of the gradient.
+
+    NIST MSQC C-4A / C-4B / C-4C. Distinguishes dead-volume broadening
+    (early peaks wide) from column-collapse (late peaks wide) that a
+    single median FWHM cannot separate.
+
+    Needs the filtered precursor DataFrame with at least `RT` (or `RT.Start`
+    + `RT.Stop` to derive per-peak width). Returns None values if columns
+    aren't available.
+    """
+    if "RT" not in df.columns:
+        return {"peak_width_early_sec": None, "peak_width_middle_sec": None, "peak_width_late_sec": None}
+    if "RT.Start" not in df.columns or "RT.Stop" not in df.columns:
+        return {"peak_width_early_sec": None, "peak_width_middle_sec": None, "peak_width_late_sec": None}
+
+    w = df.with_columns(
+        ((pl.col("RT.Stop") - pl.col("RT.Start")) * 60).alias("peak_width_sec")
+    ).filter(pl.col("peak_width_sec") > 0)
+    if w.height == 0:
+        return {"peak_width_early_sec": None, "peak_width_middle_sec": None, "peak_width_late_sec": None}
+
+    rt_min = float(w["RT"].min())
+    rt_max = float(w["RT"].max())
+    span = rt_max - rt_min
+    if span <= 0:
+        return {"peak_width_early_sec": None, "peak_width_middle_sec": None, "peak_width_late_sec": None}
+
+    cut_a = rt_min + span / 3
+    cut_b = rt_min + 2 * span / 3
+
+    early  = w.filter(pl.col("RT") <  cut_a)["peak_width_sec"]
+    middle = w.filter((pl.col("RT") >= cut_a) & (pl.col("RT") < cut_b))["peak_width_sec"]
+    late   = w.filter(pl.col("RT") >= cut_b)["peak_width_sec"]
+    return {
+        "peak_width_early_sec":  float(early.median())  if len(early)  else None,
+        "peak_width_middle_sec": float(middle.median()) if len(middle) else None,
+        "peak_width_late_sec":   float(late.median())   if len(late)   else None,
+    }
+
+
+def _c2a_band(df: pl.DataFrame) -> dict[str, float | None]:
+    """C-2A: the RT span covered by the middle 50% of IDs.
+
+    If a 60-min gradient has IDs packed into the middle 20 min, the
+    gradient is either wrong or the column has failed (retention loss).
+    A healthy run should use most of the gradient — the middle-50%
+    band should cover a substantial fraction of total RT span.
+
+    Returns:
+      c2a_rt_start_min, c2a_rt_stop_min — bounds of the middle 50% band
+      c2a_width_min — total width of that band
+      ids_per_minute_in_c2a — precursor density inside the band (a
+        gradient-independent ID rate useful for cross-method comparison)
+    """
+    if "RT" not in df.columns:
+        return {
+            "c2a_rt_start_min": None, "c2a_rt_stop_min": None,
+            "c2a_width_min": None, "ids_per_minute_in_c2a": None,
+        }
+    rts = df["RT"].drop_nulls()
+    if len(rts) == 0:
+        return {
+            "c2a_rt_start_min": None, "c2a_rt_stop_min": None,
+            "c2a_width_min": None, "ids_per_minute_in_c2a": None,
+        }
+    q25 = float(rts.quantile(0.25))
+    q75 = float(rts.quantile(0.75))
+    width = q75 - q25
+    n_in_band = df.filter((pl.col("RT") >= q25) & (pl.col("RT") <= q75)).height
+    return {
+        "c2a_rt_start_min": q25,
+        "c2a_rt_stop_min":  q75,
+        "c2a_width_min":    width,
+        "ids_per_minute_in_c2a": (n_in_band / width) if width > 0 else None,
+    }
+
+
+def _peak_capacity(median_peak_width_sec: float | None, gradient_min: float | None) -> float | None:
+    """Single-number separation quality.
+
+    n_c = 1 + t_grad / (4·σ), where σ = FWHM / 2.355 for a Gaussian peak.
+    CPTAC system-suitability metric. Higher is better; typical good values
+    for a 60 min Orbitrap DIA run land around 200-400.
+    """
+    if not median_peak_width_sec or median_peak_width_sec <= 0:
+        return None
+    if not gradient_min or gradient_min <= 0:
+        return None
+    sigma_sec = median_peak_width_sec / 2.355
+    four_sigma_min = (4 * sigma_sec) / 60.0
+    if four_sigma_min <= 0:
+        return None
+    return 1.0 + gradient_min / four_sigma_min
+
+
+def _dynamic_range(df: pl.DataFrame) -> float | None:
+    """log10(p99 / p01) of Precursor.Normalised intensity.
+
+    Compresses when the source is dirty or the LC pressure drops because
+    low-intensity precursors fall below the detection floor. QCloud2 /
+    Practical Primer 2024 recommend this as a "single number" ion-current
+    health indicator that survives ID-count-based comparisons.
+    """
+    if "Precursor.Normalised" not in df.columns:
+        return None
+    intens = df["Precursor.Normalised"].drop_nulls().filter(pl.col("Precursor.Normalised") > 0) \
+        if False else df.filter(pl.col("Precursor.Normalised") > 0)["Precursor.Normalised"]
+    if len(intens) < 10:
+        return None
+    p01 = float(intens.quantile(0.01))
+    p99 = float(intens.quantile(0.99))
+    if p01 <= 0 or p99 <= 0:
+        return None
+    return math.log10(p99 / p01)
+
+
+def extract_dia_metrics(
+    report_path: Path,
+    q_cutoff: float = 0.01,
+    gradient_min: float | None = None,
+) -> dict:
     """Extract DIA QC metrics from DIA-NN report.parquet.
 
     Args:
-        report_path: Path to DIA-NN report.parquet output.
+        report_path: Path to DIA-NN report.parquet output. report.stats.tsv
+            is read automatically if present in the same directory.
         q_cutoff: FDR threshold (default 1%).
+        gradient_min: Gradient length in minutes. Used to compute peak
+            capacity. If None, peak_capacity will be None in the result.
 
     Returns:
         Dict of metric name → value.
