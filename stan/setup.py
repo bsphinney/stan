@@ -118,6 +118,35 @@ def run_setup() -> None:
         console=console,
     )
 
+    display_name = "Anonymous Lab"
+    if community:
+        from stan.community.pseudonym import generate_pseudonym
+
+        suggested = generate_pseudonym()
+        console.print()
+        console.print(
+            f"  Your anonymous lab name: [bold cyan]{suggested}[/bold cyan]"
+        )
+        console.print(
+            "  This is how your submissions appear on the community leaderboard."
+        )
+        console.print(
+            "  Only [bold]you[/bold] know which name is yours. You can change it anytime in ~/.stan/community.yml."
+        )
+        keep = Confirm.ask(
+            f"  Use '{suggested}'? (or enter your own)",
+            default=True,
+            console=console,
+        )
+        if keep:
+            display_name = suggested
+        else:
+            display_name = Prompt.ask(
+                "  Your display name (real or made up)",
+                default=suggested,
+                console=console,
+            )
+
     # ── 10. Instrument name ──────────────────────────────────────
     name = Prompt.ask(
         "Give this instrument a name",
@@ -179,6 +208,17 @@ def run_setup() -> None:
     _copy_if_missing("thresholds.yml", user_dir)
     _copy_if_missing("community.yml", user_dir)
 
+    # Write display_name into community.yml so submissions use it
+    community_path = user_dir / "community.yml"
+    if community and display_name != "Anonymous Lab":
+        try:
+            comm_config = yaml.safe_load(community_path.read_text()) or {}
+        except Exception:
+            comm_config = {}
+        comm_config["display_name"] = display_name
+        community_path.write_text(yaml.dump(comm_config, default_flow_style=False, sort_keys=False))
+        console.print(f"  [green]Wrote[/green] display_name '{display_name}' to {community_path}")
+
     # ── Summary ──────────────────────────────────────────────────
     console.print()
     table = Table(title="Configuration Summary", show_header=False, border_style="blue")
@@ -192,6 +232,8 @@ def run_setup() -> None:
     table.add_row("LC Column", f"{column.get('vendor', '')} {column.get('model', '')}".strip() or "(not set)")
     table.add_row("FASTA", fasta_path or "(not set)")
     table.add_row("Community benchmark", "Yes" if community else "No")
+    if community and display_name != "Anonymous Lab":
+        table.add_row("Your lab name", f"[bold cyan]{display_name}[/bold cyan]")
     console.print(table)
 
     console.print()
