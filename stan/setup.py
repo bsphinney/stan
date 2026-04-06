@@ -74,6 +74,7 @@ def run_setup() -> None:
     community = Confirm.ask("  Participate?", default=True, console=console)
 
     display_name = "Anonymous Lab"
+    auth_token = None
     if community:
         from stan.community.pseudonym import generate_unique_pseudonym
 
@@ -90,9 +91,8 @@ def run_setup() -> None:
                 console=console,
             )
             console.print(f"  Using: [bold cyan]{display_name}[/bold cyan]")
-            console.print(
-                "  [dim]Tip: copy ~/.stan/community.yml between machines to skip typing.[/dim]"
-            )
+            # Re-verify ownership via email
+            auth_token = _verify_name_ownership(display_name, reclaim=True)
         else:
             console.print("  [dim]Checking community site for existing names...[/dim]")
             suggested = generate_unique_pseudonym()
@@ -115,6 +115,9 @@ def run_setup() -> None:
                     default=suggested,
                     console=console,
                 )
+
+            # Claim the name with email verification
+            auth_token = _verify_name_ownership(display_name, reclaim=False)
 
     # ── Check search engines ─────────────────────────────────────
     console.print()
@@ -168,7 +171,7 @@ def run_setup() -> None:
     _copy_if_missing("thresholds.yml", user_dir)
     _copy_if_missing("community.yml", user_dir)
 
-    # Write display_name into community.yml so submissions use it
+    # Write display_name + auth token into community.yml
     community_path = user_dir / "community.yml"
     if community and display_name != "Anonymous Lab":
         try:
@@ -176,8 +179,12 @@ def run_setup() -> None:
         except Exception:
             comm_config = {}
         comm_config["display_name"] = display_name
+        if auth_token:
+            comm_config["auth_token"] = auth_token
         community_path.write_text(yaml.dump(comm_config, default_flow_style=False, sort_keys=False))
-        console.print(f"  [green]Wrote[/green] display_name '{display_name}' to {community_path}")
+        # Set permissions so only the user can read the token
+        community_path.chmod(0o600)
+        console.print(f"  [green]Wrote[/green] display_name + auth token to {community_path}")
 
     # ── Summary ──────────────────────────────────────────────────
     console.print()
@@ -330,6 +337,87 @@ def _probe_existing_files(watch_dir: str) -> None:
                         console.print(f"  [green]Instrument:[/green] {models[0]}")
     except Exception:
         pass  # Don't block setup on a probe failure
+
+
+RELAY_URL = "https://brettsp-stan.hf.space"
+
+
+def _verify_name_ownership(pseudonym: str, reclaim: bool = False) -> str | None:
+    """Claim or reclaim a pseudonym via email verification.
+
+    Returns the auth token on success, or None if skipped/failed.
+
+    Privacy statement shown to user: the email is NEVER stored. Only a
+    one-way SHA256 hash is kept. STAN cannot de-anonymize participants.
+    """
+    console.print()
+    console.print("  [bold]Email verification[/bold]")
+    console.print("  [dim]Your email is used ONLY to verify ownership of this name.[/dim]")
+    console.print("  [dim]STAN stores a one-way hash — your email is NEVER saved,[/dim]")
+    console.print("  [dim]cannot be recovered, and cannot be used to identify you.[/dim]")
+    console.print()
+
+    email = Prompt.ask("  Your email", console=console)
+    if not email or "@" not in email:
+        console.print("  [yellow]Skipped — you can verify later with: stan verify[/yellow]")
+        return None
+
+    # Call the relay to send verification code
+    import json
+    import urllib.request
+
+    try:
+        payload = json.dumps({"pseudonym": pseudonym, "email": email}).encode()
+        req = urllib.request.Request(
+            f"{RELAY_URL}/api/claim-name",
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "STAN"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            console.print(f"  [green]{result.get('message', 'Code sent!')}[/green]")
+    except urllib.error.HTTPError as e:
+        body = json.loads(e.read().decode()) if e.headers.get("content-type", "").startswith("application/json") else {}
+        detail = body.get("detail", str(e))
+        console.print(f"  [red]{detail}[/red]")
+        return None
+    except Exception as e:
+        console.print(f"  [red]Could not reach community site: {e}[/red]")
+        console.print("  [dim]You can verify later when online.[/dim]")
+        return None
+
+    # Prompt for the code
+    console.print()
+    console.print("  [yellow]Check your inbox (and SPAM/JUNK folder!) for the 6-digit code.[/yellow]")
+    console.print("  [dim]The email comes from noreply@stan-proteomics.org[/dim]")
+    code = Prompt.ask("  Enter the 6-digit code", console=console)
+
+    if not code or len(code) != 6:
+        console.print("  [yellow]Invalid code. You can verify later with: stan verify[/yellow]")
+        return None
+
+    # Verify the code
+    try:
+        payload = json.dumps({"pseudonym": pseudonym, "code": code}).encode()
+        req = urllib.request.Request(
+            f"{RELAY_URL}/api/verify-claim",
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "STAN"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            token = result.get("token")
+            console.print(f"  [green]Verified! '{pseudonym}' is now yours.[/green]")
+            console.print("  [dim]Nobody else can submit under this name without your email.[/dim]")
+            return token
+    except urllib.error.HTTPError as e:
+        body = json.loads(e.read().decode()) if e.headers.get("content-type", "").startswith("application/json") else {}
+        detail = body.get("detail", str(e))
+        console.print(f"  [red]{detail}[/red]")
+        return None
+    except Exception as e:
+        console.print(f"  [red]Verification failed: {e}[/red]")
+        return None
 
 
 def _pick_column() -> tuple[str, str]:
