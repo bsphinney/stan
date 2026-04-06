@@ -71,6 +71,22 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS idx_runs_instrument ON runs(instrument);
 CREATE INDEX IF NOT EXISTS idx_runs_date ON runs(run_date);
+
+CREATE TABLE IF NOT EXISTS maintenance_events (
+    id          TEXT PRIMARY KEY,
+    instrument  TEXT NOT NULL,
+    event_type  TEXT NOT NULL,   -- column_change, source_clean, calibration, pm, lc_service, other
+    event_date  TEXT NOT NULL,
+    notes       TEXT DEFAULT '',
+    operator    TEXT DEFAULT '',
+    -- For column tracking: what was installed
+    column_vendor TEXT,
+    column_model  TEXT,
+    column_serial TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_instrument ON maintenance_events(instrument);
+CREATE INDEX IF NOT EXISTS idx_events_date ON maintenance_events(event_date);
 """
 
 
@@ -284,3 +300,266 @@ def mark_submitted(run_id: str, submission_id: str, db_path: Path | None = None)
             (submission_id, run_id),
         )
     logger.info("Run %s marked as submitted (submission %s)", run_id[:8], submission_id[:8])
+
+
+# ── Maintenance events ─────────────────────────────────────────────
+
+EVENT_TYPES = [
+    "column_change",   # New LC column installed
+    "source_clean",    # Ion source cleaned
+    "calibration",     # Mass calibration performed
+    "pm",              # Scheduled preventive maintenance
+    "lc_service",      # LC pump/valve/tubing service
+    "other",           # Free-text
+]
+
+
+def log_event(
+    instrument: str,
+    event_type: str,
+    notes: str = "",
+    operator: str = "",
+    event_date: str | None = None,
+    column_vendor: str | None = None,
+    column_model: str | None = None,
+    column_serial: str | None = None,
+    db_path: Path | None = None,
+) -> str:
+    """Record a maintenance event for an instrument.
+
+    Args:
+        instrument: Instrument name (must match instruments.yml).
+        event_type: One of EVENT_TYPES.
+        notes: Free-text description.
+        operator: Who performed the maintenance.
+        event_date: ISO 8601. Defaults to now.
+        column_vendor/model/serial: For column_change events.
+
+    Returns:
+        Event ID.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if event_date is None:
+        event_date = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    event_id = str(uuid.uuid4())[:12]
+    row = {
+        "id": event_id,
+        "instrument": instrument,
+        "event_type": event_type,
+        "event_date": event_date,
+        "notes": notes,
+        "operator": operator,
+        "column_vendor": column_vendor,
+        "column_model": column_model,
+        "column_serial": column_serial,
+    }
+
+    with sqlite3.connect(str(db_path)) as con:
+        cols = ", ".join(row.keys())
+        placeholders = ", ".join(f":{k}" for k in row.keys())
+        con.execute(f"INSERT INTO maintenance_events ({cols}) VALUES ({placeholders})", row)
+
+    logger.info("Logged event %s: %s on %s (%s)", event_id, event_type, instrument, notes[:50])
+    return event_id
+
+
+def get_events(
+    instrument: str | None = None,
+    limit: int = 100,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Fetch maintenance events, newest first."""
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return []
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        if instrument:
+            rows = con.execute(
+                "SELECT * FROM maintenance_events WHERE instrument = ? ORDER BY event_date DESC LIMIT ?",
+                (instrument, limit),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM maintenance_events ORDER BY event_date DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_last_event(instrument: str, event_type: str, db_path: Path | None = None) -> dict | None:
+    """Get the most recent event of a given type for an instrument."""
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return None
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT * FROM maintenance_events WHERE instrument = ? AND event_type = ? ORDER BY event_date DESC LIMIT 1",
+            (instrument, event_type),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _bruker_injection_number(run_name: str) -> int | None:
+    """Extract the absolute injection counter from a Bruker .d filename.
+
+    Bruker filenames end with _N_NNNN.d where the last number is the
+    instrument's absolute injection counter (increments for every injection,
+    not just QC). Example: 03jun2024_HeLa50ng_DIA_100spd_S1-B2_1_6205.d → 6205.
+    """
+    import re
+    # Strip .d suffix
+    name = run_name
+    if name.endswith(".d"):
+        name = name[:-2]
+    # Match the last number group
+    m = re.search(r"_(\d+)$", name)
+    if m:
+        n = int(m.group(1))
+        # Sanity check: injection counters are typically >100
+        if n > 50:
+            return n
+    return None
+
+
+def get_column_lifetime(instrument: str, db_path: Path | None = None) -> dict:
+    """Get column health stats since the last column change.
+
+    For Bruker instruments: uses the absolute injection counter embedded in
+    filenames (e.g., _6205.d) to give the REAL total injection count on the
+    column, including non-QC samples STAN doesn't see.
+
+    For Thermo instruments: can only count QC runs STAN has seen (the .raw
+    file doesn't embed a global injection counter). Reports days-on-column
+    and QC metric trend instead.
+
+    Returns:
+        {
+            column_installed: date string,
+            column_vendor: str,
+            column_model: str,
+            qc_runs_since_change: int — QC runs STAN has processed
+            total_injections_on_column: int | None — Bruker only (from filename counter)
+            days_on_column: int,
+            runs_since_change: list[dict],
+            depth_trend_pct_per_week: float | None — precursor count trend
+        }
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return {"qc_runs_since_change": 0, "runs_since_change": []}
+
+    # Find last column change
+    last_change = get_last_event(instrument, "column_change", db_path=db_path)
+    since_date = last_change["event_date"] if last_change else "1970-01-01"
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        runs = con.execute(
+            """SELECT run_name, run_date, n_precursors, n_psms, n_peptides,
+                      n_proteins, ips_score, gate_result
+               FROM runs
+               WHERE instrument = ? AND run_date >= ?
+               ORDER BY run_date ASC""",
+            (instrument, since_date),
+        ).fetchall()
+
+    runs_list = [dict(r) for r in runs]
+
+    result = {
+        "column_installed": last_change["event_date"] if last_change else None,
+        "column_vendor": last_change.get("column_vendor") if last_change else None,
+        "column_model": last_change.get("column_model") if last_change else None,
+        "qc_runs_since_change": len(runs_list),
+        "total_injections_on_column": None,
+        "days_on_column": 0,
+        "runs_since_change": runs_list,
+        "depth_trend_pct_per_week": None,
+    }
+
+    if runs_list:
+        first = datetime.fromisoformat(runs_list[0]["run_date"].replace("Z", "+00:00"))
+        last_dt = datetime.fromisoformat(runs_list[-1]["run_date"].replace("Z", "+00:00"))
+        result["days_on_column"] = max(0, (last_dt - first).days)
+
+        # Bruker: extract absolute injection counters from filenames
+        first_inj = _bruker_injection_number(runs_list[0]["run_name"])
+        last_inj = _bruker_injection_number(runs_list[-1]["run_name"])
+        if first_inj is not None and last_inj is not None and last_inj > first_inj:
+            result["total_injections_on_column"] = last_inj - first_inj
+
+        # Compute depth trend (% change per week) via simple linear regression
+        depths = [(i, r.get("n_precursors") or r.get("n_psms") or 0)
+                  for i, r in enumerate(runs_list)
+                  if (r.get("n_precursors") or r.get("n_psms") or 0) > 0]
+        if len(depths) >= 5 and result["days_on_column"] > 7:
+            xs = [d[0] for d in depths]
+            ys = [d[1] for d in depths]
+            n = len(xs)
+            x_mean = sum(xs) / n
+            y_mean = sum(ys) / n
+            num = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys))
+            den = sum((x - x_mean) ** 2 for x in xs)
+            if den > 0 and y_mean > 0:
+                slope = num / den  # IDs per run index
+                # Convert to % per week: slope * (runs per week) / mean * 100
+                runs_per_day = len(runs_list) / max(1, result["days_on_column"])
+                runs_per_week = runs_per_day * 7
+                pct_per_week = (slope * runs_per_week / y_mean) * 100
+                result["depth_trend_pct_per_week"] = round(pct_per_week, 2)
+
+    return result
+
+
+def time_since_last_qc(instrument: str, db_path: Path | None = None) -> dict:
+    """How long since the last QC run on this instrument?
+
+    Returns:
+        {
+            last_run_date: str,
+            last_run_name: str,
+            hours_ago: float,
+            status: 'ok' | 'overdue' | 'critical',
+        }
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return {"hours_ago": None, "status": "critical"}
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT run_name, run_date FROM runs WHERE instrument = ? ORDER BY run_date DESC LIMIT 1",
+            (instrument,),
+        ).fetchone()
+
+    if not row:
+        return {"hours_ago": None, "status": "critical"}
+
+    last_date = datetime.fromisoformat(row["run_date"].replace("Z", "+00:00"))
+    now = datetime.now(timezone.utc)
+    hours = (now - last_date).total_seconds() / 3600
+
+    # Status thresholds (configurable later)
+    if hours < 24:
+        status = "ok"
+    elif hours < 72:
+        status = "overdue"
+    else:
+        status = "critical"
+
+    return {
+        "last_run_date": row["run_date"],
+        "last_run_name": row["run_name"],
+        "hours_ago": round(hours, 1),
+        "status": status,
+    }

@@ -165,6 +165,52 @@ async def api_update_thresholds(body: ThresholdsUpdate) -> dict:
     return {"status": "ok"}
 
 
+@app.get("/api/instruments/{instrument}/events")
+async def api_events(instrument: str, limit: int = 50) -> list[dict]:
+    """Fetch maintenance events for an instrument."""
+    from stan.db import get_events
+    return get_events(instrument=instrument, limit=limit)
+
+
+class LogEventRequest(BaseModel):
+    event_type: str
+    notes: str = ""
+    operator: str = ""
+    column_vendor: str | None = None
+    column_model: str | None = None
+
+
+@app.post("/api/instruments/{instrument}/events")
+async def api_log_event(instrument: str, body: LogEventRequest) -> dict:
+    """Log a maintenance event from the dashboard UI."""
+    from stan.db import log_event, EVENT_TYPES
+    if body.event_type not in EVENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid event type. Valid: {EVENT_TYPES}")
+    event_id = log_event(
+        instrument=instrument,
+        event_type=body.event_type,
+        notes=body.notes,
+        operator=body.operator,
+        column_vendor=body.column_vendor,
+        column_model=body.column_model,
+    )
+    return {"event_id": event_id, "status": "logged"}
+
+
+@app.get("/api/instruments/{instrument}/column-life")
+async def api_column_life(instrument: str) -> dict:
+    """Column lifetime stats since last column change."""
+    from stan.db import get_column_lifetime
+    return get_column_lifetime(instrument=instrument)
+
+
+@app.get("/api/instruments/{instrument}/last-qc")
+async def api_last_qc(instrument: str) -> dict:
+    """Time since last QC run on this instrument."""
+    from stan.db import time_since_last_qc
+    return time_since_last_qc(instrument=instrument)
+
+
 @app.get("/api/community/cohort")
 async def api_community_cohort() -> dict:
     """Fetch community cohort data.

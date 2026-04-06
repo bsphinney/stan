@@ -304,6 +304,73 @@ def column_health(
     console.print(f"  {report.message}")
 
 
+@app.command("log")
+def log_event_cmd(
+    instrument: str = typer.Argument(..., help="Instrument name"),
+    event: str = typer.Argument(
+        ...,
+        help="Event type: column-change, source-clean, calibration, pm, lc-service, other",
+    ),
+    notes: str = typer.Option("", "--notes", "-n", help="Description of what was done"),
+    operator: str = typer.Option("", "--operator", "-op", help="Who performed the maintenance"),
+    column: str = typer.Option(None, "--column", "-c", help="New column description (for column-change)"),
+) -> None:
+    """Log a maintenance event (column change, source cleaning, calibration, etc.).
+
+    STAN tracks these events and overlays them on trend charts so you can see
+    cause-and-effect. Column changes reset the injection counter for column
+    lifetime tracking.
+
+    Examples:
+
+      stan log Lumos column-change --column "PepSep 25cm x 150um" --operator "Brett"
+
+      stan log Lumos source-clean --notes "Cleaned emitter + ion transfer tube"
+
+      stan log Lumos calibration --notes "Positive mode FlexMix"
+    """
+    from stan.db import log_event, get_column_lifetime, EVENT_TYPES
+
+    # Normalize event type
+    event_type = event.lower().replace("-", "_")
+    if event_type not in EVENT_TYPES:
+        console.print(f"[red]Unknown event type: {event}[/red]")
+        console.print(f"Valid types: {', '.join(EVENT_TYPES)}")
+        raise typer.Exit(1)
+
+    # Parse column info for column_change events
+    column_vendor = column_model = None
+    if column and event_type == "column_change":
+        # Simple parse: if column contains a known vendor, split it out
+        col_lower = column.lower()
+        for vendor in ["pepsep", "ionopticks", "thermo", "waters", "phenomenex", "agilent"]:
+            if vendor in col_lower:
+                column_vendor = vendor.title()
+                column_model = column
+                break
+        if not column_vendor:
+            column_model = column
+
+    event_id = log_event(
+        instrument=instrument,
+        event_type=event_type,
+        notes=notes,
+        operator=operator,
+        column_vendor=column_vendor,
+        column_model=column_model,
+    )
+
+    console.print(f"[green]Logged[/green] {event_type} on {instrument} (event {event_id})")
+
+    # Show column lifetime summary after a column change
+    if event_type == "column_change":
+        life = get_column_lifetime(instrument)
+        if life.get("injections_since_change", 0) > 0:
+            console.print(f"  Previous column: {life['injections_since_change']} injections over {life['days_on_column']} days")
+        console.print(f"  New column: {column or '(not specified)'}")
+        console.print(f"  Injection counter reset to 0")
+
+
 @app.command()
 def status() -> None:
     """Show current STAN configuration and database status."""
