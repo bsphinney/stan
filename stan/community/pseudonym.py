@@ -86,3 +86,43 @@ def is_pseudonym(name: str) -> bool:
     if len(parts) != 2:
         return False
     return parts[0] in ADJECTIVES and parts[1] in SCIENTISTS
+
+
+def generate_unique_pseudonym(relay_url: str = "https://brettsp-stan.hf.space") -> str:
+    """Generate a pseudonym that isn't already taken on the community site.
+
+    Queries the relay's /api/leaderboard to get existing display_names,
+    then generates candidates until one is unique. Falls back to adding
+    a numeric suffix after 20 attempts (extremely unlikely with ~3000
+    combinations and <100 labs, but handles it gracefully).
+
+    If the relay is unreachable (offline, no internet), just returns
+    a random name without dedup — better to risk a collision than to
+    block setup because of a network issue.
+    """
+    existing: set[str] = set()
+    try:
+        import urllib.request
+        import json
+        req = urllib.request.Request(f"{relay_url}/api/leaderboard", headers={"User-Agent": "STAN"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            for sub in data.get("submissions", []):
+                name = sub.get("display_name", "")
+                if name:
+                    existing.add(name)
+    except Exception:
+        # Offline or relay down — generate without dedup check
+        return generate_pseudonym()
+
+    # Try up to 20 random names
+    for _ in range(20):
+        candidate = generate_pseudonym()
+        if candidate not in existing:
+            return candidate
+
+    # Extremely unlikely fallback: add a numeric suffix
+    import random
+    base = generate_pseudonym()
+    suffix = random.randint(100, 999)
+    return f"{base} {suffix}"

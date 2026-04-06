@@ -120,9 +120,10 @@ def run_setup() -> None:
 
     display_name = "Anonymous Lab"
     if community:
-        from stan.community.pseudonym import generate_pseudonym
+        from stan.community.pseudonym import generate_unique_pseudonym
 
-        suggested = generate_pseudonym()
+        console.print("  [dim]Checking community site for existing names...[/dim]")
+        suggested = generate_unique_pseudonym()
         console.print()
         console.print(
             f"  Your anonymous lab name: [bold cyan]{suggested}[/bold cyan]"
