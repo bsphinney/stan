@@ -22,12 +22,13 @@ STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap
 - **Instrument Performance Score (IPS)** -- a single 0-100 composite number for LC health, updated every run
 - **Column health tracking** -- longitudinal TIC trend analysis detects column aging before it affects your data
 - **Precursor-first metrics** -- benchmarks on precursor count (DIA) and PSM count (DDA), not protein count, because protein count is confounded by FASTA choice and inference settings
-- **Community HeLa benchmark** **(planned)** -- compare your instrument against labs worldwide via an open HuggingFace Dataset (CC BY 4.0)
+- **Community HeLa benchmark** -- compare your instrument against 967+ runs from labs worldwide at [community.stan-proteomics.org](https://community.stan-proteomics.org) (CC BY 4.0)
+- **Zero-config raw file intelligence** -- STAN auto-extracts instrument model, serial number, LC system, gradient length, DIA window size, acquisition date, and DIA/DDA mode directly from `.raw` and `.d` files. The only thing you tell STAN is your column and HeLa amount.
+- **Anonymous lab identity** -- fun pseudonyms ("Clogged PeakTail", "Caffeinated Quadrupole") with email verification so you can track your own data on the community site without revealing your lab
+- **Gas-gauge dashboard** -- at-a-glance instrument health: 5 recent runs × 3 metrics, green/amber/red zones vs your instrument's own history
 - **Instrument health fingerprint** -- dual-mode DDA+DIA radar chart for rapid visual diagnosis
 - **Plain-English failure diagnosis** -- templated alerts explain what failed and what to check, no guesswork
 - **Privacy by design** -- raw files are never uploaded; only aggregate QC metrics leave your lab
-
-> **Status note**: The Python backend (watcher, search dispatch, metric extraction, gating, scoring, DB) is implemented and tested. The React dashboard frontend, community HF Dataset assets, and PyPI packaging are in progress. See [Implementation Status](#implementation-status) below.
 
 ## Supported Instruments
 
@@ -155,7 +156,9 @@ STAN powers an open, crowdsourced HeLa digest benchmark hosted on HuggingFace. L
 
 **Community submission is entirely opt-in.** By default, `community_submit` is `false` and nothing leaves your machine. STAN works fully standalone for local QC monitoring, gating, and longitudinal tracking without ever contacting an external service. Set `community_submit: true` per instrument only if you want to participate in the benchmark.
 
-Browse the community dashboard **(planned)**: [huggingface.co/spaces/brettsp/stan](https://huggingface.co/spaces/brettsp/stan)
+Browse the community dashboard: **[community.stan-proteomics.org](https://community.stan-proteomics.org)** (also at [huggingface.co/spaces/brettsp/stan](https://huggingface.co/spaces/brettsp/stan))
+
+The community site is **live** with 967 runs across Fusion Lumos, timsTOF HT, and Exploris 480 instruments.
 
 ### How It Works
 
@@ -345,15 +348,41 @@ institution_type: "core_facility"          # core_facility | academic_lab | indu
 
 ---
 
+## Zero-Config Raw File Intelligence
+
+STAN reads your raw files before any search and auto-detects everything it needs. **You only configure two things: your LC column and your HeLa amount.**
+
+| What STAN auto-detects | Thermo `.raw` | Bruker `.d` | How |
+|---|---|---|---|
+| Instrument model | Orbitrap Fusion Lumos, Exploris 480, Astral, ... | timsTOF HT, Ultra, Pro, ... | TRFP metadata / TDF GlobalMetadata |
+| Serial number | fsn20215, ... | 1895883.10878, ... | Same |
+| Acquisition date | 09/02/2025 15:18:13 | 2024-06-04T15:32:57 | FileProperties / AcquisitionDateTime |
+| DIA vs DDA mode | From method name + MS2/MS1 ratio | MsmsType in Frames table (8=DDA, 9=DIA) | Automatic |
+| Gradient length (min) | 35, 60, 90, 120 | From method XML | ScanSettings `expected runtime` |
+| DIA window size (Th) | 22 Da, 3 Th, 4 Th, ... | From method name | Parsed from method + computed from scan ratio |
+| LC system | Dionex UltiMate 3000, Vanquish Neo, Easy-nLC | Evosep One, nanoElute | Binary string scan (`.raw`) / hystar.method XML (`.d`) |
+| LC pump model | NCS-3500RS, HPG-3400RS, ... | — | DriverId in embedded method XML |
+| Autosampler | WPS-3000, ... | Standard | Same |
+| Fragmentation type | HCD, CID | CID (TIMS-CID) | ScanSettings / method |
+| Column oven temp | 40°C | — | ScanSettings |
+| Injection volume | 2 µL | — | SampleData |
+| Xcalibur method path | `C:\Xcalibur\methods\gabri\Dia\ela_fDIAw22_35m.meth` | — | SampleData |
+
+On Windows, STAN auto-downloads ThermoRawFileParser on first use (~10 MB, cached in `~/.stan/tools/`). On Linux/HPC, it uses the system `dotnet` runtime. Metadata extraction takes ~3 seconds per file.
+
+---
+
 ## Instrument Performance Score (IPS)
 
-IPS is a 0-100 composite computed entirely from search output. No reference run, no blank runs, no historical data needed — works from the very first QC injection.
+IPS v2 is a 0-100 **cohort-calibrated depth score** derived from 967 real UC Davis HeLa QC runs. It uses only metrics STAN reliably measures — no reference TIC, no blank runs, works from run 1. A run at its cohort median scores 60; cohort p90 scores 90.
 
 **DIA:**
 ```
-IPS = 30 x precursor_depth + 25 x spectral_quality (frags/precursor)
-    + 20 x sampling_quality (pts/peak) + 15 x quant_coverage + 10 x digestion
+IPS = 50% precursor_depth + 30% peptide_depth + 20% protein_depth
 ```
+Each component scored by piecewise-linear interpolation against (instrument_family, SPD_bucket) reference p10/p50/p90.
+
+**DDA:** Same structure but uses PSM counts with separate per-instrument DDA cohort references.
 
 **DDA:**
 ```

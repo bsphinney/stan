@@ -122,31 +122,55 @@ def run_setup() -> None:
     if community:
         from stan.community.pseudonym import generate_unique_pseudonym
 
-        console.print("  [dim]Checking community site for existing names...[/dim]")
-        suggested = generate_unique_pseudonym()
         console.print()
-        console.print(
-            f"  Your anonymous lab name: [bold cyan]{suggested}[/bold cyan]"
-        )
-        console.print(
-            "  This is how your submissions appear on the community leaderboard."
-        )
-        console.print(
-            "  Only [bold]you[/bold] know which name is yours. You can change it anytime in ~/.stan/community.yml."
-        )
-        keep = Confirm.ask(
-            f"  Use '{suggested}'? (or enter your own)",
-            default=True,
+        existing_name = Confirm.ask(
+            "  Do you already have a STAN community name from another instrument?",
+            default=False,
             console=console,
         )
-        if keep:
-            display_name = suggested
-        else:
+
+        if existing_name:
             display_name = Prompt.ask(
-                "  Your display name (real or made up)",
-                default=suggested,
+                "  Enter your existing name (exactly as shown on the leaderboard)",
                 console=console,
             )
+            console.print(f"  Using: [bold cyan]{display_name}[/bold cyan]")
+            console.print(
+                "  [dim]Tip: you can also just copy ~/.stan/community.yml "
+                "between machines instead of retyping.[/dim]"
+            )
+        else:
+            console.print("  [dim]Checking community site for existing names...[/dim]")
+            suggested = generate_unique_pseudonym()
+            console.print()
+            console.print(
+                f"  Your anonymous lab name: [bold cyan]{suggested}[/bold cyan]"
+            )
+            console.print(
+                "  This is how your submissions appear on the community leaderboard."
+            )
+            console.print(
+                "  Only [bold]you[/bold] know which name is yours."
+            )
+            console.print(
+                "  [dim]Use the same name on all your instruments so they group together.[/dim]"
+            )
+            console.print(
+                "  [dim]Change anytime in ~/.stan/community.yml[/dim]"
+            )
+            keep = Confirm.ask(
+                f"  Use '{suggested}'? (or enter your own)",
+                default=True,
+                console=console,
+            )
+            if keep:
+                display_name = suggested
+            else:
+                display_name = Prompt.ask(
+                    "  Your display name (real or made up)",
+                    default=suggested,
+                    console=console,
+                )
 
     # ── 10. Instrument name ──────────────────────────────────────
     name = Prompt.ask(
