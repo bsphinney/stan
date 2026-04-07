@@ -19,6 +19,26 @@ $accept = Read-Host "  Accept DIA-NN and Sage license terms? (Y/n)"
 if ($accept -eq "n") { Write-Host "  Cancelled." -ForegroundColor Yellow; exit 0 }
 Write-Host "  License accepted." -ForegroundColor Green
 
+# -- SSL workaround for corporate/university proxy networks --
+# Some networks (e.g. UC Davis) use SSL inspection that breaks certificate verification.
+# This callback trusts all certs for PowerShell web requests in this session only.
+try {
+    Add-Type @"
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public class TrustAll {
+    public static void Enable() {
+        ServicePointManager.ServerCertificateValidationCallback =
+            delegate { return true; };
+    }
+}
+"@
+    [TrustAll]::Enable()
+} catch {
+    # Already defined from a previous run, or .NET type not available — safe to ignore
+}
+
 # -- Find Python --
 Write-Host ""
 Write-Host "  [1/7] Checking for Python..." -ForegroundColor Cyan
@@ -115,9 +135,10 @@ Write-Host "  [3/7] Installing STAN (may take a minute)..." -ForegroundColor Cya
 $venvPython = "$venv\Scripts\python.exe"
 $ErrorActionPreference = "Continue"
 Write-Host "  Upgrading pip + setuptools..." -ForegroundColor Gray
-& $venvPython -m pip install --upgrade pip setuptools wheel 2>&1 | Out-Null
+$pipTrust = @("--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org", "--trusted-host", "github.com", "--trusted-host", "objects.githubusercontent.com")
+& $venvPython -m pip install --upgrade pip setuptools wheel @pipTrust 2>&1 | Out-Null
 Write-Host "  Installing STAN package..." -ForegroundColor Gray
-& $venvPython -m pip install "https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>&1 | ForEach-Object {
+& $venvPython -m pip install @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>&1 | ForEach-Object {
     $line = $_.ToString()
     if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
     elseif ($line -match "ERROR|error") { Write-Host "  $line" -ForegroundColor Red }

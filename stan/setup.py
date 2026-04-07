@@ -28,6 +28,21 @@ from rich.table import Table
 from stan.config import get_default_config_dir, get_user_config_dir
 
 logger = logging.getLogger(__name__)
+
+# Common LC method presets — used by both setup wizard and baseline builder.
+# Each entry: name (display label), spd (samples per day), gradient_min (active gradient).
+# spd=0 means "custom" — the user will be prompted for gradient length.
+LC_METHODS = [
+    {"name": "Evosep 60 SPD (Whisper 21 min)", "spd": 60, "gradient_min": 21},
+    {"name": "Evosep 100 SPD (11 min)", "spd": 100, "gradient_min": 11},
+    {"name": "Evosep 200 SPD (5 min)", "spd": 200, "gradient_min": 5},
+    {"name": "Evosep 300 SPD (2.3 min)", "spd": 300, "gradient_min": 2},
+    {"name": "Evosep 30 SPD (44 min)", "spd": 30, "gradient_min": 44},
+    {"name": "Vanquish Neo / nanoLC 30 min", "spd": 30, "gradient_min": 30},
+    {"name": "Vanquish Neo / nanoLC 60 min", "spd": 15, "gradient_min": 60},
+    {"name": "Vanquish Neo / nanoLC 90 min", "spd": 10, "gradient_min": 90},
+    {"name": "Custom (enter gradient length)", "spd": 0, "gradient_min": None},
+]
 console = Console()
 
 
