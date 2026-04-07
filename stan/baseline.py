@@ -6,30 +6,340 @@ Usage:
 Walks the user through selecting a directory of existing HeLa QC runs,
 asks for the run specifics (instrument, amount, SPD, column), then
 processes all raw files and stores metrics in the local database.
+
+Features:
+  - Recursive discovery of .d and .raw files
+  - Metadata extraction (acquisition date, instrument model, mode detection)
+  - Summary table with instrument breakdown before committing
+  - Scheduling: run now, tonight (8 PM), or weekend (Saturday 8 AM)
+  - Resume support via ~/.stan/baseline_progress.json
+  - IPS computation for every run
+  - Duplicate detection (skip files already in the database)
+  - Community benchmark batch upload (if enabled)
+  - Detailed per-file progress output
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import shutil
+import sqlite3
+import time
+from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
-from rich.prompt import Confirm, FloatPrompt, Prompt
+from rich.panel import Panel
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
-from stan.columns import COLUMN_CATALOG
-from stan.config import get_user_config_dir
-from stan.watcher.detector import AcquisitionMode, detect_mode, is_dia
+from stan.config import get_user_config_dir, load_community
+from stan.watcher.detector import AcquisitionMode, detect_bruker_mode, is_dda, is_dia
 
 logger = logging.getLogger(__name__)
 console = Console()
 
+PROGRESS_FILE = "baseline_progress.json"
+
+
+# ── File discovery ──────────────────────────────────────────────────
+
+def _find_raw_files(directory: Path) -> list[Path]:
+    """Recursively find all .d directories and .raw files."""
+    files: list[Path] = []
+
+    # .d directories (Bruker) — don't recurse into them
+    for item in sorted(directory.rglob("*.d")):
+        if item.is_dir() and (item / "analysis.tdf").exists():
+            files.append(item)
+
+    # .raw files (Thermo)
+    for item in sorted(directory.rglob("*.raw")):
+        if item.is_file() and item.stat().st_size > 100_000:
+            files.append(item)
+
+    return files
+
+
+def _classify_vendor(path: Path) -> str:
+    """Classify a raw file as bruker or thermo."""
+    if path.suffix.lower() == ".d" and path.is_dir():
+        return "bruker"
+    return "thermo"
+
+
+# ── Metadata extraction ────────────────────────────────────────────
+
+def _extract_file_metadata(raw_path: Path, vendor: str) -> dict:
+    """Extract metadata from a raw file without running a search.
+
+    Returns dict with: acquisition_date, instrument_model, acquisition_mode,
+    gradient_length_min, and vendor-specific fields.
+    """
+    meta: dict = {
+        "vendor": vendor,
+        "acquisition_date": None,
+        "instrument_model": None,
+        "acquisition_mode": None,
+        "gradient_length_min": None,
+    }
+
+    if vendor == "bruker":
+        meta.update(_extract_bruker_metadata(raw_path))
+    elif vendor == "thermo":
+        meta.update(_extract_thermo_metadata(raw_path))
+
+    return meta
+
+
+def _extract_bruker_metadata(d_path: Path) -> dict:
+    """Extract metadata from a Bruker .d directory."""
+    result: dict = {}
+
+    # Acquisition date
+    from stan.watcher.acquisition_date import get_acquisition_date
+    result["acquisition_date"] = get_acquisition_date(d_path)
+
+    # Instrument model from GlobalMetadata
+    tdf = d_path / "analysis.tdf"
+    if tdf.exists():
+        try:
+            with sqlite3.connect(str(tdf)) as con:
+                for key in ["InstrumentName", "InstrumentType"]:
+                    row = con.execute(
+                        "SELECT Value FROM GlobalMetadata WHERE Key = ?", (key,)
+                    ).fetchone()
+                    if row and row[0]:
+                        result["instrument_model"] = row[0]
+                        break
+        except sqlite3.Error:
+            pass
+
+    # Acquisition mode
+    mode = detect_bruker_mode(d_path)
+    if mode != AcquisitionMode.UNKNOWN:
+        result["acquisition_mode"] = mode
+
+    return result
+
+
+def _extract_thermo_metadata(raw_path: Path) -> dict:
+    """Extract metadata from a Thermo .raw file using TRFP."""
+    result: dict = {}
+
+    try:
+        from stan.tools.trfp import extract_metadata
+        trfp_meta = extract_metadata(raw_path)
+
+        result["acquisition_date"] = trfp_meta.get("creation_date")
+        result["instrument_model"] = trfp_meta.get("instrument_model")
+        result["gradient_length_min"] = trfp_meta.get("gradient_length_min")
+
+        # Mode detection from method name or scan filters
+        acq_mode = trfp_meta.get("acquisition_mode")
+        if acq_mode == "dia":
+            result["acquisition_mode"] = AcquisitionMode.DIA_ORBITRAP
+        elif acq_mode == "dda":
+            result["acquisition_mode"] = AcquisitionMode.DDA_ORBITRAP
+    except Exception:
+        logger.debug("TRFP metadata extraction failed for %s", raw_path, exc_info=True)
+
+    # Fallback: try filename-based heuristics
+    if result.get("acquisition_mode") is None:
+        name_lower = raw_path.stem.lower()
+        if "dia" in name_lower:
+            result["acquisition_mode"] = AcquisitionMode.DIA_ORBITRAP
+        elif "dda" in name_lower:
+            result["acquisition_mode"] = AcquisitionMode.DDA_ORBITRAP
+
+    return result
+
+
+# ── Date parsing helpers ────────────────────────────────────────────
+
+def _parse_date(date_str: str | None) -> datetime | None:
+    """Parse an ISO 8601 date string to a datetime object."""
+    if not date_str:
+        return None
+    try:
+        return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _format_date_range(dates: list[datetime]) -> str:
+    """Format a date range as 'Mon YYYY - Mon YYYY'."""
+    if not dates:
+        return "unknown"
+    dates_sorted = sorted(dates)
+    start = dates_sorted[0].strftime("%b %Y")
+    end = dates_sorted[-1].strftime("%b %Y")
+    if start == end:
+        return start
+    return f"{start} - {end}"
+
+
+# ── Progress file management ───────────────────────────────────────
+
+def _get_progress_path() -> Path:
+    return get_user_config_dir() / PROGRESS_FILE
+
+
+def _load_progress() -> dict | None:
+    """Load baseline progress file if it exists."""
+    path = _get_progress_path()
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _save_progress(progress_data: dict) -> None:
+    """Save baseline progress to disk."""
+    path = _get_progress_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(progress_data, indent=2, default=str))
+
+
+def _clear_progress() -> None:
+    """Remove the progress file."""
+    path = _get_progress_path()
+    if path.exists():
+        path.unlink()
+
+
+# ── Duplicate detection ────────────────────────────────────────────
+
+def _get_existing_run_names(instrument: str) -> set[str]:
+    """Get all run names already in the database for this instrument."""
+    from stan.db import get_db_path
+    db_path = get_db_path()
+    if not db_path.exists():
+        return set()
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            rows = con.execute(
+                "SELECT run_name FROM runs WHERE instrument = ?",
+                (instrument,),
+            ).fetchall()
+        return {r[0] for r in rows}
+    except sqlite3.Error:
+        return set()
+
+
+# ── Scheduling ──────────────────────────────────────────────────────
+
+def _wait_for_schedule(schedule: str) -> None:
+    """Wait until the scheduled time to start processing."""
+    now = datetime.now()
+
+    if schedule == "tonight":
+        # Wait until 8 PM today (or 8 PM tomorrow if already past 8 PM)
+        target = now.replace(hour=20, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target = target.replace(day=target.day + 1)
+        wait_secs = (target - now).total_seconds()
+        console.print(
+            f"\n[yellow]Scheduled for tonight at 8:00 PM "
+            f"(starting in {wait_secs / 3600:.1f} hours)[/yellow]"
+        )
+        console.print("[dim]Press Ctrl+C to cancel[/dim]")
+        time.sleep(wait_secs)
+
+    elif schedule == "weekend":
+        # Wait until Saturday 8 AM
+        days_until_saturday = (5 - now.weekday()) % 7
+        if days_until_saturday == 0 and now.hour >= 8:
+            days_until_saturday = 7
+        target = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        if days_until_saturday > 0:
+            from datetime import timedelta
+            target += timedelta(days=days_until_saturday)
+        wait_secs = (target - now).total_seconds()
+        if wait_secs > 0:
+            console.print(
+                f"\n[yellow]Scheduled for Saturday 8:00 AM "
+                f"(starting in {wait_secs / 3600:.1f} hours)[/yellow]"
+            )
+            console.print("[dim]Press Ctrl+C to cancel[/dim]")
+            time.sleep(wait_secs)
+
+
+# ── Community batch upload ──────────────────────────────────────────
+
+def _batch_submit_community(
+    pending_runs: list[dict],
+    spd: int | None,
+    gradient_length_min: int | None,
+    amount_ng: float,
+) -> tuple[int, int]:
+    """Submit runs to the community benchmark in batches.
+
+    Args:
+        pending_runs: List of run dicts from the local DB that need submission.
+        spd: Samples per day.
+        gradient_length_min: Gradient length in minutes.
+        amount_ng: HeLa injection amount.
+
+    Returns:
+        (submitted_count, failed_count)
+    """
+    from stan.community.submit import submit_to_benchmark
+
+    submitted = 0
+    failed = 0
+    batch_size = 20
+
+    for i in range(0, len(pending_runs), batch_size):
+        batch = pending_runs[i : i + batch_size]
+
+        for run in batch:
+            try:
+                submit_to_benchmark(
+                    run=run,
+                    spd=spd,
+                    gradient_length_min=gradient_length_min,
+                    amount_ng=amount_ng,
+                )
+                submitted += 1
+            except Exception as e:
+                logger.debug("Community submission failed for %s: %s", run.get("run_name"), e)
+                failed += 1
+
+        # Small delay between batches to avoid rate limits
+        if i + batch_size < len(pending_runs):
+            time.sleep(2)
+
+    return submitted, failed
+
+
+# ── Estimate search time ───────────────────────────────────────────
+
+def _estimate_search_time(n_files: int, vendor: str) -> str:
+    """Estimate total search time. Very rough — depends on hardware."""
+    # Rough estimates: DIA-NN ~2-5 min/file, Sage ~1-3 min/file on modern HW
+    # Thermo files take longer due to mzML conversion
+    minutes_per_file = 4 if vendor == "thermo" else 3
+    total_min = n_files * minutes_per_file
+    if total_min < 60:
+        return f"~{total_min} minutes"
+    hours = total_min / 60
+    if hours < 24:
+        return f"~{hours:.1f} hours"
+    days = hours / 24
+    return f"~{days:.1f} days"
+
+
+# ── Main entry point ───────────────────────────────────────────────
 
 def run_baseline() -> None:
     """Interactive baseline builder — process existing HeLa QC directories."""
-    from rich.panel import Panel
-
     console.print()
     console.print(Panel(
         "[bold]STAN Baseline Builder[/bold]\n\n"
@@ -40,38 +350,145 @@ def run_baseline() -> None:
     ))
     console.print()
 
+    # ── Check for resume ────────────────────────────────────────
+    existing_progress = _load_progress()
+    if existing_progress:
+        completed = existing_progress.get("completed", 0)
+        total = existing_progress.get("total", 0)
+        raw_dir = existing_progress.get("directory", "")
+        console.print(
+            f"[yellow]Found incomplete baseline: {completed}/{total} files "
+            f"processed from {raw_dir}[/yellow]"
+        )
+        if Confirm.ask(f"Resume from file {completed + 1}/{total}?", default=True, console=console):
+            _resume_baseline(existing_progress)
+            return
+        else:
+            _clear_progress()
+            console.print("[dim]Starting fresh.[/dim]")
+
     # ── 1. Directory ─────────────────────────────────────────────
     console.print("[bold]Step 1: Raw data directory[/bold]")
-    raw_dir = Prompt.ask("Directory containing HeLa QC runs", console=console)
+
+    # Try to suggest the watch_dir from instruments.yml
+    default_dir = ""
+    try:
+        from stan.config import load_instruments
+        _, instruments = load_instruments()
+        if instruments:
+            wd = instruments[0].get("watch_dir", "")
+            if wd and Path(wd).exists():
+                default_dir = wd
+    except Exception:
+        pass
+
+    raw_dir = Prompt.ask(
+        "Directory containing HeLa QC runs",
+        default=default_dir or None,
+        console=console,
+    )
     raw_path = Path(raw_dir)
 
     if not raw_path.exists():
         console.print(f"[red]Directory not found: {raw_dir}[/red]")
         return
 
-    # Find raw files
-    d_files = sorted(raw_path.glob("*.d"))
-    raw_files = sorted(raw_path.glob("*.raw"))
-    all_files = d_files + raw_files
+    # Find raw files recursively
+    console.print(f"\n[dim]Scanning {raw_path}...[/dim]")
+    all_files = _find_raw_files(raw_path)
 
     if not all_files:
-        console.print("[red]No .d directories or .raw files found in that directory.[/red]")
+        console.print("[red]No .d directories or .raw files found.[/red]")
         return
 
-    vendor = "bruker" if d_files else "thermo"
-    console.print(f"\n  Found [bold]{len(all_files)}[/bold] raw files ({vendor})")
-    for f in all_files[:5]:
-        console.print(f"    {f.name}")
-    if len(all_files) > 5:
-        console.print(f"    ... and {len(all_files) - 5} more")
+    # ── 2. Extract metadata from all files ──────────────────────
+    console.print(f"\n  Found [bold]{len(all_files)}[/bold] raw files")
+    console.print("  [dim]Extracting metadata (this may take a moment for Thermo files)...[/dim]")
 
-    # ── 2. Standard specifics ────────────────────────────────────
+    file_metadata: list[dict] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Scanning files...", total=len(all_files))
+        for f in all_files:
+            vendor = _classify_vendor(f)
+            meta = _extract_file_metadata(f, vendor)
+            meta["path"] = f
+            meta["name"] = f.name
+            file_metadata.append(meta)
+            progress.advance(task)
+
+    # ── 3. Build summary table ──────────────────────────────────
+    # Group by instrument model and mode
+    groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for meta in file_metadata:
+        model = meta.get("instrument_model") or "Unknown"
+        mode_obj = meta.get("acquisition_mode")
+        if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
+            mode_str = "Unknown"
+        elif is_dia(mode_obj):
+            mode_str = "DIA"
+        elif is_dda(mode_obj):
+            mode_str = "DDA"
+        else:
+            mode_str = str(mode_obj.value) if mode_obj else "Unknown"
+        groups[(model, mode_str)].append(meta)
+
+    console.print()
+    console.print(
+        f"[bold]Found {len(all_files)} HeLa QC files in {raw_path}[/bold]"
+    )
+    console.print()
+
+    summary_table = Table(show_header=True, header_style="bold", border_style="blue")
+    summary_table.add_column("Instrument")
+    summary_table.add_column("Dates")
+    summary_table.add_column("Files", justify="right")
+    summary_table.add_column("Mode")
+
+    for (model, mode_str), entries in sorted(groups.items()):
+        dates = [
+            _parse_date(e.get("acquisition_date"))
+            for e in entries
+            if e.get("acquisition_date")
+        ]
+        dates = [d for d in dates if d is not None]
+        date_range = _format_date_range(dates)
+        summary_table.add_row(model, date_range, str(len(entries)), mode_str)
+
+    console.print(summary_table)
+
+    # Determine dominant vendor
+    vendors = [_classify_vendor(f) for f in all_files]
+    vendor = "bruker" if vendors.count("bruker") > vendors.count("thermo") else "thermo"
+
+    est_time = _estimate_search_time(len(all_files), vendor)
+    console.print(f"\n  Estimated search time: [bold]{est_time}[/bold]")
+
+    # ── 4. Standard specifics ───────────────────────────────────
     console.print()
     console.print("[bold]Step 2: Standard specifics[/bold]")
     console.print("These apply to ALL files in this directory.")
 
-    instrument_name = Prompt.ask("Instrument name", default="timsTOF Ultra" if vendor == "bruker" else "Astral", console=console)
-    instrument_model = Prompt.ask("Instrument model", default=instrument_name, console=console)
+    # Suggest instrument name from metadata
+    detected_models = [
+        m.get("instrument_model") for m in file_metadata if m.get("instrument_model")
+    ]
+    default_instrument = detected_models[0] if detected_models else (
+        "timsTOF Ultra" if vendor == "bruker" else "Astral"
+    )
+
+    instrument_name = Prompt.ask(
+        "Instrument name", default=default_instrument, console=console
+    )
+    instrument_model = Prompt.ask(
+        "Instrument model", default=instrument_name, console=console
+    )
     amount = FloatPrompt.ask("HeLa injection amount (ng)", default=50.0, console=console)
 
     # SPD
@@ -83,15 +500,19 @@ def run_baseline() -> None:
             console.print(f"  [{i}] {lc['name']} (~{lc['gradient_min']} min)")
         else:
             console.print(f"  [{i}] {lc['name']}")
-    lc_choice = Prompt.ask("Select method", choices=[str(i) for i in range(1, len(LC_METHODS) + 1)], console=console)
+    lc_choice = Prompt.ask(
+        "Select method",
+        choices=[str(i) for i in range(1, len(LC_METHODS) + 1)],
+        console=console,
+    )
     lc = LC_METHODS[int(lc_choice) - 1]
     spd = lc["spd"] if lc["spd"] > 0 else None
+    gradient_length_min = lc.get("gradient_min")
 
     if lc["spd"] == 0:
-        from rich.prompt import IntPrompt
-        gradient = IntPrompt.ask("Active gradient length (minutes)", console=console)
+        gradient_length_min = IntPrompt.ask("Active gradient length (minutes)", console=console)
         from stan.metrics.scoring import gradient_min_to_spd
-        spd = gradient_min_to_spd(gradient)
+        spd = gradient_min_to_spd(gradient_length_min)
 
     # Column
     console.print()
@@ -102,151 +523,494 @@ def run_baseline() -> None:
         from stan.setup import _pick_column
         column_info = _pick_column()
 
-    # ── 3. FASTA ─────────────────────────────────────────────────
+    # ── 5. FASTA ────────────────────────────────────────────────
     console.print()
     fasta_path = Prompt.ask("Path to FASTA file", console=console)
     if fasta_path and not Path(fasta_path).exists():
         console.print(f"  [yellow]Warning: File not found: {fasta_path}[/yellow]")
 
-    # ── 4. Search engine paths ───────────────────────────────────
-    import shutil
-    diann_exe = shutil.which("diann") or shutil.which("diann.exe") or "diann"
-    sage_exe = shutil.which("sage") or shutil.which("sage.exe") or "sage"
+    # ── 6. Search engine paths ──────────────────────────────────
+    diann_exe = _find_diann()
+    sage_exe = _find_sage()
 
-    # ── 5. Confirm ───────────────────────────────────────────────
     console.print()
-    table = Table(title="Baseline Configuration", show_header=False, border_style="blue")
-    table.add_column("Field", style="bold")
-    table.add_column("Value")
-    table.add_row("Directory", raw_dir)
-    table.add_row("Files", f"{len(all_files)} {vendor} files")
-    table.add_row("Instrument", f"{instrument_name} ({instrument_model})")
-    table.add_row("Amount", f"{amount} ng")
-    table.add_row("SPD", str(spd) if spd else "N/A")
+    console.print(f"  DIA-NN: {diann_exe or '[red]not found[/red]'}")
+    console.print(f"  Sage:   {sage_exe or '[red]not found[/red]'}")
+
+    # ── 7. Community upload ─────────────────────────────────────
+    community_submit = False
+    try:
+        community_cfg = load_community()
+        if community_cfg.get("hf_token") and community_cfg.get("auto_submit", False):
+            community_submit = True
+            console.print("  Community: [green]enabled[/green] (auto_submit is on)")
+        elif community_cfg.get("hf_token"):
+            community_submit = Confirm.ask(
+                "Submit results to community benchmark?", default=False, console=console
+            )
+    except Exception:
+        pass
+
+    # ── 8. Confirmation ─────────────────────────────────────────
+    console.print()
+    config_table = Table(title="Baseline Configuration", show_header=False, border_style="blue")
+    config_table.add_column("Field", style="bold")
+    config_table.add_column("Value")
+    config_table.add_row("Directory", str(raw_path))
+    config_table.add_row("Files", f"{len(all_files)} ({vendor})")
+    config_table.add_row("Instrument", f"{instrument_name} ({instrument_model})")
+    config_table.add_row("Amount", f"{amount} ng")
+    config_table.add_row("SPD", str(spd) if spd else "N/A")
+    config_table.add_row("Gradient", f"{gradient_length_min} min" if gradient_length_min else "N/A")
     if column_info:
-        table.add_row("Column", f"{column_info.get('vendor', '')} {column_info.get('model', '')}".strip())
-    table.add_row("FASTA", fasta_path or "(not set)")
-    console.print(table)
+        config_table.add_row(
+            "Column",
+            f"{column_info.get('vendor', '')} {column_info.get('model', '')}".strip(),
+        )
+    config_table.add_row("FASTA", fasta_path or "(not set)")
+    config_table.add_row("Community", "[green]yes[/green]" if community_submit else "no")
+    config_table.add_row("Est. time", est_time)
+    console.print(config_table)
 
     console.print()
-    if not Confirm.ask(f"Process all {len(all_files)} files?", default=True, console=console):
+    if not Confirm.ask("Build baseline?", default=True, console=console):
         console.print("[yellow]Cancelled.[/yellow]")
         return
 
-    # ── 6. Process ───────────────────────────────────────────────
-    console.print()
+    # ── 9. Scheduling ───────────────────────────────────────────
+    schedule = Prompt.ask(
+        "Run now or schedule?",
+        choices=["now", "tonight", "weekend"],
+        default="now",
+        console=console,
+    )
 
+    if schedule != "now":
+        _wait_for_schedule(schedule)
+
+    # ── 10. Process ─────────────────────────────────────────────
+    # Sort files by acquisition date
+    def _sort_key(meta: dict) -> str:
+        return meta.get("acquisition_date") or "9999"
+
+    file_metadata.sort(key=_sort_key)
+    sorted_files = [m["path"] for m in file_metadata]
+
+    _process_files(
+        files=sorted_files,
+        file_metadata_map={str(m["path"]): m for m in file_metadata},
+        instrument_name=instrument_name,
+        instrument_model=instrument_model,
+        amount_ng=amount,
+        spd=spd,
+        gradient_length_min=gradient_length_min,
+        column_info=column_info,
+        fasta_path=fasta_path,
+        diann_exe=diann_exe,
+        sage_exe=sage_exe,
+        community_submit=community_submit,
+        directory=str(raw_path),
+        start_index=0,
+    )
+
+
+def _resume_baseline(progress_data: dict) -> None:
+    """Resume a previously interrupted baseline build."""
+    directory = Path(progress_data["directory"])
+    if not directory.exists():
+        console.print(f"[red]Directory no longer exists: {directory}[/red]")
+        _clear_progress()
+        return
+
+    all_files = _find_raw_files(directory)
+    if not all_files:
+        console.print("[red]No raw files found in directory.[/red]")
+        _clear_progress()
+        return
+
+    # Rebuild minimal metadata for sorting
+    file_metadata: list[dict] = []
+    for f in all_files:
+        vendor = _classify_vendor(f)
+        meta = {"path": f, "name": f.name, "vendor": vendor}
+        file_metadata.append(meta)
+
+    # Sort same way as original
+    sorted_files = [m["path"] for m in file_metadata]
+
+    start_index = progress_data.get("completed", 0)
+
+    console.print(f"\n[bold]Resuming baseline from file {start_index + 1}/{len(sorted_files)}[/bold]")
+
+    _process_files(
+        files=sorted_files,
+        file_metadata_map={str(m["path"]): m for m in file_metadata},
+        instrument_name=progress_data.get("instrument_name", "Unknown"),
+        instrument_model=progress_data.get("instrument_model", "Unknown"),
+        amount_ng=progress_data.get("amount_ng", 50.0),
+        spd=progress_data.get("spd"),
+        gradient_length_min=progress_data.get("gradient_length_min"),
+        column_info=progress_data.get("column_info", {}),
+        fasta_path=progress_data.get("fasta_path", ""),
+        diann_exe=progress_data.get("diann_exe"),
+        sage_exe=progress_data.get("sage_exe"),
+        community_submit=progress_data.get("community_submit", False),
+        directory=str(directory),
+        start_index=start_index,
+    )
+
+
+def _process_files(
+    files: list[Path],
+    file_metadata_map: dict[str, dict],
+    instrument_name: str,
+    instrument_model: str,
+    amount_ng: float,
+    spd: int | None,
+    gradient_length_min: int | None,
+    column_info: dict,
+    fasta_path: str,
+    diann_exe: str | None,
+    sage_exe: str | None,
+    community_submit: bool,
+    directory: str,
+    start_index: int,
+) -> None:
+    """Process a list of raw files, extracting metrics and storing results."""
     from stan.db import init_db, insert_run
     from stan.gating.evaluator import evaluate_gates
+    from stan.metrics.chromatography import compute_ips_dda, compute_ips_dia
     from stan.metrics.extractor import extract_dda_metrics, extract_dia_metrics
     from stan.search.local import run_diann_local, run_sage_local
+    from stan.watcher.detector import AcquisitionMode, detect_mode, is_dia
+    from stan.watcher.validate_raw import RawFileValidationError, validate_raw_file
 
     init_db()
 
-    output_base = Path(get_user_config_dir()) / "baseline_output"
+    output_base = get_user_config_dir() / "baseline_output"
     output_base.mkdir(parents=True, exist_ok=True)
 
+    # Check which files are already in the DB
+    existing_names = _get_existing_run_names(instrument_name)
+
+    total = len(files)
     processed = 0
+    skipped = 0
     failed = 0
     invalid = 0
+    results_for_community: list[dict] = []
 
-    from stan.watcher.validate_raw import RawFileValidationError, validate_raw_file
+    # Save initial progress
+    progress_state = {
+        "total": total,
+        "completed": start_index,
+        "failed": 0,
+        "current": "",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "directory": directory,
+        "instrument_name": instrument_name,
+        "instrument_model": instrument_model,
+        "amount_ng": amount_ng,
+        "spd": spd,
+        "gradient_length_min": gradient_length_min,
+        "column_info": column_info,
+        "fasta_path": fasta_path,
+        "diann_exe": diann_exe,
+        "sage_exe": sage_exe,
+        "community_submit": community_submit,
+    }
+    _save_progress(progress_state)
+
+    console.print()
 
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
         console=console,
-    ) as progress:
-        task = progress.add_task("Processing runs...", total=len(all_files))
+    ) as progress_bar:
+        task = progress_bar.add_task("Processing runs...", total=total, completed=start_index)
 
-        for raw_file in all_files:
-            progress.update(task, description=f"Processing {raw_file.name}...")
-            output_dir = output_base / raw_file.stem
+        for idx in range(start_index, total):
+            raw_file = files[idx]
+            vendor = _classify_vendor(raw_file)
+            file_meta = file_metadata_map.get(str(raw_file), {})
 
-            # Validate file before search
+            progress_bar.update(task, description=f"[{idx + 1}/{total}] {raw_file.name}")
+
+            # Update progress file
+            progress_state["current"] = raw_file.name
+            progress_state["completed"] = idx
+            _save_progress(progress_state)
+
+            # Skip if already in database
+            if raw_file.name in existing_names:
+                console.print(f"  [dim][{idx + 1}/{total}] {raw_file.name} -- already in DB, skipping[/dim]")
+                skipped += 1
+                progress_bar.advance(task)
+                continue
+
+            # Validate file
             try:
                 validate_raw_file(raw_file, vendor=vendor)
             except RawFileValidationError as e:
-                logger.warning("Skipping invalid file: %s", e)
-                console.print(f"  [yellow]skip[/yellow] {raw_file.name}: {e}")
+                console.print(f"  [yellow][{idx + 1}/{total}] {raw_file.name} -- invalid: {e}[/yellow]")
                 invalid += 1
-                progress.advance(task)
+                progress_bar.advance(task)
                 continue
 
             try:
                 # Detect mode
-                mode = detect_mode(raw_file, vendor=vendor)
-                if mode == AcquisitionMode.UNKNOWN:
+                mode_obj = file_meta.get("acquisition_mode")
+                if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
+                    mode_obj = detect_mode(raw_file, vendor=vendor)
+                if mode_obj == AcquisitionMode.UNKNOWN:
                     # Default to DIA for baseline — most common QC mode
-                    mode = AcquisitionMode.DIA_PASEF if vendor == "bruker" else AcquisitionMode.DIA
+                    mode_obj = (
+                        AcquisitionMode.DIA_PASEF if vendor == "bruker"
+                        else AcquisitionMode.DIA_ORBITRAP
+                    )
+
+                output_dir = output_base / raw_file.stem
 
                 # Run search
-                if is_dia(mode):
+                if is_dia(mode_obj):
+                    if not diann_exe:
+                        console.print(
+                            f"  [red][{idx + 1}/{total}] {raw_file.name} "
+                            f"-- DIA file but DIA-NN not found[/red]"
+                        )
+                        failed += 1
+                        progress_bar.advance(task)
+                        continue
+
                     result_path = run_diann_local(
-                        raw_path=raw_file, output_dir=output_dir,
-                        vendor=vendor, diann_exe=diann_exe,
+                        raw_path=raw_file,
+                        output_dir=output_dir,
+                        vendor=vendor,
+                        diann_exe=diann_exe,
                         fasta_path=fasta_path,
                     )
                 else:
+                    if not sage_exe:
+                        console.print(
+                            f"  [red][{idx + 1}/{total}] {raw_file.name} "
+                            f"-- DDA file but Sage not found[/red]"
+                        )
+                        failed += 1
+                        progress_bar.advance(task)
+                        continue
+
                     result_path = run_sage_local(
-                        raw_path=raw_file, output_dir=output_dir,
-                        vendor=vendor, sage_exe=sage_exe,
+                        raw_path=raw_file,
+                        output_dir=output_dir,
+                        vendor=vendor,
+                        sage_exe=sage_exe,
                         fasta_path=fasta_path,
                     )
 
                 if result_path is None:
+                    console.print(
+                        f"  [red][{idx + 1}/{total}] {raw_file.name} "
+                        f"-- search failed[/red]"
+                    )
                     failed += 1
-                    progress.advance(task)
+                    progress_bar.advance(task)
                     continue
 
                 # Extract metrics
-                if is_dia(mode):
-                    metrics = extract_dia_metrics(str(result_path))
+                grad_min = gradient_length_min or file_meta.get("gradient_length_min")
+                if is_dia(mode_obj):
+                    metrics = extract_dia_metrics(
+                        result_path, gradient_min=float(grad_min) if grad_min else None
+                    )
                 else:
-                    metrics = extract_dda_metrics(str(result_path))
+                    metrics = extract_dda_metrics(
+                        result_path,
+                        gradient_min=grad_min or 60,
+                    )
+
+                # Compute IPS
+                metrics["instrument_family"] = instrument_model
+                metrics["spd"] = spd
+                if is_dia(mode_obj):
+                    ips = compute_ips_dia(metrics)
+                else:
+                    ips = compute_ips_dda(metrics)
+                metrics["ips_score"] = ips
 
                 # Evaluate gates
-                acq_mode = "dia" if is_dia(mode) else "dda"
+                acq_mode = "dia" if is_dia(mode_obj) else "dda"
                 decision = evaluate_gates(
                     metrics=metrics,
                     instrument_model=instrument_model,
                     acquisition_mode=acq_mode,
                 )
 
-                # Store
-                insert_run(
+                # Use real acquisition date if available, otherwise fallback
+                run_date = file_meta.get("acquisition_date")
+
+                # Store in database
+                run_id = insert_run(
                     instrument=instrument_name,
                     run_name=raw_file.name,
                     raw_path=str(raw_file),
-                    mode=mode.value,
+                    mode=mode_obj.value,
                     metrics=metrics,
                     gate_result=decision.result.value,
                     failed_gates=decision.failed_gates,
                     diagnosis=decision.diagnosis,
-                    amount_ng=amount,
+                    amount_ng=amount_ng,
                     spd=spd,
+                    gradient_length_min=gradient_length_min,
+                )
+
+                # Update run_date to the actual acquisition date if we have it
+                if run_date:
+                    _update_run_date(run_id, run_date)
+
+                # Track for community upload
+                if community_submit:
+                    results_for_community.append({
+                        "id": run_id,
+                        "run_name": raw_file.name,
+                        "instrument": instrument_name,
+                        "mode": acq_mode.upper(),
+                        **metrics,
+                    })
+
+                # Print result line
+                primary_metric = metrics.get("n_precursors", 0) if is_dia(mode_obj) else metrics.get("n_psms", 0)
+                metric_label = "precursors" if is_dia(mode_obj) else "PSMs"
+                gate_icon = {
+                    "pass": "[green]OK[/green]",
+                    "warn": "[yellow]WARN[/yellow]",
+                    "fail": "[red]FAIL[/red]",
+                }.get(decision.result.value, "")
+
+                console.print(
+                    f"  [{idx + 1}/{total}] {raw_file.name} -- "
+                    f"{primary_metric:,} {metric_label} "
+                    f"(IPS {ips}) {gate_icon}"
                 )
 
                 processed += 1
 
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Interrupted. Progress saved.[/yellow]")
+                progress_state["completed"] = idx
+                _save_progress(progress_state)
+                console.print("  Resume with: [cyan]stan baseline[/cyan]")
+                return
             except Exception:
                 logger.exception("Failed to process %s", raw_file.name)
+                console.print(f"  [red][{idx + 1}/{total}] {raw_file.name} -- error (see log)[/red]")
                 failed += 1
 
-            progress.advance(task)
+            progress_bar.advance(task)
 
-    # ── 7. Summary ───────────────────────────────────────────────
+    # ── Community upload ────────────────────────────────────────
+    if community_submit and results_for_community:
+        console.print()
+        console.print(
+            f"[bold]Uploading {len(results_for_community)} runs to community benchmark...[/bold]"
+        )
+        submitted, sub_failed = _batch_submit_community(
+            results_for_community,
+            spd=spd,
+            gradient_length_min=gradient_length_min,
+            amount_ng=amount_ng,
+        )
+        console.print(f"  [green]Submitted:[/green] {submitted}")
+        if sub_failed:
+            console.print(f"  [yellow]Failed:[/yellow] {sub_failed}")
+
+    # ── Summary ─────────────────────────────────────────────────
     console.print()
-    console.print(f"[bold]Baseline complete:[/bold]")
+    console.print("[bold]Baseline complete[/bold]")
     console.print(f"  [green]Processed:[/green] {processed}")
+    if skipped:
+        console.print(f"  [dim]Skipped (already in DB):[/dim] {skipped}")
     if invalid:
         console.print(f"  [yellow]Invalid (skipped):[/yellow] {invalid}")
     if failed:
         console.print(f"  [red]Failed:[/red] {failed}")
     console.print(f"  Database: {get_user_config_dir() / 'stan.db'}")
+
+    # Clear progress file on successful completion
+    _clear_progress()
+
     console.print()
     console.print("View results:")
     console.print("  [cyan]stan status[/cyan]")
     console.print("  [cyan]stan dashboard[/cyan]")
+
+
+# ── Utility functions ───────────────────────────────────────────────
+
+def _update_run_date(run_id: str, run_date: str) -> None:
+    """Update the run_date for a run to use the actual acquisition date."""
+    from stan.db import get_db_path
+    db_path = get_db_path()
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.execute(
+                "UPDATE runs SET run_date = ? WHERE id = ?",
+                (run_date, run_id),
+            )
+    except sqlite3.Error:
+        logger.debug("Failed to update run_date for %s", run_id, exc_info=True)
+
+
+def _find_diann() -> str | None:
+    """Find DIA-NN executable on PATH or common locations."""
+    # Check PATH
+    for name in ["diann", "diann.exe", "DiaNN", "DiaNN.exe"]:
+        found = shutil.which(name)
+        if found:
+            return found
+
+    # Common Windows locations
+    common_paths = [
+        Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "DIA-NN" / "DiaNN.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "DIA-NN" / "DiaNN.exe",
+        Path.home() / "DIA-NN" / "diann.exe",
+        Path.home() / "diann" / "diann.exe",
+        # Linux/Mac common
+        Path("/usr/local/bin/diann"),
+        Path.home() / ".local" / "bin" / "diann",
+    ]
+
+    for p in common_paths:
+        if p.exists():
+            return str(p)
+
+    # Check STAN tools dir
+    stan_diann = get_user_config_dir() / "tools" / "diann" / "diann"
+    if stan_diann.exists():
+        return str(stan_diann)
+    stan_diann_exe = get_user_config_dir() / "tools" / "diann" / "DiaNN.exe"
+    if stan_diann_exe.exists():
+        return str(stan_diann_exe)
+
+    return None
+
+
+def _find_sage() -> str | None:
+    """Find Sage executable on PATH or common locations."""
+    for name in ["sage", "sage.exe"]:
+        found = shutil.which(name)
+        if found:
+            return found
+
+    # Check STAN tools dir
+    stan_sage = get_user_config_dir() / "tools" / "sage" / "sage"
+    if stan_sage.exists():
+        return str(stan_sage)
+    stan_sage_exe = get_user_config_dir() / "tools" / "sage" / "sage.exe"
+    if stan_sage_exe.exists():
+        return str(stan_sage_exe)
+
+    return None
