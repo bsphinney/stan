@@ -12,8 +12,9 @@
 ::
 :: After install, just type `stan` in any terminal.
 
-title STAN Installer — Know Your Instrument
+title STAN Installer - Know Your Instrument
 color 0B
+chcp 65001 >nul 2>&1
 
 echo.
 echo  ============================================================
@@ -48,7 +49,7 @@ if /i "%ACCEPT_LICENSE%"=="n" (
     pause
     exit /b 0
 )
-echo  License accepted ✓
+echo  License accepted [OK]
 
 :: ── Check Python ────────────────────────────────────────────────
 echo.
@@ -56,20 +57,54 @@ echo  [1/5] Checking for Python...
 
 where python >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (
-    echo  Python not found. Attempting to install via winget...
+    echo  Python not found. Downloading Python 3.12 installer...
+    echo.
+
+    :: Try winget first (fast, silent)
     winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements >nul 2>&1
-    if %ERRORLEVEL% NEQ 0 (
+    if %ERRORLEVEL% EQU 0 (
+        set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
+        goto :python_ok
+    )
+
+    :: winget not available — download installer directly
+    echo  winget not available. Downloading from python.org...
+    set PY_URL=https://www.python.org/ftp/python/3.12.4/python-3.12.4-amd64.exe
+    set PY_INSTALLER=%TEMP%\python-3.12.4-installer.exe
+
+    :: Try PowerShell download (works on all modern Windows)
+    powershell -Command "Invoke-WebRequest -Uri '%PY_URL%' -OutFile '%PY_INSTALLER%'" >nul 2>&1
+    if not exist "%PY_INSTALLER%" (
+        :: Try certutil as last resort
+        certutil -urlcache -split -f "%PY_URL%" "%PY_INSTALLER%" >nul 2>&1
+    )
+
+    if not exist "%PY_INSTALLER%" (
         echo.
-        echo  ERROR: Could not install Python automatically.
-        echo  Please install Python 3.10+ from https://www.python.org/downloads/
-        echo  Make sure to check "Add Python to PATH" during installation.
+        echo  ERROR: Could not download Python automatically.
+        echo  Please install Python 3.12 manually:
+        echo    1. Go to https://www.python.org/downloads/
+        echo    2. Download Python 3.12
+        echo    3. IMPORTANT: Check "Add Python to PATH" during installation
+        echo    4. Re-run this installer
         echo.
         pause
         exit /b 1
     )
-    :: Refresh PATH
+
+    echo  Installing Python 3.12 (this may take a minute)...
+    echo  IMPORTANT: If a dialog appears, make sure "Add Python to PATH" is checked.
+    "%PY_INSTALLER%" /passive InstallAllUsers=0 PrependPath=1 Include_test=0
+    if %ERRORLEVEL% NEQ 0 (
+        echo  Trying interactive install...
+        "%PY_INSTALLER%" InstallAllUsers=0 PrependPath=1
+    )
+    del "%PY_INSTALLER%" >nul 2>&1
+
+    :: Refresh PATH for this session
     set "PATH=%LOCALAPPDATA%\Programs\Python\Python312;%LOCALAPPDATA%\Programs\Python\Python312\Scripts;%PATH%"
 )
+:python_ok
 
 :: Verify Python version
 python -c "import sys; exit(0 if sys.version_info >= (3, 10) else 1)" 2>nul
@@ -81,7 +116,7 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-for /f "tokens=*" %%i in ('python --version') do echo  Found %%i ✓
+for /f "tokens=*" %%i in ('python --version') do echo  Found %%i [OK]
 
 :: ── Create virtual environment ──────────────────────────────────
 echo.
@@ -100,7 +135,7 @@ if not exist "%VENV%\Scripts\activate.bat" (
         exit /b 1
     )
 )
-echo  Virtual environment at %VENV% ✓
+echo  Virtual environment at %VENV% [OK]
 
 :: Activate
 call "%VENV%\Scripts\activate.bat"
@@ -122,14 +157,14 @@ if %ERRORLEVEL% NEQ 0 (
         exit /b 1
     )
 )
-echo  STAN installed ✓
+echo  STAN installed [OK]
 
 :: ── Initialize config ───────────────────────────────────────────
 echo.
 echo  [4/5] Initializing configuration...
 
 stan init
-echo  Config directory: %STAN_HOME% ✓
+echo  Config directory: %STAN_HOME% [OK]
 
 :: ── Add to PATH permanently ─────────────────────────────────────
 echo.
@@ -140,10 +175,10 @@ for /f "tokens=2*" %%a in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set
 echo %USERPATH% | find /i "%VENV%\Scripts" >nul
 if %ERRORLEVEL% NEQ 0 (
     setx PATH "%USERPATH%;%VENV%\Scripts" >nul 2>&1
-    echo  Added %VENV%\Scripts to PATH ✓
+    echo  Added %VENV%\Scripts to PATH [OK]
     echo  (new terminals will find `stan` automatically)
 ) else (
-    echo  Already in PATH ✓
+    echo  Already in PATH [OK]
 )
 
 :: ── Done! ───────────────────────────────────────────────────────
