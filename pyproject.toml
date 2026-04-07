@@ -30,6 +30,10 @@ dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
 [project.scripts]
 stan = "stan.cli:app"
 
+[tool.setuptools.package-data]
+"stan.dashboard" = ["public/**/*"]
+"stan" = ["config/*.yml"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
