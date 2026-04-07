@@ -1,4 +1,4 @@
-# Force Windows line endings for batch files so they work when
-# downloaded from GitHub on Windows instrument workstations.
-*.bat text eol=crlf
-*.ps1 text eol=crlf
+# Store batch files as-is (binary) so CRLF bytes survive in the Git
+# blob and GitHub Raw downloads serve them with Windows line endings.
+# Without this, Git normalizes to LF and Windows CMD can't parse them.
+*.bat -text
