@@ -47,7 +47,6 @@ if (-not $python) {
     } catch {
         Write-Host "  ERROR: Download failed." -ForegroundColor Red
         Write-Host "  Install Python 3.12 from https://www.python.org/downloads/" -ForegroundColor Yellow
-        Write-Host "  Check 'Add Python to PATH' during installation." -ForegroundColor Yellow
         exit 1
     }
     Write-Host "  Installing Python (check 'Add to PATH' if prompted)..." -ForegroundColor Yellow
@@ -81,11 +80,16 @@ Write-Host "  Done." -ForegroundColor Green
 Write-Host ""
 Write-Host "  [3/5] Installing STAN (may take a minute)..." -ForegroundColor Cyan
 
-# Use the venv pip directly to avoid PowerShell ErrorAction issues
 $pip = "$venv\Scripts\pip.exe"
 $ErrorActionPreference = "Continue"
+
+# Upgrade pip silently
 & $pip install --upgrade pip 2>&1 | Out-Null
-& $pip install "git+https://github.com/bsphinney/stan.git" 2>&1 | ForEach-Object {
+
+# Install from GitHub zip (no git required) instead of git+https
+# This works on any Windows machine without Git installed.
+$stanUrl = "https://github.com/bsphinney/stan/archive/refs/heads/main.zip"
+& $pip install $stanUrl 2>&1 | ForEach-Object {
     $line = $_.ToString()
     if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
     elseif ($line -match "ERROR|error") { Write-Host "  $line" -ForegroundColor Red }
@@ -93,13 +97,10 @@ $ErrorActionPreference = "Continue"
 $ErrorActionPreference = "Stop"
 
 # Verify stan is installed
-$stanCmd = Get-Command stan -ErrorAction SilentlyContinue
-if (-not $stanCmd) {
-    $stanCmd = Get-Command "$venv\Scripts\stan.exe" -ErrorAction SilentlyContinue
-}
-if (-not $stanCmd) {
+$stanExe = "$venv\Scripts\stan.exe"
+if (-not (Test-Path $stanExe)) {
     Write-Host "  ERROR: STAN installation failed." -ForegroundColor Red
-    Write-Host "  Try manually: pip install git+https://github.com/bsphinney/stan.git" -ForegroundColor Yellow
+    Write-Host "  Try: pip install https://github.com/bsphinney/stan/archive/main.zip" -ForegroundColor Yellow
     exit 1
 }
 Write-Host "  STAN installed." -ForegroundColor Green
@@ -108,7 +109,7 @@ Write-Host "  STAN installed." -ForegroundColor Green
 Write-Host ""
 Write-Host "  [4/5] Initializing..." -ForegroundColor Cyan
 $ErrorActionPreference = "Continue"
-& stan init 2>&1 | Out-Null
+& $stanExe init 2>&1 | Out-Null
 $ErrorActionPreference = "Stop"
 Write-Host "  Done." -ForegroundColor Green
 
@@ -139,7 +140,7 @@ Write-Host ""
 $go = Read-Host "  Run 'stan setup' now? (Y/n)"
 if ($go -ne "n") {
     Write-Host ""
-    & stan setup
+    & $stanExe setup
 }
 
 Write-Host ""
