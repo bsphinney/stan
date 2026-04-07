@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>STAN — Know Your Instrument</title>
+  <title>STAN - Know Your Instrument</title>
   <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
   <style>
     :root {
-      --bg: #0f172a; --surface: #1e293b; --border: #334155;
-      --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;
+      --bg: #011a3a; --surface: #022851; --border: #1e3a5f;
+      --text: #e2e8f0; --muted: #a0b4cc; --accent: #DAAA00;
       --pass: #22c55e; --warn: #eab308; --fail: #ef4444;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -602,6 +602,7 @@
       const [instYaml, setInstYaml] = useState('');
       const [thrYaml, setThrYaml] = useState('');
       const [msg, setMsg] = useState('');
+      const [showAdvanced, setShowAdvanced] = useState(false);
 
       useEffect(() => { if (instruments) setInstYaml(jsyaml(instruments)); }, [instruments]);
       useEffect(() => { if (thresholds) setThrYaml(jsyaml(thresholds)); }, [thresholds]);
@@ -621,47 +622,124 @@
         reloadThr();
       }
 
+      // Parse instruments for a friendly summary
+      const instList = instruments?.instruments || [];
+
       return (
-        <div className="grid">
-          <div className="card">
-            <h3>instruments.yml</h3>
-            <textarea value={instYaml} onChange={e => setInstYaml(e.target.value)} />
-            <button onClick={saveInstruments} style={{marginTop: '0.5rem'}}>Save Instruments</button>
+        <div>
+          <div className="card" style={{marginBottom:'1rem'}}>
+            <h3>Your Instruments</h3>
+            <p style={{color:'var(--muted)', fontSize:'0.85rem', marginBottom:'0.75rem'}}>
+              STAN auto-detects most settings from your raw files. The only things you configure
+              are the watch directory, LC column, and HeLa amount. To change these, edit the
+              values below or re-run <code style={{color:'var(--accent)'}}>stan setup</code>.
+            </p>
+            {instList.length === 0 ? (
+              <p style={{color:'var(--warn)'}}>No instruments configured. Run <code>stan setup</code> to add one.</p>
+            ) : (
+              <div className="grid">
+                {instList.map((inst, i) => (
+                  <div key={i} style={{padding:'0.75rem', background:'var(--bg)', borderRadius:'0.5rem', border:'1px solid var(--border)'}}>
+                    <div style={{fontWeight:700, color:'var(--accent)', marginBottom:'0.5rem'}}>
+                      {inst.name || 'auto'}
+                      {inst.model && <span style={{fontWeight:400, color:'var(--muted)'}}> ({inst.model})</span>}
+                    </div>
+                    <div className="metric"><span className="metric-label">Watch directory</span><span className="metric-value" style={{fontSize:'0.8rem', wordBreak:'break-all'}}>{inst.watch_dir || '(not set)'}</span></div>
+                    <div className="metric"><span className="metric-label">LC Column</span><span className="metric-value">{[inst.column_vendor, inst.column_model].filter(Boolean).join(' ') || '(not set)'}</span></div>
+                    <div className="metric"><span className="metric-label">HeLa amount</span><span className="metric-value">{inst.hela_amount_ng || 50} ng</span></div>
+                    <div className="metric"><span className="metric-label">Community</span><span className="metric-value">{inst.community_submit ? 'Yes' : 'No'}</span></div>
+                    {inst.spd && <div className="metric"><span className="metric-label">SPD</span><span className="metric-value">{inst.spd}</span></div>}
+                    <div className="metric"><span className="metric-label">Status</span><span className="metric-value" style={{color: inst.enabled !== false ? 'var(--pass)' : 'var(--fail)'}}>{inst.enabled !== false ? 'Enabled' : 'Disabled'}</span></div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          <div className="card">
-            <h3>thresholds.yml</h3>
-            <textarea value={thrYaml} onChange={e => setThrYaml(e.target.value)} />
-            <button onClick={saveThresholds} style={{marginTop: '0.5rem'}}>Save Thresholds</button>
+
+          <div className="card" style={{marginBottom:'1rem'}}>
+            <h3>Quick Actions</h3>
+            <p style={{color:'var(--muted)', fontSize:'0.85rem', marginBottom:'0.75rem'}}>
+              Run these commands in a terminal on this machine.
+            </p>
+            <div style={{display:'flex', gap:'0.5rem', flexWrap:'wrap'}}>
+              <div style={{padding:'0.5rem 0.75rem', background:'var(--bg)', borderRadius:'0.5rem', border:'1px solid var(--border)', fontSize:'0.85rem'}}>
+                <code style={{color:'var(--accent)'}}>stan setup</code>
+                <span style={{color:'var(--muted)', marginLeft:'0.5rem'}}>- reconfigure instrument</span>
+              </div>
+              <div style={{padding:'0.5rem 0.75rem', background:'var(--bg)', borderRadius:'0.5rem', border:'1px solid var(--border)', fontSize:'0.85rem'}}>
+                <code style={{color:'var(--accent)'}}>stan baseline</code>
+                <span style={{color:'var(--muted)', marginLeft:'0.5rem'}}>- build QC history from existing files</span>
+              </div>
+              <div style={{padding:'0.5rem 0.75rem', background:'var(--bg)', borderRadius:'0.5rem', border:'1px solid var(--border)', fontSize:'0.85rem'}}>
+                <code style={{color:'var(--accent)'}}>stan log Exploris column-change</code>
+                <span style={{color:'var(--muted)', marginLeft:'0.5rem'}}>- record maintenance event</span>
+              </div>
+              <div style={{padding:'0.5rem 0.75rem', background:'var(--bg)', borderRadius:'0.5rem', border:'1px solid var(--border)', fontSize:'0.85rem'}}>
+                <code style={{color:'var(--accent)'}}>stan email-report --test</code>
+                <span style={{color:'var(--muted)', marginLeft:'0.5rem'}}>- send a test QC email</span>
+              </div>
+            </div>
           </div>
-          {msg && <div className="status-msg">{msg}</div>}
+
+          <div style={{marginBottom:'0.5rem'}}>
+            <span onClick={() => setShowAdvanced(!showAdvanced)} style={{cursor:'pointer', color:'var(--muted)', fontSize:'0.85rem'}}>
+              {showAdvanced ? '▼' : '▶'} Advanced: edit raw YAML config files
+            </span>
+          </div>
+          {showAdvanced && (
+            <div className="grid">
+              <div className="card">
+                <h3>instruments.yml</h3>
+                <p style={{color:'var(--muted)', fontSize:'0.75rem', marginBottom:'0.5rem'}}>Instrument watch directories and settings. Hot-reloaded every 30 seconds.</p>
+                <textarea value={instYaml} onChange={e => setInstYaml(e.target.value)} />
+                <button onClick={saveInstruments} style={{marginTop: '0.5rem'}}>Save Instruments</button>
+              </div>
+              <div className="card">
+                <h3>thresholds.yml</h3>
+                <p style={{color:'var(--muted)', fontSize:'0.75rem', marginBottom:'0.5rem'}}>QC pass/warn/fail thresholds per instrument model.</p>
+                <textarea value={thrYaml} onChange={e => setThrYaml(e.target.value)} />
+                <button onClick={saveThresholds} style={{marginTop: '0.5rem'}}>Save Thresholds</button>
+              </div>
+              {msg && <div className="status-msg">{msg}</div>}
+            </div>
+          )}
         </div>
       );
     }
 
     function CommunityTab() {
-      const { data: cohort, loading } = useFetch('/api/community/cohort');
-      if (loading) return <div className="empty">Loading community data...</div>;
-
       return (
-        <div className="card">
-          <h3>Community Benchmark</h3>
-          {cohort?.error
-            ? <p className="empty">{cohort.error}</p>
-            : <div>
-                <p style={{color: 'var(--muted)', marginBottom: '1rem'}}>
-                  Primary metrics: precursor count (DIA, Track B) and PSM count (DDA, Track A) at 1% FDR.
-                  Protein count is contextual only — not used for ranking.
-                </p>
-                {Object.keys(cohort?.cohorts || {}).length === 0
-                  ? <p className="empty">No community data available yet. Submit a QC run to contribute.</p>
-                  : Object.entries(cohort.cohorts).map(([id, c]) => (
-                      <div key={id} style={{marginBottom: '1rem'}}>
-                        <strong>{id}</strong> ({c.n_submissions} submissions)
-                      </div>
-                    ))
-                }
-              </div>
-          }
+        <div>
+          <div className="card" style={{marginBottom:'1rem'}}>
+            <h3>Community Benchmark</h3>
+            <p style={{marginBottom:'0.75rem'}}>
+              Compare your instrument against labs worldwide. The community dashboard
+              is live at:
+            </p>
+            <a href="https://community.stan-proteomics.org" target="_blank"
+               style={{display:'inline-block', padding:'0.6rem 1.2rem', background:'var(--accent)',
+                       color:'var(--bg)', borderRadius:'0.5rem', fontWeight:700, fontSize:'1rem',
+                       textDecoration:'none', marginBottom:'0.75rem'}}>
+              community.stan-proteomics.org
+            </a>
+            <p style={{color:'var(--muted)', fontSize:'0.85rem', marginTop:'0.5rem'}}>
+              967 QC runs across Fusion Lumos, timsTOF HT, and Exploris 480.
+              Your data will appear here after running <code style={{color:'var(--accent)'}}>stan baseline</code>.
+            </p>
+          </div>
+          <div className="card" style={{marginBottom:'1rem'}}>
+            <h3>Learn Proteomics</h3>
+            <p style={{marginBottom:'0.5rem'}}>
+              Want hands-on training with the instruments and techniques behind STAN?
+            </p>
+            <a href="https://proteomics.ucdavis.edu/events/hands-proteomics-short-course" target="_blank"
+               style={{color:'var(--accent)', textDecoration:'none', fontWeight:600}}>
+              UC Davis Hands-on Proteomics Short Course →
+            </a>
+            <p style={{color:'var(--muted)', fontSize:'0.8rem', marginTop:'0.3rem'}}>
+              Annual course covering sample prep, LC-MS, DIA, data analysis, and more.
+            </p>
+          </div>
         </div>
       );
     }
