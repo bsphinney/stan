@@ -197,15 +197,20 @@ def run_setup() -> None:
         existing = yaml.safe_load(instruments_path.read_text()) or {}
         existing_instruments = existing.get("instruments", [])
 
+        # Normalize watch_dir for comparison (case-insensitive on Windows)
+        def _norm_wd(wd: str) -> str:
+            return str(Path(wd).resolve()).casefold() if wd else ""
+
         # Auto-remove duplicate watch_dir entries (from prior bug)
         if existing_instruments:
             seen_dirs: dict[str, int] = {}
             deduped: list[dict] = []
             for ei in existing_instruments:
-                wd = ei.get("watch_dir", "").rstrip("/\\")
+                wd = _norm_wd(ei.get("watch_dir", ""))
                 if wd and wd in seen_dirs:
                     continue  # skip duplicate
-                seen_dirs[wd] = len(deduped)
+                if wd:
+                    seen_dirs[wd] = len(deduped)
                 deduped.append(ei)
             if len(deduped) < len(existing_instruments):
                 removed = len(existing_instruments) - len(deduped)
@@ -223,8 +228,9 @@ def run_setup() -> None:
             )
             # Check if this watch_dir is already configured
             dup_idx = None
+            new_wd = _norm_wd(watch_dir)
             for idx, ei in enumerate(existing_instruments):
-                if ei.get("watch_dir", "").rstrip("/\\") == watch_dir.rstrip("/\\"):
+                if _norm_wd(ei.get("watch_dir", "")) == new_wd:
                     dup_idx = idx
                     break
 
