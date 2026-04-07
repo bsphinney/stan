@@ -138,7 +138,7 @@ Write-Host "  Upgrading pip + setuptools..." -ForegroundColor Gray
 $pipTrust = @("--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org", "--trusted-host", "github.com", "--trusted-host", "objects.githubusercontent.com")
 & $venvPython -m pip install --upgrade pip setuptools wheel @pipTrust 2>&1 | Out-Null
 Write-Host "  Installing STAN package..." -ForegroundColor Gray
-& $venvPython -m pip install @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>&1 | ForEach-Object {
+& $venvPython -m pip install --no-cache-dir --force-reinstall @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>&1 | ForEach-Object {
     $line = $_.ToString()
     if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
     elseif ($line -match "ERROR|error") { Write-Host "  $line" -ForegroundColor Red }
