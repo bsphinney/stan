@@ -297,6 +297,23 @@ def run_setup() -> None:
 
     console.print()
 
+    # Offer to build baseline from existing raw files
+    has_existing = any(Path(watch_dir).iterdir()) if Path(watch_dir).exists() else False
+    if has_existing:
+        console.print(
+            "[bold]Existing raw files detected.[/bold] "
+            "Build a QC baseline from your historical data?"
+        )
+        console.print(
+            "  [dim]This processes past HeLa runs to establish your instrument's baseline.[/dim]"
+        )
+        build_baseline = Confirm.ask("  Run baseline builder?", default=True, console=console)
+        if build_baseline:
+            console.print()
+            from stan.baseline import run_baseline
+            run_baseline()
+            console.print()
+
     # Offer to start the watcher + dashboard right now
     start_now = Confirm.ask(
         "[bold]Start STAN now?[/bold] (watcher + dashboard)",
