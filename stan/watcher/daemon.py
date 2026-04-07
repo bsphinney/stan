@@ -49,8 +49,20 @@ class _AcquisitionHandler(FileSystemEventHandler):
         self._vendor = instrument_config.get("vendor", "")
         self._stable_secs = instrument_config.get("stable_secs", 60)
 
+    def _is_inside_dot_d(self, path: Path) -> bool:
+        """Check if path is inside a Bruker .d directory (not the .d itself)."""
+        for parent in path.parents:
+            if parent.suffix == ".d":
+                return True
+        return False
+
     def on_created(self, event) -> None:
         path = Path(event.src_path)
+
+        # Ignore anything inside a .d directory — those are Bruker internals
+        # (analysis.tdf, analysis.tdf_bin, etc.), not new acquisitions
+        if self._is_inside_dot_d(path):
+            return
 
         # Bruker .d: directory creation event
         if isinstance(event, DirCreatedEvent) and path.suffix == ".d":
@@ -107,7 +119,7 @@ class InstrumentWatcher:
             )
             return
 
-        self._observer.schedule(self._handler, str(watch_path), recursive=False)
+        self._observer.schedule(self._handler, str(watch_path), recursive=True)
         self._observer.start()
 
         self._stop_event.clear()
