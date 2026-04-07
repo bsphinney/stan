@@ -1,7 +1,4 @@
 # STAN Installer - downloaded and executed by install.bat
-# User only needs install.bat - this file is fetched automatically.
-
-$ErrorActionPreference = "Stop"
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Cyan
@@ -83,17 +80,36 @@ Write-Host "  Done." -ForegroundColor Green
 # -- Install STAN --
 Write-Host ""
 Write-Host "  [3/5] Installing STAN (may take a minute)..." -ForegroundColor Cyan
-pip install --upgrade pip 2>$null | Out-Null
-pip install "git+https://github.com/bsphinney/stan.git" 2>&1 | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    pip install --no-cache-dir "git+https://github.com/bsphinney/stan.git"
+
+# Use the venv pip directly to avoid PowerShell ErrorAction issues
+$pip = "$venv\Scripts\pip.exe"
+$ErrorActionPreference = "Continue"
+& $pip install --upgrade pip 2>&1 | Out-Null
+& $pip install "git+https://github.com/bsphinney/stan.git" 2>&1 | ForEach-Object {
+    $line = $_.ToString()
+    if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
+    elseif ($line -match "ERROR|error") { Write-Host "  $line" -ForegroundColor Red }
 }
-Write-Host "  Done." -ForegroundColor Green
+$ErrorActionPreference = "Stop"
+
+# Verify stan is installed
+$stanCmd = Get-Command stan -ErrorAction SilentlyContinue
+if (-not $stanCmd) {
+    $stanCmd = Get-Command "$venv\Scripts\stan.exe" -ErrorAction SilentlyContinue
+}
+if (-not $stanCmd) {
+    Write-Host "  ERROR: STAN installation failed." -ForegroundColor Red
+    Write-Host "  Try manually: pip install git+https://github.com/bsphinney/stan.git" -ForegroundColor Yellow
+    exit 1
+}
+Write-Host "  STAN installed." -ForegroundColor Green
 
 # -- Init --
 Write-Host ""
 Write-Host "  [4/5] Initializing..." -ForegroundColor Cyan
-stan init 2>$null
+$ErrorActionPreference = "Continue"
+& stan init 2>&1 | Out-Null
+$ErrorActionPreference = "Stop"
 Write-Host "  Done." -ForegroundColor Green
 
 # -- PATH --
@@ -103,7 +119,8 @@ $sp = "$venv\Scripts"
 $up = [Environment]::GetEnvironmentVariable("PATH","User")
 if ($up -notlike "*$sp*") {
     [Environment]::SetEnvironmentVariable("PATH","$up;$sp","User")
-    Write-Host "  Added to PATH. New terminals will find 'stan'." -ForegroundColor Green
+    $env:Path = "$sp;$env:Path"
+    Write-Host "  Added to PATH." -ForegroundColor Green
 } else {
     Write-Host "  Already in PATH." -ForegroundColor Green
 }
@@ -120,4 +137,11 @@ Write-Host "    stan dashboard   - open QC dashboard" -ForegroundColor Cyan
 Write-Host ""
 
 $go = Read-Host "  Run 'stan setup' now? (Y/n)"
-if ($go -ne "n") { stan setup }
+if ($go -ne "n") {
+    Write-Host ""
+    & stan setup
+}
+
+Write-Host ""
+Write-Host "  Happy QC\!" -ForegroundColor Green
+Write-Host ""
