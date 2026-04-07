@@ -1,11 +1,11 @@
-# STAN Installer v8 - downloaded and executed by install.bat
+# STAN Installer v9 - downloaded and executed by install.bat
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Cyan
 Write-Host "    STAN - Standardized proteomic Throughput ANalyzer" -ForegroundColor Cyan
 Write-Host "    Know your instrument." -ForegroundColor Cyan
 Write-Host "  ============================================================" -ForegroundColor Cyan
-Write-Host "  Installer v8" -ForegroundColor DarkGray
+Write-Host "  Installer v9" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  This will install STAN on your instrument workstation."
 Write-Host "  No admin rights required. Takes about 2 minutes."
