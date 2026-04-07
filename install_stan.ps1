@@ -1,11 +1,11 @@
-# STAN Installer v7 - downloaded and executed by install.bat
+# STAN Installer v8 - downloaded and executed by install.bat
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Cyan
 Write-Host "    STAN - Standardized proteomic Throughput ANalyzer" -ForegroundColor Cyan
 Write-Host "    Know your instrument." -ForegroundColor Cyan
 Write-Host "  ============================================================" -ForegroundColor Cyan
-Write-Host "  Installer v7" -ForegroundColor DarkGray
+Write-Host "  Installer v8" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  This will install STAN on your instrument workstation."
 Write-Host "  No admin rights required. Takes about 2 minutes."
@@ -111,10 +111,13 @@ Write-Host "  Done." -ForegroundColor Green
 Write-Host ""
 Write-Host "  [3/5] Installing STAN (may take a minute)..." -ForegroundColor Cyan
 
-$pip = "$venv\Scripts\pip.exe"
+# Use venv python -m pip to guarantee we're in the right environment
+$venvPython = "$venv\Scripts\python.exe"
 $ErrorActionPreference = "Continue"
-& $pip install --upgrade pip setuptools wheel 2>&1 | Out-Null
-& $pip install "https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>&1 | ForEach-Object {
+Write-Host "  Upgrading pip + setuptools..." -ForegroundColor Gray
+& $venvPython -m pip install --upgrade pip setuptools wheel 2>&1 | Out-Null
+Write-Host "  Installing STAN package..." -ForegroundColor Gray
+& $venvPython -m pip install "https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>&1 | ForEach-Object {
     $line = $_.ToString()
     if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
     elseif ($line -match "ERROR|error") { Write-Host "  $line" -ForegroundColor Red }
