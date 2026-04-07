@@ -1,10 +1,11 @@
-# STAN Installer - downloaded and executed by install.bat
+# STAN Installer v7 - downloaded and executed by install.bat
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Cyan
 Write-Host "    STAN - Standardized proteomic Throughput ANalyzer" -ForegroundColor Cyan
 Write-Host "    Know your instrument." -ForegroundColor Cyan
 Write-Host "  ============================================================" -ForegroundColor Cyan
+Write-Host "  Installer v7" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  This will install STAN on your instrument workstation."
 Write-Host "  No admin rights required. Takes about 2 minutes."
@@ -112,7 +113,7 @@ Write-Host "  [3/5] Installing STAN (may take a minute)..." -ForegroundColor Cya
 
 $pip = "$venv\Scripts\pip.exe"
 $ErrorActionPreference = "Continue"
-& $pip install --upgrade pip 2>&1 | Out-Null $pip install --upgrade pip setuptools wheel 2>&1 | Out-Null
+& $pip install --upgrade pip setuptools wheel 2>&1 | Out-Null
 & $pip install "https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>&1 | ForEach-Object {
     $line = $_.ToString()
     if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
