@@ -33,6 +33,10 @@ COLUMN_CATALOG: dict[str, list[dict]] = {
         {"model": "Aurora Series 25cm x 75um, 1.6um C18", "id": "AUR-25075C18A", "length_cm": 25, "id_um": 75, "particle_um": 1.6},
     ],
     "PepSep": [
+        # MAX series (shorter, high-throughput)
+        {"model": "PepSep MAX 10cm x 150um, 1.5um C18", "id": "PSP-MAX10150C18", "length_cm": 10, "id_um": 150, "particle_um": 1.5},
+        {"model": "PepSep MAX 10cm x 75um, 1.5um C18", "id": "PSP-MAX1075C18", "length_cm": 10, "id_um": 75, "particle_um": 1.5},
+        # Standard ReproSil series
         {"model": "PepSep 15cm x 75um, 1.9um ReproSil C18", "id": "PSP-15075C18", "length_cm": 15, "id_um": 75, "particle_um": 1.9},
         {"model": "PepSep 25cm x 75um, 1.9um ReproSil C18", "id": "PSP-25075C18", "length_cm": 25, "id_um": 75, "particle_um": 1.9},
         {"model": "PepSep 15cm x 150um, 1.9um ReproSil C18", "id": "PSP-15150C18", "length_cm": 15, "id_um": 150, "particle_um": 1.9},
