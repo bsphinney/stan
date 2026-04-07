@@ -1,11 +1,11 @@
-# STAN Installer v9 - downloaded and executed by install.bat
+# STAN Installer v10 - downloaded and executed by install.bat
 
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Cyan
 Write-Host "    STAN - Standardized proteomic Throughput ANalyzer" -ForegroundColor Cyan
 Write-Host "    Know your instrument." -ForegroundColor Cyan
 Write-Host "  ============================================================" -ForegroundColor Cyan
-Write-Host "  Installer v9" -ForegroundColor DarkGray
+Write-Host "  Installer v10" -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  This will install STAN on your instrument workstation."
 Write-Host "  No admin rights required. Takes about 2 minutes."
@@ -21,7 +21,7 @@ Write-Host "  License accepted." -ForegroundColor Green
 
 # -- Find Python --
 Write-Host ""
-Write-Host "  [1/5] Checking for Python..." -ForegroundColor Cyan
+Write-Host "  [1/7] Checking for Python..." -ForegroundColor Cyan
 
 function Find-Python {
     # Check PATH first
@@ -96,7 +96,7 @@ if (-not $python) {
 
 # -- Virtual environment --
 Write-Host ""
-Write-Host "  [2/5] Creating virtual environment..." -ForegroundColor Cyan
+Write-Host "  [2/7] Creating virtual environment..." -ForegroundColor Cyan
 $venv = "$env:USERPROFILE\.stan\venv"
 if (-not (Test-Path "$env:USERPROFILE\.stan")) { New-Item -ItemType Directory -Path "$env:USERPROFILE\.stan" -Force | Out-Null }
 if (-not (Test-Path "$venv\Scripts\python.exe")) {
@@ -109,7 +109,7 @@ Write-Host "  Done." -ForegroundColor Green
 
 # -- Install STAN --
 Write-Host ""
-Write-Host "  [3/5] Installing STAN (may take a minute)..." -ForegroundColor Cyan
+Write-Host "  [3/7] Installing STAN (may take a minute)..." -ForegroundColor Cyan
 
 # Use venv python -m pip to guarantee we're in the right environment
 $venvPython = "$venv\Scripts\python.exe"
@@ -132,9 +132,146 @@ if (-not (Test-Path $stanExe)) {
 }
 Write-Host "  STAN installed." -ForegroundColor Green
 
+# -- Install DIA-NN --
+Write-Host ""
+Write-Host "  [4/7] Installing DIA-NN..." -ForegroundColor Cyan
+$diannInstalled = $false
+$ErrorActionPreference = "Continue"
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $diannRelease = Invoke-RestMethod "https://api.github.com/repos/vdemichev/DiaNN/releases/latest" -TimeoutSec 15
+    $diannAsset = $diannRelease.assets | Where-Object { $_.name -match "\.exe$" -and $_.name -notmatch "linux" } | Select-Object -First 1
+    if ($diannAsset) {
+        $diannUrl = $diannAsset.browser_download_url
+        $diannInstaller = "$env:TEMP\$($diannAsset.name)"
+        Write-Host "  Downloading $($diannAsset.name)..." -ForegroundColor Gray
+        Invoke-WebRequest -Uri $diannUrl -OutFile $diannInstaller -UseBasicParsing
+        Write-Host "  Running DIA-NN installer (silent)..." -ForegroundColor Gray
+        $diannProc = Start-Process -FilePath $diannInstaller -ArgumentList "/S" -Wait -PassThru
+        if ($diannProc.ExitCode -ne 0) {
+            Write-Host "  Silent install returned exit code $($diannProc.ExitCode), trying /VERYSILENT..." -ForegroundColor Yellow
+            Start-Process -FilePath $diannInstaller -ArgumentList "/VERYSILENT" -Wait
+        }
+        Remove-Item $diannInstaller -ErrorAction SilentlyContinue
+
+        # Find DiaNN.exe and add to PATH
+        $diannExe = $null
+        $diannSearchPaths = @(
+            "C:\DIA-NN",
+            "C:\Program Files\DIA-NN",
+            "$env:LOCALAPPDATA\DIA-NN",
+            "C:\DiaNN",
+            "C:\Program Files\DiaNN",
+            "$env:LOCALAPPDATA\DiaNN",
+            "$env:PROGRAMFILES\DIA-NN",
+            "$env:PROGRAMFILES(x86)\DIA-NN"
+        )
+        foreach ($searchPath in $diannSearchPaths) {
+            if (Test-Path $searchPath) {
+                $found = Get-ChildItem -Path $searchPath -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if (-not $found) {
+                    $found = Get-ChildItem -Path $searchPath -Recurse -Filter "diann.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+                }
+                if ($found) {
+                    $diannExe = $found.FullName
+                    break
+                }
+            }
+        }
+        # Also check PATH after install
+        if (-not $diannExe) {
+            $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+            $onPath = Get-Command "DiaNN.exe" -ErrorAction SilentlyContinue
+            if (-not $onPath) { $onPath = Get-Command "diann.exe" -ErrorAction SilentlyContinue }
+            if ($onPath) { $diannExe = $onPath.Source }
+        }
+        if ($diannExe) {
+            $diannDir = Split-Path $diannExe -Parent
+            $userPath = [Environment]::GetEnvironmentVariable("PATH","User")
+            if ($userPath -notlike "*$diannDir*") {
+                [Environment]::SetEnvironmentVariable("PATH","$userPath;$diannDir","User")
+                $env:Path = "$diannDir;$env:Path"
+                Write-Host "  Added $diannDir to PATH." -ForegroundColor Gray
+            }
+            $diannVer = & $diannExe 2>&1 | Select-String -Pattern "DIA-NN|version|v\d" | Select-Object -First 1
+            if ($diannVer) {
+                Write-Host "  DIA-NN installed: $diannVer" -ForegroundColor Green
+            } else {
+                Write-Host "  DIA-NN installed at $diannExe" -ForegroundColor Green
+            }
+            $diannInstalled = $true
+        } else {
+            Write-Host "  DIA-NN installer completed but DiaNN.exe not found on disk." -ForegroundColor Yellow
+            Write-Host "  You may need to install DIA-NN manually: https://github.com/vdemichev/DiaNN/releases" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  No Windows .exe found in latest DIA-NN release." -ForegroundColor Yellow
+        Write-Host "  Install DIA-NN manually: https://github.com/vdemichev/DiaNN/releases" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "  Could not download/install DIA-NN automatically: $_" -ForegroundColor Yellow
+    Write-Host "  Install DIA-NN manually: https://github.com/vdemichev/DiaNN/releases" -ForegroundColor Yellow
+}
+if (-not $diannInstalled) {
+    Write-Host "  Skipped (STAN will still work, but DIA searches require DIA-NN)." -ForegroundColor Yellow
+}
+$ErrorActionPreference = "Stop"
+
+# -- Install Sage --
+Write-Host ""
+Write-Host "  [5/7] Installing Sage..." -ForegroundColor Cyan
+$sageInstalled = $false
+$sageDir = "$env:USERPROFILE\.stan\tools\sage"
+$ErrorActionPreference = "Continue"
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $sageRelease = Invoke-RestMethod "https://api.github.com/repos/lazear/sage/releases/latest" -TimeoutSec 15
+    $sageAsset = $sageRelease.assets | Where-Object { $_.name -match "windows" -and $_.name -match "\.zip$" } | Select-Object -First 1
+    if ($sageAsset) {
+        $sageUrl = $sageAsset.browser_download_url
+        $sageZip = "$env:TEMP\$($sageAsset.name)"
+        Write-Host "  Downloading $($sageAsset.name)..." -ForegroundColor Gray
+        Invoke-WebRequest -Uri $sageUrl -OutFile $sageZip -UseBasicParsing
+
+        # Extract to tools directory
+        if (-not (Test-Path $sageDir)) { New-Item -ItemType Directory -Path $sageDir -Force | Out-Null }
+        Write-Host "  Extracting to $sageDir..." -ForegroundColor Gray
+        Expand-Archive -Path $sageZip -DestinationPath $sageDir -Force
+        Remove-Item $sageZip -ErrorAction SilentlyContinue
+
+        # Sage zips sometimes have a nested directory; find sage.exe
+        $sageExe = Get-ChildItem -Path $sageDir -Recurse -Filter "sage.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($sageExe) {
+            $sageExeDir = Split-Path $sageExe.FullName -Parent
+            $userPath = [Environment]::GetEnvironmentVariable("PATH","User")
+            if ($userPath -notlike "*$sageExeDir*") {
+                [Environment]::SetEnvironmentVariable("PATH","$userPath;$sageExeDir","User")
+                $env:Path = "$sageExeDir;$env:Path"
+                Write-Host "  Added $sageExeDir to PATH." -ForegroundColor Gray
+            }
+            $sageVer = & $sageExe.FullName --version 2>&1
+            Write-Host "  Sage installed: $sageVer" -ForegroundColor Green
+            $sageInstalled = $true
+        } else {
+            Write-Host "  Extraction succeeded but sage.exe not found." -ForegroundColor Yellow
+            Write-Host "  Check $sageDir manually." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "  No Windows .zip found in latest Sage release." -ForegroundColor Yellow
+        Write-Host "  Install Sage manually: https://github.com/lazear/sage/releases" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "  Could not download/install Sage automatically: $_" -ForegroundColor Yellow
+    Write-Host "  Install Sage manually: https://github.com/lazear/sage/releases" -ForegroundColor Yellow
+}
+if (-not $sageInstalled) {
+    Write-Host "  Skipped (STAN will still work, but DDA searches require Sage)." -ForegroundColor Yellow
+}
+$ErrorActionPreference = "Stop"
+
 # -- Init --
 Write-Host ""
-Write-Host "  [4/5] Initializing..." -ForegroundColor Cyan
+Write-Host "  [6/7] Initializing..." -ForegroundColor Cyan
 $ErrorActionPreference = "Continue"
 & $stanExe init 2>&1 | Out-Null
 $ErrorActionPreference = "Stop"
@@ -142,7 +279,7 @@ Write-Host "  Done." -ForegroundColor Green
 
 # -- PATH --
 Write-Host ""
-Write-Host "  [5/5] Adding to PATH..." -ForegroundColor Cyan
+Write-Host "  [7/7] Adding to PATH..." -ForegroundColor Cyan
 $sp = "$venv\Scripts"
 $up = [Environment]::GetEnvironmentVariable("PATH","User")
 if ($up -notlike "*$sp*") {
