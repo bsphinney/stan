@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "stan-proteomics"
@@ -19,12 +19,12 @@ dependencies = [
     "huggingface_hub>=0.22",
     "rich>=13.0",
     "typer>=0.12",
-    "paramiko>=3.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
 ]
 
 [project.optional-dependencies]
+hpc = ["paramiko>=3.0"]
 dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
 
 [project.scripts]
