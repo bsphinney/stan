@@ -1,4 +1,4 @@
-"""Interactive setup wizard — 4 questions, everything else auto-detected.
+"""Interactive setup wizard — 5 questions, everything else auto-detected.
 
 Usage:
     stan setup
@@ -10,6 +10,7 @@ files. The setup wizard only asks for things the raw file can't tell us:
   2. LC column (not embedded in raw file metadata)
   3. HeLa amount (default 50 ng)
   4. Community benchmark (yes/no + pseudonym)
+  5. Daily QC email (morning report + optional weekly summary)
 """
 
 from __future__ import annotations
@@ -31,12 +32,12 @@ console = Console()
 
 
 def run_setup() -> None:
-    """Run the interactive setup wizard — 4 questions."""
+    """Run the interactive setup wizard — 5 questions."""
     console.print()
     console.print(Panel(
         "[bold]STAN Setup[/bold]\n\n"
         "STAN auto-detects your instrument, LC system, gradient, and\n"
-        "acquisition mode from raw files. You only need to answer 4 questions.\n\n"
+        "acquisition mode from raw files. You only need to answer 5 questions.\n\n"
         "[dim]DIA-NN license: free academic / commercial license required[/dim]\n"
         "[dim]Sage license: MIT (open source)[/dim]",
         title="STAN — Know Your Instrument",
@@ -119,6 +120,34 @@ def run_setup() -> None:
             # Claim the name with email verification
             auth_token = _verify_name_ownership(display_name, reclaim=False)
 
+    # ── 5. Email reports ────────────────────────────────────────
+    console.print()
+    console.print("[bold]5. Daily QC summary email?[/bold]")
+    console.print("  [dim]Get a morning report of all instruments at 7 AM.[/dim]")
+
+    email_enabled = Confirm.ask("  Enable daily email report?", default=True, console=console)
+    email_address = ""
+    email_weekly = False
+    if email_enabled:
+        email_address = Prompt.ask("  Email address", console=console)
+        if email_address and "@" in email_address:
+            email_weekly = Confirm.ask(
+                "  Also send weekly summary?", default=True, console=console
+            )
+        else:
+            console.print("  [yellow]Invalid email — skipping email reports.[/yellow]")
+            email_enabled = False
+
+    if email_enabled and email_address:
+        from stan.reports.daily_email import save_email_config
+        save_email_config(
+            enabled=True,
+            to=email_address,
+            daily="07:00",
+            weekly="monday" if email_weekly else "",
+        )
+        console.print(f"  [green]Email reports enabled for {email_address}[/green]")
+
     # ── Check search engines ─────────────────────────────────────
     console.print()
     _check_search_engines()
@@ -197,6 +226,11 @@ def run_setup() -> None:
     table.add_row("Community", "Yes" if community else "No")
     if community and display_name != "Anonymous Lab":
         table.add_row("Your lab name", f"[bold cyan]{display_name}[/bold cyan]")
+    if email_enabled and email_address:
+        table.add_row("Daily email", email_address)
+        table.add_row("Weekly summary", "Yes" if email_weekly else "No")
+    else:
+        table.add_row("Daily email", "[dim]disabled[/dim]")
     table.add_row("Instrument", "[dim]auto-detected from first raw file[/dim]")
     table.add_row("LC system", "[dim]auto-detected from first raw file[/dim]")
     table.add_row("Gradient", "[dim]auto-detected from first raw file[/dim]")

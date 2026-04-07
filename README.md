@@ -528,6 +528,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | HF Space public dashboard | **Planned** | Space repo exists but not deployed |
 | Community benchmark live data | **Planned** | Requires HF Dataset assets + first submissions |
 | Setup wizard (`stan setup`) | Done | Interactive instrument picker, LC method, FASTA path, writes YAML |
+| Email reports (`stan email-report`) | Done | Daily + weekly HTML reports via Resend API, cron/schtasks install |
 | Outlier detection (amount mismatch) | **Planned** | Flag submissions where metrics don't match declared amount/SPD |
 | Failed run rejection | **Planned** | Block near-zero results from entering benchmark (failed injection, empty spray) |
 

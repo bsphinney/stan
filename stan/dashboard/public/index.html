@@ -210,6 +210,176 @@
       );
     }
 
+    /* ── Last QC Badge ─────────────────────────────────────────────── */
+
+    function LastQcBadge({ instrument }) {
+      const { data } = useFetch(`/api/instruments/${encodeURIComponent(instrument)}/last-qc`, [instrument]);
+      if (!data || data.hours_ago == null) return <span style={{fontSize:'0.75rem', color:'var(--muted)'}}>No QC data</span>;
+
+      const h = data.hours_ago;
+      let label, color, suffix;
+      if (h < 24) {
+        label = h < 1 ? '<1h ago' : `${Math.round(h)}h ago`;
+        color = 'var(--pass)';
+        suffix = '';
+      } else if (h < 72) {
+        label = `${Math.round(h)}h ago`;
+        color = 'var(--warn)';
+        suffix = ' — OVERDUE';
+      } else {
+        const days = Math.round(h / 24);
+        label = `${days} days ago`;
+        color = 'var(--fail)';
+        suffix = ' — CRITICAL';
+      }
+
+      return (
+        <span style={{
+          display:'inline-block', padding:'0.15rem 0.5rem', borderRadius:'999px',
+          fontSize:'0.72rem', fontWeight:700, background:color,
+          color: color === 'var(--pass)' ? '#052e16' : color === 'var(--warn)' ? '#422006' : '#450a0a',
+        }}>
+          {label}{suffix}
+        </span>
+      );
+    }
+
+    /* ── Column Lifetime Badge ─────────────────────────────────────── */
+
+    function ColumnLifeBadge({ instrument }) {
+      const { data } = useFetch(`/api/instruments/${encodeURIComponent(instrument)}/column-life`, [instrument]);
+      if (!data || (!data.days_on_column && !data.total_injections_on_column && !data.qc_runs_since_change))
+        return <span style={{fontSize:'0.75rem', color:'var(--muted)'}}>No column data</span>;
+
+      const parts = [];
+      // Bruker-style: show injection count
+      if (data.total_injections_on_column != null) {
+        parts.push(`${data.total_injections_on_column.toLocaleString()} injections`);
+      }
+      if (data.days_on_column > 0) {
+        parts.push(`${data.days_on_column} days`);
+      }
+      // Thermo-style: show trend if available
+      let trendStr = '';
+      if (data.depth_trend_pct_per_week != null) {
+        const sign = data.depth_trend_pct_per_week >= 0 ? '+' : '';
+        trendStr = `, trend: ${sign}${data.depth_trend_pct_per_week.toFixed(1)}%/week`;
+      }
+
+      const label = parts.length ? parts.join(' (') + (parts.length > 1 ? ')' : '') : `${data.qc_runs_since_change} QC runs`;
+      const trendColor = data.depth_trend_pct_per_week != null && data.depth_trend_pct_per_week < -3
+        ? 'var(--warn)' : 'var(--muted)';
+
+      return (
+        <div style={{fontSize:'0.75rem', color:'var(--muted)'}}>
+          <span style={{fontWeight:600, color:'var(--accent)'}}>Column:</span>{' '}
+          {label}{trendStr && <span style={{color:trendColor}}>{trendStr}</span>}
+          {data.column_model && <span style={{marginLeft:'0.3rem'}}>({data.column_model})</span>}
+        </div>
+      );
+    }
+
+    /* ── Maintenance Event Log Button ──────────────────────────────── */
+
+    function LogEventButton({ instrument }) {
+      const [open, setOpen] = useState(false);
+      const [eventType, setEventType] = useState('column_change');
+      const [notes, setNotes] = useState('');
+      const [operator, setOperator] = useState('');
+      const [colVendor, setColVendor] = useState('');
+      const [colModel, setColModel] = useState('');
+      const [status, setStatus] = useState('');
+
+      const eventTypes = [
+        { value: 'column_change', label: 'Column change' },
+        { value: 'source_clean', label: 'Source clean' },
+        { value: 'calibration', label: 'Calibration' },
+        { value: 'pm', label: 'Preventive maintenance' },
+        { value: 'lc_service', label: 'LC service' },
+        { value: 'other', label: 'Other' },
+      ];
+
+      async function submit() {
+        setStatus('Saving...');
+        const payload = { event_type: eventType, notes, operator };
+        if (eventType === 'column_change') {
+          payload.column_vendor = colVendor || null;
+          payload.column_model = colModel || null;
+        }
+        try {
+          const r = await fetch(API + `/api/instruments/${encodeURIComponent(instrument)}/events`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (r.ok) {
+            setStatus('Logged.');
+            setNotes('');
+            setOperator('');
+            setColVendor('');
+            setColModel('');
+            setTimeout(() => { setStatus(''); setOpen(false); }, 1500);
+          } else {
+            const err = await r.json();
+            setStatus(`Error: ${err.detail || 'Unknown error'}`);
+          }
+        } catch (e) {
+          setStatus(`Error: ${e.message}`);
+        }
+      }
+
+      const inputStyle = {
+        width: '100%', padding: '0.35rem 0.5rem', background: 'var(--bg)',
+        color: 'var(--text)', border: '1px solid var(--border)', borderRadius: '0.35rem',
+        fontSize: '0.8rem', marginTop: '0.25rem',
+      };
+      const selectStyle = { ...inputStyle, cursor: 'pointer' };
+
+      return (
+        <div style={{marginTop:'0.5rem'}}>
+          <button onClick={() => setOpen(!open)} style={{
+            padding:'0.25rem 0.6rem', fontSize:'0.72rem', background:'var(--surface)',
+            color:'var(--accent)', border:'1px solid var(--border)', borderRadius:'0.35rem',
+            cursor:'pointer', fontWeight:600,
+          }}>
+            {open ? 'Cancel' : 'Log event'}
+          </button>
+          {open && (
+            <div style={{marginTop:'0.5rem', padding:'0.75rem', background:'var(--bg)', borderRadius:'0.5rem', border:'1px solid var(--border)'}}>
+              <div style={{marginBottom:'0.4rem'}}>
+                <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Event type</label>
+                <select value={eventType} onChange={e => setEventType(e.target.value)} style={selectStyle}>
+                  {eventTypes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+              {eventType === 'column_change' && (
+                <div style={{display:'flex', gap:'0.4rem', marginBottom:'0.4rem'}}>
+                  <div style={{flex:1}}>
+                    <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Column vendor</label>
+                    <input value={colVendor} onChange={e => setColVendor(e.target.value)} placeholder="e.g. IonOpticks" style={inputStyle} />
+                  </div>
+                  <div style={{flex:1}}>
+                    <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Column model</label>
+                    <input value={colModel} onChange={e => setColModel(e.target.value)} placeholder="e.g. Aurora 25cm" style={inputStyle} />
+                  </div>
+                </div>
+              )}
+              <div style={{marginBottom:'0.4rem'}}>
+                <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Operator</label>
+                <input value={operator} onChange={e => setOperator(e.target.value)} placeholder="Your name" style={inputStyle} />
+              </div>
+              <div style={{marginBottom:'0.5rem'}}>
+                <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Notes</label>
+                <input value={notes} onChange={e => setNotes(e.target.value)} placeholder="Details..." style={inputStyle} />
+              </div>
+              <button onClick={submit} style={{padding:'0.3rem 0.75rem', fontSize:'0.8rem'}}>Save</button>
+              {status && <span style={{marginLeft:'0.5rem', fontSize:'0.8rem', color: status.startsWith('Error') ? 'var(--fail)' : 'var(--pass)'}}>{status}</span>}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function LiveRuns() {
       const { data: runs, loading, reload } = useFetch('/api/runs?limit=50');
       useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [reload]);
@@ -228,7 +398,11 @@
           <div className="grid">
             {Object.entries(byInstrument).map(([name, run]) => (
               <div className="card" key={name}>
-                <h3>{name}</h3>
+                <h3 style={{display:'flex', alignItems:'center', gap:'0.5rem', flexWrap:'wrap'}}>
+                  {name}
+                  <LastQcBadge instrument={name} />
+                </h3>
+                <ColumnLifeBadge instrument={name} />
                 <div className="metric"><span className="metric-label">Last run</span><span className="metric-value">{run.run_name}</span></div>
                 <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
                 <div className="metric"><span className="metric-label">Gate</span><GateBadge result={run.gate_result} /></div>
@@ -237,6 +411,7 @@
                 {run.mode === 'DDA' && <div className="metric"><span className="metric-label">PSMs</span><span className="metric-value">{run.n_psms?.toLocaleString()}</span></div>}
                 <div className="metric"><span className="metric-label">Time</span><span className="metric-value">{new Date(run.run_date).toLocaleString()}</span></div>
                 {run.diagnosis && <div className="diagnosis">{run.diagnosis}</div>}
+                <LogEventButton instrument={name} />
               </div>
             ))}
           </div>
@@ -277,17 +452,87 @@
       );
     }
 
+    /* ── Maintenance Event Marker ──────────────────────────────────── */
+
+    function EventMarker({ event }) {
+      const [hover, setHover] = useState(false);
+      const typeLabels = {
+        column_change: 'Column change',
+        source_clean: 'Source clean',
+        calibration: 'Calibration',
+        pm: 'PM',
+        lc_service: 'LC service',
+        other: 'Other',
+      };
+      const typeColors = {
+        column_change: 'var(--accent)',
+        source_clean: 'var(--pass)',
+        calibration: 'var(--warn)',
+        pm: '#a78bfa',
+        lc_service: '#f472b6',
+        other: 'var(--muted)',
+      };
+      const color = typeColors[event.event_type] || 'var(--muted)';
+      const label = typeLabels[event.event_type] || event.event_type;
+      const dateStr = new Date(event.event_date).toLocaleDateString();
+
+      return (
+        <div
+          onMouseEnter={() => setHover(true)}
+          onMouseLeave={() => setHover(false)}
+          style={{position:'relative', display:'inline-block'}}
+        >
+          <div style={{
+            width:'2px', height:'100%', minHeight:'1.6rem',
+            borderLeft:`2px dashed ${color}`, display:'inline-block', verticalAlign:'middle',
+          }} />
+          <span style={{
+            fontSize:'0.65rem', color, fontWeight:700, marginLeft:'0.2rem',
+            verticalAlign:'middle', cursor:'default',
+          }}>
+            {label}
+          </span>
+          {hover && (
+            <div style={{
+              position:'absolute', bottom:'100%', left:0, zIndex:10,
+              background:'var(--surface)', border:'1px solid var(--border)',
+              borderRadius:'0.4rem', padding:'0.4rem 0.6rem', fontSize:'0.75rem',
+              whiteSpace:'nowrap', boxShadow:'0 4px 12px rgba(0,0,0,0.4)',
+            }}>
+              <div style={{fontWeight:700, color}}>{label}</div>
+              <div style={{color:'var(--muted)'}}>{dateStr}</div>
+              {event.operator && <div style={{color:'var(--muted)'}}>By: {event.operator}</div>}
+              {event.notes && <div style={{color:'var(--text)', marginTop:'0.2rem'}}>{event.notes}</div>}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function TrendCharts() {
       const { data: instruments } = useFetch('/api/instruments');
       const [selected, setSelected] = useState(null);
       const [trends, setTrends] = useState(null);
+      const [events, setEvents] = useState([]);
 
       const names = instruments?.instruments?.map(i => i.name) || [];
       useEffect(() => { if (names.length && !selected) setSelected(names[0]); }, [names]);
       useEffect(() => {
         if (!selected) return;
         fetch(API + `/api/trends/${encodeURIComponent(selected)}?limit=50`).then(r => r.json()).then(setTrends);
+        fetch(API + `/api/instruments/${encodeURIComponent(selected)}/events?limit=50`).then(r => r.json()).then(d => setEvents(d || []));
       }, [selected]);
+
+      // Merge events into trend data by finding the nearest run date for each event
+      function findEventsBetween(runs, idx) {
+        if (!events.length || !runs || !runs.length) return [];
+        const runDate = new Date(runs[idx]?.run_date);
+        const prevDate = idx > 0 ? new Date(runs[idx - 1]?.run_date) : new Date(0);
+        return events.filter(e => {
+          const ed = new Date(e.event_date);
+          return ed > prevDate && ed <= runDate;
+        });
+      }
 
       return (
         <div>
@@ -297,9 +542,54 @@
           {!trends || trends.length === 0
             ? <div className="empty">No trend data for {selected || 'this instrument'}.</div>
             : <div className="grid">
-                <div className="card"><h3>Precursors / PSMs</h3>{trends.map((r, i) => <div key={i} className="metric"><span className="metric-label">{r.run_name}</span><span className="metric-value">{(r.n_precursors || r.n_psms || 0).toLocaleString()}</span></div>)}</div>
-                <div className="card"><h3>GRS Score</h3>{trends.map((r, i) => <div key={i} className="metric"><span className="metric-label">{r.run_name}</span><GrsBadge score={r.grs_score} /></div>)}</div>
-                <div className="card"><h3>CV %</h3>{trends.map((r, i) => <div key={i} className="metric"><span className="metric-label">{r.run_name}</span><span className="metric-value">{r.median_cv_precursor?.toFixed(1) || '—'}</span></div>)}</div>
+                <div className="card">
+                  <h3>Precursors / PSMs</h3>
+                  {trends.map((r, i) => (
+                    <React.Fragment key={i}>
+                      {findEventsBetween(trends, i).map((ev, j) => (
+                        <div key={`ev-${j}`} style={{padding:'0.2rem 0', display:'flex', alignItems:'center'}}>
+                          <EventMarker event={ev} />
+                        </div>
+                      ))}
+                      <div className="metric">
+                        <span className="metric-label">{r.run_name}</span>
+                        <span className="metric-value">{(r.n_precursors || r.n_psms || 0).toLocaleString()}</span>
+                      </div>
+                    </React.Fragment>
+                  ))}
+                </div>
+                <div className="card">
+                  <h3>GRS Score</h3>
+                  {trends.map((r, i) => (
+                    <React.Fragment key={i}>
+                      {findEventsBetween(trends, i).map((ev, j) => (
+                        <div key={`ev-${j}`} style={{padding:'0.2rem 0', display:'flex', alignItems:'center'}}>
+                          <EventMarker event={ev} />
+                        </div>
+                      ))}
+                      <div className="metric">
+                        <span className="metric-label">{r.run_name}</span>
+                        <GrsBadge score={r.grs_score} />
+                      </div>
+                    </React.Fragment>
+                  ))}
+                </div>
+                <div className="card">
+                  <h3>CV %</h3>
+                  {trends.map((r, i) => (
+                    <React.Fragment key={i}>
+                      {findEventsBetween(trends, i).map((ev, j) => (
+                        <div key={`ev-${j}`} style={{padding:'0.2rem 0', display:'flex', alignItems:'center'}}>
+                          <EventMarker event={ev} />
+                        </div>
+                      ))}
+                      <div className="metric">
+                        <span className="metric-label">{r.run_name}</span>
+                        <span className="metric-value">{r.median_cv_precursor?.toFixed(1) || '—'}</span>
+                      </div>
+                    </React.Fragment>
+                  ))}
+                </div>
               </div>
           }
         </div>

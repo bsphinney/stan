@@ -371,6 +371,115 @@ def log_event_cmd(
         console.print(f"  Injection counter reset to 0")
 
 
+@app.command("email-report")
+def email_report(
+    send: bool = typer.Option(False, "--send", help="Send daily report now"),
+    send_weekly: bool = typer.Option(False, "--send-weekly", help="Send weekly summary now"),
+    test: bool = typer.Option(False, "--test", help="Send a test email to verify setup"),
+    enable: bool = typer.Option(False, "--enable", help="Enable scheduled email reports"),
+    disable: bool = typer.Option(False, "--disable", help="Disable scheduled email reports"),
+    to: str = typer.Option(None, "--to", help="Recipient email address"),
+    daily: str = typer.Option("07:00", "--daily", help="Daily report time (HH:MM)"),
+    weekly: str = typer.Option("monday", "--weekly", help="Weekly report day"),
+) -> None:
+    """Send or configure daily/weekly QC email reports.
+
+    Examples:
+
+      stan email-report --send             Send daily report now
+
+      stan email-report --send-weekly      Send weekly summary now
+
+      stan email-report --test             Send a test email to verify setup
+
+      stan email-report --enable --to EMAIL --daily 07:00 --weekly monday
+
+      stan email-report --disable
+    """
+    from stan.reports.daily_email import (
+        get_email_config,
+        install_scheduled_task,
+        save_email_config,
+        send_daily_report,
+        send_test_email,
+        send_weekly_report,
+    )
+
+    if disable:
+        save_email_config(enabled=False, to="")
+        console.print("[yellow]Email reports disabled.[/yellow]")
+        return
+
+    if enable:
+        if not to:
+            cfg = get_email_config()
+            to = cfg.get("to", "")
+        if not to:
+            console.print("[red]--to EMAIL is required when enabling reports.[/red]")
+            raise typer.Exit(1)
+        save_email_config(enabled=True, to=to, daily=daily, weekly=weekly)
+        console.print("[green]Email reports enabled.[/green]")
+        console.print(f"  To: {to}")
+        console.print(f"  Daily at: {daily}")
+        console.print(f"  Weekly on: {weekly}")
+        console.print()
+        # Show cron/schtasks instructions
+        try:
+            instructions = install_scheduled_task(daily_time=daily)
+            console.print("[bold]To automate delivery:[/bold]")
+            console.print(instructions)
+        except RuntimeError as exc:
+            console.print(f"[yellow]Could not create scheduled task: {exc}[/yellow]")
+            console.print("You can run manually: stan email-report --send")
+        return
+
+    if test:
+        console.print("Sending test email...")
+        try:
+            result = send_test_email(to=to)
+            console.print(f"[green]Test email sent![/green] ID: {result.get('id', 'unknown')}")
+        except Exception as exc:
+            console.print(f"[red]Failed: {exc}[/red]")
+            raise typer.Exit(1)
+        return
+
+    if send_weekly:
+        console.print("Composing weekly summary...")
+        try:
+            result = send_weekly_report(to=to)
+            console.print(f"[green]Weekly report sent![/green] ID: {result.get('id', 'unknown')}")
+        except Exception as exc:
+            console.print(f"[red]Failed: {exc}[/red]")
+            raise typer.Exit(1)
+        return
+
+    if send:
+        console.print("Composing daily report...")
+        try:
+            result = send_daily_report(to=to)
+            console.print(f"[green]Daily report sent![/green] ID: {result.get('id', 'unknown')}")
+        except Exception as exc:
+            console.print(f"[red]Failed: {exc}[/red]")
+            raise typer.Exit(1)
+        return
+
+    # No action specified -- show current config
+    cfg = get_email_config()
+    if cfg.get("enabled"):
+        console.print("[bold]Email reports: [green]enabled[/green][/bold]")
+        console.print(f"  To: {cfg.get('to', '(not set)')}")
+        console.print(f"  Daily at: {cfg.get('daily', '07:00')}")
+        console.print(f"  Weekly on: {cfg.get('weekly', 'monday')}")
+    else:
+        console.print("[bold]Email reports: [yellow]disabled[/yellow][/bold]")
+        console.print()
+        console.print("To enable:")
+        console.print("  [cyan]stan email-report --enable --to your@email.com[/cyan]")
+        console.print()
+        console.print("To send a one-off report:")
+        console.print("  [cyan]stan email-report --send[/cyan]")
+
+
 @app.command()
 def status() -> None:
     """Show current STAN configuration and database status."""
