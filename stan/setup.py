@@ -196,6 +196,25 @@ def run_setup() -> None:
     if instruments_path.exists():
         existing = yaml.safe_load(instruments_path.read_text()) or {}
         existing_instruments = existing.get("instruments", [])
+
+        # Auto-remove duplicate watch_dir entries (from prior bug)
+        if existing_instruments:
+            seen_dirs: dict[str, int] = {}
+            deduped: list[dict] = []
+            for ei in existing_instruments:
+                wd = ei.get("watch_dir", "").rstrip("/\\")
+                if wd and wd in seen_dirs:
+                    continue  # skip duplicate
+                seen_dirs[wd] = len(deduped)
+                deduped.append(ei)
+            if len(deduped) < len(existing_instruments):
+                removed = len(existing_instruments) - len(deduped)
+                console.print(
+                    f"  [yellow]Removed {removed} duplicate instrument(s) from config.[/yellow]"
+                )
+                existing_instruments = deduped
+                existing["instruments"] = existing_instruments
+
         if existing_instruments:
             console.print()
             console.print(
