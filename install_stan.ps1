@@ -161,17 +161,27 @@ $ErrorActionPreference = "Continue"
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $diannRelease = Invoke-RestMethod "https://api.github.com/repos/vdemichev/DiaNN/releases/latest" -TimeoutSec 15
-    $diannAsset = $diannRelease.assets | Where-Object { $_.name -match "\.exe$" -and $_.name -notmatch "linux" } | Select-Object -First 1
+    # Look for .msi first (DIA-NN 2.x), then .exe (older versions)
+    $diannAsset = $diannRelease.assets | Where-Object { $_.name -match "\.msi$" -and $_.name -notmatch "linux" } | Select-Object -First 1
+    if (-not $diannAsset) {
+        $diannAsset = $diannRelease.assets | Where-Object { $_.name -match "\.exe$" -and $_.name -notmatch "linux" } | Select-Object -First 1
+    }
     if ($diannAsset) {
         $diannUrl = $diannAsset.browser_download_url
         $diannInstaller = "$env:TEMP\$($diannAsset.name)"
         Write-Host "  Downloading $($diannAsset.name)..." -ForegroundColor Gray
         Invoke-WebRequest -Uri $diannUrl -OutFile $diannInstaller -UseBasicParsing
         Write-Host "  Running DIA-NN installer (silent)..." -ForegroundColor Gray
-        $diannProc = Start-Process -FilePath $diannInstaller -ArgumentList "/S" -Wait -PassThru
-        if ($diannProc.ExitCode -ne 0) {
-            Write-Host "  Silent install returned exit code $($diannProc.ExitCode), trying /VERYSILENT..." -ForegroundColor Yellow
-            Start-Process -FilePath $diannInstaller -ArgumentList "/VERYSILENT" -Wait
+        if ($diannInstaller -match "\.msi$") {
+            # MSI installer — use msiexec for silent install
+            $diannProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/quiet", "/norestart" -Wait -PassThru
+        } else {
+            # EXE installer (legacy)
+            $diannProc = Start-Process -FilePath $diannInstaller -ArgumentList "/S" -Wait -PassThru
+            if ($diannProc.ExitCode -ne 0) {
+                Write-Host "  Silent install returned exit code $($diannProc.ExitCode), trying /VERYSILENT..." -ForegroundColor Yellow
+                Start-Process -FilePath $diannInstaller -ArgumentList "/VERYSILENT" -Wait
+            }
         }
         Remove-Item $diannInstaller -ErrorAction SilentlyContinue
 
