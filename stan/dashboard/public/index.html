@@ -639,10 +639,20 @@
             ) : (
               <div className="grid">
                 {instList.map((inst, i) => (
-                  <div key={i} style={{padding:'0.75rem', background:'var(--bg)', borderRadius:'0.5rem', border:'1px solid var(--border)'}}>
-                    <div style={{fontWeight:700, color:'var(--accent)', marginBottom:'0.5rem'}}>
-                      {inst.name || 'auto'}
-                      {inst.model && <span style={{fontWeight:400, color:'var(--muted)'}}> ({inst.model})</span>}
+                  <div key={i} style={{padding:'0.75rem', background:'var(--bg)', borderRadius:'0.5rem', border:'1px solid var(--border)', position:'relative'}}>
+                    <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.5rem'}}>
+                      <div style={{fontWeight:700, color:'var(--accent)'}}>
+                        {inst.name || 'auto'}
+                        {inst.model && <span style={{fontWeight:400, color:'var(--muted)'}}> ({inst.model})</span>}
+                      </div>
+                      {instList.length > 1 && (
+                        <button onClick={async () => {
+                          if (!confirm('Remove this instrument from config?')) return;
+                          const r = await fetch(API + '/api/instruments/' + i, { method: 'DELETE' });
+                          if (r.ok) { setMsg('Instrument removed.'); reloadInst(); }
+                          else setMsg('Error removing instrument.');
+                        }} style={{background:'none', border:'1px solid var(--fail)', color:'var(--fail)', borderRadius:'0.25rem', padding:'0.15rem 0.5rem', cursor:'pointer', fontSize:'0.75rem'}} title="Remove this instrument">Remove</button>
+                      )}
                     </div>
                     <div className="metric"><span className="metric-label">Watch directory</span><span className="metric-value" style={{fontSize:'0.8rem', wordBreak:'break-all'}}>{inst.watch_dir || '(not set)'}</span></div>
                     <div className="metric"><span className="metric-label">LC Column</span><span className="metric-value">{[inst.column_vendor, inst.column_model].filter(Boolean).join(' ') || '(not set)'}</span></div>
@@ -751,7 +761,7 @@
       return (
         <div className="container">
           <header>
-            <h1><span>STAN</span> — Know Your Instrument</h1>
+            <h1><span>STAN</span> &mdash; Know Your Instrument</h1>
             <span className="version">{ver ? `v${ver.version}` : ''}</span>
           </header>
           <div className="tabs">

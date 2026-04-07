@@ -131,6 +131,26 @@ async def api_update_instruments(body: InstrumentsUpdate) -> dict:
     return {"status": "ok", "instruments": len(data.get("instruments", []))}
 
 
+@app.delete("/api/instruments/{index}")
+async def api_delete_instrument(index: int) -> dict:
+    """Delete an instrument by its index in the instruments list."""
+    config_path = resolve_config_path("instruments.yml")
+    data = yaml.safe_load(config_path.read_text()) or {}
+    instruments = data.get("instruments", [])
+
+    if index < 0 or index >= len(instruments):
+        raise HTTPException(status_code=404, detail="Instrument index out of range")
+
+    removed = instruments.pop(index)
+    data["instruments"] = instruments
+    config_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+    watcher = _get_instruments_watcher()
+    watcher.reload()
+
+    return {"status": "ok", "removed": removed.get("name", "unknown"), "remaining": len(instruments)}
+
+
 @app.get("/api/trends/{instrument}")
 async def api_trends(instrument: str, limit: int = 100) -> list[dict]:
     """Fetch time-series metrics for trend charts."""
