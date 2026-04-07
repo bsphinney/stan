@@ -202,11 +202,29 @@ def run_setup() -> None:
                 f"[yellow]instruments.yml already exists with "
                 f"{len(existing_instruments)} instrument(s).[/yellow]"
             )
-            add = Confirm.ask("Add this watch directory to existing config?", default=True, console=console)
-            if add:
-                existing_instruments.append(inst_config)
+            # Check if this watch_dir is already configured
+            dup_idx = None
+            for idx, ei in enumerate(existing_instruments):
+                if ei.get("watch_dir", "").rstrip("/\\") == watch_dir.rstrip("/\\"):
+                    dup_idx = idx
+                    break
+
+            if dup_idx is not None:
+                dup_name = existing_instruments[dup_idx].get("name", "unnamed")
+                console.print(
+                    f"  [yellow]This directory is already configured as '{dup_name}'.[/yellow]"
+                )
+                update = Confirm.ask("  Update this instrument's config?", default=True, console=console)
+                if update:
+                    existing_instruments[dup_idx] = inst_config
                 full_config = existing
                 full_config["instruments"] = existing_instruments
+            else:
+                add = Confirm.ask("Add this watch directory to existing config?", default=True, console=console)
+                if add:
+                    existing_instruments.append(inst_config)
+                    full_config = existing
+                    full_config["instruments"] = existing_instruments
 
     instruments_path.write_text(yaml.dump(full_config, default_flow_style=False, sort_keys=False))
     console.print(f"\n  [green]Wrote[/green] {instruments_path}")
@@ -458,6 +476,7 @@ def _verify_name_ownership(pseudonym: str, reclaim: bool = False) -> str | None:
             token = result.get("token")
             console.print(f"  [green]Verified! '{pseudonym}' is now yours.[/green]")
             console.print("  [dim]Nobody else can submit under this name without your email.[/dim]")
+            console.print("  [dim]To change your verification email, contact bsphinney@ucdavis.edu[/dim]")
             return token
     except urllib.error.HTTPError as e:
         body = json.loads(e.read().decode()) if e.headers.get("content-type", "").startswith("application/json") else {}
