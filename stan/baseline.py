@@ -492,6 +492,59 @@ def run_baseline() -> None:
     est_time = _estimate_search_time(len(all_files), vendor)
     console.print(f"\n  Estimated search time: [bold]{est_time}[/bold]")
 
+    # ── 3b. Download community search assets (FASTA + library) ──
+    console.print()
+    console.print("[bold]Downloading search assets...[/bold]")
+
+    assets_dir = get_user_config_dir() / "community_assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    RELEASE_URL = "https://github.com/bsphinney/stan/releases/download/v0.1.0-assets"
+    ASSETS = {
+        "fasta": "human_hela_202604.fasta",
+        "lib_thermo": "hela_orbitrap_202604.parquet",
+        "lib_bruker": "hela_timstof_202604.parquet",
+    }
+
+    def _get_asset(name: str) -> Path | None:
+        """Find or download a community asset."""
+        local = assets_dir / name
+        if local.exists():
+            return local
+        # Check bundled (shipped with pip install)
+        bundled = Path(__file__).resolve().parent.parent / "community_fasta" / name
+        if bundled.exists():
+            return bundled
+        # Download from GitHub release
+        url = f"{RELEASE_URL}/{name}"
+        console.print(f"  Downloading {name}...")
+        try:
+            import urllib.request
+            urllib.request.urlretrieve(url, str(local))
+            console.print(f"  [green]Downloaded:[/green] {name}")
+            return local
+        except Exception as e:
+            console.print(f"  [yellow]Download failed: {e}[/yellow]")
+            return None
+
+    fasta_path = None
+    lib_path = None
+
+    fasta_file = _get_asset(ASSETS["fasta"])
+    if fasta_file:
+        fasta_path = str(fasta_file)
+        console.print(f"  [green]FASTA:[/green] {fasta_file.name}")
+
+    lib_key = "lib_thermo" if vendor == "thermo" else "lib_bruker"
+    lib_file = _get_asset(ASSETS[lib_key])
+    if lib_file:
+        lib_path = str(lib_file)
+        console.print(f"  [green]Library:[/green] {lib_file.name}")
+
+    if not fasta_path:
+        console.print("  [yellow]No FASTA available — searches will fail.[/yellow]")
+        fasta_path = Prompt.ask("  Path to local FASTA file", default="", console=console)
+
     # ── 4. Standard specifics ───────────────────────────────────
     console.print()
     console.print("[bold]Step 2: Standard specifics[/bold]")
@@ -572,63 +625,7 @@ def run_baseline() -> None:
         col_vendor, col_model = _pick_column()
         column_info = {"vendor": col_vendor, "model": col_model}
 
-    # ── 5. FASTA — download community standard from HF Dataset ──
-    console.print()
-    console.print("[bold]FASTA database[/bold]")
-    fasta_path = None
-    lib_path = None
-
-    # Download community search assets (FASTA + empirical library)
-    assets_dir = get_user_config_dir() / "community_assets"
-    assets_dir.mkdir(parents=True, exist_ok=True)
-
-    # Asset filenames and GitHub release URLs
-    RELEASE_URL = "https://github.com/bsphinney/stan/releases/download/v0.1.0-assets"
-    ASSETS = {
-        "fasta": "human_hela_202604.fasta",
-        "lib_thermo": "hela_orbitrap_202604.parquet",
-        "lib_bruker": "hela_timstof_202604.parquet",
-    }
-
-    def _get_asset(name: str) -> Path | None:
-        """Find or download a community asset."""
-        local = assets_dir / name
-        if local.exists():
-            return local
-
-        # Check bundled (shipped with pip install)
-        bundled = Path(__file__).resolve().parent.parent / "community_fasta" / name
-        if bundled.exists():
-            return bundled
-
-        # Download from GitHub release
-        url = f"{RELEASE_URL}/{name}"
-        console.print(f"  Downloading {name}...")
-        try:
-            import urllib.request
-            urllib.request.urlretrieve(url, str(local))
-            console.print(f"  [green]Downloaded:[/green] {name}")
-            return local
-        except Exception as e:
-            console.print(f"  [yellow]Download failed: {e}[/yellow]")
-            return None
-
-    # Get FASTA
-    fasta_file = _get_asset(ASSETS["fasta"])
-    if fasta_file:
-        fasta_path = str(fasta_file)
-        console.print(f"  [green]FASTA:[/green] {fasta_file.name}")
-    else:
-        fasta_path = Prompt.ask("  Path to local FASTA file", default="", console=console)
-        if fasta_path and not Path(fasta_path).exists():
-            console.print(f"  [yellow]Warning: File not found: {fasta_path}[/yellow]")
-
-    # Get empirical library (vendor-specific)
-    lib_key = "lib_thermo" if vendor == "thermo" else "lib_bruker"
-    lib_file = _get_asset(ASSETS[lib_key])
-    if lib_file:
-        lib_path = str(lib_file)
-        console.print(f"  [green]Library:[/green] {lib_file.name}")
+    # (FASTA + library already downloaded in step 3b above)
 
     # ── 6. Search engines — find, validate, test ─────────────────
     diann_exe = _find_diann()
