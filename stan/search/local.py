@@ -259,7 +259,7 @@ def run_sage_local(
         logger.error("Sage timed out after 4 hours: %s", raw_path.name)
         return None
     except subprocess.CalledProcessError as e:
-        logger.error("Sage failed: %s\nstderr: %s", raw_path.name, e.stderr[-500:])
+        logger.error("Sage failed: %s\nstderr:\n%s", raw_path.name, e.stderr)
         return None
     finally:
         # Clean up mzML if requested
@@ -273,7 +273,22 @@ def run_sage_local(
     if results.exists():
         return results
 
-    logger.error("Sage output not found: %s", results)
+    # Sage may write output with a different prefix or at a parent level
+    # Search for any .sage.parquet file in the output directory
+    sage_files = list(output_dir.glob("*.sage.parquet"))
+    if sage_files:
+        logger.info("Found Sage output at: %s", sage_files[0])
+        return sage_files[0]
+
+    # Also check if Sage wrote to current working directory instead
+    cwd_results = Path("results.sage.parquet")
+    if cwd_results.exists():
+        dest = output_dir / "results.sage.parquet"
+        cwd_results.rename(dest)
+        logger.info("Moved Sage output from cwd to: %s", dest)
+        return dest
+
+    logger.error("Sage output not found in: %s", output_dir)
     return None
 
 
