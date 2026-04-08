@@ -354,7 +354,7 @@ def run_baseline() -> None:
     """Interactive baseline builder — process existing HeLa QC directories."""
     console.print()
     console.print(Panel(
-        "[bold]STAN Baseline Builder v2[/bold]\n\n"
+        "[bold]STAN Baseline Builder v3[/bold]\n\n"
         "Process existing HeLa QC runs to build historical baseline data.\n"
         "Point STAN at a directory containing .d or .raw files.",
         title="STAN",
@@ -694,7 +694,7 @@ def run_baseline() -> None:
         community_cfg = load_community()
         hf_token = community_cfg.get("hf_token")
     except Exception:
-        pass
+        community_cfg = {}
     # Also check the default HF token cache
     if not hf_token:
         try:
@@ -705,21 +705,41 @@ def run_baseline() -> None:
             pass
 
     if hf_token:
-        try:
-            community_cfg_local = community_cfg if 'community_cfg' in dir() else {}
-            if community_cfg_local.get("auto_submit", False):
-                community_submit = True
-                console.print("  Community: [green]enabled[/green] (auto_submit is on)")
-            else:
-                community_submit = Confirm.ask(
-                    "Submit results to community benchmark?", default=True, console=console
-                )
-        except Exception:
-            pass
+        if community_cfg.get("auto_submit", False):
+            community_submit = True
+            console.print("  Community: [green]enabled[/green] (auto_submit is on)")
+        else:
+            community_submit = Confirm.ask(
+                "Submit results to community benchmark?", default=True, console=console
+            )
     else:
-        console.print("  Community: [dim]no HF token found — skipping[/dim]")
-        console.print("    [dim]To enable: create ~/STAN/community.yml with hf_token,[/dim]")
-        console.print("    [dim]or run: huggingface-cli login[/dim]")
+        want_community = Confirm.ask(
+            "Submit results to community benchmark? (requires HF token)", default=True, console=console
+        )
+        if want_community:
+            console.print()
+            console.print("  [bold]Set up community submission[/bold]")
+            console.print("  Get a free token at: [cyan]https://huggingface.co/settings/tokens[/cyan]")
+            console.print("  (Create a token with [bold]write[/bold] access)")
+            console.print()
+            token_input = Prompt.ask("  Paste your HF token (or Enter to skip)", default="", console=console)
+            token_input = token_input.strip()
+            if token_input and token_input.startswith("hf_"):
+                hf_token = token_input
+                # Save to community.yml for future use
+                config_dir = get_user_config_dir()
+                config_dir.mkdir(parents=True, exist_ok=True)
+                community_path = config_dir / "community.yml"
+                import yaml as _yaml
+                community_data = {"hf_token": hf_token, "auto_submit": False}
+                with open(community_path, "w") as f:
+                    _yaml.dump(community_data, f, default_flow_style=False)
+                console.print(f"  [green]Token saved to {community_path}[/green]")
+                community_submit = True
+            elif token_input:
+                console.print("  [yellow]Token should start with 'hf_' — skipping[/yellow]")
+            else:
+                console.print("  [dim]Skipping community submission[/dim]")
 
     # ── 8. Confirmation ─────────────────────────────────────────
     console.print()
