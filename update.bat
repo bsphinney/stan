@@ -1,5 +1,6 @@
 @echo off
 echo Updating STAN...
 echo.
-powershell -ExecutionPolicy Bypass -File "%~dp0update_stan.ps1"
+echo Downloading latest updater...
+powershell -ExecutionPolicy Bypass -Command "try{Add-Type 'using System.Net;using System.Net.Security;using System.Security.Cryptography.X509Certificates;public class TrustAllUpd{public static void Enable(){ServicePointManager.ServerCertificateValidationCallback=delegate{return true;};}}';[TrustAllUpd]::Enable()}catch{}; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $t=[DateTime]::Now.Ticks; Invoke-WebRequest -Uri \"https://raw.githubusercontent.com/bsphinney/stan/main/update_stan.ps1?t=$t\" -OutFile '%~dp0update_stan.ps1' -UseBasicParsing; & '%~dp0update_stan.ps1'"
 pause
