@@ -35,19 +35,41 @@ if (-not (Test-Path $venvPython)) {
 
 # -- Update STAN --
 Write-Host "  [1/3] Updating STAN..." -ForegroundColor Cyan
+
+# Show current version before update
+$stanExe = "$venv\Scripts\stan.exe"
+$oldVer = ""
+if (Test-Path $stanExe) {
+    try { $oldVer = & $stanExe version 2>&1 | Out-String } catch {}
+    $oldVer = $oldVer.Trim()
+}
+
 $pipTrust = @("--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org", "--trusted-host", "github.com", "--trusted-host", "objects.githubusercontent.com")
+$installOk = $false
 & $venvPython -m pip install --no-cache-dir --force-reinstall @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>&1 | ForEach-Object {
     $line = $_.ToString()
-    if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
+    if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green; $script:installOk = $true }
     elseif ($line -match "ERROR|error") { Write-Host "  $line" -ForegroundColor Red }
 }
 
-$stanExe = "$venv\Scripts\stan.exe"
 if (-not (Test-Path $stanExe)) {
-    Write-Host "  ERROR: STAN update failed." -ForegroundColor Red
+    Write-Host "  ERROR: STAN update failed — stan.exe not found." -ForegroundColor Red
+    Write-Host "  Was another process using stan.exe? Close all STAN windows and retry." -ForegroundColor Yellow
     exit 1
 }
-Write-Host "  STAN updated." -ForegroundColor Green
+
+# Show version after update
+$newVer = ""
+try { $newVer = & $stanExe version 2>&1 | Out-String } catch {}
+$newVer = $newVer.Trim()
+
+if ($oldVer -and $newVer -and $oldVer -eq $newVer) {
+    Write-Host "  STAN $newVer (no change)." -ForegroundColor Gray
+} elseif ($newVer) {
+    Write-Host "  STAN updated: $newVer" -ForegroundColor Green
+} else {
+    Write-Host "  STAN updated." -ForegroundColor Green
+}
 
 # -- Check DIA-NN --
 Write-Host ""
