@@ -689,17 +689,37 @@ def run_baseline() -> None:
 
     # ── 7. Community upload ─────────────────────────────────────
     community_submit = False
+    hf_token = None
     try:
         community_cfg = load_community()
-        if community_cfg.get("hf_token") and community_cfg.get("auto_submit", False):
-            community_submit = True
-            console.print("  Community: [green]enabled[/green] (auto_submit is on)")
-        elif community_cfg.get("hf_token"):
-            community_submit = Confirm.ask(
-                "Submit results to community benchmark?", default=False, console=console
-            )
+        hf_token = community_cfg.get("hf_token")
     except Exception:
         pass
+    # Also check the default HF token cache
+    if not hf_token:
+        try:
+            hf_token_path = Path.home() / ".cache" / "huggingface" / "token"
+            if hf_token_path.exists():
+                hf_token = hf_token_path.read_text().strip()
+        except Exception:
+            pass
+
+    if hf_token:
+        try:
+            community_cfg_local = community_cfg if 'community_cfg' in dir() else {}
+            if community_cfg_local.get("auto_submit", False):
+                community_submit = True
+                console.print("  Community: [green]enabled[/green] (auto_submit is on)")
+            else:
+                community_submit = Confirm.ask(
+                    "Submit results to community benchmark?", default=True, console=console
+                )
+        except Exception:
+            pass
+    else:
+        console.print("  Community: [dim]no HF token found — skipping[/dim]")
+        console.print("    [dim]To enable: create ~/STAN/community.yml with hf_token,[/dim]")
+        console.print("    [dim]or run: huggingface-cli login[/dim]")
 
     # ── 8. Confirmation ─────────────────────────────────────────
     console.print()
