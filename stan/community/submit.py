@@ -7,16 +7,11 @@ are NEVER uploaded — metrics only.
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import urllib.request
 import urllib.error
-import uuid
 from datetime import datetime, timezone
-
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 from stan import __version__
 from stan.community.fingerprint_dedup import compute_submission_fingerprint
@@ -28,35 +23,7 @@ from stan.search.community_params import check_diann_version_compatible
 
 logger = logging.getLogger(__name__)
 
-HF_DATASET_REPO = "brettsp/stan-benchmark"
 RELAY_URL = "https://brettsp-stan.hf.space"
-
-# Submission parquet schema
-SUBMISSION_SCHEMA = pa.schema([
-    pa.field("submission_id", pa.string()),
-    pa.field("submitted_at", pa.timestamp("us", tz="UTC")),
-    pa.field("stan_version", pa.string()),
-    pa.field("display_name", pa.string()),
-    pa.field("instrument_family", pa.string()),
-    pa.field("instrument_model", pa.string()),
-    pa.field("acquisition_mode", pa.string()),
-    pa.field("spd", pa.int32()),
-    pa.field("gradient_length_min", pa.int32()),
-    pa.field("amount_ng", pa.float32()),
-    pa.field("n_precursors", pa.int32()),
-    pa.field("n_peptides", pa.int32()),
-    pa.field("n_proteins", pa.int32()),
-    pa.field("n_psms", pa.int32()),
-    pa.field("median_cv_precursor", pa.float32()),
-    pa.field("median_fragments_per_precursor", pa.float32()),
-    pa.field("ips_score", pa.int32()),
-    pa.field("missed_cleavage_rate", pa.float32()),
-    pa.field("community_score", pa.float32()),
-    pa.field("cohort_id", pa.string()),
-    pa.field("is_flagged", pa.bool_()),
-    pa.field("fingerprint", pa.string()),  # for dedup
-    pa.field("diann_version", pa.string()),  # pinned for reproducibility
-])
 
 
 def submit_to_benchmark(
@@ -120,7 +87,6 @@ def submit_to_benchmark(
         raise ValueError(f"Submission rejected: {msg}")
 
     # Build submission
-    submission_id = str(uuid.uuid4())
     instrument = run.get("instrument", "")
     instrument_family = _instrument_family(instrument)
 
@@ -140,39 +106,31 @@ def submit_to_benchmark(
         spd=spd,
     )
 
-    row = {
-        "submission_id": [submission_id],
-        "submitted_at": [datetime.now(timezone.utc)],
-        "stan_version": [__version__],
-        "display_name": [display_name],
-        "instrument_family": [instrument_family],
-        "instrument_model": [instrument],
-        "acquisition_mode": [run.get("mode", "")],
-        "spd": [spd or 0],
-        "gradient_length_min": [gradient_length_min or 0],
-        "amount_ng": [amount_ng],
-        "n_precursors": [run.get("n_precursors") or 0],
-        "n_peptides": [run.get("n_peptides") or 0],
-        "n_proteins": [run.get("n_proteins") or 0],
-        "n_psms": [run.get("n_psms") or 0],
-        "median_cv_precursor": [run.get("median_cv_precursor") or 0.0],
-        "median_fragments_per_precursor": [run.get("median_fragments_per_precursor") or 0.0],
-        "ips_score": [run.get("ips_score") or 0],
-        "missed_cleavage_rate": [run.get("missed_cleavage_rate") or 0.0],
-        "community_score": [0.0],  # computed by nightly consolidation
-        "cohort_id": [cohort_id],
-        "is_flagged": [len(validation.flags) > 0],
-        "fingerprint": [fingerprint],
-        "diann_version": [diann_version],
+    # Build payload matching the relay's BenchmarkSubmission schema
+    # The relay generates submission_id, submitted_at, community_score, is_flagged
+    submit_payload = {
+        "stan_version": __version__,
+        "display_name": display_name,
+        "instrument_family": instrument_family,
+        "instrument_model": instrument,
+        "acquisition_mode": run.get("mode", ""),
+        "spd": spd or 0,
+        "gradient_length_min": gradient_length_min or 0,
+        "amount_ng": amount_ng,
+        "n_precursors": run.get("n_precursors") or 0,
+        "n_peptides": run.get("n_peptides") or 0,
+        "n_proteins": run.get("n_proteins") or 0,
+        "n_psms": run.get("n_psms") or 0,
+        "median_cv_precursor": run.get("median_cv_precursor") or 0.0,
+        "median_fragments_per_precursor": run.get("median_fragments_per_precursor") or 0.0,
+        "ips_score": run.get("ips_score") or 0,
+        "missed_cleavage_rate": run.get("missed_cleavage_rate") or 0.0,
+        "cohort_id": cohort_id,
+        "fingerprint": fingerprint,
+        "diann_version": diann_version or "",
+        "column_vendor": run.get("column_vendor", ""),
+        "column_model": column_model,
     }
-
-    table = pa.table(row, schema=SUBMISSION_SCHEMA)
-
-    # Submit via relay (no token needed — relay handles HF auth server-side)
-    # Convert row to JSON-serializable format
-    submit_payload = {k: v[0] for k, v in row.items()}
-    # Convert non-serializable types
-    submit_payload["submitted_at"] = submit_payload["submitted_at"].isoformat()
 
     try:
         data = json.dumps(submit_payload).encode("utf-8")
@@ -186,15 +144,28 @@ def submit_to_benchmark(
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read())
-            if result.get("status") != "ok":
-                raise RuntimeError(f"Relay rejected submission: {result.get('error', 'unknown')}")
+            if result.get("status") != "accepted":
+                raise RuntimeError(
+                    f"Relay rejected submission: {result.get('detail', result.get('error', 'unknown'))}"
+                )
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        logger.error("Relay HTTP %s: %s", e.code, body)
+        try:
+            detail = json.loads(body).get("detail", body)
+        except Exception:
+            detail = body
+        raise RuntimeError(f"Community relay rejected submission: {detail}") from e
     except urllib.error.URLError as e:
-        logger.error("Failed to submit to relay: %s", e)
+        logger.error("Failed to reach relay: %s", e)
         raise RuntimeError(f"Could not reach community relay: {e}") from e
+
+    # Get submission_id from relay response
+    submission_id = result.get("submission_id", "")
 
     # Mark as submitted in local DB
     run_id = run.get("id", "")
-    if run_id:
+    if run_id and submission_id:
         try:
             mark_submitted(run_id, submission_id)
         except Exception:
@@ -206,7 +177,7 @@ def submit_to_benchmark(
 
     return {
         "submission_id": submission_id,
-        "cohort_id": cohort_id,
+        "cohort_id": result.get("cohort_id", cohort_id),
         "is_flagged": len(validation.flags) > 0,
         "flags": validation.flags,
         "status": "submitted",
