@@ -117,8 +117,13 @@ if (-not $python) {
 # -- Virtual environment --
 Write-Host ""
 Write-Host "  [2/7] Creating virtual environment..." -ForegroundColor Cyan
-$venv = "$env:USERPROFILE\.stan\venv"
-if (-not (Test-Path "$env:USERPROFILE\.stan")) { New-Item -ItemType Directory -Path "$env:USERPROFILE\.stan" -Force | Out-Null }
+$venv = "$env:USERPROFILE\STAN\venv"
+# Migrate from old hidden .stan directory if it exists
+if ((Test-Path "$env:USERPROFILE\.stan") -and -not (Test-Path "$env:USERPROFILE\STAN")) {
+    Write-Host "  Migrating config from .stan to STAN..." -ForegroundColor Gray
+    Copy-Item -Path "$env:USERPROFILE\.stan" -Destination "$env:USERPROFILE\STAN" -Recurse -Force
+}
+if (-not (Test-Path "$env:USERPROFILE\STAN")) { New-Item -ItemType Directory -Path "$env:USERPROFILE\STAN" -Force | Out-Null }
 if (-not (Test-Path "$venv\Scripts\python.exe")) {
     & $python -m venv $venv
 }
@@ -293,7 +298,7 @@ $ErrorActionPreference = "Stop"
 Write-Host ""
 Write-Host "  [5/7] Installing Sage..." -ForegroundColor Cyan
 $sageInstalled = $false
-$sageDir = "$env:USERPROFILE\.stan\tools\sage"
+$sageDir = "$env:USERPROFILE\STAN\tools\sage"
 $ErrorActionPreference = "Continue"
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12

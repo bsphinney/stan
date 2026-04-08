@@ -14,15 +14,36 @@ CONFIG_POLL_INTERVAL = 30  # seconds between mtime checks
 # Package-level config/ directory (fallback)
 _PACKAGE_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
-# User config directory
-_USER_CONFIG_DIR = Path.home() / ".stan"
+# User config directory — visible location on Windows, hidden on Unix
+import platform as _plat
+if _plat.system() == "Windows":
+    _USER_CONFIG_DIR = Path.home() / "STAN"
+else:
+    _USER_CONFIG_DIR = Path.home() / ".stan"
+
+
+# Auto-migrate from old hidden .stan directory on Windows
+if _plat.system() == "Windows":
+    _OLD_CONFIG_DIR = Path.home() / ".stan"
+    if _OLD_CONFIG_DIR.exists() and not _USER_CONFIG_DIR.exists():
+        try:
+            import shutil
+            shutil.copytree(str(_OLD_CONFIG_DIR), str(_USER_CONFIG_DIR))
+            logger.info("Migrated config from %s to %s", _OLD_CONFIG_DIR, _USER_CONFIG_DIR)
+        except Exception:
+            pass  # old dir will still work as fallback
 
 
 def resolve_config_path(filename: str) -> Path:
-    """Resolve config file path: ~/.stan/ first, then package config/ fallback."""
+    """Resolve config file path: ~/STAN/ (or ~/.stan/) first, then package config/ fallback."""
     user_path = _USER_CONFIG_DIR / filename
     if user_path.exists():
         return user_path
+    # Fallback: check old .stan directory on Windows
+    if _plat.system() == "Windows":
+        old_path = Path.home() / ".stan" / filename
+        if old_path.exists():
+            return old_path
     package_path = _PACKAGE_CONFIG_DIR / filename
     if package_path.exists():
         return package_path

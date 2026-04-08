@@ -18,12 +18,24 @@ public class TrustAllUpdate {
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$venv = "$env:USERPROFILE\.stan\venv"
+# Migrate from old hidden .stan directory if needed
+if ((Test-Path "$env:USERPROFILE\.stan\venv") -and -not (Test-Path "$env:USERPROFILE\STAN\venv")) {
+    Write-Host "  Migrating from .stan to STAN..." -ForegroundColor Gray
+    Copy-Item -Path "$env:USERPROFILE\.stan" -Destination "$env:USERPROFILE\STAN" -Recurse -Force
+}
+
+$venv = "$env:USERPROFILE\STAN\venv"
 $venvPython = "$venv\Scripts\python.exe"
 
 if (-not (Test-Path $venvPython)) {
-    Write-Host "  STAN is not installed. Run install.bat first." -ForegroundColor Red
-    exit 1
+    # Also check old location
+    if (Test-Path "$env:USERPROFILE\.stan\venv\Scripts\python.exe") {
+        $venv = "$env:USERPROFILE\.stan\venv"
+        $venvPython = "$venv\Scripts\python.exe"
+    } else {
+        Write-Host "  STAN is not installed. Run install-stan.bat first." -ForegroundColor Red
+        exit 1
+    }
 }
 
 # -- Update STAN --
@@ -182,7 +194,7 @@ Write-Host ""
 Write-Host "  [3/3] Checking Sage..." -ForegroundColor Cyan
 $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
 $sageExe = Get-Command "sage.exe" -ErrorAction SilentlyContinue
-$sageDir = "$env:USERPROFILE\.stan\tools\sage"
+$sageDir = "$env:USERPROFILE\STAN\tools\sage"
 
 if (-not $sageExe) {
     # Check tools directory
