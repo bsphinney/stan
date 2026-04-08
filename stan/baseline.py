@@ -831,7 +831,7 @@ def _process_files(
     lib_path: str | None = None,
 ) -> None:
     """Process a list of raw files, extracting metrics and storing results."""
-    from stan.db import init_db, insert_run
+    from stan.db import init_db, insert_run, insert_tic_trace
     from stan.gating.evaluator import evaluate_gates
     from stan.metrics.chromatography import compute_ips_dda, compute_ips_dia
     from stan.metrics.extractor import extract_dda_metrics, extract_dia_metrics
@@ -1027,6 +1027,20 @@ def _process_files(
                 if run_date:
                     _update_run_date(run_id, run_date)
 
+                # Extract and store TIC trace (Bruker .d only)
+                if vendor == "bruker" and raw_file.is_dir():
+                    try:
+                        from stan.metrics.tic import extract_tic_bruker, compute_tic_metrics
+                        tic_trace = extract_tic_bruker(raw_file)
+                        if tic_trace:
+                            tic_metrics = compute_tic_metrics(tic_trace)
+                            insert_tic_trace(run_id, tic_trace.rt_min, tic_trace.intensity)
+                            # Update run with TIC metrics
+                            if tic_metrics.total_auc > 0:
+                                _update_tic_metrics(run_id, tic_metrics)
+                    except Exception:
+                        logger.debug("TIC extraction failed for %s", raw_file.name, exc_info=True)
+
                 # Track for community upload
                 if community_submit:
                     results_for_community.append({
@@ -1128,6 +1142,20 @@ def _update_run_date(run_id: str, run_date: str) -> None:
             )
     except sqlite3.Error:
         logger.debug("Failed to update run_date for %s", run_id, exc_info=True)
+
+
+def _update_tic_metrics(run_id: str, tic_metrics) -> None:
+    """Update a run with TIC shape metrics (AUC, peak RT, etc.)."""
+    from stan.db import get_db_path
+    db_path = get_db_path()
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.execute(
+                "UPDATE runs SET tic_auc = ?, peak_rt_min = ? WHERE id = ?",
+                (tic_metrics.total_auc, tic_metrics.peak_rt_min, run_id),
+            )
+    except sqlite3.Error:
+        logger.debug("Failed to update TIC metrics for %s", run_id, exc_info=True)
 
 
 def _test_diann(

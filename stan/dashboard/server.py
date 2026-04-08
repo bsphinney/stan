@@ -23,7 +23,7 @@ from stan.config import (
     load_yaml,
     resolve_config_path,
 )
-from stan.db import get_run, get_runs, get_trends, init_db
+from stan.db import get_run, get_runs, get_tic_trace, get_tic_traces_for_instrument, get_trends, init_db
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +239,22 @@ async def api_last_qc(instrument: str) -> dict:
     """Time since last QC run on this instrument."""
     from stan.db import time_since_last_qc
     return time_since_last_qc(instrument=instrument)
+
+
+@app.get("/api/runs/{run_id}/tic")
+async def api_tic_trace(run_id: str) -> dict:
+    """Fetch TIC trace for a single run."""
+    trace = get_tic_trace(run_id)
+    if not trace:
+        raise HTTPException(status_code=404, detail="No TIC trace for this run")
+    return trace
+
+
+@app.get("/api/instruments/{instrument}/tic")
+async def api_instrument_tic(instrument: str, limit: int = 20) -> dict:
+    """Fetch recent TIC traces for an instrument (for overlay plot)."""
+    traces = get_tic_traces_for_instrument(instrument, limit=min(limit, 50))
+    return {"instrument": instrument, "traces": traces, "count": len(traces)}
 
 
 @app.get("/api/community/cohort")

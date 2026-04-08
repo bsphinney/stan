@@ -135,8 +135,11 @@ def run_diann_local(
         else:
             cmd.extend([f"--{key}", str(val)])
 
-    if threads > 0:
-        cmd.extend(["--threads", str(threads)])
+    # Default to all available cores if threads not specified
+    if threads <= 0:
+        import os
+        threads = os.cpu_count() or 4
+    cmd.extend(["--threads", str(threads)])
 
     logger.info("Running DIA-NN locally: %s", raw_path.name)
     logger.debug("Command: %s", " ".join(cmd))

@@ -87,6 +87,14 @@ CREATE TABLE IF NOT EXISTS maintenance_events (
 
 CREATE INDEX IF NOT EXISTS idx_events_instrument ON maintenance_events(instrument);
 CREATE INDEX IF NOT EXISTS idx_events_date ON maintenance_events(event_date);
+
+CREATE TABLE IF NOT EXISTS tic_traces (
+    run_id      TEXT PRIMARY KEY REFERENCES runs(id),
+    rt_min      TEXT NOT NULL,   -- JSON array of floats
+    intensity   TEXT NOT NULL,   -- JSON array of floats
+    n_frames    INTEGER,
+    UNIQUE(run_id)
+);
 """
 
 
@@ -216,6 +224,92 @@ def insert_run(
 
     logger.info("Inserted run %s: %s (%s)", run_id[:8], run_name, gate_result)
     return run_id
+
+
+def insert_tic_trace(
+    run_id: str,
+    rt_min: list[float],
+    intensity: list[float],
+    db_path: Path | None = None,
+) -> None:
+    """Store a TIC trace for a run. Local-only — never uploaded to community."""
+    if db_path is None:
+        db_path = get_db_path()
+
+    # Downsample to ~500 points max for storage efficiency
+    n = len(rt_min)
+    if n > 500:
+        step = n // 500
+        rt_min = rt_min[::step]
+        intensity = intensity[::step]
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO tic_traces (run_id, rt_min, intensity, n_frames) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                run_id,
+                json.dumps([round(r, 3) for r in rt_min]),
+                json.dumps([round(v, 0) for v in intensity]),
+                n,
+            ),
+        )
+
+
+def get_tic_trace(run_id: str, db_path: Path | None = None) -> dict | None:
+    """Fetch a TIC trace for a single run."""
+    if db_path is None:
+        db_path = get_db_path()
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            "SELECT * FROM tic_traces WHERE run_id = ?", (run_id,)
+        ).fetchone()
+
+    if not row:
+        return None
+    return {
+        "run_id": row["run_id"],
+        "rt_min": json.loads(row["rt_min"]),
+        "intensity": json.loads(row["intensity"]),
+        "n_frames": row["n_frames"],
+    }
+
+
+def get_tic_traces_for_instrument(
+    instrument: str,
+    limit: int = 20,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Fetch recent TIC traces for an instrument, joined with run metadata."""
+    if db_path is None:
+        db_path = get_db_path()
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT t.run_id, t.rt_min, t.intensity, t.n_frames, "
+            "r.run_name, r.run_date, r.gate_result "
+            "FROM tic_traces t "
+            "JOIN runs r ON t.run_id = r.id "
+            "WHERE r.instrument = ? "
+            "ORDER BY r.run_date DESC LIMIT ?",
+            (instrument, limit),
+        ).fetchall()
+
+    return [
+        {
+            "run_id": row["run_id"],
+            "rt_min": json.loads(row["rt_min"]),
+            "intensity": json.loads(row["intensity"]),
+            "n_frames": row["n_frames"],
+            "run_name": row["run_name"],
+            "run_date": row["run_date"],
+            "gate_result": row["gate_result"],
+        }
+        for row in rows
+    ]
 
 
 def get_runs(
