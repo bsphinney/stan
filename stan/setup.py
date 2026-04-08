@@ -276,12 +276,16 @@ def run_setup() -> None:
         if auth_token:
             comm_config["auth_token"] = auth_token
     comm_config["error_telemetry"] = error_telemetry
-    community_path.write_text(yaml.dump(comm_config, default_flow_style=False, sort_keys=False))
-    # Set permissions so only the user can read the token (Unix only)
-    import platform as _plat
-    if _plat.system() != "Windows":
-        community_path.chmod(0o600)
-    console.print(f"  [green]Wrote[/green] community settings to {community_path}")
+    try:
+        # On Windows, remove read-only flag before writing (may be set by prior chmod)
+        if community_path.exists():
+            import stat
+            community_path.chmod(stat.S_IWRITE | stat.S_IREAD)
+        community_path.write_text(yaml.dump(comm_config, default_flow_style=False, sort_keys=False))
+        console.print(f"  [green]Wrote[/green] community settings to {community_path}")
+    except PermissionError:
+        console.print(f"  [red]Permission denied writing {community_path}[/red]")
+        console.print("  [yellow]Try right-clicking the file → Properties → uncheck Read-only[/yellow]")
 
     # ── Summary ──────────────────────────────────────────────────
     console.print()
