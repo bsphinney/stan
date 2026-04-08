@@ -576,43 +576,59 @@ def run_baseline() -> None:
     console.print()
     console.print("[bold]FASTA database[/bold]")
     fasta_path = None
+    lib_path = None
 
-    # Check for bundled FASTA first (shipped with STAN in community_fasta/)
-    bundled_fasta = Path(__file__).resolve().parent.parent / "community_fasta" / "human_hela_202604.fasta"
-    if not bundled_fasta.exists():
-        # pip install puts it relative to site-packages — check there too
-        import importlib.resources
-        try:
-            # Walk up from stan/ to find community_fasta/ at repo root
-            for p in [
-                Path(__file__).resolve().parent.parent / "community_fasta" / "human_hela_202604.fasta",
-                get_user_config_dir() / "community_fasta" / "human_hela_202604.fasta",
-            ]:
-                if p.exists():
-                    bundled_fasta = p
-                    break
-        except Exception:
-            pass
+    # Download community search assets (FASTA + empirical library)
+    assets_dir = get_user_config_dir() / "community_assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
 
-    if bundled_fasta.exists():
-        fasta_path = str(bundled_fasta)
-        console.print(f"  [green]Using bundled FASTA:[/green] {bundled_fasta.name}")
-    else:
+    # Asset filenames and GitHub release URLs
+    RELEASE_URL = "https://github.com/bsphinney/stan/releases/download/v0.1.0-assets"
+    ASSETS = {
+        "fasta": "human_hela_202604.fasta",
+        "lib_thermo": "hela_orbitrap_202604.parquet",
+        "lib_bruker": "hela_timstof_202604.parquet",
+    }
+
+    def _get_asset(name: str) -> Path | None:
+        """Find or download a community asset."""
+        local = assets_dir / name
+        if local.exists():
+            return local
+
+        # Check bundled (shipped with pip install)
+        bundled = Path(__file__).resolve().parent.parent / "community_fasta" / name
+        if bundled.exists():
+            return bundled
+
+        # Download from GitHub release
+        url = f"{RELEASE_URL}/{name}"
+        console.print(f"  Downloading {name}...")
         try:
-            from huggingface_hub import hf_hub_download
-            from stan.search.community_params import COMMUNITY_FASTA_HF_PATH, HF_DATASET_REPO
-            console.print("  Downloading community FASTA from HuggingFace...")
-            fasta_path = hf_hub_download(
-                repo_id=HF_DATASET_REPO,
-                filename=COMMUNITY_FASTA_HF_PATH,
-                repo_type="dataset",
-            )
-            console.print(f"  [green]Using community FASTA:[/green] {Path(fasta_path).name}")
+            import urllib.request
+            urllib.request.urlretrieve(url, str(local))
+            console.print(f"  [green]Downloaded:[/green] {name}")
+            return local
         except Exception as e:
-            console.print(f"  [yellow]Could not download community FASTA: {e}[/yellow]")
-            fasta_path = Prompt.ask("  Path to local FASTA file", default="", console=console)
-            if fasta_path and not Path(fasta_path).exists():
-                console.print(f"  [yellow]Warning: File not found: {fasta_path}[/yellow]")
+            console.print(f"  [yellow]Download failed: {e}[/yellow]")
+            return None
+
+    # Get FASTA
+    fasta_file = _get_asset(ASSETS["fasta"])
+    if fasta_file:
+        fasta_path = str(fasta_file)
+        console.print(f"  [green]FASTA:[/green] {fasta_file.name}")
+    else:
+        fasta_path = Prompt.ask("  Path to local FASTA file", default="", console=console)
+        if fasta_path and not Path(fasta_path).exists():
+            console.print(f"  [yellow]Warning: File not found: {fasta_path}[/yellow]")
+
+    # Get empirical library (vendor-specific)
+    lib_key = "lib_thermo" if vendor == "thermo" else "lib_bruker"
+    lib_file = _get_asset(ASSETS[lib_key])
+    if lib_file:
+        lib_path = str(lib_file)
+        console.print(f"  [green]Library:[/green] {lib_file.name}")
 
     # ── 6. Search engines — find, validate, test ─────────────────
     diann_exe = _find_diann()
@@ -929,6 +945,7 @@ def _process_files(
                         vendor=vendor,
                         diann_exe=diann_exe,
                         fasta_path=fasta_path,
+                        lib_path=lib_path,
                     )
                 else:
                     if not sage_exe:
