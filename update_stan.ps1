@@ -66,18 +66,49 @@ if (-not $diannExe) {
     }
 }
 
-$needsDiannInstall = $false
+# Collect ALL DIA-NN installs, pick the newest
+$allDiann = @()
 if ($diannExe) {
-    $diannPath = if ($diannExe.Source) { $diannExe.Source } else { $diannExe.FullName }
-    # Check version — need 2.0+ for community benchmark
-    $diannVerOut = & $diannPath 2>&1 | Out-String
-    if ($diannPath -match "1\.\d+\.\d+" -or $diannVerOut -match "DIA-NN\s+1\.") {
-        Write-Host "  DIA-NN found but outdated: $diannPath" -ForegroundColor Yellow
-        Write-Host "  Version 2.0+ required. Upgrading..." -ForegroundColor Yellow
-        $needsDiannInstall = $true
-    } else {
-        Write-Host "  DIA-NN found: $diannPath" -ForegroundColor Green
+    $p = if ($diannExe.Source) { $diannExe.Source } else { $diannExe.FullName }
+    $allDiann += $p
+}
+foreach ($searchPath in $diannSearchPaths) {
+    if (Test-Path $searchPath) {
+        $found = Get-ChildItem -Path $searchPath -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue
+        foreach ($f in $found) {
+            if ($allDiann -notcontains $f.FullName) { $allDiann += $f.FullName }
+        }
     }
+}
+
+# Pick the newest version (prefer 2.x over 1.x)
+$bestDiann = $null
+$bestVer = @(0, 0, 0)
+foreach ($p in $allDiann) {
+    if ($p -match "(\d+)\.(\d+)\.?(\d*)") {
+        $ver = @([int]$Matches[1], [int]$Matches[2], [int]$(if ($Matches[3]) { $Matches[3] } else { 0 }))
+        if ($ver[0] -gt $bestVer[0] -or ($ver[0] -eq $bestVer[0] -and $ver[1] -gt $bestVer[1])) {
+            $bestVer = $ver
+            $bestDiann = $p
+        }
+    }
+}
+
+$needsDiannInstall = $false
+if ($bestDiann -and $bestVer[0] -ge 2) {
+    Write-Host "  DIA-NN found: $bestDiann (v$($bestVer[0]).$($bestVer[1]))" -ForegroundColor Green
+    # Ensure it's on PATH
+    $diannDir = Split-Path $bestDiann -Parent
+    $userPath = [Environment]::GetEnvironmentVariable("PATH","User")
+    if ($userPath -notlike "*$diannDir*") {
+        [Environment]::SetEnvironmentVariable("PATH","$userPath;$diannDir","User")
+        $env:Path = "$diannDir;$env:Path"
+        Write-Host "  Added $diannDir to PATH." -ForegroundColor Gray
+    }
+} elseif ($bestDiann) {
+    Write-Host "  DIA-NN found but outdated: $bestDiann (v$($bestVer[0]).$($bestVer[1]))" -ForegroundColor Yellow
+    Write-Host "  Version 2.0+ required. Upgrading..." -ForegroundColor Yellow
+    $needsDiannInstall = $true
 } else {
     Write-Host "  DIA-NN not found. Installing..." -ForegroundColor Yellow
     $needsDiannInstall = $true
