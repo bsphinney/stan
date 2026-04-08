@@ -157,6 +157,42 @@ Write-Host "  STAN installed." -ForegroundColor Green
 Write-Host ""
 Write-Host "  [4/7] Installing DIA-NN..." -ForegroundColor Cyan
 $diannInstalled = $false
+
+# Check if DIA-NN 2.0+ is already installed
+$diannSearchPaths = @(
+    "C:\DIA-NN", "C:\Program Files\DIA-NN", "$env:LOCALAPPDATA\DIA-NN",
+    "C:\DiaNN", "C:\Program Files\DiaNN", "$env:LOCALAPPDATA\DiaNN",
+    "$env:PROGRAMFILES\DIA-NN", "$env:PROGRAMFILES(x86)\DIA-NN"
+)
+$env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+$allDiann = @()
+$onPath = Get-Command "DiaNN.exe" -ErrorAction SilentlyContinue
+if ($onPath) { $allDiann += $onPath.Source }
+foreach ($sp in $diannSearchPaths) {
+    if (Test-Path $sp) {
+        $found = Get-ChildItem -Path $sp -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue
+        foreach ($f in $found) { if ($allDiann -notcontains $f.FullName) { $allDiann += $f.FullName } }
+    }
+}
+$bestDiann = $null
+foreach ($p in $allDiann) {
+    if ($p -match "(\d+)\.(\d+)") {
+        if ([int]$Matches[1] -ge 2) { $bestDiann = $p; break }
+    }
+}
+if ($bestDiann) {
+    Write-Host "  DIA-NN 2.0+ already installed: $bestDiann" -ForegroundColor Green
+    $diannDir = Split-Path $bestDiann -Parent
+    $userPath = [Environment]::GetEnvironmentVariable("PATH","User")
+    if ($userPath -notlike "*$diannDir*") {
+        [Environment]::SetEnvironmentVariable("PATH","$userPath;$diannDir","User")
+        $env:Path = "$diannDir;$env:Path"
+        Write-Host "  Added $diannDir to PATH." -ForegroundColor Gray
+    }
+    $diannInstalled = $true
+}
+
+if (-not $diannInstalled) {
 $ErrorActionPreference = "Continue"
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -251,6 +287,7 @@ if (-not $diannInstalled) {
     Write-Host "  Skipped (STAN will still work, but DIA searches require DIA-NN)." -ForegroundColor Yellow
 }
 $ErrorActionPreference = "Stop"
+}  # end if (-not $diannInstalled) — skip download if 2.0+ already present
 
 # -- Install Sage --
 Write-Host ""
