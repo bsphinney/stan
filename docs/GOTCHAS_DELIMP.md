@@ -86,6 +86,19 @@ Quick-reference table for known issues and their solutions. Referenced from CLAU
 | `AnalyisOverview.txt` typo | Regex handles both spellings: `analy.?is.?overview` |
 | Spectronaut 20+ RunOverview format | Key-value pairs, auto-detected via `ncol()` check |
 
+## Bruker .d / analysis.tdf Metadata
+
+| Field | Source | Query |
+|-------|--------|-------|
+| Gradient length (min) | `Frames.Time` column (seconds) | `SELECT MIN(Time), MAX(Time) FROM Frames` → `(max - min) / 60` |
+| Instrument model | `GlobalMetadata` key-value | `SELECT Value FROM GlobalMetadata WHERE Key = 'InstrumentName'` |
+| Instrument serial | `GlobalMetadata` key-value | `SELECT Value FROM GlobalMetadata WHERE Key = 'InstrumentSerialNumber'` |
+| Acquisition date | `GlobalMetadata` key-value | `SELECT Value FROM GlobalMetadata WHERE Key = 'AcquisitionDateTime'` |
+| DIA/DDA mode | `Frames.MsmsType` | 0=MS1, 8=ddaPASEF, 9=diaPASEF |
+| MS method name | `GlobalMetadata` key-value | `SELECT Value FROM GlobalMetadata WHERE Key = 'MethodName'` |
+
+Note: `Frames.Time` is retention time in seconds from acquisition start. The difference between max and min gives the total acquisition duration, which closely approximates gradient length. Confirmed from DE-LIMP `parse_timstof_from_tdf()` in `R/helpers_instrument.R`.
+
 ## Cascadia / Casanovo Training
 
 | Problem | Solution |

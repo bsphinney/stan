@@ -104,11 +104,12 @@ def _extract_bruker_metadata(d_path: Path) -> dict:
     from stan.watcher.acquisition_date import get_acquisition_date
     result["acquisition_date"] = get_acquisition_date(d_path)
 
-    # Instrument model from GlobalMetadata
+    # Instrument model + gradient length from analysis.tdf
     tdf = d_path / "analysis.tdf"
     if tdf.exists():
         try:
             with sqlite3.connect(str(tdf)) as con:
+                # Instrument model from GlobalMetadata
                 for key in ["InstrumentName", "InstrumentType"]:
                     row = con.execute(
                         "SELECT Value FROM GlobalMetadata WHERE Key = ?", (key,)
@@ -116,6 +117,16 @@ def _extract_bruker_metadata(d_path: Path) -> dict:
                     if row and row[0]:
                         result["instrument_model"] = row[0]
                         break
+
+                # Gradient length from Frames table
+                # Time column is in seconds; gradient = (max - min) / 60
+                row = con.execute(
+                    "SELECT MIN(Time), MAX(Time) FROM Frames"
+                ).fetchone()
+                if row and row[0] is not None and row[1] is not None:
+                    gradient_sec = row[1] - row[0]
+                    if gradient_sec > 0:
+                        result["gradient_length_min"] = int(gradient_sec / 60)
         except sqlite3.Error:
             pass
 
