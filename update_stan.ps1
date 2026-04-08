@@ -125,17 +125,20 @@ foreach ($p in $allDiann) {
 
 $needsDiannInstall = $false
 if ($bestDiann -and $bestVer[0] -ge 2) {
-    Write-Host "  DIA-NN found: $bestDiann (v$($bestVer[0]).$($bestVer[1]))" -ForegroundColor Green
+    $verStr = "$($bestVer[0]).$($bestVer[1])"
+    Write-Host "  DIA-NN found: $bestDiann (v$verStr)" -ForegroundColor Green
     # Ensure it's on PATH
     $diannDir = Split-Path $bestDiann -Parent
     $userPath = [Environment]::GetEnvironmentVariable("PATH","User")
     if ($userPath -notlike "*$diannDir*") {
-        [Environment]::SetEnvironmentVariable("PATH","$userPath;$diannDir","User")
+        $newPath = "$userPath;$diannDir"
+                [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
         $env:Path = "$diannDir;$env:Path"
         Write-Host "  Added $diannDir to PATH." -ForegroundColor Gray
     }
 } elseif ($bestDiann) {
-    Write-Host "  DIA-NN found but outdated: $bestDiann (v$($bestVer[0]).$($bestVer[1]))" -ForegroundColor Yellow
+    $verStr = "$($bestVer[0]).$($bestVer[1])"
+    Write-Host "  DIA-NN found but outdated: $bestDiann (v$verStr)" -ForegroundColor Yellow
     Write-Host "  Version 2.0+ required. Upgrading..." -ForegroundColor Yellow
     $needsDiannInstall = $true
 } else {
@@ -161,11 +164,13 @@ if ($needsDiannInstall) {
                 # Try silent install first (may need admin)
                 $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/quiet", "/norestart" -Wait -PassThru
                 if ($proc.ExitCode -ne 0) {
-                    Write-Host "  Silent install failed (exit $($proc.ExitCode)). Trying with admin prompt..." -ForegroundColor Yellow
+                    $exitCode = $proc.ExitCode
+                    Write-Host "  Silent install failed (exit $exitCode). Trying with admin prompt..." -ForegroundColor Yellow
                     $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/passive", "/norestart" -Wait -PassThru -Verb RunAs
                 }
                 if ($proc.ExitCode -ne 0) {
-                    Write-Host "  MSI install failed with exit code $($proc.ExitCode)." -ForegroundColor Red
+                    $exitCode = $proc.ExitCode
+                    Write-Host "  MSI install failed with exit code $exitCode." -ForegroundColor Red
                     Write-Host "  Try running update-stan.bat as Administrator, or install DIA-NN manually." -ForegroundColor Yellow
                 }
             } else {
@@ -184,7 +189,8 @@ if ($needsDiannInstall) {
                         $diannDir = Split-Path $found.FullName -Parent
                         $userPath = [Environment]::GetEnvironmentVariable("PATH","User")
                         if ($userPath -notlike "*$diannDir*") {
-                            [Environment]::SetEnvironmentVariable("PATH","$userPath;$diannDir","User")
+                            $newPath = "$userPath;$diannDir"
+                [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
                         }
                         Write-Host "  DIA-NN installed at $($found.FullName)" -ForegroundColor Green
                         $diannFound = $true
@@ -240,7 +246,8 @@ if ($sageExe) {
                 $sageExeDir = Split-Path $found.FullName -Parent
                 $userPath = [Environment]::GetEnvironmentVariable("PATH","User")
                 if ($userPath -notlike "*$sageExeDir*") {
-                    [Environment]::SetEnvironmentVariable("PATH","$userPath;$sageExeDir","User")
+                    $newPath = "$userPath;$sageExeDir"
+                [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
                 }
                 Write-Host "  Sage installed: $($found.FullName)" -ForegroundColor Green
             }
