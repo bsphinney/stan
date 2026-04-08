@@ -581,13 +581,77 @@ def run_baseline() -> None:
         if fasta_path and not Path(fasta_path).exists():
             console.print(f"  [yellow]Warning: File not found: {fasta_path}[/yellow]")
 
-    # ── 6. Search engine paths ──────────────────────────────────
+    # ── 6. Search engines — find, validate, test ─────────────────
     diann_exe = _find_diann()
     sage_exe = _find_sage()
 
+    # Determine if we need each engine
+    has_dia = any(
+        is_dia(m.get("acquisition_mode"))
+        for m in file_metadata
+        if m.get("acquisition_mode") and m["acquisition_mode"] != AcquisitionMode.UNKNOWN
+    )
+    has_dda = any(
+        is_dda(m.get("acquisition_mode"))
+        for m in file_metadata
+        if m.get("acquisition_mode") and m["acquisition_mode"] != AcquisitionMode.UNKNOWN
+    )
+
+    # DIA-NN validation
+    if has_dia and not diann_exe:
+        console.print("  [red]DIA-NN not found[/red] — needed for DIA files.")
+        custom = Prompt.ask("  Path to DiaNN.exe (or Enter to skip DIA)", default="", console=console)
+        if custom and Path(custom).exists():
+            diann_exe = custom
+        elif custom:
+            console.print(f"  [yellow]Not found: {custom}[/yellow]")
+
+    if diann_exe:
+        ok, msg = _test_diann(diann_exe, fasta_path, file_metadata, vendor, console)
+        if not ok:
+            console.print(f"  [red]DIA-NN test failed:[/red] {msg}")
+            custom = Prompt.ask("  Path to a different DiaNN.exe (or Enter to skip DIA)", default="", console=console)
+            if custom and Path(custom).exists():
+                diann_exe = custom
+                ok2, msg2 = _test_diann(diann_exe, fasta_path, file_metadata, vendor, console)
+                if not ok2:
+                    console.print(f"  [red]Still failing:[/red] {msg2}")
+                    diann_exe = None
+            else:
+                diann_exe = None
+    else:
+        if not has_dia:
+            console.print("  DIA-NN: [dim]not needed (no DIA files)[/dim]")
+
+    # Sage validation
+    if has_dda and not sage_exe:
+        console.print("  [red]Sage not found[/red] — needed for DDA files.")
+        custom = Prompt.ask("  Path to sage.exe (or Enter to skip DDA)", default="", console=console)
+        if custom and Path(custom).exists():
+            sage_exe = custom
+        elif custom:
+            console.print(f"  [yellow]Not found: {custom}[/yellow]")
+
+    if sage_exe:
+        ok, msg = _test_sage(sage_exe, fasta_path, file_metadata, vendor, console)
+        if not ok:
+            console.print(f"  [red]Sage test failed:[/red] {msg}")
+            custom = Prompt.ask("  Path to a different sage.exe (or Enter to skip DDA)", default="", console=console)
+            if custom and Path(custom).exists():
+                sage_exe = custom
+                ok2, msg2 = _test_sage(sage_exe, fasta_path, file_metadata, vendor, console)
+                if not ok2:
+                    console.print(f"  [red]Still failing:[/red] {msg2}")
+                    sage_exe = None
+            else:
+                sage_exe = None
+    else:
+        if not has_dda:
+            console.print("  Sage: [dim]not needed (no DDA files)[/dim]")
+
     console.print()
-    console.print(f"  DIA-NN: {diann_exe or '[red]not found[/red]'}")
-    console.print(f"  Sage:   {sage_exe or '[red]not found[/red]'}")
+    console.print(f"  DIA-NN: {diann_exe or '[dim]skipped[/dim]'}")
+    console.print(f"  Sage:   {sage_exe or '[dim]skipped[/dim]'}")
 
     # ── 7. Community upload ─────────────────────────────────────
     community_submit = False
@@ -1024,6 +1088,165 @@ def _update_run_date(run_id: str, run_date: str) -> None:
             )
     except sqlite3.Error:
         logger.debug("Failed to update run_date for %s", run_id, exc_info=True)
+
+
+def _test_diann(
+    diann_exe: str,
+    fasta_path: str | None,
+    file_metadata: list[dict],
+    vendor: str,
+    console,
+) -> tuple[bool, str]:
+    """Run a quick DIA-NN test to verify it works.
+
+    Picks the smallest DIA file, runs DIA-NN with a short timeout,
+    and parses output to verify it started correctly.
+
+    Returns (success, message).
+    """
+    import subprocess
+    from stan.telemetry import report_error
+
+    console.print("  [dim]Testing DIA-NN...[/dim]")
+
+    # First check: does the exe run at all?
+    try:
+        proc = subprocess.run(
+            [diann_exe],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        output = proc.stdout + proc.stderr
+        # DIA-NN prints its version on startup
+        if "DIA-NN" not in output and "diann" not in output.lower():
+            msg = f"Executable runs but doesn't look like DIA-NN. Output: {output[:200]}"
+            report_error(RuntimeError(msg), {"search_engine": "diann", "vendor": vendor})
+            return False, msg
+    except FileNotFoundError:
+        msg = f"Executable not found: {diann_exe}"
+        report_error(FileNotFoundError(msg), {"search_engine": "diann", "vendor": vendor})
+        return False, msg
+    except subprocess.TimeoutExpired:
+        # DIA-NN may hang waiting for input — that's OK, it at least started
+        pass
+    except Exception as e:
+        msg = f"Could not run DIA-NN: {e}"
+        report_error(e, {"search_engine": "diann", "vendor": vendor})
+        return False, msg
+
+    # Second check: test search on the smallest DIA file
+    dia_files = [
+        m for m in file_metadata
+        if m.get("acquisition_mode") and is_dia(m["acquisition_mode"])
+    ]
+    if not dia_files or not fasta_path:
+        console.print("  [green]DIA-NN executable OK[/green]")
+        return True, "OK (no test file available)"
+
+    # Pick smallest file for fast test
+    test_file = min(dia_files, key=lambda m: m["path"].stat().st_size if m["path"].exists() else float("inf"))
+    test_path = test_file["path"]
+    test_output = Path(os.environ.get("TEMP", "/tmp")) / "stan_test_diann"
+    test_output.mkdir(parents=True, exist_ok=True)
+    report_path = test_output / "report.parquet"
+
+    from stan.search.local import _build_local_diann_params
+    params = _build_local_diann_params(fasta_path)
+    cmd = [diann_exe, "--f", str(test_path), "--out", str(report_path)]
+    for key, val in params.items():
+        if val == "":
+            cmd.append(f"--{key}")
+        else:
+            cmd.extend([f"--{key}", str(val)])
+    cmd.extend(["--threads", "2"])
+
+    console.print(f"  [dim]Test search: {test_path.name}...[/dim]")
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,  # 2 min timeout for test
+        )
+        output = proc.stdout + proc.stderr
+
+        if proc.returncode != 0:
+            # Parse common DIA-NN errors
+            if "cannot open" in output.lower() or "file not found" in output.lower():
+                msg = f"DIA-NN cannot read input file. stderr: {proc.stderr[:300]}"
+            elif "fasta" in output.lower() and "error" in output.lower():
+                msg = f"FASTA issue. stderr: {proc.stderr[:300]}"
+            elif ".net" in output.lower() or "runtime" in output.lower():
+                msg = f"Missing .NET runtime. stderr: {proc.stderr[:300]}"
+            else:
+                msg = f"Exit code {proc.returncode}. stderr: {proc.stderr[:500]}"
+            report_error(
+                RuntimeError(msg),
+                {"search_engine": "diann", "vendor": vendor, "raw_file_name": test_path.stem},
+            )
+            return False, msg
+
+        console.print(f"  [green]DIA-NN test passed[/green]")
+        return True, "OK"
+
+    except subprocess.TimeoutExpired:
+        # 2 min timeout is fine — DIA-NN started and is actually searching
+        console.print(f"  [green]DIA-NN test passed[/green] (still running after 2 min — working)")
+        return True, "OK (search started successfully)"
+    except Exception as e:
+        msg = f"Test search error: {e}"
+        report_error(e, {"search_engine": "diann", "vendor": vendor})
+        return False, msg
+    finally:
+        # Clean up test output
+        import shutil as _shutil
+        _shutil.rmtree(test_output, ignore_errors=True)
+
+
+def _test_sage(
+    sage_exe: str,
+    fasta_path: str | None,
+    file_metadata: list[dict],
+    vendor: str,
+    console,
+) -> tuple[bool, str]:
+    """Run a quick Sage test to verify it works.
+
+    Returns (success, message).
+    """
+    import subprocess
+    from stan.telemetry import report_error
+
+    console.print("  [dim]Testing Sage...[/dim]")
+
+    # First check: does the exe run?
+    try:
+        proc = subprocess.run(
+            [sage_exe, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        output = proc.stdout + proc.stderr
+        if "sage" not in output.lower():
+            msg = f"Executable runs but doesn't look like Sage. Output: {output[:200]}"
+            report_error(RuntimeError(msg), {"search_engine": "sage", "vendor": vendor})
+            return False, msg
+        console.print(f"  [green]Sage OK:[/green] {output.strip()}")
+        return True, "OK"
+    except FileNotFoundError:
+        msg = f"Executable not found: {sage_exe}"
+        report_error(FileNotFoundError(msg), {"search_engine": "sage", "vendor": vendor})
+        return False, msg
+    except subprocess.TimeoutExpired:
+        console.print("  [green]Sage executable responds[/green]")
+        return True, "OK"
+    except Exception as e:
+        msg = f"Could not run Sage: {e}"
+        report_error(e, {"search_engine": "sage", "vendor": vendor})
+        return False, msg
 
 
 def _find_diann() -> str | None:
