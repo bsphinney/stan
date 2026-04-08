@@ -302,6 +302,25 @@ def extract_metadata(raw_path: Path) -> dict:
             elif "dda" in value.lower():
                 parsed["acquisition_mode"] = "dda"
 
+    # Fallback mode detection from MS1/MS2 scan ratio when method name doesn't help.
+    # DIA has a fixed, consistent MS2/MS1 ratio (typically 10-80 windows per cycle).
+    # DDA has a variable ratio but typically higher overall MS2/MS1 (top-N dependent).
+    # Key insight: DIA windows_per_cycle is an integer (or very close to one).
+    if "acquisition_mode" not in parsed and ms1_count > 10 and ms2_count > 0:
+        ratio = ms2_count / ms1_count
+        # Check if ratio is close to an integer (within 5%) — hallmark of DIA
+        nearest_int = round(ratio)
+        if nearest_int >= 5 and abs(ratio - nearest_int) / nearest_int < 0.05:
+            parsed["acquisition_mode"] = "dia"
+            logger.info(
+                "Mode from scan ratio: DIA (MS2/MS1=%.1f, ~%d windows/cycle)",
+                ratio, nearest_int,
+            )
+        elif ratio > 1:
+            # DDA: variable MS2 count, ratio usually not close to integer
+            parsed["acquisition_mode"] = "dda"
+            logger.info("Mode from scan ratio: DDA (MS2/MS1=%.1f)", ratio)
+
     # Also check the raw filename for window info (backup if method name is absent)
     if "dia_isolation_width_th" not in parsed:
         raw_name = str(raw_path.name)
