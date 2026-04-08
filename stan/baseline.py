@@ -540,6 +540,12 @@ def run_baseline() -> None:
     if lib_file:
         lib_path = str(lib_file)
         console.print(f"  [green]Library:[/green] {lib_file.name}")
+    else:
+        console.print(
+            f"  [red]Library not found:[/red] {ASSETS[lib_key]}\n"
+            f"  DIA searches require the community spectral library.\n"
+            f"  DIA files will be skipped. DDA files will still be processed."
+        )
 
     if not fasta_path:
         console.print("  [yellow]No FASTA available — searches will fail.[/yellow]")

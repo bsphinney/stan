@@ -37,11 +37,19 @@ def _build_local_diann_params(
 ) -> dict:
     """Build DIA-NN parameters for local mode with user-provided FASTA.
 
-    If no lib_path is provided, DIA-NN runs in library-free mode:
-    it generates a predicted spectral library from the FASTA.
+    Requires a spectral library — library-free mode is too slow for QC
+    and produces non-comparable results for the community benchmark.
     """
+    if not lib_path:
+        raise ValueError(
+            "DIA-NN requires a spectral library for QC searches. "
+            "Library-free mode is too slow and produces non-comparable results. "
+            "Run `stan baseline` again to download the community library."
+        )
+
     params: dict = {
         "fasta": fasta_path,
+        "lib": lib_path,
         "qvalue": 0.01,
         "min-pep-len": 7,
         "max-pep-len": 30,
@@ -50,13 +58,6 @@ def _build_local_diann_params(
         "max-pr-charge": 4,
         "cut": "K*,R*",
     }
-
-    if lib_path:
-        params["lib"] = lib_path
-    else:
-        # Library-free mode: predict from FASTA
-        params["fasta-search"] = ""
-        params["predictor"] = ""
 
     return params
 
