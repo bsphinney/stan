@@ -30,41 +30,53 @@ if (-not (Test-Path $venvPython)) {
         # Auto-migrate: create new STAN dir and copy venv from .stan
         Write-Host "  Migrating from .stan to STAN..." -ForegroundColor Yellow
         if (-not (Test-Path $newStanDir)) { New-Item -ItemType Directory -Path $newStanDir -Force | Out-Null }
+        $migrationOk = $true
         try {
-            Copy-Item -Path $oldVenv -Destination "$newStanDir\venv" -Recurse -Force
-            Write-Host "  Copied venv to $newStanDir\venv" -ForegroundColor Gray
-            # Copy config files (instruments.yml, community.yml, etc.)
-            $configFiles = Get-ChildItem "$env:USERPROFILE\.stan" -File -ErrorAction SilentlyContinue
+            $destVenv = Join-Path $newStanDir "venv"
+            Copy-Item -Path $oldVenv -Destination $destVenv -Recurse -Force
+            Write-Host "  Copied venv" -ForegroundColor Gray
+            # Copy config files
+            $oldStanDir = Join-Path $env:USERPROFILE ".stan"
+            $configFiles = Get-ChildItem $oldStanDir -File -ErrorAction SilentlyContinue
             foreach ($cf in $configFiles) {
-                if (-not (Test-Path "$newStanDir\$($cf.Name)")) {
-                    Copy-Item $cf.FullName "$newStanDir\$($cf.Name)"
-                    Write-Host "  Copied $($cf.Name)" -ForegroundColor Gray
+                $destFile = Join-Path $newStanDir $cf.Name
+                if (-not (Test-Path $destFile)) {
+                    Copy-Item $cf.FullName $destFile
+                    Write-Host ("  Copied " + $cf.Name) -ForegroundColor Gray
                 }
             }
-            # Copy subdirectories (tools, community_assets, etc.) except venv
-            $subDirs = Get-ChildItem "$env:USERPROFILE\.stan" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "venv" }
+            # Copy subdirectories except venv
+            $subDirs = Get-ChildItem $oldStanDir -Directory -ErrorAction SilentlyContinue
             foreach ($sd in $subDirs) {
-                if (-not (Test-Path "$newStanDir\$($sd.Name)")) {
-                    Copy-Item $sd.FullName "$newStanDir\$($sd.Name)" -Recurse -Force
-                    Write-Host "  Copied $($sd.Name)/" -ForegroundColor Gray
+                if ($sd.Name -ne "venv") {
+                    $destSub = Join-Path $newStanDir $sd.Name
+                    if (-not (Test-Path $destSub)) {
+                        Copy-Item $sd.FullName $destSub -Recurse -Force
+                        Write-Host ("  Copied " + $sd.Name) -ForegroundColor Gray
+                    }
                 }
             }
-            # Update PATH: remove old .stan, add new STAN
+            # Update PATH
             $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-            $oldScripts = "$oldVenv\Scripts"
-            $newScripts = "$newStanDir\venv\Scripts"
+            $oldScripts = Join-Path $oldVenv "Scripts"
+            $newScripts = Join-Path $destVenv "Scripts"
             if ($userPath -like "*$oldScripts*") {
-                $userPath = ($userPath -split ";" | Where-Object { $_ -ne $oldScripts -and $_ -ne "" }) -join ";"
+                $parts = $userPath -split ";"
+                $filtered = @()
+                foreach ($p in $parts) { if ($p -ne $oldScripts -and $p -ne "") { $filtered += $p } }
+                $userPath = $filtered -join ";"
             }
             if ($userPath -notlike "*$newScripts*") {
-                $userPath = "$userPath;$newScripts"
+                $userPath = $userPath + ";" + $newScripts
             }
             [Environment]::SetEnvironmentVariable("PATH", $userPath, "User")
-            $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + $userPath
-            Write-Host "  PATH updated to use $newStanDir" -ForegroundColor Gray
+            $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+            $env:Path = $machinePath + ";" + $userPath
+            Write-Host "  PATH updated." -ForegroundColor Gray
             Write-Host "  Migration complete." -ForegroundColor Green
         } catch {
-            Write-Host "  Migration failed: $_ — using old location" -ForegroundColor Yellow
+            Write-Host "  Migration failed, using old location." -ForegroundColor Yellow
+            $migrationOk = $false
             $venv = $oldVenv
             $venvPython = $oldVenvPython
         }
@@ -75,10 +87,10 @@ if (-not (Test-Path $venvPython)) {
 }
 
 # Ensure venvPython points to the right place after potential migration
-$venvPython = "$venv\Scripts\python.exe"
+$venvPython = Join-Path $venv "Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
     $venv = $oldVenv
-    $venvPython = "$oldVenv\Scripts\python.exe"
+    $venvPython = Join-Path $oldVenv "Scripts\python.exe"
 }
 
 # -- Update STAN --
@@ -100,25 +112,34 @@ if (-not (Test-Path $stanExe)) {
 Write-Host "  STAN updated." -ForegroundColor Green
 
 # If both venvs exist, clean up the old .stan location
-if ((Test-Path "$env:USERPROFILE\STAN\venv\Scripts\stan.exe") -and (Test-Path $oldVenvPython)) {
-    Write-Host "  Migrating from old .stan location..." -ForegroundColor Yellow
-    $oldScripts = "$oldVenv\Scripts"
+$newStanExe = Join-Path $env:USERPROFILE "STAN\venv\Scripts\stan.exe"
+if ((Test-Path $newStanExe) -and (Test-Path $oldVenvPython)) {
+    Write-Host "  Cleaning up old .stan location..." -ForegroundColor Yellow
+    $oldScripts = Join-Path $oldVenv "Scripts"
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     if ($userPath -and $userPath -like "*$oldScripts*") {
-        $newPath = ($userPath -split ";" | Where-Object { $_ -ne $oldScripts -and $_ -ne "" }) -join ";"
-        [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
-        $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + $newPath
+        $parts = $userPath -split ";"
+        $filtered = @()
+        foreach ($p in $parts) { if ($p -ne $oldScripts -and $p -ne "") { $filtered += $p } }
+        $cleanPath = $filtered -join ";"
+        [Environment]::SetEnvironmentVariable("PATH", $cleanPath, "User")
+        $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        $env:Path = $machinePath + ";" + $cleanPath
         Write-Host "  Removed old .stan\venv from PATH." -ForegroundColor Gray
     }
     # Also update the old venv so any stale shortcuts still work
-    & $oldVenvPython -m pip install --no-cache-dir --force-reinstall --quiet @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip?t=$([DateTime]::Now.Ticks)" 2>&1 | Out-Null
+    $ticks = [DateTime]::Now.Ticks
+    $zipUrl = "https://github.com/bsphinney/stan/archive/refs/heads/main.zip?t=$ticks"
+    & $oldVenvPython -m pip install --no-cache-dir --force-reinstall --quiet @pipTrust $zipUrl 2>&1 | Out-Null
     Write-Host "  Old .stan venv also updated." -ForegroundColor Gray
 }
 
 # -- Check DIA-NN --
 Write-Host ""
 Write-Host "  [2/3] Checking DIA-NN..." -ForegroundColor Cyan
-$env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+$userPathRefresh = [Environment]::GetEnvironmentVariable("Path", "User")
+$env:Path = $machinePath + ";" + $userPathRefresh
 
 $diannSearchPaths = @(
     "C:\DIA-NN",
@@ -197,7 +218,7 @@ if ($needsDiannInstall) {
             }
             Remove-Item $installer -ErrorAction SilentlyContinue
             # Find installed exe
-            $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+            $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); $up = [Environment]::GetEnvironmentVariable("Path", "User"); $env:Path = "$mp;$up"
             foreach ($sp in $diannSearchPaths) {
                 if (Test-Path $sp) {
                     $f = Get-ChildItem -Path $sp -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -225,7 +246,7 @@ if ($needsDiannInstall) {
 # -- Check Sage --
 Write-Host ""
 Write-Host "  [3/3] Checking Sage..." -ForegroundColor Cyan
-$env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
+$mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); $up = [Environment]::GetEnvironmentVariable("Path", "User"); $env:Path = "$mp;$up"
 $sageExe = Get-Command "sage.exe" -ErrorAction SilentlyContinue
 $sageDir = "$env:USERPROFILE\STAN\tools\sage"
 
