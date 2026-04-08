@@ -21,6 +21,7 @@ from watchdog.observers.polling import PollingObserver
 
 from stan.config import CONFIG_POLL_INTERVAL, ConfigWatcher, resolve_config_path
 from stan.watcher.detector import AcquisitionMode, detect_mode, is_dia
+from stan.watcher.qc_filter import compile_qc_pattern, is_qc_file
 from stan.watcher.stability import StabilityTracker
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,8 @@ class _AcquisitionHandler(FileSystemEventHandler):
         self._extensions = set(instrument_config.get("extensions", []))
         self._vendor = instrument_config.get("vendor", "")
         self._stable_secs = instrument_config.get("stable_secs", 60)
+        self._qc_only = instrument_config.get("qc_only", True)
+        self._qc_pattern = compile_qc_pattern(instrument_config.get("qc_pattern"))
 
     def _is_inside_dot_d(self, path: Path) -> bool:
         """Check if path is inside a Bruker .d directory (not the .d itself)."""
@@ -74,6 +77,11 @@ class _AcquisitionHandler(FileSystemEventHandler):
                 self._register_tracker(path)
 
     def _register_tracker(self, path: Path) -> None:
+        # Skip non-QC files when qc_only is enabled
+        if self._qc_only and not is_qc_file(path, self._qc_pattern):
+            logger.debug("Skipping non-QC file: %s", path.name)
+            return
+
         key = str(path)
         with self._lock:
             if key not in self._trackers:
@@ -82,7 +90,7 @@ class _AcquisitionHandler(FileSystemEventHandler):
                     vendor=self._vendor,
                     stable_secs=self._stable_secs,
                 )
-                logger.info("Tracking new acquisition: %s", path.name)
+                logger.info("Tracking new QC acquisition: %s", path.name)
 
 
 class InstrumentWatcher:

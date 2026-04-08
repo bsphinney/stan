@@ -97,10 +97,18 @@ def load_instruments() -> tuple[dict, list[dict]]:
 
 
 def load_thresholds() -> dict:
-    """Load thresholds.yml. Returns the thresholds dict keyed by model name."""
-    path = resolve_config_path("thresholds.yml")
-    data = load_yaml(path)
-    return data.get("thresholds", {})
+    """Load thresholds.yml. Returns the thresholds dict keyed by model name.
+
+    Returns empty dict if thresholds.yml doesn't exist — gating will
+    default to PASS for all runs until thresholds are configured.
+    """
+    try:
+        path = resolve_config_path("thresholds.yml")
+        data = load_yaml(path)
+        return data.get("thresholds", {})
+    except FileNotFoundError:
+        logger.debug("thresholds.yml not found — all runs will pass gating")
+        return {}
 
 
 def load_community() -> dict:

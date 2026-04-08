@@ -160,9 +160,7 @@ def detect_mode(path: Path, vendor: str, **kwargs) -> AcquisitionMode:
         trfp_path = kwargs.get("trfp_path")
         output_dir = kwargs.get("output_dir")
         if trfp_path is None or output_dir is None:
-            logger.error(
-                "trfp_path and output_dir required for Thermo mode detection"
-            )
+            logger.debug("TRFP not available for mode detection: %s", path.name)
             return AcquisitionMode.UNKNOWN
         return detect_thermo_mode(path, Path(trfp_path), Path(output_dir))
 

@@ -48,19 +48,28 @@ PROGRESS_FILE = "baseline_progress.json"
 
 # ── File discovery ──────────────────────────────────────────────────
 
-def _find_raw_files(directory: Path) -> list[Path]:
-    """Recursively find all .d directories and .raw files."""
+def _find_raw_files(directory: Path, qc_pattern=None) -> list[Path]:
+    """Recursively find all .d directories and .raw files.
+
+    Args:
+        directory: Root directory to scan.
+        qc_pattern: Compiled regex to filter QC files only. If None, returns all files.
+    """
+    from stan.watcher.qc_filter import is_qc_file
+
     files: list[Path] = []
 
     # .d directories (Bruker) — don't recurse into them
     for item in sorted(directory.rglob("*.d")):
         if item.is_dir() and (item / "analysis.tdf").exists():
-            files.append(item)
+            if qc_pattern is None or is_qc_file(item, qc_pattern):
+                files.append(item)
 
     # .raw files (Thermo)
     for item in sorted(directory.rglob("*.raw")):
         if item.is_file() and item.stat().st_size > 100_000:
-            files.append(item)
+            if qc_pattern is None or is_qc_file(item, qc_pattern):
+                files.append(item)
 
     return files
 
@@ -407,14 +416,31 @@ def run_baseline() -> None:
 
     # Find raw files recursively
     console.print(f"\n[dim]Scanning {raw_path}...[/dim]")
-    all_files = _find_raw_files(raw_path)
+    all_raw = _find_raw_files(raw_path)
 
-    if not all_files:
+    if not all_raw:
         console.print("[red]No .d directories or .raw files found.[/red]")
         return
 
+    # Filter to QC files only
+    from stan.watcher.qc_filter import compile_qc_pattern, filter_qc_files
+    console.print(f"  Found [bold]{len(all_raw)}[/bold] total raw files")
+    qc_filter_on = Confirm.ask(
+        "  Filter to QC/HeLa files only?", default=True, console=console
+    )
+    if qc_filter_on:
+        qc_pat = compile_qc_pattern()
+        all_files = filter_qc_files(all_raw, qc_pat)
+        if not all_files:
+            console.print("[yellow]No QC files matched. Showing all files instead.[/yellow]")
+            all_files = all_raw
+        else:
+            console.print(f"  Matched [bold]{len(all_files)}[/bold] QC files (skipped {len(all_raw) - len(all_files)} non-QC)")
+    else:
+        all_files = all_raw
+
     # ── 2. Extract metadata from all files ──────────────────────
-    console.print(f"\n  Found [bold]{len(all_files)}[/bold] raw files")
+    console.print(f"\n  Processing [bold]{len(all_files)}[/bold] raw files")
     console.print("  [dim]Extracting metadata (this may take a moment for Thermo files)...[/dim]")
 
     file_metadata: list[dict] = []
