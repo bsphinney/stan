@@ -21,11 +21,13 @@ public class TrustAllUpdate {
 # Use new STAN directory, fall back to old .stan
 $venv = "$env:USERPROFILE\STAN\venv"
 $venvPython = "$venv\Scripts\python.exe"
+$oldVenv = "$env:USERPROFILE\.stan\venv"
+$oldVenvPython = "$oldVenv\Scripts\python.exe"
 
 if (-not (Test-Path $venvPython)) {
-    if (Test-Path "$env:USERPROFILE\.stan\venv\Scripts\python.exe") {
-        $venv = "$env:USERPROFILE\.stan\venv"
-        $venvPython = "$venv\Scripts\python.exe"
+    if (Test-Path $oldVenvPython) {
+        $venv = $oldVenv
+        $venvPython = $oldVenvPython
     } else {
         Write-Host "  STAN is not installed. Run install-stan.bat first." -ForegroundColor Red
         exit 1
@@ -49,6 +51,22 @@ if (-not (Test-Path $stanExe)) {
     exit 1
 }
 Write-Host "  STAN updated." -ForegroundColor Green
+
+# If both venvs exist, clean up the old .stan location
+if ((Test-Path "$env:USERPROFILE\STAN\venv\Scripts\stan.exe") -and (Test-Path $oldVenvPython)) {
+    Write-Host "  Migrating from old .stan location..." -ForegroundColor Yellow
+    $oldScripts = "$oldVenv\Scripts"
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    if ($userPath -and $userPath -like "*$oldScripts*") {
+        $newPath = ($userPath -split ";" | Where-Object { $_ -ne $oldScripts -and $_ -ne "" }) -join ";"
+        [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+        $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + $newPath
+        Write-Host "  Removed old .stan\venv from PATH." -ForegroundColor Gray
+    }
+    # Also update the old venv so any stale shortcuts still work
+    & $oldVenvPython -m pip install --no-cache-dir --force-reinstall --quiet @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip?t=$([DateTime]::Now.Ticks)" 2>&1 | Out-Null
+    Write-Host "  Old .stan venv also updated." -ForegroundColor Gray
+}
 
 # -- Check DIA-NN --
 Write-Host ""
