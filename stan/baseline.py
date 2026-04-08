@@ -491,28 +491,54 @@ def run_baseline() -> None:
     )
     amount = FloatPrompt.ask("HeLa injection amount (ng)", default=50.0, console=console)
 
-    # SPD
-    from stan.setup import LC_METHODS
-    console.print()
-    console.print("[bold]LC method[/bold]")
-    for i, lc in enumerate(LC_METHODS, 1):
-        if lc["spd"] > 0:
-            console.print(f"  [{i}] {lc['name']} (~{lc['gradient_min']} min)")
-        else:
-            console.print(f"  [{i}] {lc['name']}")
-    lc_choice = Prompt.ask(
-        "Select method",
-        choices=[str(i) for i in range(1, len(LC_METHODS) + 1)],
-        console=console,
-    )
-    lc = LC_METHODS[int(lc_choice) - 1]
-    spd = lc["spd"] if lc["spd"] > 0 else None
-    gradient_length_min = lc.get("gradient_min")
+    # SPD — auto-detect from raw file metadata when possible
+    from stan.metrics.scoring import gradient_min_to_spd
 
-    if lc["spd"] == 0:
-        gradient_length_min = IntPrompt.ask("Active gradient length (minutes)", console=console)
-        from stan.metrics.scoring import gradient_min_to_spd
+    detected_gradients = [
+        m.get("gradient_length_min") for m in file_metadata
+        if m.get("gradient_length_min") and m["gradient_length_min"] > 0
+    ]
+    detected_lc = next(
+        (m.get("lc_system") for m in file_metadata if m.get("lc_system")), None
+    )
+
+    if detected_gradients:
+        # Use median gradient length from raw files
+        detected_gradients.sort()
+        median_grad = detected_gradients[len(detected_gradients) // 2]
+        gradient_length_min = median_grad
         spd = gradient_min_to_spd(gradient_length_min)
+        lc_label = f"{detected_lc}, " if detected_lc else ""
+        console.print(
+            f"  [green]Auto-detected:[/green] {lc_label}{gradient_length_min} min gradient "
+            f"({spd} SPD)"
+        )
+        override = Confirm.ask("  Use detected values?", default=True, console=console)
+        if not override:
+            gradient_length_min = IntPrompt.ask("Active gradient length (minutes)", console=console)
+            spd = gradient_min_to_spd(gradient_length_min)
+    else:
+        # Fallback to manual selection
+        from stan.setup import LC_METHODS
+        console.print()
+        console.print("[bold]LC method[/bold]")
+        for i, lc in enumerate(LC_METHODS, 1):
+            if lc["spd"] > 0:
+                console.print(f"  [{i}] {lc['name']} (~{lc['gradient_min']} min)")
+            else:
+                console.print(f"  [{i}] {lc['name']}")
+        lc_choice = Prompt.ask(
+            "Select method",
+            choices=[str(i) for i in range(1, len(LC_METHODS) + 1)],
+            console=console,
+        )
+        lc = LC_METHODS[int(lc_choice) - 1]
+        spd = lc["spd"] if lc["spd"] > 0 else None
+        gradient_length_min = lc.get("gradient_min")
+
+        if not spd:
+            gradient_length_min = IntPrompt.ask("Active gradient length (minutes)", console=console)
+            spd = gradient_min_to_spd(gradient_length_min)
 
     # Column
     console.print()
