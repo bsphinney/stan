@@ -36,7 +36,8 @@ if (-not (Test-Path $venvPython)) {
 Write-Host "  [1/3] Updating STAN..." -ForegroundColor Cyan
 $stanExe = "$venv\Scripts\stan.exe"
 $pipTrust = @("--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org", "--trusted-host", "github.com", "--trusted-host", "objects.githubusercontent.com")
-& $venvPython -m pip install --no-cache-dir --force-reinstall @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>&1 | ForEach-Object {
+$t = [DateTime]::Now.Ticks
+& $venvPython -m pip install --no-cache-dir --force-reinstall @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip?t=$t" 2>&1 | ForEach-Object {
     $line = $_.ToString()
     if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
     elseif ($line -match "ERROR|error") { Write-Host "  $line" -ForegroundColor Red }
