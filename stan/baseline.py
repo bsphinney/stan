@@ -560,11 +560,25 @@ def run_baseline() -> None:
         from stan.setup import _pick_column
         column_info = _pick_column()
 
-    # ── 5. FASTA ────────────────────────────────────────────────
+    # ── 5. FASTA — download community standard from HF Dataset ──
     console.print()
-    fasta_path = Prompt.ask("Path to FASTA file", console=console)
-    if fasta_path and not Path(fasta_path).exists():
-        console.print(f"  [yellow]Warning: File not found: {fasta_path}[/yellow]")
+    console.print("[bold]FASTA database[/bold]")
+    fasta_path = None
+    try:
+        from huggingface_hub import hf_hub_download
+        from stan.search.community_params import COMMUNITY_FASTA_HF_PATH, HF_DATASET_REPO
+        console.print("  Downloading community FASTA from HuggingFace...")
+        fasta_path = hf_hub_download(
+            repo_id=HF_DATASET_REPO,
+            filename=COMMUNITY_FASTA_HF_PATH,
+            repo_type="dataset",
+        )
+        console.print(f"  [green]Using community FASTA:[/green] {Path(fasta_path).name}")
+    except Exception as e:
+        console.print(f"  [yellow]Could not download community FASTA: {e}[/yellow]")
+        fasta_path = Prompt.ask("  Path to local FASTA file", default="", console=console)
+        if fasta_path and not Path(fasta_path).exists():
+            console.print(f"  [yellow]Warning: File not found: {fasta_path}[/yellow]")
 
     # ── 6. Search engine paths ──────────────────────────────────
     diann_exe = _find_diann()
