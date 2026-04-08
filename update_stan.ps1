@@ -23,15 +23,62 @@ $venv = "$env:USERPROFILE\STAN\venv"
 $venvPython = "$venv\Scripts\python.exe"
 $oldVenv = "$env:USERPROFILE\.stan\venv"
 $oldVenvPython = "$oldVenv\Scripts\python.exe"
+$newStanDir = "$env:USERPROFILE\STAN"
 
 if (-not (Test-Path $venvPython)) {
     if (Test-Path $oldVenvPython) {
-        $venv = $oldVenv
-        $venvPython = $oldVenvPython
+        # Auto-migrate: create new STAN dir and copy venv from .stan
+        Write-Host "  Migrating from .stan to STAN..." -ForegroundColor Yellow
+        if (-not (Test-Path $newStanDir)) { New-Item -ItemType Directory -Path $newStanDir -Force | Out-Null }
+        try {
+            Copy-Item -Path $oldVenv -Destination "$newStanDir\venv" -Recurse -Force
+            Write-Host "  Copied venv to $newStanDir\venv" -ForegroundColor Gray
+            # Copy config files (instruments.yml, community.yml, etc.)
+            $configFiles = Get-ChildItem "$env:USERPROFILE\.stan" -File -ErrorAction SilentlyContinue
+            foreach ($cf in $configFiles) {
+                if (-not (Test-Path "$newStanDir\$($cf.Name)")) {
+                    Copy-Item $cf.FullName "$newStanDir\$($cf.Name)"
+                    Write-Host "  Copied $($cf.Name)" -ForegroundColor Gray
+                }
+            }
+            # Copy subdirectories (tools, community_assets, etc.) except venv
+            $subDirs = Get-ChildItem "$env:USERPROFILE\.stan" -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "venv" }
+            foreach ($sd in $subDirs) {
+                if (-not (Test-Path "$newStanDir\$($sd.Name)")) {
+                    Copy-Item $sd.FullName "$newStanDir\$($sd.Name)" -Recurse -Force
+                    Write-Host "  Copied $($sd.Name)/" -ForegroundColor Gray
+                }
+            }
+            # Update PATH: remove old .stan, add new STAN
+            $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+            $oldScripts = "$oldVenv\Scripts"
+            $newScripts = "$newStanDir\venv\Scripts"
+            if ($userPath -like "*$oldScripts*") {
+                $userPath = ($userPath -split ";" | Where-Object { $_ -ne $oldScripts -and $_ -ne "" }) -join ";"
+            }
+            if ($userPath -notlike "*$newScripts*") {
+                $userPath = "$userPath;$newScripts"
+            }
+            [Environment]::SetEnvironmentVariable("PATH", $userPath, "User")
+            $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + $userPath
+            Write-Host "  PATH updated to use $newStanDir" -ForegroundColor Gray
+            Write-Host "  Migration complete." -ForegroundColor Green
+        } catch {
+            Write-Host "  Migration failed: $_ — using old location" -ForegroundColor Yellow
+            $venv = $oldVenv
+            $venvPython = $oldVenvPython
+        }
     } else {
         Write-Host "  STAN is not installed. Run install-stan.bat first." -ForegroundColor Red
         exit 1
     }
+}
+
+# Ensure venvPython points to the right place after potential migration
+$venvPython = "$venv\Scripts\python.exe"
+if (-not (Test-Path $venvPython)) {
+    $venv = $oldVenv
+    $venvPython = "$oldVenv\Scripts\python.exe"
 }
 
 # -- Update STAN --
