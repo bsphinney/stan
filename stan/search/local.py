@@ -135,10 +135,10 @@ def run_diann_local(
         else:
             cmd.extend([f"--{key}", str(val)])
 
-    # Default to all available cores if threads not specified
+    # Default to half available cores — instrument PCs need headroom for acquisition
     if threads <= 0:
         import os
-        threads = os.cpu_count() or 4
+        threads = max(2, (os.cpu_count() or 4) // 2)
     cmd.extend(["--threads", str(threads)])
 
     logger.info("Running DIA-NN locally: %s", raw_path.name)
