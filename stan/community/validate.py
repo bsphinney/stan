@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 # These are checked client-side before submission and server-side during
 # nightly consolidation. If a submission's hashes don't match, it's rejected.
 EXPECTED_ASSET_HASHES: dict[str, str] = {
-    # FASTA (shared) — TODO: upload UniProt human + contaminants to HF Dataset
-    "human_hela_202604.fasta": "",
+    # FASTA (shared) — UniProt human + universal contaminants (21,044 entries)
+    "human_hela_202604.fasta": "8de1d9bd0a052b175f88f66f82500d92",
     # timsTOF empirical library — built from UCD longitudinal HeLa QC (6 files, 54K precursors)
     "hela_timstof_202604.parquet": "ad72bfb2730644c69147ba8f34bfe982",
     # Orbitrap/Astral empirical library — built from PXD054015 (8 files, 170K precursors)
