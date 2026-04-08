@@ -330,8 +330,8 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $scriptDir) { $scriptDir = Get-Location }
 try {
     $t = [DateTime]::Now.Ticks
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/install.bat?t=$t" -OutFile "$scriptDir\install.bat" -UseBasicParsing -ErrorAction SilentlyContinue
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/update.bat?t=$t" -OutFile "$scriptDir\update.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat?t=$t" -OutFile "$scriptDir\install-stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat?t=$t" -OutFile "$scriptDir\update-stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
 } catch {}
 
 # -- Done --

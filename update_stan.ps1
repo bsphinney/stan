@@ -106,7 +106,7 @@ if ($needsDiannInstall) {
                 }
                 if ($proc.ExitCode -ne 0) {
                     Write-Host "  MSI install failed with exit code $($proc.ExitCode)." -ForegroundColor Red
-                    Write-Host "  Try running update.bat as Administrator, or install DIA-NN manually." -ForegroundColor Yellow
+                    Write-Host "  Try running update-stan.bat as Administrator, or install DIA-NN manually." -ForegroundColor Yellow
                 }
             } else {
                 $proc = Start-Process -FilePath $diannInstaller -ArgumentList "/S" -Wait -PassThru
@@ -198,9 +198,9 @@ if ($sageExe) {
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $scriptDir) { $scriptDir = Get-Location }
 try {
-    $batUrl = "https://raw.githubusercontent.com/bsphinney/stan/main/update.bat"
+    $batUrl = "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat"
     $t = [DateTime]::Now.Ticks
-    Invoke-WebRequest -Uri "$batUrl`?t=$t" -OutFile "$scriptDir\update.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri "$batUrl`?t=$t" -OutFile "$scriptDir\update-stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
 } catch {}
 
 # -- Done --
