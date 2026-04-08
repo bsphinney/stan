@@ -22,16 +22,6 @@ else:
     _USER_CONFIG_DIR = Path.home() / ".stan"
 
 
-# Auto-migrate from old hidden .stan directory on Windows
-if _plat.system() == "Windows":
-    _OLD_CONFIG_DIR = Path.home() / ".stan"
-    if _OLD_CONFIG_DIR.exists() and not _USER_CONFIG_DIR.exists():
-        try:
-            import shutil
-            shutil.copytree(str(_OLD_CONFIG_DIR), str(_USER_CONFIG_DIR))
-            logger.info("Migrated config from %s to %s", _OLD_CONFIG_DIR, _USER_CONFIG_DIR)
-        except Exception:
-            pass  # old dir will still work as fallback
 
 
 def resolve_config_path(filename: str) -> Path:

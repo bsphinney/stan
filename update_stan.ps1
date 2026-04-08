@@ -18,12 +18,7 @@ public class TrustAllUpdate {
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# Migrate from old hidden .stan directory if needed
-if ((Test-Path "$env:USERPROFILE\.stan\venv") -and -not (Test-Path "$env:USERPROFILE\STAN\venv")) {
-    Write-Host "  Migrating from .stan to STAN..." -ForegroundColor Gray
-    Copy-Item -Path "$env:USERPROFILE\.stan" -Destination "$env:USERPROFILE\STAN" -Recurse -Force
-}
-
+# Use new STAN directory, fall back to old .stan
 $venv = "$env:USERPROFILE\STAN\venv"
 $venvPython = "$venv\Scripts\python.exe"
 

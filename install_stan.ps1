@@ -118,11 +118,7 @@ if (-not $python) {
 Write-Host ""
 Write-Host "  [2/7] Creating virtual environment..." -ForegroundColor Cyan
 $venv = "$env:USERPROFILE\STAN\venv"
-# Migrate from old hidden .stan directory if it exists
-if ((Test-Path "$env:USERPROFILE\.stan") -and -not (Test-Path "$env:USERPROFILE\STAN")) {
-    Write-Host "  Migrating config from .stan to STAN..." -ForegroundColor Gray
-    Copy-Item -Path "$env:USERPROFILE\.stan" -Destination "$env:USERPROFILE\STAN" -Recurse -Force
-}
+# Fresh start in visible STAN directory (old .stan may have permission issues)
 if (-not (Test-Path "$env:USERPROFILE\STAN")) { New-Item -ItemType Directory -Path "$env:USERPROFILE\STAN" -Force | Out-Null }
 if (-not (Test-Path "$venv\Scripts\python.exe")) {
     & $python -m venv $venv
