@@ -239,11 +239,14 @@ def extract_dia_metrics(
     all_cols = pl.read_parquet_schema(report_path)
     available = set(all_cols.keys()) if hasattr(all_cols, 'keys') else set(all_cols)
 
+    # DIA-NN 2.0 renamed File.Name → Run — detect which exists
+    file_col = "Run" if "Run" in available else "File.Name"
+
     # Required columns
     want = [
         "Precursor.Id", "Stripped.Sequence", "Protein.Group",
         "Q.Value", "PG.Q.Value", "Fragment.Info", "Fragment.Quant.Corrected",
-        "Precursor.Charge", "Missed.Cleavages", "File.Name", "Precursor.Normalised",
+        "Precursor.Charge", "Missed.Cleavages", file_col, "Precursor.Normalised",
     ]
 
     # Optional RT columns for points-across-peak (column names vary by DIA-NN version)
@@ -264,6 +267,10 @@ def extract_dia_metrics(
         cols_to_read.append(evidence_col)
 
     df = pl.read_parquet(report_path, columns=cols_to_read)
+
+    # Normalize DIA-NN 2.0 "Run" column to "File.Name" for consistency
+    if file_col == "Run" and "Run" in df.columns:
+        df = df.rename({"Run": "File.Name"})
 
     filt = df.filter(pl.col("Q.Value") <= q_cutoff)
 
