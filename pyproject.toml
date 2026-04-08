@@ -7,7 +7,7 @@ name = "stan-proteomics"
 version = "0.1.0"
 description = "STAN — Standardized proteomic Throughput ANalyzer"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "STAN Academic License" }
 authors = [{ name = "Brett Stanley Phinney", email = "bsphinney@ucdavis.edu" }]
 requires-python = ">=3.10"
 dependencies = [
