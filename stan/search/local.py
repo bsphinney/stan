@@ -142,7 +142,7 @@ def run_diann_local(
     logger.debug("Command: %s", " ".join(cmd))
 
     try:
-        result = subprocess.run(
+        subprocess.run(
             cmd,
             check=True,
             capture_output=True,
@@ -241,7 +241,7 @@ def run_sage_local(
     logger.debug("Command: %s", " ".join(cmd))
 
     try:
-        result = subprocess.run(
+        subprocess.run(
             cmd,
             check=True,
             capture_output=True,

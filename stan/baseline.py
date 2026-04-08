@@ -1017,35 +1017,64 @@ def _update_run_date(run_id: str, run_date: str) -> None:
 
 
 def _find_diann() -> str | None:
-    """Find DIA-NN executable on PATH or common locations."""
-    # Check PATH
-    for name in ["diann", "diann.exe", "DiaNN", "DiaNN.exe"]:
-        found = shutil.which(name)
-        if found:
-            return found
+    """Find DIA-NN executable, preferring version 2.0+.
 
-    # Common Windows locations
-    common_paths = [
-        Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "DIA-NN" / "DiaNN.exe",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "DIA-NN" / "DiaNN.exe",
-        Path.home() / "DIA-NN" / "diann.exe",
-        Path.home() / "diann" / "diann.exe",
-        # Linux/Mac common
-        Path("/usr/local/bin/diann"),
-        Path.home() / ".local" / "bin" / "diann",
+    Searches common install locations first (newest versions tend to be
+    in higher-numbered directories like C:\\DIA-NN\\2.0), then falls back
+    to PATH. This avoids using an outdated 1.x on PATH when 2.x is installed.
+    """
+    candidates: list[str] = []
+
+    # Common Windows locations — search for all DiaNN.exe recursively
+    search_roots = [
+        Path("C:/DIA-NN"),
+        Path("C:/Program Files/DIA-NN"),
+        Path(os.environ.get("LOCALAPPDATA", "") or "C:/Users") / "DIA-NN",
+        Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "DIA-NN",
+        Path(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)")) / "DIA-NN",
+        Path.home() / "DIA-NN",
     ]
 
-    for p in common_paths:
-        if p.exists():
-            return str(p)
+    for root in search_roots:
+        if root.exists():
+            for exe in root.rglob("DiaNN.exe"):
+                candidates.append(str(exe))
+            for exe in root.rglob("diann.exe"):
+                if str(exe) not in candidates:
+                    candidates.append(str(exe))
 
     # Check STAN tools dir
-    stan_diann = get_user_config_dir() / "tools" / "diann" / "diann"
-    if stan_diann.exists():
-        return str(stan_diann)
     stan_diann_exe = get_user_config_dir() / "tools" / "diann" / "DiaNN.exe"
     if stan_diann_exe.exists():
-        return str(stan_diann_exe)
+        candidates.append(str(stan_diann_exe))
+    stan_diann = get_user_config_dir() / "tools" / "diann" / "diann"
+    if stan_diann.exists():
+        candidates.append(str(stan_diann))
+
+    # Check PATH last (may find old version)
+    for name in ["diann", "diann.exe", "DiaNN", "DiaNN.exe"]:
+        found = shutil.which(name)
+        if found and found not in candidates:
+            candidates.append(found)
+
+    # Linux/Mac common
+    for p in [Path("/usr/local/bin/diann"), Path.home() / ".local" / "bin" / "diann"]:
+        if p.exists() and str(p) not in candidates:
+            candidates.append(str(p))
+
+    if not candidates:
+        return None
+
+    # Prefer highest version number in path (e.g. 2.0 > 1.8.1)
+    import re
+    def _version_key(path: str) -> tuple:
+        m = re.search(r"(\d+)\.(\d+)\.?(\d*)", path)
+        if m:
+            return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
+        return (0, 0, 0)
+
+    candidates.sort(key=_version_key, reverse=True)
+    return candidates[0]
 
     return None
 

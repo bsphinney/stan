@@ -66,7 +66,7 @@ def run_setup() -> None:
     watch_dir = Prompt.ask("  Watch directory", console=console)
     p = Path(watch_dir)
     if not p.exists():
-        console.print(f"  [yellow]Directory does not exist yet.[/yellow] STAN will watch it once created.")
+        console.print("  [yellow]Directory does not exist yet.[/yellow] STAN will watch it once created.")
 
     # Try to auto-detect instrument from existing files
     _probe_existing_files(watch_dir)
@@ -403,7 +403,6 @@ def _probe_existing_files(watch_dir: str) -> None:
     try:
         if raw_file.suffix.lower() == ".d" and raw_file.is_dir():
             # Bruker — quick TDF read
-            from stan.watcher.acquisition_date import _bruker_acquisition_date
             import sqlite3
             tdf = raw_file / "analysis.tdf"
             if tdf.exists():
@@ -435,7 +434,8 @@ def _probe_existing_files(watch_dir: str) -> None:
                     console.print(f"  [green]Acquired:[/green] {meta['creation_date'][:19]}")
             except Exception:
                 # TRFP not available yet — try binary string scan
-                import subprocess, re
+                import re
+                import subprocess
                 proc = subprocess.run(
                     ["strings", str(raw_file)],
                     capture_output=True, text=True, timeout=15,
