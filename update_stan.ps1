@@ -1,4 +1,4 @@
-# STAN Updater — reinstalls STAN and checks for missing search engines
+# STAN Updater - reinstalls STAN and checks for missing search engines
 
 # SSL workaround for corporate/university proxy networks
 try {
@@ -30,7 +30,6 @@ if (-not (Test-Path $venvPython)) {
         # Auto-migrate: create new STAN dir and copy venv from .stan
         Write-Host "  Migrating from .stan to STAN..." -ForegroundColor Yellow
         if (-not (Test-Path $newStanDir)) { New-Item -ItemType Directory -Path $newStanDir -Force | Out-Null }
-        $migrationOk = $true
         try {
             $destVenv = Join-Path $newStanDir "venv"
             Copy-Item -Path $oldVenv -Destination $destVenv -Recurse -Force
@@ -42,7 +41,7 @@ if (-not (Test-Path $venvPython)) {
                 $destFile = Join-Path $newStanDir $cf.Name
                 if (-not (Test-Path $destFile)) {
                     Copy-Item $cf.FullName $destFile
-                    Write-Host ("  Copied " + $cf.Name) -ForegroundColor Gray
+                    Write-Host "  Copied $($cf.Name)" -ForegroundColor Gray
                 }
             }
             # Copy subdirectories except venv
@@ -52,7 +51,7 @@ if (-not (Test-Path $venvPython)) {
                     $destSub = Join-Path $newStanDir $sd.Name
                     if (-not (Test-Path $destSub)) {
                         Copy-Item $sd.FullName $destSub -Recurse -Force
-                        Write-Host ("  Copied " + $sd.Name) -ForegroundColor Gray
+                        Write-Host "  Copied $($sd.Name)" -ForegroundColor Gray
                     }
                 }
             }
@@ -67,16 +66,14 @@ if (-not (Test-Path $venvPython)) {
                 $userPath = $filtered -join ";"
             }
             if ($userPath -notlike "*$newScripts*") {
-                $userPath = $userPath + ";" + $newScripts
+                $userPath = "$userPath;$newScripts"
             }
             [Environment]::SetEnvironmentVariable("PATH", $userPath, "User")
-            $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-            $env:Path = $machinePath + ";" + $userPath
+            $env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$userPath"
             Write-Host "  PATH updated." -ForegroundColor Gray
             Write-Host "  Migration complete." -ForegroundColor Green
         } catch {
             Write-Host "  Migration failed, using old location." -ForegroundColor Yellow
-            $migrationOk = $false
             $venv = $oldVenv
             $venvPython = $oldVenvPython
         }
@@ -123,8 +120,7 @@ if ((Test-Path $newStanExe) -and (Test-Path $oldVenvPython)) {
         foreach ($p in $parts) { if ($p -ne $oldScripts -and $p -ne "") { $filtered += $p } }
         $cleanPath = $filtered -join ";"
         [Environment]::SetEnvironmentVariable("PATH", $cleanPath, "User")
-        $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-        $env:Path = $machinePath + ";" + $cleanPath
+        $env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$cleanPath"
         Write-Host "  Removed old .stan\venv from PATH." -ForegroundColor Gray
     }
     # Also update the old venv so any stale shortcuts still work
@@ -137,9 +133,7 @@ if ((Test-Path $newStanExe) -and (Test-Path $oldVenvPython)) {
 # -- Check DIA-NN --
 Write-Host ""
 Write-Host "  [2/3] Checking DIA-NN..." -ForegroundColor Cyan
-$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-$userPathRefresh = [Environment]::GetEnvironmentVariable("Path", "User")
-$env:Path = $machinePath + ";" + $userPathRefresh
+$env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$([Environment]::GetEnvironmentVariable('Path','User'))"
 
 $diannSearchPaths = @(
     "C:\DIA-NN",
@@ -182,9 +176,8 @@ if ($bestDiann -and $bestMajor -ge 2) {
     $diannDir = Split-Path $bestDiann -Parent
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     if ($userPath -notlike "*$diannDir*") {
-        $np = $userPath + ";" + $diannDir
-        [Environment]::SetEnvironmentVariable("PATH", $np, "User")
-        $env:Path = $diannDir + ";" + $env:Path
+        [Environment]::SetEnvironmentVariable("PATH", "$userPath;$diannDir", "User")
+        $env:Path = "$diannDir;$env:Path"
         Write-Host "  Added $diannDir to PATH." -ForegroundColor Gray
     }
 } elseif ($bestDiann) {
@@ -218,7 +211,7 @@ if ($needsDiannInstall) {
             }
             Remove-Item $installer -ErrorAction SilentlyContinue
             # Find installed exe
-            $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); $up = [Environment]::GetEnvironmentVariable("Path", "User"); $env:Path = "$mp;$up"
+            $env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$([Environment]::GetEnvironmentVariable('Path','User'))"
             foreach ($sp in $diannSearchPaths) {
                 if (Test-Path $sp) {
                     $f = Get-ChildItem -Path $sp -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -226,8 +219,7 @@ if ($needsDiannInstall) {
                         $d = Split-Path $f.FullName -Parent
                         $up = [Environment]::GetEnvironmentVariable("PATH", "User")
                         if ($up -notlike "*$d*") {
-                            $np = $up + ";" + $d
-                            [Environment]::SetEnvironmentVariable("PATH", $np, "User")
+                            [Environment]::SetEnvironmentVariable("PATH", "$up;$d", "User")
                         }
                         Write-Host "  DIA-NN installed: $($f.FullName)" -ForegroundColor Green
                         break
@@ -246,7 +238,7 @@ if ($needsDiannInstall) {
 # -- Check Sage --
 Write-Host ""
 Write-Host "  [3/3] Checking Sage..." -ForegroundColor Cyan
-$mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); $up = [Environment]::GetEnvironmentVariable("Path", "User"); $env:Path = "$mp;$up"
+$env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$([Environment]::GetEnvironmentVariable('Path','User'))"
 $sageExe = Get-Command "sage.exe" -ErrorAction SilentlyContinue
 $sageDir = "$env:USERPROFILE\STAN\tools\sage"
 
@@ -264,7 +256,8 @@ if (-not $sageExe) {
 }
 
 if ($sageExe) {
-    $sp = if ($sageExe.Source) { $sageExe.Source } else { $sageExe.FullName }
+    $sp = $sageExe.FullName
+    if ($sageExe.Source) { $sp = $sageExe.Source }
     Write-Host "  Sage found: $sp" -ForegroundColor Green
 } else {
     Write-Host "  Sage not found. Installing..." -ForegroundColor Yellow
@@ -284,8 +277,7 @@ if ($sageExe) {
                 $d = Split-Path $f.FullName -Parent
                 $up = [Environment]::GetEnvironmentVariable("PATH", "User")
                 if ($up -notlike "*$d*") {
-                    $np = $up + ";" + $d
-                    [Environment]::SetEnvironmentVariable("PATH", $np, "User")
+                    [Environment]::SetEnvironmentVariable("PATH", "$up;$d", "User")
                 }
                 Write-Host "  Sage installed: $($f.FullName)" -ForegroundColor Green
             }
@@ -298,14 +290,13 @@ if ($sageExe) {
     $ErrorActionPreference = "Stop"
 }
 
-# -- Self-update bat file --
+# -- Self-update bat files --
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $scriptDir) { $scriptDir = Get-Location }
 try {
     $t = [DateTime]::Now.Ticks
-    $url = "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat"
-    Invoke-WebRequest -Uri ($url + "?t=" + $t) -OutFile "$scriptDir\update-stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
-    Invoke-WebRequest -Uri ("https://raw.githubusercontent.com/bsphinney/stan/main/start_stan.bat?t=" + $t) -OutFile "$scriptDir\start_stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat?t=$t" -OutFile "$scriptDir\update-stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/start_stan.bat?t=$t" -OutFile "$scriptDir\start_stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
 } catch {}
 
 # -- Done --
