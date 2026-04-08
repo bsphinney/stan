@@ -37,6 +37,9 @@ include = ["stan*"]
 "stan.dashboard" = ["public/**/*"]
 "stan" = ["config/*.yml"]
 
+[tool.setuptools.data-files]
+"community_fasta" = ["community_fasta/human_hela_202604.fasta"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

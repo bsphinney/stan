@@ -418,6 +418,9 @@ def run_baseline() -> None:
     console.print("  [dim]Extracting metadata (this may take a moment for Thermo files)...[/dim]")
 
     file_metadata: list[dict] = []
+    _first_dia_file: Path | None = None
+    _first_dda_file: Path | None = None
+    _scan_vendor: str = ""
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -429,10 +432,17 @@ def run_baseline() -> None:
         task = progress.add_task("Scanning files...", total=len(all_files))
         for f in all_files:
             vendor = _classify_vendor(f)
+            _scan_vendor = vendor
             meta = _extract_file_metadata(f, vendor)
             meta["path"] = f
             meta["name"] = f.name
             file_metadata.append(meta)
+            # Track first DIA and DDA files for early test search
+            mode = meta.get("acquisition_mode")
+            if mode and _first_dia_file is None and is_dia(mode):
+                _first_dia_file = f
+            if mode and _first_dda_file is None and is_dda(mode):
+                _first_dda_file = f
             progress.advance(task)
 
     # ── 3. Build summary table ──────────────────────────────────
@@ -566,89 +576,99 @@ def run_baseline() -> None:
     console.print()
     console.print("[bold]FASTA database[/bold]")
     fasta_path = None
-    try:
-        from huggingface_hub import hf_hub_download
-        from stan.search.community_params import COMMUNITY_FASTA_HF_PATH, HF_DATASET_REPO
-        console.print("  Downloading community FASTA from HuggingFace...")
-        fasta_path = hf_hub_download(
-            repo_id=HF_DATASET_REPO,
-            filename=COMMUNITY_FASTA_HF_PATH,
-            repo_type="dataset",
-        )
-        console.print(f"  [green]Using community FASTA:[/green] {Path(fasta_path).name}")
-    except Exception as e:
-        console.print(f"  [yellow]Could not download community FASTA: {e}[/yellow]")
-        fasta_path = Prompt.ask("  Path to local FASTA file", default="", console=console)
-        if fasta_path and not Path(fasta_path).exists():
-            console.print(f"  [yellow]Warning: File not found: {fasta_path}[/yellow]")
+
+    # Check for bundled FASTA first (shipped with STAN in community_fasta/)
+    bundled_fasta = Path(__file__).resolve().parent.parent / "community_fasta" / "human_hela_202604.fasta"
+    if not bundled_fasta.exists():
+        # pip install puts it relative to site-packages — check there too
+        import importlib.resources
+        try:
+            # Walk up from stan/ to find community_fasta/ at repo root
+            for p in [
+                Path(__file__).resolve().parent.parent / "community_fasta" / "human_hela_202604.fasta",
+                get_user_config_dir() / "community_fasta" / "human_hela_202604.fasta",
+            ]:
+                if p.exists():
+                    bundled_fasta = p
+                    break
+        except Exception:
+            pass
+
+    if bundled_fasta.exists():
+        fasta_path = str(bundled_fasta)
+        console.print(f"  [green]Using bundled FASTA:[/green] {bundled_fasta.name}")
+    else:
+        try:
+            from huggingface_hub import hf_hub_download
+            from stan.search.community_params import COMMUNITY_FASTA_HF_PATH, HF_DATASET_REPO
+            console.print("  Downloading community FASTA from HuggingFace...")
+            fasta_path = hf_hub_download(
+                repo_id=HF_DATASET_REPO,
+                filename=COMMUNITY_FASTA_HF_PATH,
+                repo_type="dataset",
+            )
+            console.print(f"  [green]Using community FASTA:[/green] {Path(fasta_path).name}")
+        except Exception as e:
+            console.print(f"  [yellow]Could not download community FASTA: {e}[/yellow]")
+            fasta_path = Prompt.ask("  Path to local FASTA file", default="", console=console)
+            if fasta_path and not Path(fasta_path).exists():
+                console.print(f"  [yellow]Warning: File not found: {fasta_path}[/yellow]")
 
     # ── 6. Search engines — find, validate, test ─────────────────
     diann_exe = _find_diann()
     sage_exe = _find_sage()
 
-    # Determine if we need each engine
-    has_dia = any(
-        is_dia(m.get("acquisition_mode"))
-        for m in file_metadata
-        if m.get("acquisition_mode") and m["acquisition_mode"] != AcquisitionMode.UNKNOWN
-    )
-    has_dda = any(
-        is_dda(m.get("acquisition_mode"))
-        for m in file_metadata
-        if m.get("acquisition_mode") and m["acquisition_mode"] != AcquisitionMode.UNKNOWN
-    )
-
-    # DIA-NN validation
-    if has_dia and not diann_exe:
-        console.print("  [red]DIA-NN not found[/red] — needed for DIA files.")
-        custom = Prompt.ask("  Path to DiaNN.exe (or Enter to skip DIA)", default="", console=console)
-        if custom and Path(custom).exists():
-            diann_exe = custom
-        elif custom:
-            console.print(f"  [yellow]Not found: {custom}[/yellow]")
-
-    if diann_exe:
-        ok, msg = _test_diann(diann_exe, fasta_path, file_metadata, vendor, console)
-        if not ok:
-            console.print(f"  [red]DIA-NN test failed:[/red] {msg}")
-            custom = Prompt.ask("  Path to a different DiaNN.exe (or Enter to skip DIA)", default="", console=console)
+    # DIA-NN: find/test using the first DIA file captured during scan
+    if _first_dia_file:
+        if not diann_exe:
+            console.print("  [red]DIA-NN not found[/red] — needed for DIA files.")
+            custom = Prompt.ask("  Path to DiaNN.exe (or Enter to skip DIA)", default="", console=console)
             if custom and Path(custom).exists():
                 diann_exe = custom
-                ok2, msg2 = _test_diann(diann_exe, fasta_path, file_metadata, vendor, console)
-                if not ok2:
-                    console.print(f"  [red]Still failing:[/red] {msg2}")
+            elif custom:
+                console.print(f"  [yellow]Not found: {custom}[/yellow]")
+
+        if diann_exe:
+            ok, msg = _test_diann(diann_exe, fasta_path, _first_dia_file, _scan_vendor, console)
+            if not ok:
+                console.print(f"  [red]DIA-NN test failed:[/red] {msg}")
+                custom = Prompt.ask("  Path to a different DiaNN.exe (or Enter to skip DIA)", default="", console=console)
+                if custom and Path(custom).exists():
+                    diann_exe = custom
+                    ok2, msg2 = _test_diann(diann_exe, fasta_path, _first_dia_file, _scan_vendor, console)
+                    if not ok2:
+                        console.print(f"  [red]Still failing:[/red] {msg2}")
+                        diann_exe = None
+                else:
                     diann_exe = None
-            else:
-                diann_exe = None
     else:
-        if not has_dia:
-            console.print("  DIA-NN: [dim]not needed (no DIA files)[/dim]")
+        console.print("  DIA-NN: [dim]not needed (no DIA files)[/dim]")
 
-    # Sage validation
-    if has_dda and not sage_exe:
-        console.print("  [red]Sage not found[/red] — needed for DDA files.")
-        custom = Prompt.ask("  Path to sage.exe (or Enter to skip DDA)", default="", console=console)
-        if custom and Path(custom).exists():
-            sage_exe = custom
-        elif custom:
-            console.print(f"  [yellow]Not found: {custom}[/yellow]")
-
-    if sage_exe:
-        ok, msg = _test_sage(sage_exe, fasta_path, file_metadata, vendor, console)
-        if not ok:
-            console.print(f"  [red]Sage test failed:[/red] {msg}")
-            custom = Prompt.ask("  Path to a different sage.exe (or Enter to skip DDA)", default="", console=console)
+    # Sage: find/test using the first DDA file
+    if _first_dda_file:
+        if not sage_exe:
+            console.print("  [red]Sage not found[/red] — needed for DDA files.")
+            custom = Prompt.ask("  Path to sage.exe (or Enter to skip DDA)", default="", console=console)
             if custom and Path(custom).exists():
                 sage_exe = custom
-                ok2, msg2 = _test_sage(sage_exe, fasta_path, file_metadata, vendor, console)
-                if not ok2:
-                    console.print(f"  [red]Still failing:[/red] {msg2}")
+            elif custom:
+                console.print(f"  [yellow]Not found: {custom}[/yellow]")
+
+        if sage_exe:
+            ok, msg = _test_sage(sage_exe, fasta_path, _first_dda_file, _scan_vendor, console)
+            if not ok:
+                console.print(f"  [red]Sage test failed:[/red] {msg}")
+                custom = Prompt.ask("  Path to a different sage.exe (or Enter to skip DDA)", default="", console=console)
+                if custom and Path(custom).exists():
+                    sage_exe = custom
+                    ok2, msg2 = _test_sage(sage_exe, fasta_path, _first_dda_file, _scan_vendor, console)
+                    if not ok2:
+                        console.print(f"  [red]Still failing:[/red] {msg2}")
+                        sage_exe = None
+                else:
                     sage_exe = None
-            else:
-                sage_exe = None
     else:
-        if not has_dda:
-            console.print("  Sage: [dim]not needed (no DDA files)[/dim]")
+        console.print("  Sage: [dim]not needed (no DDA files)[/dim]")
 
     console.print()
     console.print(f"  DIA-NN: {diann_exe or '[dim]skipped[/dim]'}")
@@ -1094,13 +1114,13 @@ def _update_run_date(run_id: str, run_date: str) -> None:
 def _test_diann(
     diann_exe: str,
     fasta_path: str | None,
-    file_metadata: list[dict],
+    test_file: Path,
     vendor: str,
     console,
 ) -> tuple[bool, str]:
     """Run a quick DIA-NN test to verify it works.
 
-    Picks the smallest DIA file, runs DIA-NN with a short timeout,
+    Uses the provided test file, runs DIA-NN with a short timeout,
     and parses output to verify it started correctly.
 
     Returns (success, message).
@@ -1136,18 +1156,11 @@ def _test_diann(
         report_error(e, {"search_engine": "diann", "vendor": vendor})
         return False, msg
 
-    # Second check: test search on the smallest DIA file
-    dia_files = [
-        m for m in file_metadata
-        if m.get("acquisition_mode") and is_dia(m["acquisition_mode"])
-    ]
-    if not dia_files or not fasta_path:
+    if not fasta_path:
         console.print("  [green]DIA-NN executable OK[/green]")
-        return True, "OK (no test file available)"
+        return True, "OK (no FASTA for test search)"
 
-    # Pick smallest file for fast test
-    test_file = min(dia_files, key=lambda m: m["path"].stat().st_size if m["path"].exists() else float("inf"))
-    test_path = test_file["path"]
+    test_path = test_file
     test_output = Path(os.environ.get("TEMP", "/tmp")) / "stan_test_diann"
     test_output.mkdir(parents=True, exist_ok=True)
     report_path = test_output / "report.parquet"
@@ -1209,7 +1222,7 @@ def _test_diann(
 def _test_sage(
     sage_exe: str,
     fasta_path: str | None,
-    file_metadata: list[dict],
+    test_file: Path,
     vendor: str,
     console,
 ) -> tuple[bool, str]:
