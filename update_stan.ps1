@@ -49,13 +49,14 @@ $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Env
 $diannExe = Get-Command "DiaNN.exe" -ErrorAction SilentlyContinue
 if (-not $diannExe) { $diannExe = Get-Command "diann.exe" -ErrorAction SilentlyContinue }
 
+$diannSearchPaths = @(
+    "C:\DIA-NN", "C:\Program Files\DIA-NN", "$env:LOCALAPPDATA\DIA-NN",
+    "C:\DiaNN", "C:\Program Files\DiaNN", "$env:LOCALAPPDATA\DiaNN",
+    "$env:PROGRAMFILES\DIA-NN", "$env:PROGRAMFILES(x86)\DIA-NN"
+)
+
 # Also check common install locations
 if (-not $diannExe) {
-    $diannSearchPaths = @(
-        "C:\DIA-NN", "C:\Program Files\DIA-NN", "$env:LOCALAPPDATA\DIA-NN",
-        "C:\DiaNN", "C:\Program Files\DiaNN", "$env:LOCALAPPDATA\DiaNN",
-        "$env:PROGRAMFILES\DIA-NN", "$env:PROGRAMFILES(x86)\DIA-NN"
-    )
     foreach ($searchPath in $diannSearchPaths) {
         if (Test-Path $searchPath) {
             $found = Get-ChildItem -Path $searchPath -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -65,11 +66,24 @@ if (-not $diannExe) {
     }
 }
 
+$needsDiannInstall = $false
 if ($diannExe) {
     $diannPath = if ($diannExe.Source) { $diannExe.Source } else { $diannExe.FullName }
-    Write-Host "  DIA-NN found: $diannPath" -ForegroundColor Green
+    # Check version — need 2.0+ for community benchmark
+    $diannVerOut = & $diannPath 2>&1 | Out-String
+    if ($diannPath -match "1\.\d+\.\d+" -or $diannVerOut -match "DIA-NN\s+1\.") {
+        Write-Host "  DIA-NN found but outdated: $diannPath" -ForegroundColor Yellow
+        Write-Host "  Version 2.0+ required. Upgrading..." -ForegroundColor Yellow
+        $needsDiannInstall = $true
+    } else {
+        Write-Host "  DIA-NN found: $diannPath" -ForegroundColor Green
+    }
 } else {
     Write-Host "  DIA-NN not found. Installing..." -ForegroundColor Yellow
+    $needsDiannInstall = $true
+}
+
+if ($needsDiannInstall) {
     $ErrorActionPreference = "Continue"
     try {
         $diannRelease = Invoke-RestMethod "https://api.github.com/repos/vdemichev/DiaNN/releases/latest" -TimeoutSec 15
