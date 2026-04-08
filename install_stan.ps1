@@ -355,11 +355,20 @@ Write-Host ""
 Write-Host "  [7/7] Adding to PATH..." -ForegroundColor Cyan
 $sp = "$venv\Scripts"
 $up = [Environment]::GetEnvironmentVariable("PATH","User")
+
+# Remove old .stan\venv from PATH if it exists (avoid shadowing new STAN\venv)
+$oldScripts = "$env:USERPROFILE\.stan\venv\Scripts"
+if ($up -like "*$oldScripts*") {
+    $up = ($up -split ";" | Where-Object { $_ -ne $oldScripts -and $_ -ne "" }) -join ";"
+    Write-Host "  Removed old .stan\venv from PATH." -ForegroundColor Gray
+}
+
 if ($up -notlike "*$sp*") {
     [Environment]::SetEnvironmentVariable("PATH","$up;$sp","User")
     $env:Path = "$sp;$env:Path"
     Write-Host "  Added to PATH." -ForegroundColor Green
 } else {
+    [Environment]::SetEnvironmentVariable("PATH","$up","User")
     Write-Host "  Already in PATH." -ForegroundColor Green
 }
 
@@ -370,6 +379,7 @@ try {
     $t = [DateTime]::Now.Ticks
     Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat?t=$t" -OutFile "$scriptDir\install-stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
     Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat?t=$t" -OutFile "$scriptDir\update-stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/start_stan.bat?t=$t" -OutFile "$scriptDir\start_stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
 } catch {}
 
 # -- Done --

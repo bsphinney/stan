@@ -237,6 +237,7 @@ try {
     $t = [DateTime]::Now.Ticks
     $url = "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat"
     Invoke-WebRequest -Uri ($url + "?t=" + $t) -OutFile "$scriptDir\update-stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri ("https://raw.githubusercontent.com/bsphinney/stan/main/start_stan.bat?t=" + $t) -OutFile "$scriptDir\start_stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
 } catch {}
 
 # -- Done --
