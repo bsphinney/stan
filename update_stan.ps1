@@ -165,6 +165,15 @@ if ($sageExe) {
     $ErrorActionPreference = "Stop"
 }
 
+# -- Self-update .bat files for next run --
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $scriptDir) { $scriptDir = Get-Location }
+try {
+    $batUrl = "https://raw.githubusercontent.com/bsphinney/stan/main/update.bat"
+    $t = [DateTime]::Now.Ticks
+    Invoke-WebRequest -Uri "$batUrl`?t=$t" -OutFile "$scriptDir\update.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+} catch {}
+
 # -- Done --
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green

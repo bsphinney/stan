@@ -321,6 +321,15 @@ if ($up -notlike "*$sp*") {
     Write-Host "  Already in PATH." -ForegroundColor Green
 }
 
+# -- Self-update .bat files for next run --
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $scriptDir) { $scriptDir = Get-Location }
+try {
+    $t = [DateTime]::Now.Ticks
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/install.bat?t=$t" -OutFile "$scriptDir\install.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/update.bat?t=$t" -OutFile "$scriptDir\update.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+} catch {}
+
 # -- Done --
 Write-Host ""
 Write-Host "  ============================================================" -ForegroundColor Green
