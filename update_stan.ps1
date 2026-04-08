@@ -66,7 +66,8 @@ if (-not $diannExe) {
 }
 
 if ($diannExe) {
-    Write-Host "  DIA-NN found: $($diannExe.Source ?? $diannExe.FullName)" -ForegroundColor Green
+    $diannPath = if ($diannExe.Source) { $diannExe.Source } else { $diannExe.FullName }
+    Write-Host "  DIA-NN found: $diannPath" -ForegroundColor Green
 } else {
     Write-Host "  DIA-NN not found. Installing..." -ForegroundColor Yellow
     $ErrorActionPreference = "Continue"
@@ -130,7 +131,8 @@ if (-not $sageExe) {
 }
 
 if ($sageExe) {
-    Write-Host "  Sage found: $($sageExe.Source ?? $sageExe.FullName)" -ForegroundColor Green
+    $sagePath = if ($sageExe.Source) { $sageExe.Source } else { $sageExe.FullName }
+    Write-Host "  Sage found: $sagePath" -ForegroundColor Green
 } else {
     Write-Host "  Sage not found. Installing..." -ForegroundColor Yellow
     $ErrorActionPreference = "Continue"
