@@ -43,7 +43,6 @@ def _build_local_diann_params(
     params: dict = {
         "fasta": fasta_path,
         "qvalue": 0.01,
-        "protein-q": 0.01,
         "min-pep-len": 7,
         "max-pep-len": 30,
         "missed-cleavages": 1,
@@ -127,7 +126,8 @@ def run_diann_local(
             return None
         params = _build_local_diann_params(fasta_path, lib_path)
 
-    cmd = [diann_exe, "--f", str(raw_path), "--out", str(output_dir)]
+    report_path = output_dir / "report.parquet"
+    cmd = [diann_exe, "--f", str(raw_path), "--out", str(report_path)]
 
     for key, val in params.items():
         if val == "":
@@ -161,7 +161,7 @@ def run_diann_local(
         logger.error("DIA-NN timed out after 4 hours: %s", raw_path.name)
         return None
     except subprocess.CalledProcessError as e:
-        logger.error("DIA-NN failed: %s\nstderr: %s", raw_path.name, e.stderr[-500:])
+        logger.error("DIA-NN failed: %s\nstderr:\n%s", raw_path.name, e.stderr)
         return None
 
     report = output_dir / "report.parquet"
