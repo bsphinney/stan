@@ -354,7 +354,7 @@ def run_baseline() -> None:
     """Interactive baseline builder — process existing HeLa QC directories."""
     console.print()
     console.print(Panel(
-        "[bold]STAN Baseline Builder[/bold]\n\n"
+        "[bold]STAN Baseline Builder v2[/bold]\n\n"
         "Process existing HeLa QC runs to build historical baseline data.\n"
         "Point STAN at a directory containing .d or .raw files.",
         title="STAN",
