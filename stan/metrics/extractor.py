@@ -271,16 +271,21 @@ def extract_dia_metrics(
         logger.warning("No precursors pass FDR threshold %.2f in %s", q_cutoff, report_path)
         return _empty_dia_metrics()
 
-    # Fragment counts per precursor
-    filt = filt.with_columns(
-        (pl.col("Fragment.Info").str.count_matches(";") + 1).alias("n_frag_extracted"),
-        pl.col("Fragment.Quant.Corrected")
-        .map_elements(
-            lambda s: sum(1 for x in str(s).split(";") if x.strip() and float(x) > 0),
-            return_dtype=pl.Int32,
+    # Fragment counts per precursor (columns may not exist in DIA-NN 2.0+)
+    has_fragment_info = "Fragment.Info" in available
+    has_fragment_quant = "Fragment.Quant.Corrected" in available
+    if has_fragment_info and has_fragment_quant:
+        filt = filt.with_columns(
+            (pl.col("Fragment.Info").str.count_matches(";") + 1).alias("n_frag_extracted"),
+            pl.col("Fragment.Quant.Corrected")
+            .map_elements(
+                lambda s: sum(1 for x in str(s).split(";") if x.strip() and float(x) > 0),
+                return_dtype=pl.Int32,
+            )
+            .alias("n_frag_quantified"),
         )
-        .alias("n_frag_quantified"),
-    )
+    else:
+        logger.debug("Fragment.Info/Fragment.Quant.Corrected not in report — skipping fragment metrics")
 
     # CV across replicates (if multiple files)
     n_files = filt["File.Name"].n_unique()
@@ -310,8 +315,8 @@ def extract_dia_metrics(
         row = charge.filter(pl.col("Precursor.Charge") == z)
         return float(row["pct"][0]) if len(row) else 0.0
 
-    total_frag_extracted = filt["n_frag_extracted"].sum()
-    total_frag_quantified = filt["n_frag_quantified"].sum()
+    total_frag_extracted = filt["n_frag_extracted"].sum() if "n_frag_extracted" in filt.columns else 0
+    total_frag_quantified = filt["n_frag_quantified"].sum() if "n_frag_quantified" in filt.columns else 0
 
     # ── Points across peak (Matthews & Hayes 1976) ────────────────
     # Compute from RT.Start/RT.Stop if available, or estimate from RT + Evidence
@@ -364,9 +369,10 @@ def extract_dia_metrics(
     c2a = _c2a_band(filt)
 
     # Missed cleavages ≥2 (more sensitive than ≥1 for digestion quality)
+    has_mc = "Missed.Cleavages" in filt.columns
     mc2_rate = float(
         filt.filter(pl.col("Missed.Cleavages") >= 2).height / filt.height
-    ) if filt.height > 0 else 0.0
+    ) if has_mc and filt.height > 0 else 0.0
 
     # Median precursor intensity
     median_intensity = None
@@ -385,7 +391,7 @@ def extract_dia_metrics(
         "n_proteins": filt.filter(pl.col("PG.Q.Value") <= q_cutoff)[
             "Protein.Group"
         ].n_unique(),
-        "median_fragments_per_precursor": float(filt["n_frag_extracted"].median()),
+        "median_fragments_per_precursor": float(filt["n_frag_extracted"].median()) if "n_frag_extracted" in filt.columns else 0.0,
         "pct_fragments_quantified": (
             float(total_frag_quantified / total_frag_extracted)
             if total_frag_extracted > 0
@@ -394,7 +400,7 @@ def extract_dia_metrics(
         "median_cv_precursor": median_cv,
         "missed_cleavage_rate": float(
             filt.filter(pl.col("Missed.Cleavages") >= 1).height / filt.height
-        ),
+        ) if has_mc else 0.0,
         "missed_cleavage_rate_2plus": mc2_rate,
         "pct_charge_1": charge_pct(1),
         "pct_charge_2": charge_pct(2),
