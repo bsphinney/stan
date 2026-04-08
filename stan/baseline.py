@@ -558,7 +558,8 @@ def run_baseline() -> None:
     column_info: dict = {}
     if use_column:
         from stan.setup import _pick_column
-        column_info = _pick_column()
+        col_vendor, col_model = _pick_column()
+        column_info = {"vendor": col_vendor, "model": col_model}
 
     # ── 5. FASTA — download community standard from HF Dataset ──
     console.print()
