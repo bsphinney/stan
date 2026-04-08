@@ -1156,65 +1156,53 @@ def _test_diann(
         report_error(e, {"search_engine": "diann", "vendor": vendor})
         return False, msg
 
-    if not fasta_path:
-        console.print("  [green]DIA-NN executable OK[/green]")
-        return True, "OK (no FASTA for test search)"
-
+    # Quick test: can DIA-NN read this file? (15s timeout — just checks it starts)
     test_path = test_file
     test_output = Path(os.environ.get("TEMP", "/tmp")) / "stan_test_diann"
     test_output.mkdir(parents=True, exist_ok=True)
     report_path = test_output / "report.parquet"
 
-    from stan.search.local import _build_local_diann_params
-    params = _build_local_diann_params(fasta_path)
+    # Minimal command — just point at the file with no search params
+    # DIA-NN will try to read the file and fail fast if it can't
     cmd = [diann_exe, "--f", str(test_path), "--out", str(report_path)]
-    for key, val in params.items():
-        if val == "":
-            cmd.append(f"--{key}")
-        else:
-            cmd.extend([f"--{key}", str(val)])
-    cmd.extend(["--threads", "2"])
+    if fasta_path:
+        cmd.extend(["--fasta", fasta_path])
+    cmd.extend(["--threads", "1"])
 
-    console.print(f"  [dim]Test search: {test_path.name}...[/dim]")
+    console.print(f"  [dim]Quick test: {test_path.name}...[/dim]")
 
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,  # 2 min timeout for test
+            timeout=15,  # 15s — just enough to check it starts
         )
         output = proc.stdout + proc.stderr
 
         if proc.returncode != 0:
-            # Parse common DIA-NN errors
+            # Parse the output for useful error info
             if "cannot open" in output.lower() or "file not found" in output.lower():
-                msg = f"DIA-NN cannot read input file. stderr: {proc.stderr[:300]}"
-            elif "fasta" in output.lower() and "error" in output.lower():
-                msg = f"FASTA issue. stderr: {proc.stderr[:300]}"
+                msg = f"Cannot read input file. Output: {output[:300]}"
             elif ".net" in output.lower() or "runtime" in output.lower():
-                msg = f"Missing .NET runtime. stderr: {proc.stderr[:300]}"
+                msg = f"Missing .NET runtime. Output: {output[:300]}"
             else:
-                msg = f"Exit code {proc.returncode}. stderr: {proc.stderr[:500]}"
-            report_error(
-                RuntimeError(msg),
-                {"search_engine": "diann", "vendor": vendor, "raw_file_name": test_path.stem},
-            )
+                msg = f"Exit code {proc.returncode}. Output: {output[:500]}"
+            report_error(RuntimeError(msg), {"search_engine": "diann", "vendor": vendor})
             return False, msg
 
-        console.print(f"  [green]DIA-NN test passed[/green]")
+        console.print("  [green]DIA-NN test passed[/green]")
         return True, "OK"
 
     except subprocess.TimeoutExpired:
-        # 2 min timeout is fine — DIA-NN started and is actually searching
-        console.print(f"  [green]DIA-NN test passed[/green] (still running after 2 min — working)")
-        return True, "OK (search started successfully)"
+        # 15s timeout means DIA-NN started successfully and is working
+        console.print("  [green]DIA-NN OK[/green] (started successfully)")
+        return True, "OK"
     except Exception as e:
-        msg = f"Test search error: {e}"
+        msg = f"Test error: {e}"
         report_error(e, {"search_engine": "diann", "vendor": vendor})
         return False, msg
     finally:
-        # Clean up test output
         import shutil as _shutil
         _shutil.rmtree(test_output, ignore_errors=True)
 
