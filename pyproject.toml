@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stan-proteomics"
+version = "0.1.0"
+description = "STAN — Standardized proteomic Throughput ANalyzer"
+readme = "README.md"
+license = { text = "STAN Academic License" }
+authors = [{ name = "Brett Stanley Phinney", email = "bsphinney@ucdavis.edu" }]
+requires-python = ">=3.10"
+dependencies = [
+    "polars>=0.20",
+    "pyarrow>=14",
+    "watchdog>=4.0",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "huggingface_hub>=0.22",
+    "rich>=13.0",
+    "typer>=0.12",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
+
+[project.optional-dependencies]
+hpc = ["paramiko>=3.0"]
+dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
+
+[project.scripts]
+stan = "stan.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["stan*"]
+
+[tool.setuptools.package-data]
+"stan.dashboard" = ["public/**/*"]
+"stan" = ["config/*.yml"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests requiring Hive SLURM or real instrument files",
+]

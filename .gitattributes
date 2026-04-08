@@ -1,0 +1,4 @@
+# Store batch files as-is (binary) so CRLF bytes survive in the Git
+# blob and GitHub Raw downloads serve them with Windows line endings.
+# Without this, Git normalizes to LF and Windows CMD can't parse them.
+*.bat -text
