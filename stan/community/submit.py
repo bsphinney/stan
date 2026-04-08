@@ -1,13 +1,17 @@
-"""Submit QC metrics to the community HeLa benchmark on HF Dataset.
+"""Submit QC metrics to the community HeLa benchmark via the STAN relay.
 
-Submissions are individual parquet files uploaded to the submissions/ directory
-of the HF Dataset repo. Raw files are NEVER uploaded — metrics only.
+Submissions are posted to the HF Space relay which handles HF Dataset
+uploads server-side. No HF token is required on the client. Raw files
+are NEVER uploaded — metrics only.
 """
 
 from __future__ import annotations
 
 import io
+import json
 import logging
+import urllib.request
+import urllib.error
 import uuid
 from datetime import datetime, timezone
 
@@ -25,6 +29,7 @@ from stan.search.community_params import check_diann_version_compatible
 logger = logging.getLogger(__name__)
 
 HF_DATASET_REPO = "brettsp/stan-benchmark"
+RELAY_URL = "https://brettsp-stan.hf.space"
 
 # Submission parquet schema
 SUBMISSION_SCHEMA = pa.schema([
@@ -81,14 +86,11 @@ def submit_to_benchmark(
 
     Raises:
         ValueError: If submission fails validation.
-        RuntimeError: If HF token is not configured.
     """
-    community_config = load_community()
-    hf_token = community_config.get("hf_token", "")
-    if not hf_token:
-        raise RuntimeError(
-            "HF token not configured. Set hf_token in ~/.stan/community.yml"
-        )
+    try:
+        community_config = load_community()
+    except Exception:
+        community_config = {}
 
     display_name = community_config.get("display_name", "") or "Anonymous Lab"
     mode = run.get("mode", "").lower()
@@ -166,24 +168,29 @@ def submit_to_benchmark(
 
     table = pa.table(row, schema=SUBMISSION_SCHEMA)
 
-    # Upload to HF Dataset
-    buf = io.BytesIO()
-    pq.write_table(table, buf)
-    buf.seek(0)
+    # Submit via relay (no token needed — relay handles HF auth server-side)
+    # Convert row to JSON-serializable format
+    submit_payload = {k: v[0] for k, v in row.items()}
+    # Convert non-serializable types
+    submit_payload["submitted_at"] = submit_payload["submitted_at"].isoformat()
 
     try:
-        from huggingface_hub import HfApi
-
-        api = HfApi(token=hf_token)
-        api.upload_file(
-            path_or_fileobj=buf,
-            path_in_repo=f"submissions/{submission_id}.parquet",
-            repo_id=HF_DATASET_REPO,
-            repo_type="dataset",
+        data = json.dumps(submit_payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{RELAY_URL}/api/submit",
+            data=data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": f"STAN/{__version__}",
+            },
         )
-    except Exception:
-        logger.exception("Failed to upload submission to HF Dataset")
-        raise
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+            if result.get("status") != "ok":
+                raise RuntimeError(f"Relay rejected submission: {result.get('error', 'unknown')}")
+    except urllib.error.URLError as e:
+        logger.error("Failed to submit to relay: %s", e)
+        raise RuntimeError(f"Could not reach community relay: {e}") from e
 
     # Mark as submitted in local DB
     run_id = run.get("id", "")
