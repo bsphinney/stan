@@ -220,8 +220,14 @@ class InstrumentWatcher:
             )
             if result_path is not None:
                 self._store_run(path, mode, result_path)
-        except Exception:
+        except Exception as e:
             logger.exception("Search dispatch failed for %s", path.name)
+            from stan.telemetry import report_error
+            report_error(e, {
+                "vendor": self._config.get("vendor"),
+                "raw_file_name": path.stem,
+                "acquisition_mode": mode.value if mode != AcquisitionMode.UNKNOWN else None,
+            })
 
     def _store_run(
         self, raw_path: Path, mode: AcquisitionMode, result_path: Path

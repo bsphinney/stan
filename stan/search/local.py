@@ -150,18 +150,24 @@ def run_diann_local(
             timeout=14400,  # 4 hour timeout for local execution
         )
         logger.info("DIA-NN complete: %s", raw_path.name)
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         logger.error(
             "DIA-NN executable not found: %s. "
             "Install DIA-NN or add it to PATH.",
             diann_exe,
         )
+        from stan.telemetry import report_error
+        report_error(e, {"search_engine": "diann", "vendor": vendor})
         return None
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         logger.error("DIA-NN timed out after 4 hours: %s", raw_path.name)
+        from stan.telemetry import report_error
+        report_error(e, {"search_engine": "diann", "vendor": vendor})
         return None
     except subprocess.CalledProcessError as e:
         logger.error("DIA-NN failed: %s\nstderr:\n%s", raw_path.name, e.stderr)
+        from stan.telemetry import report_error
+        report_error(e, {"search_engine": "diann", "vendor": vendor})
         return None
 
     report = output_dir / "report.parquet"
@@ -249,17 +255,23 @@ def run_sage_local(
             timeout=14400,
         )
         logger.info("Sage complete: %s", raw_path.name)
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         logger.error(
             "Sage executable not found: %s. Install Sage or add it to PATH.",
             sage_exe,
         )
+        from stan.telemetry import report_error
+        report_error(e, {"search_engine": "sage", "vendor": vendor})
         return None
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         logger.error("Sage timed out after 4 hours: %s", raw_path.name)
+        from stan.telemetry import report_error
+        report_error(e, {"search_engine": "sage", "vendor": vendor})
         return None
     except subprocess.CalledProcessError as e:
         logger.error("Sage failed: %s\nstderr:\n%s", raw_path.name, e.stderr)
+        from stan.telemetry import report_error
+        report_error(e, {"search_engine": "sage", "vendor": vendor})
         return None
     finally:
         # Clean up mzML if requested

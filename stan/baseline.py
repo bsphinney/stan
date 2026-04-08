@@ -956,9 +956,19 @@ def _process_files(
                 _save_progress(progress_state)
                 console.print("  Resume with: [cyan]stan baseline[/cyan]")
                 return
-            except Exception:
+            except Exception as e:
                 logger.exception("Failed to process %s", raw_file.name)
                 console.print(f"  [red][{idx + 1}/{total}] {raw_file.name} -- error (see log)[/red]")
+                from stan.telemetry import report_error
+                try:
+                    search_eng = "diann" if is_dia(mode_obj) else "sage"
+                except NameError:
+                    search_eng = "unknown"
+                report_error(e, {
+                    "search_engine": search_eng,
+                    "vendor": vendor,
+                    "raw_file_name": raw_file.stem,
+                })
                 failed += 1
 
             progress_bar.advance(task)

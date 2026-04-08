@@ -163,6 +163,13 @@ def run_setup() -> None:
         )
         console.print(f"  [green]Email reports enabled for {email_address}[/green]")
 
+    # ── 6. Error telemetry ──────────────────────────────────────
+    console.print()
+    console.print("[bold]6. Help improve STAN?[/bold]")
+    console.print("  [dim]Share anonymous error reports so we can fix common issues.[/dim]")
+    console.print("  [dim]No file names, paths, or patient data — just error messages and versions.[/dim]")
+    error_telemetry = Confirm.ask("  Enable error reporting?", default=True, console=console)
+
     # ── Check search engines ─────────────────────────────────────
     console.print()
     _check_search_engines()
@@ -258,20 +265,21 @@ def run_setup() -> None:
     _copy_if_missing("thresholds.yml", user_dir)
     _copy_if_missing("community.yml", user_dir)
 
-    # Write display_name + auth token into community.yml
+    # Write display_name + auth token + error_telemetry into community.yml
     community_path = user_dir / "community.yml"
+    try:
+        comm_config = yaml.safe_load(community_path.read_text()) or {}
+    except Exception:
+        comm_config = {}
     if community and display_name != "Anonymous Lab":
-        try:
-            comm_config = yaml.safe_load(community_path.read_text()) or {}
-        except Exception:
-            comm_config = {}
         comm_config["display_name"] = display_name
         if auth_token:
             comm_config["auth_token"] = auth_token
-        community_path.write_text(yaml.dump(comm_config, default_flow_style=False, sort_keys=False))
-        # Set permissions so only the user can read the token
-        community_path.chmod(0o600)
-        console.print(f"  [green]Wrote[/green] display_name + auth token to {community_path}")
+    comm_config["error_telemetry"] = error_telemetry
+    community_path.write_text(yaml.dump(comm_config, default_flow_style=False, sort_keys=False))
+    # Set permissions so only the user can read the token
+    community_path.chmod(0o600)
+    console.print(f"  [green]Wrote[/green] community settings to {community_path}")
 
     # ── Summary ──────────────────────────────────────────────────
     console.print()
@@ -289,6 +297,7 @@ def run_setup() -> None:
         table.add_row("Weekly summary", "Yes" if email_weekly else "No")
     else:
         table.add_row("Daily email", "[dim]disabled[/dim]")
+    table.add_row("Error telemetry", "Yes" if error_telemetry else "No")
     table.add_row("Instrument", "[dim]auto-detected from first raw file[/dim]")
     table.add_row("LC system", "[dim]auto-detected from first raw file[/dim]")
     table.add_row("Gradient", "[dim]auto-detected from first raw file[/dim]")
