@@ -762,6 +762,7 @@ def run_baseline() -> None:
         community_submit=community_submit,
         directory=str(raw_path),
         start_index=0,
+        lib_path=lib_path,
     )
 
 
@@ -808,6 +809,7 @@ def _resume_baseline(progress_data: dict) -> None:
         community_submit=progress_data.get("community_submit", False),
         directory=str(directory),
         start_index=start_index,
+        lib_path=progress_data.get("lib_path"),
     )
 
 
@@ -826,6 +828,7 @@ def _process_files(
     community_submit: bool,
     directory: str,
     start_index: int,
+    lib_path: str | None = None,
 ) -> None:
     """Process a list of raw files, extracting metrics and storing results."""
     from stan.db import init_db, insert_run
@@ -866,6 +869,7 @@ def _process_files(
         "gradient_length_min": gradient_length_min,
         "column_info": column_info,
         "fasta_path": fasta_path,
+        "lib_path": lib_path,
         "diann_exe": diann_exe,
         "sage_exe": sage_exe,
         "community_submit": community_submit,
