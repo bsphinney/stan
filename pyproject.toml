@@ -30,6 +30,9 @@ dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
 [project.scripts]
 stan = "stan.cli:app"
 
+[tool.setuptools.packages.find]
+include = ["stan*"]
+
 [tool.setuptools.package-data]
 "stan.dashboard" = ["public/**/*"]
 "stan" = ["config/*.yml"]
