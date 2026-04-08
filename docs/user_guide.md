@@ -16,12 +16,13 @@ This guide covers installation, configuration, daily use, and troubleshooting fo
 2. [Configuration Walkthrough](#configuration-walkthrough)
 3. [Watcher Daemon](#watcher-daemon)
 4. [Dashboard](#dashboard)
-5. [Community Benchmark Submission](#community-benchmark-submission)
-6. [QC Metric Reference](#qc-metric-reference)
-7. [Instrument Performance Score (IPS)](#gradient-reproducibility-score-grs)
-8. [Run and Done Gating](#run-and-done-gating)
-9. [Column Health Monitoring](#column-health-monitoring)
-10. [Troubleshooting](#troubleshooting)
+5. [Baseline Builder](#baseline-builder)
+6. [Community Benchmark Submission](#community-benchmark-submission)
+7. [QC Metric Reference](#qc-metric-reference)
+8. [Instrument Performance Score (IPS)](#instrument-performance-score-ips)
+9. [Run and Done Gating](#run-and-done-gating)
+10. [Column Health Monitoring](#column-health-monitoring)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -30,17 +31,33 @@ This guide covers installation, configuration, daily use, and troubleshooting fo
 ### Requirements
 
 - Python 3.10 or newer
-- Access to a SLURM HPC cluster (e.g., UC Davis Hive) with DIA-NN and Sage installed
-- SSH access to the cluster (STAN uses `paramiko` for job submission)
-- For Thermo DDA runs: ThermoRawFileParser installed on the cluster (requires .NET 8 runtime)
+- Windows 10/11 (recommended for instrument workstations), Linux, or macOS
+- DIA-NN and Sage are auto-installed by the Windows installer; on Linux/macOS install them manually
+- For Thermo DDA runs: ThermoRawFileParser (auto-downloaded by STAN on first use on Windows)
+- Optional: SLURM HPC cluster access for remote search execution
 
-### Install from PyPI (coming soon)
+### Windows Install (Recommended)
 
-```bash
-pip install stan-proteomics          # not yet published — use source install below
+Download **`install-stan.bat`** from the [GitHub releases page](https://github.com/bsphinney/stan/releases) and double-click it. The installer:
+
+1. Checks for Python 3.10+ and installs it if missing
+2. Clones the STAN repository and runs `pip install`
+3. Auto-installs **DIA-NN** from GitHub releases (`.msi` for 2.x, with admin elevation if needed)
+4. Auto-installs **Sage** from GitHub releases
+5. Handles SSL certificate and proxy issues automatically (common on UC Davis and other institutional networks)
+6. Uses `--no-cache-dir` to ensure fresh code
+
+Both `install-stan.bat` and `update-stan.bat` self-update by downloading their latest version from GitHub on each run.
+
+> **Note:** The old `install_stan.bat` (underscore) was removed. Only `install-stan.bat` (hyphen) exists now.
+
+To update an existing installation:
+
+```
+update-stan.bat
 ```
 
-### Install from Source (Development)
+### Install from Source (Linux/macOS/Advanced)
 
 ```bash
 git clone https://github.com/bsphinney/stan.git
@@ -49,6 +66,16 @@ pip install -e ".[dev]"
 ```
 
 The `[dev]` extra installs pytest, ruff, and mypy for development and testing.
+
+You will also need to install DIA-NN and Sage manually and add them to your PATH:
+- **DIA-NN**: Download from [github.com/vdemichev/DiaNN/releases](https://github.com/vdemichev/DiaNN/releases)
+- **Sage**: Download from [github.com/lazear/sage/releases](https://github.com/lazear/sage/releases)
+
+### Install from PyPI (coming soon)
+
+```bash
+pip install stan-proteomics          # not yet published
+```
 
 ### Verify Installation
 
@@ -72,39 +99,67 @@ This creates `~/.stan/` and copies three default configuration files into it:
 
 | File | Purpose |
 |------|---------|
-| `instruments.yml` | Instrument watch directories, vendor, model, SLURM settings |
+| `instruments.yml` | Instrument watch directories, vendor, model, settings |
 | `thresholds.yml` | QC pass/warn/fail thresholds per instrument model |
-| `community.yml` | HuggingFace token and community benchmark preferences |
+| `community.yml` | Community benchmark preferences and error telemetry |
 
-All three files are YAML. Edit them with any text editor, or use the dashboard UI once it is running.
+All three files are YAML. Edit them with any text editor, or use the dashboard Config tab to view and manage instruments (including a Remove button for deleting duplicates).
+
+**Interactive setup (recommended):**
+
+```bash
+stan setup
+```
+
+The setup wizard asks 6 questions:
+
+1. **Watch directory** -- where do your raw files land?
+2. **LC column** -- the one thing STAN cannot read from raw files
+3. **HeLa amount** -- injection amount in ng (default: 50)
+4. **Community benchmark** -- opt in with anonymous pseudonym and email verification
+5. **Daily QC email** -- morning report and optional weekly summary
+6. **Error telemetry** -- opt-in anonymous error reporting to help improve STAN
+
+Everything else (instrument model, vendor, serial number, LC system, gradient length, DIA/DDA mode) is auto-detected from your raw files.
+
+The wizard deduplicates `instruments.yml` automatically -- if the same watch directory already exists, it offers to update the existing entry rather than creating a duplicate. If your watch directory has existing raw files, the wizard offers to run `stan baseline` at the end.
+
+To change your pseudonym's contact email later, contact bsphinney@ucdavis.edu.
 
 ### instruments.yml
 
-This is the primary configuration file. It tells STAN which instruments to watch, where their raw files land, and how to submit search jobs.
+This is the primary configuration file. It tells STAN which instruments to watch, where their raw files land, and search settings. Most fields are auto-populated by `stan setup` or auto-detected from raw files.
 
 ```yaml
-hive:
-  host: "hive.ucdavis.edu"       # your SLURM cluster hostname
-  user: "your_username"           # SSH username
-
 instruments:
 
   - name: "timsTOF Ultra"
     vendor: "bruker"              # "bruker" or "thermo"
     model: "timsTOF Ultra"        # used for threshold lookup in thresholds.yml
-    watch_dir: "/mnt/instruments/timstof-ultra/raw"
-    output_dir: "/mnt/instruments/timstof-ultra/stan_out"
+    watch_dir: "D:/Data/raw"
+    output_dir: "D:/Data/stan_out"
     extensions: [".d"]            # file extensions to watch for
     stable_secs: 60               # seconds of no size change before processing
     enabled: true                 # set false to pause watching
     qc_modes: ["dia", "dda"]      # modes to accept (auto-detected from metadata)
-    hive_partition: "high"        # SLURM partition
-    hive_account: "your-grp"      # SLURM account
-    hive_mem: "32G"               # SLURM memory request
     community_submit: true        # auto-submit to community benchmark
     hela_amount_ng: 50            # injection amount in ng (default: 50)
-    spd: 60                       # samples per day (primary — Evosep/Vanquish method)
+    spd: 60                       # samples per day (primary -- Evosep/Vanquish method)
     gradient_length_min: 21       # gradient length in minutes (fallback if spd not set)
+
+# ── Optional: SLURM HPC execution ──────────────────────────────────
+# Uncomment to run searches on a remote cluster instead of locally.
+# Most labs do NOT need this — local execution is the default.
+#
+# hive:
+#   host: "hive.ucdavis.edu"
+#   user: "your_username"
+#
+# Then add to each instrument:
+#   execution_mode: "slurm"
+#   hive_partition: "high"
+#   hive_account: "your-account-grp"
+#   hive_mem: "32G"
 ```
 
 **Key fields explained:**
@@ -181,19 +236,21 @@ Thresholds should be tuned to your specific methods and expected performance. St
 
 ### community.yml
 
-Controls your participation in the community benchmark.
+Controls your participation in the community benchmark and error telemetry.
 
 ```yaml
-hf_token: ""                          # HuggingFace token with write access
-display_name: "Your Lab Name"         # shown on the leaderboard
+display_name: "Your Lab Name"         # shown on the leaderboard; blank = anonymous
 submit_by_default: false              # true = auto-submit without prompting
 hela_source: "Pierce HeLa Protein Digest Standard"
 institution_type: "core_facility"     # core_facility | academic_lab | industry
+error_telemetry: true                 # opt-in anonymous error reports
 ```
 
-To obtain a HuggingFace token, create an account at [huggingface.co](https://huggingface.co), go to Settings, then Access Tokens, and create a token with write access. Paste it in the `hf_token` field.
+No HuggingFace account or token is needed -- STAN submits through a relay API hosted on the HF Space.
 
 Leave `display_name` blank for anonymous submissions (shown as "Anonymous Lab" on the leaderboard).
+
+When `error_telemetry: true`, STAN sends anonymous error reports (error type, message, STAN version, OS, Python version) to the HF Space relay. No file paths, serial numbers, or patient data is ever included. All errors are also logged locally at `~/.stan/error_log.json` (last 100 entries) regardless of the telemetry setting.
 
 ---
 
@@ -205,7 +262,7 @@ Leave `display_name` blank for anonymous submissions (shown as "Anonymous Lab" o
 stan watch
 ```
 
-The watcher runs in the foreground. It monitors all directories listed in `instruments.yml` where `enabled: true`. For production use, run it in a `tmux` or `screen` session, or set it up as a systemd service.
+The watcher runs in the foreground. It recursively monitors all directories (and subdirectories) listed in `instruments.yml` where `enabled: true`. Events inside Bruker `.d` directories (such as `analysis.tdf` writes) are automatically filtered out so they do not trigger redundant processing. For production use, run it in a `tmux` or `screen` session, set it up as a systemd service, or use `start_stan.bat` on Windows.
 
 ### What Happens When a File is Detected
 
@@ -213,7 +270,7 @@ The watcher runs in the foreground. It monitors all directories listed in `instr
 
 2. **Mode detection** -- For Bruker `.d` files, STAN reads the `MsmsType` column from the `Frames` table in `analysis.tdf` (an SQLite database inside the `.d` directory). Values: 8 = ddaPASEF (DDA), 9 = diaPASEF (DIA). For Thermo `.raw` files, ThermoRawFileParser extracts scan filter metadata.
 
-3. **Search dispatch** -- Based on mode, a SLURM job is submitted:
+3. **Search dispatch** -- Based on mode, a local search is launched (or a SLURM job if configured):
    - DIA: DIA-NN with community-standardized parameters
    - DDA: Sage (with ThermoRawFileParser conversion for Thermo `.raw` only)
 
@@ -229,7 +286,7 @@ The watcher runs in the foreground. It monitors all directories listed in `instr
 
 ### Stopping the Watcher
 
-Press `Ctrl-C` to shut down gracefully. In-progress SLURM jobs continue running on the cluster; STAN will not cancel them.
+Press `Ctrl-C` to shut down gracefully. In-progress search jobs will be terminated. If using SLURM mode, remote cluster jobs continue running independently.
 
 ---
 
@@ -251,7 +308,7 @@ API documentation is available at `http://localhost:8421/docs` (Swagger UI).
 
 ### Dashboard Views
 
-The dashboard currently serves a FastAPI backend with JSON API endpoints. The React frontend is **(planned)**. In the meantime, you can access the API directly:
+The dashboard serves a FastAPI backend with a basic HTML frontend. The full React frontend is **(planned)**. The current dashboard includes a Config tab with instrument cards (each with a Remove button for deleting duplicates). You can also access the API directly:
 
 - `/api/runs` -- list recent QC runs
 - `/api/runs/{run_id}` -- full metric detail for a run
@@ -273,7 +330,36 @@ The dashboard currently serves a FastAPI backend with JSON API endpoints. The Re
 
 **Community Benchmark** -- Tabs for DDA (Track A), DIA (Track B), and Both (Track C). Shows distribution plots, your instrument's position, and the leaderboard for your cohort.
 
-**Instrument Config** -- Edit `instruments.yml` through a form or raw YAML editor with live preview.
+**Instrument Config** -- View instrument cards with Remove button (implemented). Full YAML editor with live preview **(planned)**.
+
+---
+
+## Baseline Builder
+
+The baseline builder processes existing HeLa QC files retroactively, ideal for populating your database with historical data before starting the live watcher.
+
+```bash
+stan baseline
+```
+
+The baseline builder walks you through:
+
+1. **Directory selection** -- point it at a directory of existing HeLa QC runs
+2. **File discovery** -- recursively finds all `.d` and `.raw` files in subdirectories
+3. **Metadata extraction** -- auto-detects instrument model, gradient length (Thermo via TRFP metadata, Bruker via `Frames.Time` in `analysis.tdf`), LC system (U3000, Vanquish Neo, Evosep, etc.), and acquisition mode from each file
+4. **Summary** -- shows a table of discovered files broken down by instrument before committing
+5. **Pre-flight tests** -- runs a quick test search with DIA-NN and Sage to verify they work before processing your files
+6. **Processing** -- searches all files with standardized parameters and stores metrics in the database
+
+If a search engine is not found or fails pre-flight, the builder prompts for a custom executable path. DIA-NN 2.x is preferred over 1.x when both are installed.
+
+The community FASTA (`UP000005640_9606_plus_universal_contam.fasta`, 21,044 entries) is auto-downloaded from the HF Dataset if not cached locally.
+
+Additional features:
+- **Scheduling** -- run now, tonight (8 PM), or weekend (Saturday 8 AM)
+- **Resume** -- progress is tracked in `~/.stan/baseline_progress.json`; interrupted runs resume where they left off
+- **Duplicate detection** -- files already in the database are skipped
+- **Community upload** -- if community submission is enabled, metrics are batch-uploaded after processing
 
 ---
 
@@ -281,10 +367,10 @@ The dashboard currently serves a FastAPI backend with JSON API endpoints. The Re
 
 ### Prerequisites
 
-1. A HuggingFace account with a write-access token
-2. The token configured in `~/.stan/community.yml`
-3. `community_submit: true` on the instrument in `instruments.yml`
-4. A valid HeLa QC run that passes the community hard gates
+1. `community_submit: true` on the instrument in `instruments.yml`
+2. A valid HeLa QC run that passes the community hard gates
+
+No HuggingFace account or token is needed -- STAN submits through a relay API automatically.
 
 ### Hard Validation Gates
 
@@ -485,13 +571,26 @@ ls -la ~/.stan/
 - For network-mounted directories, ensure the mount is active and responsive
 - Check `stan watch` output for error messages (run with `-v` for debug logging: `stan watch -v`)
 
-### SLURM job fails
+### Search engine not found
+
+- On Windows, the installer auto-installs DIA-NN and Sage. If they were not installed, run `install-stan.bat` again
+- `stan baseline` and `stan setup` will prompt for a custom executable path if the search engine cannot be found on PATH
+- DIA-NN 2.x is preferred over 1.x; if both are installed, STAN uses 2.x
+- Check that the executable is on your PATH: `where diann` (Windows) or `which diann` (Linux/macOS)
+
+### SLURM job fails (HPC mode only)
 
 - Verify `hive_partition` and `hive_account` are correct in `instruments.yml`
 - Ensure DIA-NN and Sage are available on the cluster (check module loads or paths)
 - For Thermo DDA runs, verify `trfp_path` points to a valid ThermoRawFileParser installation
 - Check the SLURM job output log in the `output_dir` for error details
 - DIA-NN on Linux requires .NET SDK 8.0.407 or newer
+
+### SSL/certificate errors during install
+
+The Windows installer handles UC Davis network SSL proxy issues automatically. If you still see certificate errors:
+- Run the installer again -- it includes TLS trust bypass for the download step
+- Both `.bat` files self-update, so re-running always gets the latest fix
 
 ### Low identification counts
 
@@ -561,4 +660,4 @@ These ranges assume a standard 1-hour gradient with 200-250 ng injection. Your t
 
 *STAN -- Standardized proteomic Throughput ANalyzer*
 *Author: Brett Stanley Phinney, UC Davis Proteomics Core*
-*MIT License -- Community data: CC BY 4.0*
+*STAN Academic License (free for academic/non-profit; commercial requires license -- contact bsphinney@ucdavis.edu) -- Community data: CC BY 4.0*

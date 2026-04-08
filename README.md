@@ -2,7 +2,7 @@
 
 > *Know your instrument.*
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License: STAN Academic](https://img.shields.io/badge/License-Academic-blue.svg)](LICENSE)
 [![Dataset: CC BY 4.0](https://img.shields.io/badge/Data_License-CC_BY_4.0-green.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
@@ -41,27 +41,37 @@ STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap
 
 ## Quick Start
 
-### Prerequisites
+### Windows (Recommended)
 
-STAN runs search engines locally on your instrument workstation. Install these first:
+Download and double-click **`install-stan.bat`** from the [GitHub releases page](https://github.com/bsphinney/stan/releases). This single script handles everything:
 
-1. **Python 3.10+**
-2. **DIA-NN** -- download from [github.com/vdemichev/DiaNN/releases](https://github.com/vdemichev/DiaNN/releases) and add to PATH
-3. **Sage** -- download from [github.com/lazear/sage/releases](https://github.com/lazear/sage/releases) and add to PATH
-4. **ThermoRawFileParser** (only if running DDA on Thermo instruments) -- [github.com/compomics/ThermoRawFileParser](https://github.com/compomics/ThermoRawFileParser)
+1. Installs Python 3.10+ if not present
+2. Clones the STAN repository and installs it via pip
+3. Auto-installs **DIA-NN** from GitHub releases (.msi for 2.x, with admin elevation if needed)
+4. Auto-installs **Sage** from GitHub releases
+5. Handles SSL/proxy issues automatically (common on UC Davis and other institutional networks)
+6. Uses `--no-cache-dir` to ensure fresh code on every install
 
-### Install STAN
+To update an existing install, use **`update-stan.bat`** -- it downloads the latest code from GitHub and reinstalls. Both `.bat` files self-update by downloading their latest version from GitHub on each run.
 
-```bash
-pip install stan-proteomics          # coming soon — not yet on PyPI
-```
+> **Note:** The old `install_stan.bat` (underscore) was removed to avoid confusion. Only `install-stan.bat` (hyphen) and `update-stan.bat` exist now.
 
-Install from source (recommended for now):
+DIA-NN 2.x is preferred over 1.x when both are installed. If the installer cannot find or install a search engine, `stan setup` and `stan baseline` will prompt you for a custom executable path.
+
+### Install from Source (Linux/macOS/Advanced)
 
 ```bash
 git clone https://github.com/bsphinney/stan.git
 cd stan
 pip install -e ".[dev]"
+```
+
+You will also need DIA-NN and Sage installed and on your PATH. See the search engine sections below for download links.
+
+### Install from PyPI (coming soon)
+
+```bash
+pip install stan-proteomics          # not yet published
 ```
 
 ### Initialize
@@ -72,7 +82,7 @@ stan init
 
 Creates `~/.stan/` and copies default configuration templates into it.
 
-Run `stan setup` for an interactive wizard that picks your instrument, directories, LC method, and FASTA -- no YAML editing required. Or create the config files manually:
+Run `stan setup` for an interactive 6-question wizard that picks your instrument, directories, LC method, FASTA, and error telemetry preferences -- no YAML editing required. If your watch directory already has existing raw files, the wizard offers to run `stan baseline` at the end to process them retroactively. Or create the config files manually:
 - `instruments.yml` -- instrument watch directories and settings
 - `thresholds.yml` -- QC pass/warn/fail thresholds per instrument model
 - `community.yml` -- HuggingFace token and community benchmark preferences
@@ -91,7 +101,26 @@ Starts the watcher daemon. It monitors directories configured in `instruments.ym
 stan dashboard
 ```
 
-Serves the FastAPI backend at [http://localhost:8421](http://localhost:8421). The API is fully functional -- browse `/docs` for Swagger UI. **(The React frontend is planned; currently a placeholder page is shown. Use the API endpoints directly or via the Swagger UI.)**
+Serves the FastAPI backend at [http://localhost:8421](http://localhost:8421). The API is fully functional -- browse `/docs` for Swagger UI. The dashboard includes a Config tab for managing instruments. **(The full React frontend is planned; the current UI is a basic HTML page with config management.)**
+
+### Baseline Builder
+
+```bash
+stan baseline
+```
+
+Processes existing HeLa QC files retroactively -- ideal for building historical QC data from a directory of past runs. Features:
+
+- Recursive discovery of `.d` and `.raw` files in subdirectories
+- Auto-detects gradient length from raw files (Thermo via TRFP metadata, Bruker via `Frames.Time` in `analysis.tdf`)
+- Auto-detects LC system from raw file metadata (U3000, Vanquish Neo, Evosep, etc.)
+- Auto-downloads the community FASTA from the HF Dataset if not cached locally
+- Pre-flight tests DIA-NN and Sage before processing (runs a quick test search to verify they work)
+- If a search engine is not found or fails pre-flight, prompts for a custom executable path
+- Prefers DIA-NN 2.x over 1.x when both are installed
+- Resume support (tracks progress in `~/.stan/baseline_progress.json`)
+- Duplicate detection (skips files already in the database)
+- Scheduling options: run now, tonight (8 PM), or weekend (Saturday 8 AM)
 
 ### Other Commands
 
@@ -123,7 +152,7 @@ detector.py -- reads .d/analysis.tdf or .raw metadata
                          |
                  dashboard (FastAPI, port 8421)
                          |               (React frontend planned)
-                 community/submit.py --> HF Dataset (planned)
+                 community/submit.py --> HF Dataset
 ```
 
 **Data flow**: The watcher daemon detects new raw files and checks for file stability (size stops changing). Once stable, the detector reads instrument metadata to determine DIA or DDA mode. STAN runs DIA-NN (for DIA) or Sage (for DDA) **locally on your instrument workstation** as a subprocess with standardized parameters. After the search completes, STAN extracts QC metrics from the results, evaluates them against per-instrument thresholds, writes a HOLD flag if the run fails, stores everything in SQLite for longitudinal tracking, and optionally submits to the community benchmark.
@@ -252,9 +281,9 @@ Awards are computed from the community benchmark dataset and announced annually.
 
 ## Configuration
 
-All configuration files live in `~/.stan/`. They are YAML files that can be edited with any text editor. The watcher daemon hot-reloads `instruments.yml` every 30 seconds without requiring a restart. **(Dashboard UI editing is planned; for now edit the YAML files directly.)**
+All configuration files live in `~/.stan/`. They are YAML files that can be edited with any text editor. The watcher daemon hot-reloads `instruments.yml` every 30 seconds without requiring a restart. The dashboard Config tab provides a GUI for viewing and removing instruments (the Remove button deletes duplicate entries).
 
-Until the default config templates are shipped, create these files manually in `~/.stan/` using the examples below.
+Run `stan init` to create default configuration templates, or `stan setup` for the interactive wizard. Manual editing examples below.
 
 ### instruments.yml
 
@@ -344,6 +373,7 @@ Controls community benchmark participation. No HuggingFace account or token is n
 display_name: "Your Lab Name"              # shown on leaderboard; blank = anonymous
 hela_source: "Pierce HeLa Protein Digest Standard"
 institution_type: "core_facility"          # core_facility | academic_lab | industry
+error_telemetry: true                      # opt-in anonymous error reports (set by stan setup)
 ```
 
 ---
@@ -358,7 +388,7 @@ STAN reads your raw files before any search and auto-detects everything it needs
 | Serial number | fsn20215, ... | 1895883.10878, ... | Same |
 | Acquisition date | 09/02/2025 15:18:13 | 2024-06-04T15:32:57 | FileProperties / AcquisitionDateTime |
 | DIA vs DDA mode | From method name + MS2/MS1 ratio | MsmsType in Frames table (8=DDA, 9=DIA) | Automatic |
-| Gradient length (min) | 35, 60, 90, 120 | From method XML | ScanSettings `expected runtime` |
+| Gradient length (min) | 35, 60, 90, 120 | From Frames.Time in analysis.tdf | TRFP metadata / TDF Frames table |
 | DIA window size (Th) | 22 Da, 3 Th, 4 Th, ... | From method name | Parsed from method + computed from scan ratio |
 | LC system | Dionex UltiMate 3000, Vanquish Neo, Easy-nLC | Evosep One, nanoElute | Binary string scan (`.raw`) / hystar.method XML (`.d`) |
 | LC pump model | NCS-3500RS, HPG-3400RS, ... | — | DriverId in embedded method XML |
@@ -419,7 +449,7 @@ Historical note: DIA-NN versions up to 1.9.1 were free for all users (academic a
 
 **Citation required:** If STAN is useful for your work, please cite the DIA-NN paper: Demichev V, Messner CB, Vernardis SI, Lilley KS, Ralser M. *Nature Methods* (2020).
 
-Community benchmark submissions use a frozen HeLa-specific predicted spectral library and a pinned FASTA, both hosted in the HF Dataset repository. **(Library generation is in progress -- the HF Dataset assets are not yet uploaded.)**
+Community benchmark submissions use a frozen HeLa-specific empirical spectral library and a pinned FASTA (`UP000005640_9606_plus_universal_contam.fasta`, 21,044 entries), both hosted in the HF Dataset repository. The FASTA is auto-downloaded on first community submission or baseline run if not cached locally. MD5 hashes are verified client-side before submission.
 
 ### DDA: Sage
 
@@ -451,10 +481,17 @@ stan/
 +-- README.md
 +-- STAN_MASTER_SPEC.md            # authoritative design document
 +-- CLAUDE.md                      # development context for Claude Code
++-- LICENSE                        # STAN Academic License
++-- install-stan.bat               # Windows fresh install (auto-installs DIA-NN + Sage)
++-- update-stan.bat                # Windows update (reinstalls from GitHub)
++-- start_stan.bat                 # launches dashboard + watcher + opens Chrome
 +-- stan/
 |   +-- cli.py                     # CLI entry point (typer)
 |   +-- config.py                  # config loader with hot-reload
 |   +-- db.py                      # SQLite operations
+|   +-- setup.py                   # interactive 6-question setup wizard
+|   +-- baseline.py                # retroactive QC processing from existing files
+|   +-- telemetry.py               # opt-in anonymous error reporting
 |   +-- watcher/                   # watchdog daemon, stability, mode detection
 |   +-- search/                    # DIA-NN + Sage SLURM job builders
 |   |   +-- community_params.py    # frozen community search parameters
@@ -502,7 +539,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| CLI (`stan init/watch/dashboard/status/column-health/version`) | Done | All commands wired up and working |
+| CLI (`stan init/setup/watch/dashboard/baseline/status/column-health/version`) | Done | All commands wired up and working |
 | Watcher daemon (file stability, hot-reload config) | Done | Bruker `.d` and Thermo `.raw` stability detection |
 | Acquisition mode detection (Bruker `.d`) | Done | Reads `MsmsType` from `analysis.tdf` |
 | Acquisition mode detection (Thermo `.raw`) | Done | Via ThermoRawFileParser metadata |
@@ -521,14 +558,21 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | FastAPI dashboard backend | Done | API routes for runs, trends, instruments, thresholds, submission |
 | SPD-first cohort bucketing | Done | Evosep 500-30 SPD, Vanquish Neo, traditional LC |
 | Default config files (`config/`) | Done | instruments.yml, thresholds.yml, community.yml templates |
-| Test fixtures (real DIA-NN/Sage output) | **Planned** | `tests/fixtures/` is empty — need small real output files |
+| Test fixtures (real DIA-NN/Sage output) | **Planned** | `tests/fixtures/` is empty -- need small real output files |
 | React dashboard frontend | **Planned** | Only a placeholder HTML page exists |
 | PyPI publishing (`pip install stan-proteomics`) | **Planned** | `pyproject.toml` is ready, not yet published |
-| HF Dataset assets (FASTA + speclibs) | **Planned** | Library generation in progress, MD5 hashes TODO |
+| HF Dataset assets (speclibs) | **Partial** | FASTA uploaded + MD5 verified; spectral libraries in progress |
 | HF Space public dashboard | **Planned** | Space repo exists but not deployed |
-| Community benchmark live data | **Planned** | Requires HF Dataset assets + first submissions |
-| Setup wizard (`stan setup`) | Done | Interactive instrument picker, LC method, FASTA path, writes YAML |
+| Community benchmark live data | **Planned** | Requires spectral library uploads + first submissions |
+| Setup wizard (`stan setup`) | Done | 6-question wizard, deduplicates instruments.yml, offers baseline at end |
+| Baseline builder (`stan baseline`) | Done | Retroactive QC processing, auto-detect gradient/LC, pre-flight search engine tests |
+| Windows installer (`install-stan.bat`) | Done | Auto-installs Python, DIA-NN, Sage, handles SSL/proxy, self-updates |
+| Windows updater (`update-stan.bat`) | Done | One-click reinstall, self-updates from GitHub |
 | Email reports (`stan email-report`) | Done | Daily + weekly HTML reports via Resend API, cron/schtasks install |
+| Error telemetry (opt-in) | Done | Anonymous error reports to HF Space relay, local log at ~/.stan/error_log.json |
+| Community FASTA | Done | Frozen UniProt human + contaminants (21,044 entries), MD5-verified, auto-downloaded |
+| Recursive watcher | Done | Watches subdirectories, filters events inside Bruker .d directories |
+| Dashboard Config tab | Done | Remove button on instrument cards for deleting duplicates |
 | Outlier detection (amount mismatch) | **Planned** | Flag submissions where metrics don't match declared amount/SPD |
 | Failed run rejection | **Planned** | Block near-zero results from entering benchmark (failed injection, empty spray) |
 
@@ -537,13 +581,19 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 ## TODO
 
 - [x] Ship default config YAML templates in `config/` so `stan init` works out of the box
-- [x] Setup wizard (`stan setup`) — interactive instrument config, no YAML editing
+- [x] Setup wizard (`stan setup`) — 6-question interactive config with deduplication and baseline offer
+- [x] Windows installer (`install-stan.bat`) — auto-installs Python, DIA-NN (.msi), Sage, handles SSL/proxy
+- [x] Windows updater (`update-stan.bat`) — one-click reinstall with self-update
+- [x] Baseline builder (`stan baseline`) — retroactive QC processing with auto-detect and pre-flight tests
+- [x] Upload pinned human UniProt reviewed FASTA to HF Dataset (UP000005640_9606_plus_universal_contam.fasta, 21,044 entries)
+- [x] Populate MD5 hashes in `stan/community/validate.py`
+- [x] Auto-download community FASTA on first community submission or baseline run
+- [x] Opt-in anonymous error telemetry with local log
+- [x] Recursive watcher with Bruker .d event filtering
+- [x] Dashboard Config tab with instrument Remove button
 - [ ] Add small real DIA-NN and Sage output files to `tests/fixtures/`
 - [ ] Generate and upload Astral HeLa predicted spectral library to HF Dataset
 - [ ] Generate and upload timsTOF HeLa predicted spectral library to HF Dataset
-- [ ] Upload pinned human UniProt reviewed FASTA to HF Dataset (hash-verified, shipped with STAN for community mode)
-- [ ] Populate MD5 hashes in `stan/community/validate.py` — submissions with wrong FASTA hash are rejected
-- [ ] Auto-download community FASTA on first community submission if not cached locally
 - [ ] Build React frontend for dashboard (run history, trend charts, community leaderboard)
 - [ ] Deploy HF Space public community dashboard
 - [ ] Publish to PyPI
@@ -554,7 +604,6 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [ ] Community dashboard figures: SPD vs. points-across-peak (shows the quantitation cliff), faceted/colored by LC column model
 - [ ] LC column as a dimension in all community dashboard figures (color, facet, or filter)
 - [ ] End-to-end watcher integration test with real instrument data
-- [ ] Add `spd` field to instruments.yml example configs and user guide
 
 ---
 
@@ -586,7 +635,7 @@ For questions about the spec or design decisions, open a discussion on GitHub be
 
 ## License
 
-**Code**: MIT License
+**Code**: [STAN Academic License](LICENSE) -- free for academic, non-profit, educational, and personal research use. Commercial use (including CROs, pharmaceutical companies, and biotech) requires a separate license. Contact bsphinney@ucdavis.edu for commercial licensing inquiries.
 
 **Community benchmark dataset**: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
