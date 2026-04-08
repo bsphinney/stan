@@ -84,7 +84,16 @@ if ($diannExe) {
             Invoke-WebRequest -Uri $diannUrl -OutFile $diannInstaller -UseBasicParsing
             Write-Host "  Running DIA-NN installer (silent)..." -ForegroundColor Gray
             if ($diannInstaller -match "\.msi$") {
-                Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/quiet", "/norestart" -Wait
+                # Try silent install first (may need admin)
+                $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/quiet", "/norestart" -Wait -PassThru
+                if ($proc.ExitCode -ne 0) {
+                    Write-Host "  Silent install failed (exit $($proc.ExitCode)). Trying with admin prompt..." -ForegroundColor Yellow
+                    $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/passive", "/norestart" -Wait -PassThru -Verb RunAs
+                }
+                if ($proc.ExitCode -ne 0) {
+                    Write-Host "  MSI install failed with exit code $($proc.ExitCode)." -ForegroundColor Red
+                    Write-Host "  Try running update.bat as Administrator, or install DIA-NN manually." -ForegroundColor Yellow
+                }
             } else {
                 $proc = Start-Process -FilePath $diannInstaller -ArgumentList "/S" -Wait -PassThru
                 if ($proc.ExitCode -ne 0) { Start-Process -FilePath $diannInstaller -ArgumentList "/VERYSILENT" -Wait }
@@ -93,6 +102,7 @@ if ($diannExe) {
 
             # Find and add to PATH
             $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+            $diannFound = $false
             foreach ($searchPath in $diannSearchPaths) {
                 if (Test-Path $searchPath) {
                     $found = Get-ChildItem -Path $searchPath -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -103,9 +113,14 @@ if ($diannExe) {
                             [Environment]::SetEnvironmentVariable("PATH","$userPath;$diannDir","User")
                         }
                         Write-Host "  DIA-NN installed at $($found.FullName)" -ForegroundColor Green
+                        $diannFound = $true
                         break
                     }
                 }
+            }
+            if (-not $diannFound) {
+                Write-Host "  DIA-NN installer ran but DiaNN.exe not found on disk." -ForegroundColor Red
+                Write-Host "  Install manually: https://github.com/vdemichev/DiaNN/releases" -ForegroundColor Yellow
             }
         } else {
             Write-Host "  No Windows installer found. Install manually: https://github.com/vdemichev/DiaNN/releases" -ForegroundColor Yellow

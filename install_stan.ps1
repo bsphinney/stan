@@ -173,8 +173,12 @@ try {
         Invoke-WebRequest -Uri $diannUrl -OutFile $diannInstaller -UseBasicParsing
         Write-Host "  Running DIA-NN installer (silent)..." -ForegroundColor Gray
         if ($diannInstaller -match "\.msi$") {
-            # MSI installer — use msiexec for silent install
+            # MSI installer — try silent, then passive with admin prompt if it fails
             $diannProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/quiet", "/norestart" -Wait -PassThru
+            if ($diannProc.ExitCode -ne 0) {
+                Write-Host "  Silent install failed (exit $($diannProc.ExitCode)). Trying with admin prompt..." -ForegroundColor Yellow
+                $diannProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/passive", "/norestart" -Wait -PassThru -Verb RunAs
+            }
         } else {
             # EXE installer (legacy)
             $diannProc = Start-Process -FilePath $diannInstaller -ArgumentList "/S" -Wait -PassThru
