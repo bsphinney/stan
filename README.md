@@ -43,7 +43,7 @@ STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap
 
 ### Windows (Recommended)
 
-Download and double-click **`install-stan.bat`** from the [GitHub releases page](https://github.com/bsphinney/stan/releases). This single script handles everything:
+Download [**install-stan.bat**](https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat) (right-click → Save As) and double-click it. This single script handles everything:
 
 1. Installs Python 3.10+ if not present
 2. Clones the STAN repository and installs it via pip
@@ -52,7 +52,7 @@ Download and double-click **`install-stan.bat`** from the [GitHub releases page]
 5. Handles SSL/proxy issues automatically (common on UC Davis and other institutional networks)
 6. Uses `--no-cache-dir` to ensure fresh code on every install
 
-To update an existing install, use **`update-stan.bat`** -- it downloads the latest code from GitHub and reinstalls. Both `.bat` files self-update by downloading their latest version from GitHub on each run.
+To update an existing install, use [**update-stan.bat**](https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat) -- it downloads the latest code from GitHub and reinstalls. Both `.bat` files self-update by downloading their latest version from GitHub on each run.
 
 > **Note:** The old `install_stan.bat` (underscore) was removed to avoid confusion. Only `install-stan.bat` (hyphen) and `update-stan.bat` exist now.
 

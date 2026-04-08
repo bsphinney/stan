@@ -596,6 +596,59 @@ extraction → DB → dashboard to confirm every value is actually populated.
 
 ---
 
+## Deployment & Versioning
+
+- **Always bump both** `pyproject.toml` AND `stan/__init__.py` on every push — instrument PCs
+  verify code freshness via `stan version`. Never update one without the other.
+- **Always push to GitHub** after changes — Brett deploys to instrument PCs via `update-stan.bat`
+  which downloads from `github.com/bsphinney/stan/archive/refs/heads/main.zip`.
+- Baseline Builder has its own version banner (e.g. "v3") — bump it when baseline behavior changes.
+
+---
+
+## PowerShell 5.1 Compatibility (instrument PCs)
+
+Instrument PCs run Windows with PowerShell 5.1. When editing `.ps1` files:
+- **Always rewrite the entire file** — never patch individual lines (subtle parsing traps)
+- **Never use `+` string concatenation** — use `"$var;$var"` interpolation instead
+- **No inline ternary `if`** — use separate `if`/`else` blocks
+- **No `Where-Object { }` pipelines** — use explicit `foreach` loops
+- **Use `Join-Path`** instead of string concatenation for paths
+
+---
+
+## DIA-NN 2.0 Column Changes
+
+DIA-NN 2.0 changed the report.parquet schema. The extractor must handle both 1.x and 2.0:
+- `File.Name` (full path) → renamed to `Run` (basename only)
+- `Fragment.Info`, `Fragment.Quant.Corrected` → removed
+- `Missed.Cleavages` → may be absent
+- Always check `if col in available` / `if col in filt.columns` before using any column
+
+---
+
+## Instrument PC Constraints
+
+- **Half CPU cores** for DIA-NN/Sage — `max(2, cpu_count // 2)`. These are instrument
+  workstations that may be acquiring data simultaneously.
+- **No library-free DIA-NN** — too slow for QC, produces non-comparable community results.
+  Always require a spectral library; raise ValueError if none provided.
+- **Dual venv installs** — old `.stan\venv` and new `STAN\venv` may both exist on PATH.
+  The updater must detect and migrate, removing old PATH entries.
+- **thresholds.yml may not exist** — `load_thresholds()` must not crash; default to PASS.
+
+---
+
+## Community Submission Architecture
+
+Community benchmark submissions go through the HF Space relay — **no HF token required**.
+- Client (`stan/community/submit.py`) POSTs JSON to `https://brettsp-stan.hf.space/api/submit`
+- Relay has `HF_TOKEN` secret, handles auth + parquet upload to `brettsp/stan-benchmark`
+- Never re-introduce HF token requirements in client-side code
+- `tests/test_pipeline.py` has 7 tests that catch version desync, schema mismatch, and token regressions
+
+---
+
 ## Documentation Maintenance
 
 **When you implement a new feature or complete a TODO item, update ALL of the following:**
