@@ -302,6 +302,58 @@ def extract_metadata(raw_path: Path) -> dict:
             elif "dda" in value.lower():
                 parsed["acquisition_mode"] = "dda"
 
+    # Check scan filters or isolation m/z for DIA vs DDA.
+    # DIA: MS2 scans have fixed, repeating isolation windows → few unique m/z values
+    # DDA: MS2 scans have data-dependent precursor selection → many unique m/z values
+    if "acquisition_mode" not in parsed:
+        scans = raw_meta.get("Scans", raw_meta.get("scans", []))
+        if scans:
+            # Method 1: check for 'd' flag in scan filters (most reliable)
+            ms2_filters = []
+            for scan in scans:
+                filt = scan.get("ScanFilter", scan.get("scanFilter", ""))
+                if filt and "ms2" in filt.lower():
+                    ms2_filters.append(filt)
+
+            if ms2_filters:
+                # The 'd' flag before "Full ms2" means data-dependent
+                dda_count = sum(1 for f in ms2_filters if " d " in f)
+                if dda_count > len(ms2_filters) * 0.5:
+                    parsed["acquisition_mode"] = "dda"
+                    logger.info("Mode from scan filter 'd' flag: DDA for %s", raw_path.name)
+                elif dda_count == 0:
+                    parsed["acquisition_mode"] = "dia"
+                    logger.info("Mode from scan filter (no 'd' flag): DIA for %s", raw_path.name)
+
+        # Method 2: check isolation m/z uniqueness from scan data
+        if "acquisition_mode" not in parsed and scans:
+            iso_mzs = []
+            for scan in scans[:500]:  # sample first 500 scans
+                mz = scan.get("IsolationMz", scan.get("isolationMz", scan.get("precursorMz")))
+                ms_level = scan.get("MsLevel", scan.get("msLevel", 0))
+                if mz and ms_level == 2:
+                    iso_mzs.append(round(float(mz), 1))
+
+            if len(iso_mzs) > 20:
+                unique_mzs = len(set(iso_mzs))
+                total_mzs = len(iso_mzs)
+                uniqueness_ratio = unique_mzs / total_mzs
+
+                if uniqueness_ratio < 0.15:
+                    # Very few unique values — DIA (same windows repeat)
+                    parsed["acquisition_mode"] = "dia"
+                    logger.info(
+                        "Mode from isolation m/z: DIA (%d unique / %d total = %.0f%%) for %s",
+                        unique_mzs, total_mzs, uniqueness_ratio * 100, raw_path.name,
+                    )
+                elif uniqueness_ratio > 0.5:
+                    # Many unique values — DDA (each precursor different)
+                    parsed["acquisition_mode"] = "dda"
+                    logger.info(
+                        "Mode from isolation m/z: DDA (%d unique / %d total = %.0f%%) for %s",
+                        unique_mzs, total_mzs, uniqueness_ratio * 100, raw_path.name,
+                    )
+
     # Fallback mode detection from MS1/MS2 scan ratio when method name doesn't help.
     # DIA typically has 10+ windows per cycle. DDA top-N is usually 5-20.
     # The ratio alone can't distinguish them reliably (top-8 DDA ≈ 8-window DIA).
