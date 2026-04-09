@@ -168,6 +168,16 @@ def _extract_thermo_metadata(raw_path: Path) -> dict:
     except Exception:
         logger.debug("TRFP metadata extraction failed for %s", raw_path, exc_info=True)
 
+    # Parent folder name overrides scan ratio — user file organization is authoritative.
+    # A file in a "dda" folder is DDA even if scan ratio looks like DIA (e.g. top-8).
+    parent_lower = raw_path.parent.name.lower()
+    if "dda" in parent_lower:
+        result["acquisition_mode"] = AcquisitionMode.DDA_ORBITRAP
+        logger.info("Mode override from folder '%s': DDA for %s", raw_path.parent.name, raw_path.name)
+    elif "dia" in parent_lower and result.get("acquisition_mode") is None:
+        result["acquisition_mode"] = AcquisitionMode.DIA_ORBITRAP
+        logger.info("Mode from folder '%s': DIA for %s", raw_path.parent.name, raw_path.name)
+
     # Fallback: try filename-based heuristics
     if result.get("acquisition_mode") is None:
         name_lower = raw_path.stem.lower()
