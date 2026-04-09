@@ -343,8 +343,16 @@ def _convert_raw_to_mzml(
         Path to the generated .mzML file, or None on failure.
     """
     if trfp_exe is None:
-        # Try to find it on PATH
-        trfp_exe = shutil.which("ThermoRawFileParser") or shutil.which("ThermoRawFileParser.exe")
+        # Try the auto-installed TRFP first
+        try:
+            from stan.tools.trfp import ensure_installed, _build_command
+            trfp_path = ensure_installed()
+            # _build_command returns ["dotnet", "path/to/dll"] or ["path/to/exe"]
+            trfp_cmd_parts = _build_command(trfp_path)
+            trfp_exe = trfp_cmd_parts  # store as list for subprocess
+        except Exception:
+            # Fall back to PATH
+            trfp_exe = shutil.which("ThermoRawFileParser") or shutil.which("ThermoRawFileParser.exe")
 
     if trfp_exe is None:
         logger.error(
@@ -357,8 +365,12 @@ def _convert_raw_to_mzml(
 
     logger.info("Converting %s → mzML...", raw_path.name)
 
-    cmd = [
-        str(trfp_exe),
+    # trfp_exe can be a string ("path/to/exe") or list (["dotnet", "path/to/dll"])
+    if isinstance(trfp_exe, list):
+        cmd = list(trfp_exe)
+    else:
+        cmd = [str(trfp_exe)]
+    cmd += [
         f"-i={raw_path}",
         f"-o={output_dir}/",
         "-f=2",   # indexed mzML
