@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 def _build_local_diann_params(
     fasta_path: str,
     lib_path: str | None = None,
+    vendor: str = "bruker",
 ) -> dict:
     """Build DIA-NN parameters for local mode with user-provided FASTA.
 
@@ -47,6 +48,15 @@ def _build_local_diann_params(
             "Run `stan baseline` again to download the community library."
         )
 
+    # Fixed mass accuracy skips auto-optimization (saves 2-5 min per file).
+    # Vendor-specific values from DE-LIMP confirmed settings.
+    if vendor == "thermo":
+        ms2_acc = 20   # Orbitrap MS2
+        ms1_acc = 10   # Orbitrap MS1
+    else:
+        ms2_acc = 15   # timsTOF MS2
+        ms1_acc = 15   # timsTOF MS1
+
     params: dict = {
         "fasta": fasta_path,
         "lib": lib_path,
@@ -57,6 +67,8 @@ def _build_local_diann_params(
         "min-pr-charge": 2,
         "max-pr-charge": 4,
         "cut": "K*,R*",
+        "mass-acc": ms2_acc,
+        "mass-acc-ms1": ms1_acc,
     }
 
     return params
@@ -125,7 +137,7 @@ def run_diann_local(
         if not Path(fasta_path).exists():
             logger.error("FASTA file not found: %s", fasta_path)
             return None
-        params = _build_local_diann_params(fasta_path, lib_path)
+        params = _build_local_diann_params(fasta_path, lib_path, vendor=vendor)
 
     report_path = output_dir / "report.parquet"
     cmd = [diann_exe, "--f", str(raw_path), "--out", str(report_path)]
