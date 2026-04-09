@@ -633,20 +633,23 @@ def run_baseline() -> None:
     )
 
     if detected_gradients:
-        # Use median gradient length from raw files
+        # Show all unique gradient lengths found
+        from collections import Counter
+        grad_counts = Counter(detected_gradients)
+        unique_grads = sorted(grad_counts.keys())
+        grad_summary = ", ".join(f"{g} min ({grad_counts[g]} files)" for g in unique_grads)
+        lc_label = f"{detected_lc}, " if detected_lc else ""
+        console.print(f"  [green]Auto-detected gradients:[/green] {lc_label}{grad_summary}")
+
+        # Use median as the default for global settings
         detected_gradients.sort()
         median_grad = detected_gradients[len(detected_gradients) // 2]
         gradient_length_min = median_grad
         spd = gradient_min_to_spd(gradient_length_min)
-        lc_label = f"{detected_lc}, " if detected_lc else ""
+        console.print(f"  [dim]Per-file gradients will be used during processing[/dim]")
         console.print(
-            f"  [green]Auto-detected:[/green] {lc_label}{gradient_length_min} min gradient "
-            f"({spd} SPD)"
+            f"  [dim]Default (median): {gradient_length_min} min ({spd} SPD)[/dim]"
         )
-        override = Confirm.ask("  Use detected values?", default=True, console=console)
-        if not override:
-            gradient_length_min = IntPrompt.ask("Active gradient length (minutes)", console=console)
-            spd = gradient_min_to_spd(gradient_length_min)
     else:
         # Fallback to manual selection
         from stan.setup import LC_METHODS
@@ -766,8 +769,12 @@ def run_baseline() -> None:
     config_table.add_row("Files", f"{len(all_files)} ({vendor})")
     config_table.add_row("Instrument", f"{instrument_name} ({instrument_model})")
     config_table.add_row("Amount", f"{amount} ng")
-    config_table.add_row("SPD", str(spd) if spd else "N/A")
-    config_table.add_row("Gradient", f"{gradient_length_min} min" if gradient_length_min else "N/A")
+    config_table.add_row("SPD", str(spd) if spd else "per-file")
+    if detected_gradients:
+        grad_set = sorted(set(detected_gradients))
+        config_table.add_row("Gradients", ", ".join(f"{g} min" for g in grad_set))
+    else:
+        config_table.add_row("Gradient", f"{gradient_length_min} min" if gradient_length_min else "N/A")
     if column_info:
         config_table.add_row(
             "Column",
