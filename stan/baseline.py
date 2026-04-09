@@ -361,6 +361,17 @@ def _estimate_search_time(n_files: int, vendor: str) -> str:
 
 def run_baseline() -> None:
     """Interactive baseline builder — process existing HeLa QC directories."""
+    # Set up file logging so baseline output is captured for debugging
+    log_path = get_user_config_dir() / "baseline.log"
+    file_handler = logging.FileHandler(str(log_path), mode="w", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"
+    ))
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().setLevel(logging.DEBUG)
+    logger.info("Baseline log: %s", log_path)
+
     console.print()
     console.print(Panel(
         "[bold]STAN Baseline Builder v3[/bold]\n\n"
