@@ -180,6 +180,79 @@ def build_library() -> None:
     run_build_library()
 
 
+@app.command("backfill-tic")
+def backfill_tic() -> None:
+    """Extract identified TIC traces from existing baseline reports.
+
+    Reads all report.parquet files in baseline_output/ and extracts
+    TIC chromatograms without re-running any searches. Fast — takes
+    seconds per file.
+    """
+    from stan.config import get_user_config_dir
+    from stan.db import get_db_path, get_runs, init_db, insert_tic_trace
+    from stan.metrics.tic import extract_tic_from_report, compute_tic_metrics
+
+    import sqlite3
+
+    init_db()
+    db_path = get_db_path()
+    output_dir = get_user_config_dir() / "baseline_output"
+
+    if not output_dir.exists():
+        console.print("[red]No baseline_output directory found.[/red]")
+        return
+
+    # Find all report.parquet files
+    reports = sorted(output_dir.rglob("report.parquet"))
+    console.print(f"Found [bold]{len(reports)}[/bold] report.parquet files")
+
+    # Get all runs from DB to match report dirs to run IDs
+    all_runs = get_runs(limit=10000, db_path=db_path)
+    run_map = {}
+    for run in all_runs:
+        run_map[run["run_name"]] = run["id"]
+
+    extracted = 0
+    skipped = 0
+    for rp in reports:
+        dir_name = rp.parent.name
+        # Match directory name to run_name (with extension)
+        run_id = None
+        for ext in [".d", ".raw", ""]:
+            candidate = dir_name + ext
+            if candidate in run_map:
+                run_id = run_map[candidate]
+                break
+
+        if not run_id:
+            skipped += 1
+            continue
+
+        # Check if TIC already exists
+        with sqlite3.connect(str(db_path)) as con:
+            existing = con.execute(
+                "SELECT 1 FROM tic_traces WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if existing:
+            skipped += 1
+            continue
+
+        trace = extract_tic_from_report(rp)
+        if trace:
+            tic_metrics = compute_tic_metrics(trace)
+            insert_tic_trace(run_id, trace.rt_min, trace.intensity, db_path=db_path)
+            if tic_metrics.total_auc > 0:
+                with sqlite3.connect(str(db_path)) as con:
+                    con.execute(
+                        "UPDATE runs SET tic_auc = ?, peak_rt_min = ? WHERE id = ?",
+                        (tic_metrics.total_auc, tic_metrics.peak_rt_min, run_id),
+                    )
+            extracted += 1
+            console.print(f"  [green]TIC[/green] {dir_name}")
+
+    console.print(f"\nExtracted: {extracted}, Skipped: {skipped}")
+
+
 @app.command()
 def baseline_download(
     instrument_family: str = typer.Option(None, "--instrument", "-i", help="e.g. Astral, timsTOF, Exploris"),
