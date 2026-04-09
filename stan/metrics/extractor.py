@@ -394,10 +394,10 @@ def extract_dia_metrics(
 
     return {
         "n_precursors": filt["Precursor.Id"].n_unique(),
-        "n_peptides": filt["Stripped.Sequence"].n_unique(),
+        "n_peptides": filt["Stripped.Sequence"].n_unique() if "Stripped.Sequence" in filt.columns else 0,
         "n_proteins": filt.filter(pl.col("PG.Q.Value") <= q_cutoff)[
             "Protein.Group"
-        ].n_unique(),
+        ].n_unique() if "PG.Q.Value" in filt.columns and "Protein.Group" in filt.columns else 0,
         "median_fragments_per_precursor": float(filt["n_frag_extracted"].median()) if "n_frag_extracted" in filt.columns else 0.0,
         "pct_fragments_quantified": (
             float(total_frag_quantified / total_frag_extracted)
