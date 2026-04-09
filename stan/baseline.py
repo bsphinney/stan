@@ -949,16 +949,35 @@ def _process_files(
                 continue
 
             try:
-                # Detect mode
+                # Detect mode — check metadata, then parent folder name, then default
                 mode_obj = file_meta.get("acquisition_mode")
                 if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
                     mode_obj = detect_mode(raw_file, vendor=vendor)
-                if mode_obj == AcquisitionMode.UNKNOWN:
-                    # Default to DIA for baseline — most common QC mode
+                if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
+                    # Check parent folder name for dda/dia hints
+                    parent_lower = raw_file.parent.name.lower()
+                    if "dda" in parent_lower:
+                        mode_obj = (
+                            AcquisitionMode.DDA_PASEF if vendor == "bruker"
+                            else AcquisitionMode.DDA_ORBITRAP
+                        )
+                        logger.info("Mode from folder name '%s': DDA", raw_file.parent.name)
+                    elif "dia" in parent_lower:
+                        mode_obj = (
+                            AcquisitionMode.DIA_PASEF if vendor == "bruker"
+                            else AcquisitionMode.DIA_ORBITRAP
+                        )
+                        logger.info("Mode from folder name '%s': DIA", raw_file.parent.name)
+                if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
+                    # Final default to DIA — most common QC mode
                     mode_obj = (
                         AcquisitionMode.DIA_PASEF if vendor == "bruker"
                         else AcquisitionMode.DIA_ORBITRAP
                     )
+                    logger.info("Mode defaulted to DIA for %s", raw_file.name)
+
+                acq_label = "DIA" if is_dia(mode_obj) else "DDA"
+                logger.info("File %s -> %s", raw_file.name, acq_label)
 
                 output_dir = output_base / raw_file.stem
 
