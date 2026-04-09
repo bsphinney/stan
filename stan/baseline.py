@@ -1130,21 +1130,24 @@ def _process_files(
                 if run_date:
                     _update_run_date(run_id, run_date)
 
-                # Extract and store TIC trace
+                # Extract and store TIC traces
+                tic_trace = None  # best available TIC for community/local
                 try:
                     from stan.metrics.tic import (
                         extract_tic_bruker, extract_tic_thermo,
                         extract_tic_from_report, compute_tic_metrics,
                     )
-                    tic_trace = None
-                    # Method 1: Identified TIC from DIA-NN report (all vendors, best for QC)
+                    # Raw TIC from instrument file (preferred for community — search-independent)
+                    raw_tic = None
+                    if vendor == "bruker" and raw_file.is_dir():
+                        raw_tic = extract_tic_bruker(raw_file)
+                    # Identified TIC from DIA-NN report (works for all vendors)
+                    id_tic = None
                     if result_path and result_path.exists() and is_dia(mode_obj):
-                        tic_trace = extract_tic_from_report(result_path)
-                        if tic_trace:
-                            logger.debug("Identified TIC from report: %s", raw_file.name)
-                    # Method 2: Raw TIC from instrument file (Bruker only for now)
-                    if tic_trace is None and vendor == "bruker" and raw_file.is_dir():
-                        tic_trace = extract_tic_bruker(raw_file)
+                        id_tic = extract_tic_from_report(result_path)
+
+                    # Store the best available TIC locally
+                    tic_trace = raw_tic or id_tic
                     if tic_trace:
                         tic_metrics = compute_tic_metrics(tic_trace)
                         insert_tic_trace(run_id, tic_trace.rt_min, tic_trace.intensity)
@@ -1155,7 +1158,7 @@ def _process_files(
 
                 # Track for community upload (per-file gradient and SPD)
                 if community_submit:
-                    results_for_community.append({
+                    community_run = {
                         "id": run_id,
                         "run_name": raw_file.name,
                         "instrument": instrument_name,
@@ -1163,7 +1166,12 @@ def _process_files(
                         "gradient_length_min": grad_min,
                         "spd": file_spd,
                         **metrics,
-                    })
+                    }
+                    # Include identified TIC for community if available
+                    if tic_trace:
+                        community_run["tic_rt_bins"] = [round(r, 3) for r in tic_trace.rt_min]
+                        community_run["tic_intensity"] = [round(v, 0) for v in tic_trace.intensity]
+                    results_for_community.append(community_run)
 
                 # Print result line
                 primary_metric = metrics.get("n_precursors", 0) if is_dia(mode_obj) else metrics.get("n_psms", 0)

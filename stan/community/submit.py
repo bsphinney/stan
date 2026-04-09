@@ -132,6 +132,13 @@ def submit_to_benchmark(
         "column_model": column_model,
     }
 
+    # Add identified TIC trace if available (128 bins, ~500 bytes)
+    tic_rt = run.get("tic_rt_bins")
+    tic_int = run.get("tic_intensity")
+    if tic_rt and tic_int:
+        submit_payload["tic_rt_bins"] = tic_rt
+        submit_payload["tic_intensity"] = tic_int
+
     try:
         data = json.dumps(submit_payload).encode("utf-8")
         req = urllib.request.Request(
