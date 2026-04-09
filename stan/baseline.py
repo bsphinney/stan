@@ -1130,19 +1130,22 @@ def _process_files(
                 if run_date:
                     _update_run_date(run_id, run_date)
 
-                # Extract and store TIC trace (Bruker .d only)
-                if vendor == "bruker" and raw_file.is_dir():
-                    try:
-                        from stan.metrics.tic import extract_tic_bruker, compute_tic_metrics
+                # Extract and store TIC trace
+                try:
+                    from stan.metrics.tic import extract_tic_bruker, extract_tic_thermo, compute_tic_metrics
+                    if vendor == "bruker" and raw_file.is_dir():
                         tic_trace = extract_tic_bruker(raw_file)
-                        if tic_trace:
-                            tic_metrics = compute_tic_metrics(tic_trace)
-                            insert_tic_trace(run_id, tic_trace.rt_min, tic_trace.intensity)
-                            # Update run with TIC metrics
-                            if tic_metrics.total_auc > 0:
-                                _update_tic_metrics(run_id, tic_metrics)
-                    except Exception:
-                        logger.debug("TIC extraction failed for %s", raw_file.name, exc_info=True)
+                    elif vendor == "thermo":
+                        tic_trace = extract_tic_thermo(raw_file)
+                    else:
+                        tic_trace = None
+                    if tic_trace:
+                        tic_metrics = compute_tic_metrics(tic_trace)
+                        insert_tic_trace(run_id, tic_trace.rt_min, tic_trace.intensity)
+                        if tic_metrics.total_auc > 0:
+                            _update_tic_metrics(run_id, tic_metrics)
+                except Exception:
+                    logger.debug("TIC extraction failed for %s", raw_file.name, exc_info=True)
 
                 # Track for community upload (per-file gradient and SPD)
                 if community_submit:

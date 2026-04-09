@@ -1,9 +1,10 @@
-"""TIC (Total Ion Current) extraction from Bruker timsTOF .d files.
+"""TIC (Total Ion Current) extraction from raw mass spec files.
 
-Reads MS1 frame intensities from analysis.tdf SQLite database and computes
-shape metrics for LC health monitoring. Ported from DE-LIMP R logic.
+Supports:
+  - Bruker timsTOF .d: reads SummedIntensities from analysis.tdf SQLite
+  - Thermo .raw: reads TIC chromatogram via fisher_py (RawFileReader wrapper)
 
-The TIC trace is the summed intensity of all ions per MS1 frame over time.
+The TIC trace is the summed intensity of all ions per MS1 scan/frame over time.
 It reflects loading amount, LC gradient quality, and spray stability.
 """
 
@@ -104,6 +105,155 @@ def extract_tic_bruker(d_path: Path) -> TICTrace | None:
         intensity=intensity,
         run_name=d_path.stem,
     )
+
+
+def extract_tic_thermo(raw_path: Path) -> TICTrace | None:
+    """Extract MS1 TIC trace from a Thermo .raw file using fisher_py.
+
+    Requires fisher_py (pip install fisher_py) which wraps Thermo's
+    RawFileReader .NET library. Works on Windows; Linux needs .NET SDK.
+
+    Args:
+        raw_path: Path to the .raw file.
+
+    Returns:
+        TICTrace with RT (minutes) and intensity arrays, or None on failure.
+    """
+    try:
+        from fisher_py import RawFile
+    except ImportError:
+        logger.debug(
+            "fisher_py not installed — cannot extract Thermo TIC. "
+            "Install with: pip install fisher_py"
+        )
+        return None
+
+    try:
+        raw = RawFile(str(raw_path))
+
+        # Get scan count and iterate MS1 scans for TIC
+        first_scan = raw.first_spectrum_number
+        last_scan = raw.last_spectrum_number
+
+        rt_min = []
+        intensity = []
+
+        for scan_num in range(first_scan, last_scan + 1):
+            try:
+                # Get scan filter to check if MS1
+                scan_filter = raw.get_scan_filter(scan_num)
+                if scan_filter and "ms " in str(scan_filter).lower() and "ms2" not in str(scan_filter).lower():
+                    rt = raw.retention_time_from_scan_number(scan_num)
+                    # Get TIC for this scan from scan statistics
+                    stats = raw.get_scan_stats_for_scan_number(scan_num)
+                    if stats:
+                        tic_val = stats.tic
+                        rt_min.append(rt)
+                        intensity.append(float(tic_val))
+            except Exception:
+                continue
+
+        raw.close()
+
+        if not rt_min:
+            logger.warning("No MS1 scans found in %s", raw_path.name)
+            return None
+
+        return TICTrace(
+            rt_min=rt_min,
+            intensity=intensity,
+            run_name=raw_path.stem,
+        )
+
+    except Exception:
+        logger.debug("Failed to extract TIC from %s", raw_path.name, exc_info=True)
+        # Fallback: try TRFP-based extraction
+        return _extract_tic_thermo_trfp(raw_path)
+
+
+def _extract_tic_thermo_trfp(raw_path: Path) -> TICTrace | None:
+    """Fallback TIC extraction using ThermoRawFileParser mzML output.
+
+    Slower than fisher_py but doesn't require pythonnet.
+    Converts to mzML, parses TIC chromatogram, then cleans up.
+    """
+    try:
+        from stan.tools.trfp import ensure_installed, _build_command
+        import tempfile
+        import subprocess
+        import xml.etree.ElementTree as ET
+
+        exe = ensure_installed()
+        cmd = _build_command(exe)
+
+        out_dir = Path(tempfile.mkdtemp(prefix="stan_tic_"))
+        cmd += [f"-i={raw_path}", f"-o={out_dir}/", "-f=1"]  # mzML output
+
+        subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=True)
+
+        mzml_path = out_dir / f"{raw_path.stem}.mzML"
+        if not mzml_path.exists():
+            return None
+
+        # Parse TIC from mzML chromatogramList
+        ns = {"ms": "http://psi.hupo.org/ms/mzml"}
+        tree = ET.parse(str(mzml_path))
+        root = tree.getroot()
+
+        rt_min = []
+        intensity = []
+
+        for chrom in root.iter(f"{{{ns['ms']}}}chromatogram"):
+            chrom_id = chrom.get("id", "")
+            if "TIC" in chrom_id:
+                # Find binary data arrays
+                for binary_list in chrom.iter(f"{{{ns['ms']}}}binaryDataArrayList"):
+                    arrays = list(binary_list.iter(f"{{{ns['ms']}}}binaryDataArray"))
+                    if len(arrays) >= 2:
+                        # First array is RT, second is intensity
+                        # These are base64 encoded — for simplicity, skip mzML parsing
+                        # and just count scans from spectrum elements instead
+                        pass
+                break
+
+        # Simpler approach: read scan-level TIC from spectra
+        for spectrum in root.iter(f"{{{ns['ms']}}}spectrum"):
+            ms_level = None
+            scan_tic = None
+            scan_rt = None
+
+            for cv in spectrum.iter(f"{{{ns['ms']}}}cvParam"):
+                accession = cv.get("accession", "")
+                if accession == "MS:1000511":  # ms level
+                    ms_level = int(cv.get("value", "0"))
+                elif accession == "MS:1000285":  # total ion current
+                    scan_tic = float(cv.get("value", "0"))
+                elif accession == "MS:1000016":  # scan start time
+                    scan_rt = float(cv.get("value", "0"))
+                    unit = cv.get("unitName", "")
+                    if "second" in unit.lower():
+                        scan_rt = scan_rt / 60.0
+
+            if ms_level == 1 and scan_tic and scan_rt:
+                rt_min.append(scan_rt)
+                intensity.append(scan_tic)
+
+        # Cleanup
+        import shutil
+        shutil.rmtree(out_dir, ignore_errors=True)
+
+        if not rt_min:
+            return None
+
+        return TICTrace(
+            rt_min=rt_min,
+            intensity=intensity,
+            run_name=raw_path.stem,
+        )
+
+    except Exception:
+        logger.debug("TRFP TIC fallback failed for %s", raw_path.name, exc_info=True)
+        return None
 
 
 def compute_tic_metrics(trace: TICTrace) -> TICMetrics:
