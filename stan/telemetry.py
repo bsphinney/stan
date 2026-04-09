@@ -44,13 +44,17 @@ def _get_stan_version() -> str:
 
 
 def _is_opted_in() -> bool:
-    """Check if error telemetry is enabled in community.yml."""
+    """Check if error telemetry is enabled. Default: on.
+
+    Can be disabled by setting error_telemetry: false in community.yml.
+    """
     try:
         from stan.config import load_community
         comm = load_community()
-        return bool(comm.get("error_telemetry", False))
+        return bool(comm.get("error_telemetry", True))
     except Exception:
-        return False
+        # No community.yml — default to on
+        return True
 
 
 def _sanitize_traceback(tb_str: str) -> str:
