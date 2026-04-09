@@ -368,6 +368,8 @@ def run_baseline() -> None:
     file_handler.setFormatter(logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"
     ))
+    # Flush after every log message so the file is never truncated
+    file_handler.flush = file_handler.stream.flush  # type: ignore[assignment]
     logging.getLogger().addHandler(file_handler)
     logging.getLogger().setLevel(logging.DEBUG)
     logger.info("Baseline log: %s", log_path)
@@ -1038,8 +1040,8 @@ def _process_files(
                     progress_bar.advance(task)
                     continue
 
-                # Extract metrics
-                grad_min = gradient_length_min or file_meta.get("gradient_length_min")
+                # Extract metrics — per-file gradient takes priority over global
+                grad_min = file_meta.get("gradient_length_min") or gradient_length_min
                 if is_dia(mode_obj):
                     metrics = extract_dia_metrics(
                         result_path, gradient_min=float(grad_min) if grad_min else None
@@ -1082,8 +1084,14 @@ def _process_files(
                     diagnosis=decision.diagnosis,
                     amount_ng=amount_ng,
                     spd=spd,
-                    gradient_length_min=gradient_length_min,
+                    gradient_length_min=grad_min,
                 )
+
+                # Compute per-file SPD from actual gradient
+                file_spd = spd
+                if grad_min and grad_min != gradient_length_min:
+                    from stan.metrics.scoring import gradient_min_to_spd
+                    file_spd = gradient_min_to_spd(grad_min)
 
                 # Update run_date to the actual acquisition date if we have it
                 if run_date:
@@ -1103,13 +1111,15 @@ def _process_files(
                     except Exception:
                         logger.debug("TIC extraction failed for %s", raw_file.name, exc_info=True)
 
-                # Track for community upload
+                # Track for community upload (per-file gradient and SPD)
                 if community_submit:
                     results_for_community.append({
                         "id": run_id,
                         "run_name": raw_file.name,
                         "instrument": instrument_name,
                         "mode": acq_mode.upper(),
+                        "gradient_length_min": grad_min,
+                        "spd": file_spd,
                         **metrics,
                     })
 
@@ -1122,8 +1132,10 @@ def _process_files(
                     "fail": "[red]FAIL[/red]",
                 }.get(decision.result.value, "")
 
+                grad_label = f"{grad_min}m" if grad_min else ""
                 console.print(
                     f"  [{idx + 1}/{total}] {raw_file.name} -- "
+                    f"{acq_label} {grad_label} "
                     f"{primary_metric:,} {metric_label} "
                     f"(IPS {ips}) {gate_icon}"
                 )
