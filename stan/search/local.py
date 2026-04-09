@@ -143,16 +143,20 @@ def run_diann_local(
     cmd.extend(["--threads", str(threads)])
 
     logger.info("Running DIA-NN locally: %s", raw_path.name)
-    logger.debug("Command: %s", " ".join(cmd))
+    logger.info("Command: %s", " ".join(cmd))
 
+    # Write DIA-NN output to log file so we can diagnose issues
+    log_file = output_dir / "diann.log"
     try:
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=14400,  # 4 hour timeout for local execution
-        )
+        with open(log_file, "w") as lf:
+            result = subprocess.run(
+                cmd,
+                check=True,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=14400,  # 4 hour timeout for local execution
+            )
         logger.info("DIA-NN complete: %s", raw_path.name)
     except FileNotFoundError as e:
         logger.error(
@@ -248,16 +252,19 @@ def run_sage_local(
     cmd = [sage_exe, str(config_path)]
 
     logger.info("Running Sage locally: %s", raw_path.name)
-    logger.debug("Command: %s", " ".join(cmd))
+    logger.info("Command: %s", " ".join(cmd))
 
+    log_file = output_dir / "sage.log"
     try:
-        subprocess.run(
-            cmd,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=14400,
-        )
+        with open(log_file, "w") as lf:
+            subprocess.run(
+                cmd,
+                check=True,
+                stdout=lf,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=14400,
+            )
         logger.info("Sage complete: %s", raw_path.name)
     except FileNotFoundError as e:
         logger.error(
