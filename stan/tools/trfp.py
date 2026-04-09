@@ -303,23 +303,25 @@ def extract_metadata(raw_path: Path) -> dict:
                 parsed["acquisition_mode"] = "dda"
 
     # Fallback mode detection from MS1/MS2 scan ratio when method name doesn't help.
-    # DIA has a fixed, consistent MS2/MS1 ratio (typically 10-80 windows per cycle).
-    # DDA has a variable ratio but typically higher overall MS2/MS1 (top-N dependent).
-    # Key insight: DIA windows_per_cycle is an integer (or very close to one).
+    # DIA typically has 10+ windows per cycle. DDA top-N is usually 5-20.
+    # The ratio alone can't distinguish them reliably (top-8 DDA ≈ 8-window DIA).
+    # Only classify as DIA if the ratio is high enough that DDA is unlikely (>15).
+    # Low ratios are left as UNKNOWN for folder/filename fallback to handle.
     if "acquisition_mode" not in parsed and ms1_count > 10 and ms2_count > 0:
         ratio = ms2_count / ms1_count
-        # Check if ratio is close to an integer (within 5%) — hallmark of DIA
-        nearest_int = round(ratio)
-        if nearest_int >= 5 and abs(ratio - nearest_int) / nearest_int < 0.05:
+        if ratio >= 15:
+            # Very high ratio — almost certainly DIA (top-N DDA rarely exceeds 15)
             parsed["acquisition_mode"] = "dia"
             logger.info(
                 "Mode from scan ratio: DIA (MS2/MS1=%.1f, ~%d windows/cycle)",
-                ratio, nearest_int,
+                ratio, round(ratio),
             )
-        elif ratio > 1:
-            # DDA: variable MS2 count, ratio usually not close to integer
-            parsed["acquisition_mode"] = "dda"
-            logger.info("Mode from scan ratio: DDA (MS2/MS1=%.1f)", ratio)
+        else:
+            # Ambiguous ratio — don't guess, leave for folder/filename check
+            logger.info(
+                "Scan ratio ambiguous (MS2/MS1=%.1f) — leaving mode unset for %s",
+                ratio, raw_path.name,
+            )
 
     # Also check the raw filename for window info (backup if method name is absent)
     if "dia_isolation_width_th" not in parsed:
