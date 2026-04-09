@@ -3,14 +3,14 @@
 Identifies HeLa QC standard runs mixed in with other sample files.
 Used by both the watcher (real-time) and baseline (retroactive).
 
-Default patterns match common QC naming conventions:
-  - HeLa / hela / HELA
-  - QC / qc
+Default patterns match common QC naming conventions across labs:
+  - HeLa / hela / HELA / HeL50 / HeLa50 / HeLa50ng
+  - QC / qc (anywhere in the name)
   - Std_He / STD_HE / std_hela
   - Standard.*HeLa
 
 Users can override with a custom regex in instruments.yml:
-    qc_pattern: "(?i)(hela|qc|std.*he)"
+    qc_pattern: "(?i)(hel[a5]|qc|std.*he)"
 """
 
 from __future__ import annotations
@@ -22,8 +22,11 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Default QC filename patterns (case-insensitive)
-# Matches: HeLa, QC, Std_He, Standard_HeLa, etc.
-DEFAULT_QC_PATTERN = r"(?i)(hela|[\b_\-]qc[\b_\-]|^qc[\b_\-]|[\b_\-]qc$|std[_\-]?he)"
+# Matches:
+#   HeLa, hela, HELA, HeL50, HeLa50ng, HeLa50  (hel followed by a or 5)
+#   QC, qc, QCex  (qc anywhere in the name)
+#   Std_He, STD_HE, std_hela, Std_HeLa  (std followed by he)
+DEFAULT_QC_PATTERN = r"(?i)(hel[a5]|qc|std[_\-\s]?he)"
 
 
 def compile_qc_pattern(pattern: str | None = None) -> re.Pattern:
