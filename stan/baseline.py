@@ -1051,6 +1051,11 @@ def _process_files(
                         progress_bar.advance(task)
                         continue
 
+                    if vendor == "thermo":
+                        console.print(
+                            f"  [dim]Converting .raw → mzML for Sage (Sage cannot read "
+                            f".raw directly, this adds ~2-5 min)[/dim]"
+                        )
                     result_path = run_sage_local(
                         raw_path=raw_file,
                         output_dir=output_dir,
