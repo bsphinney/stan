@@ -167,6 +167,19 @@ def baseline() -> None:
     run_baseline()
 
 
+@app.command("build-library")
+def build_library() -> None:
+    """Build instrument-specific spectral library from baseline results.
+
+    Combines all report.parquet files from baseline into a refined library
+    with only precursors observed on your instrument. Produces faster
+    searches than the community library (30-50K vs 170K precursors).
+    """
+    from stan.library_builder import run_build_library
+
+    run_build_library()
+
+
 @app.command()
 def baseline_download(
     instrument_family: str = typer.Option(None, "--instrument", "-i", help="e.g. Astral, timsTOF, Exploris"),

@@ -588,17 +588,23 @@ def run_baseline() -> None:
         fasta_path = str(fasta_file)
         console.print(f"  [green]FASTA:[/green] {fasta_file.name}")
 
-    lib_key = "lib_thermo" if vendor == "thermo" else "lib_bruker"
-    lib_file = _get_asset(ASSETS[lib_key])
-    if lib_file:
-        lib_path = str(lib_file)
-        console.print(f"  [green]Library:[/green] {lib_file.name}")
+    # Prefer instrument-specific library (faster) over community library
+    instrument_lib = get_user_config_dir() / "instrument_library.parquet"
+    if instrument_lib.exists():
+        lib_path = str(instrument_lib)
+        console.print(f"  [green]Library:[/green] {instrument_lib.name} (instrument-specific)")
     else:
-        console.print(
-            f"  [red]Library not found:[/red] {ASSETS[lib_key]}\n"
-            f"  DIA searches require the community spectral library.\n"
-            f"  DIA files will be skipped. DDA files will still be processed."
-        )
+        lib_key = "lib_thermo" if vendor == "thermo" else "lib_bruker"
+        lib_file = _get_asset(ASSETS[lib_key])
+        if lib_file:
+            lib_path = str(lib_file)
+            console.print(f"  [green]Library:[/green] {lib_file.name} (community)")
+        else:
+            console.print(
+                f"  [red]Library not found:[/red] {ASSETS[lib_key]}\n"
+                f"  DIA searches require the community spectral library.\n"
+                f"  DIA files will be skipped. DDA files will still be processed."
+            )
 
     if not fasta_path:
         console.print("  [yellow]No FASTA available — searches will fail.[/yellow]")
