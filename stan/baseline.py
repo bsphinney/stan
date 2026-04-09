@@ -1132,13 +1132,19 @@ def _process_files(
 
                 # Extract and store TIC trace
                 try:
-                    from stan.metrics.tic import extract_tic_bruker, extract_tic_thermo, compute_tic_metrics
-                    if vendor == "bruker" and raw_file.is_dir():
+                    from stan.metrics.tic import (
+                        extract_tic_bruker, extract_tic_thermo,
+                        extract_tic_from_report, compute_tic_metrics,
+                    )
+                    tic_trace = None
+                    # Method 1: Identified TIC from DIA-NN report (all vendors, best for QC)
+                    if result_path and result_path.exists() and is_dia(mode_obj):
+                        tic_trace = extract_tic_from_report(result_path)
+                        if tic_trace:
+                            logger.debug("Identified TIC from report: %s", raw_file.name)
+                    # Method 2: Raw TIC from instrument file (Bruker only for now)
+                    if tic_trace is None and vendor == "bruker" and raw_file.is_dir():
                         tic_trace = extract_tic_bruker(raw_file)
-                    elif vendor == "thermo":
-                        tic_trace = extract_tic_thermo(raw_file)
-                    else:
-                        tic_trace = None
                     if tic_trace:
                         tic_metrics = compute_tic_metrics(tic_trace)
                         insert_tic_trace(run_id, tic_trace.rt_min, tic_trace.intensity)

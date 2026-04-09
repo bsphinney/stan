@@ -1,11 +1,13 @@
-"""TIC (Total Ion Current) extraction from raw mass spec files.
+"""TIC (Total Ion Current) extraction from mass spec data.
 
-Supports:
+Three sources:
   - Bruker timsTOF .d: reads SummedIntensities from analysis.tdf SQLite
-  - Thermo .raw: reads TIC chromatogram via fisher_py (RawFileReader wrapper)
+  - Thermo .raw: reads TIC chromatogram via fisher_py (optional) or TRFP mzML
+  - DIA-NN report.parquet: "identified TIC" from Ms1.Apex.Area binned by RT
+    (works for ALL vendors, no extra dependencies — ported from Vadim's QC script)
 
-The TIC trace is the summed intensity of all ions per MS1 scan/frame over time.
-It reflects loading amount, LC gradient quality, and spray stability.
+The identified TIC is often more useful for QC than raw TIC because it only
+shows signal from identified precursors, filtering out noise and contaminants.
 """
 
 from __future__ import annotations
@@ -253,6 +255,87 @@ def _extract_tic_thermo_trfp(raw_path: Path) -> TICTrace | None:
 
     except Exception:
         logger.debug("TRFP TIC fallback failed for %s", raw_path.name, exc_info=True)
+        return None
+
+
+def extract_tic_from_report(report_path: Path, n_bins: int = 128) -> TICTrace | None:
+    """Extract "identified TIC" from DIA-NN report.parquet.
+
+    Bins retention time and sums Ms1.Apex.Area per bin to create a TIC-like
+    chromatogram from identified precursors only. Works for any vendor since
+    it reads the search output, not the raw file.
+
+    Ported from Vadim Demichev's DIA-NN QC script.
+
+    Args:
+        report_path: Path to DIA-NN report.parquet.
+        n_bins: Number of RT bins (default 128).
+
+    Returns:
+        TICTrace with RT (minutes) and summed Ms1.Apex.Area, or None.
+    """
+    try:
+        import numpy as np
+        import polars as pl
+
+        # Check what columns are available
+        schema = pl.read_parquet_schema(report_path)
+        available = set(schema.keys()) if hasattr(schema, 'keys') else set(schema)
+
+        if "RT" not in available:
+            logger.debug("No RT column in report — cannot extract identified TIC")
+            return None
+
+        # Pick the best signal column
+        signal_col = None
+        for candidate in ["Ms1.Apex.Area", "Ms1.Area", "Precursor.Quantity", "Precursor.Normalised"]:
+            if candidate in available:
+                signal_col = candidate
+                break
+
+        if signal_col is None:
+            logger.debug("No signal column found in report for identified TIC")
+            return None
+
+        # Read only what we need
+        cols = ["RT", signal_col, "Q.Value"]
+        df = pl.read_parquet(report_path, columns=cols)
+
+        # Filter to 1% FDR
+        df = df.filter(pl.col("Q.Value") <= 0.01)
+
+        if df.height < 10:
+            return None
+
+        # Bin RT and sum signal
+        rt_min_val = df["RT"].min()
+        rt_max_val = df["RT"].max()
+        bin_edges = np.linspace(rt_min_val, rt_max_val, n_bins + 1)
+        bin_centers = [(bin_edges[i] + bin_edges[i + 1]) / 2.0 for i in range(n_bins)]
+        bin_width = bin_edges[1] - bin_edges[0]
+
+        # Assign each row to a bin
+        rt_array = df["RT"].to_numpy()
+        signal_array = df[signal_col].to_numpy()
+
+        binned_signal = [0.0] * n_bins
+        for rt_val, sig_val in zip(rt_array, signal_array):
+            if sig_val is None or sig_val <= 0:
+                continue
+            bin_idx = int((rt_val - rt_min_val) / bin_width)
+            bin_idx = max(0, min(n_bins - 1, bin_idx))
+            binned_signal[bin_idx] += float(sig_val)
+
+        run_name = report_path.parent.name
+
+        return TICTrace(
+            rt_min=bin_centers,
+            intensity=binned_signal,
+            run_name=run_name,
+        )
+
+    except Exception:
+        logger.debug("Failed to extract identified TIC from %s", report_path, exc_info=True)
         return None
 
 
