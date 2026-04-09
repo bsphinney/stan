@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stan-proteomics"
-version = "0.2.36"
+version = "0.2.37"
 description = "STAN — Standardized proteomic Throughput ANalyzer"
 readme = "README.md"
 license = { text = "STAN Academic License" }
@@ -25,7 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 hpc = ["paramiko>=3.0"]
-thermo = ["fisher_py>=2.0"]
+thermo = ["fisher_py>=2.0"]  # optional: enables full TIC trace for Thermo .raw (needs .NET)
 dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
 
 [project.scripts]
