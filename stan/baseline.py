@@ -168,15 +168,19 @@ def _extract_thermo_metadata(raw_path: Path) -> dict:
     except Exception:
         logger.debug("TRFP metadata extraction failed for %s", raw_path, exc_info=True)
 
-    # Parent folder name overrides scan ratio — user file organization is authoritative.
-    # A file in a "dda" folder is DDA even if scan ratio looks like DIA (e.g. top-8).
-    parent_lower = raw_path.parent.name.lower()
-    if "dda" in parent_lower:
+    # Parent folder name overrides scan ratio — but only if the folder is
+    # specifically named "dda" or "dia" (exact or with simple prefix/suffix).
+    # Avoid matching folder names that just contain the letters (e.g. "DdaDia").
+    import re
+    parent_name = raw_path.parent.name
+    # Match: "dda", "DDA", "dda_files", "my_dda" but NOT "DdaDia" or "Std_He_ExPeS-DdaDia"
+    if re.match(r"^dda$", parent_name, re.IGNORECASE):
         result["acquisition_mode"] = AcquisitionMode.DDA_ORBITRAP
-        logger.info("Mode override from folder '%s': DDA for %s", raw_path.parent.name, raw_path.name)
-    elif "dia" in parent_lower and result.get("acquisition_mode") is None:
-        result["acquisition_mode"] = AcquisitionMode.DIA_ORBITRAP
-        logger.info("Mode from folder '%s': DIA for %s", raw_path.parent.name, raw_path.name)
+        logger.info("Mode override from folder '%s': DDA for %s", parent_name, raw_path.name)
+    elif re.match(r"^dia$", parent_name, re.IGNORECASE):
+        if result.get("acquisition_mode") is None:
+            result["acquisition_mode"] = AcquisitionMode.DIA_ORBITRAP
+            logger.info("Mode from folder '%s': DIA for %s", parent_name, raw_path.name)
 
     # Fallback: try filename-based heuristics
     if result.get("acquisition_mode") is None:
@@ -984,20 +988,21 @@ def _process_files(
                 if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
                     mode_obj = detect_mode(raw_file, vendor=vendor)
                 if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
-                    # Check parent folder name for dda/dia hints
-                    parent_lower = raw_file.parent.name.lower()
-                    if "dda" in parent_lower:
+                    # Check if immediate parent folder is exactly "dda" or "dia"
+                    import re as _re
+                    _parent = raw_file.parent.name
+                    if _re.match(r"^dda$", _parent, _re.IGNORECASE):
                         mode_obj = (
                             AcquisitionMode.DDA_PASEF if vendor == "bruker"
                             else AcquisitionMode.DDA_ORBITRAP
                         )
-                        logger.info("Mode from folder name '%s': DDA", raw_file.parent.name)
-                    elif "dia" in parent_lower:
+                        logger.info("Mode from folder '%s': DDA", _parent)
+                    elif _re.match(r"^dia$", _parent, _re.IGNORECASE):
                         mode_obj = (
                             AcquisitionMode.DIA_PASEF if vendor == "bruker"
                             else AcquisitionMode.DIA_ORBITRAP
                         )
-                        logger.info("Mode from folder name '%s': DIA", raw_file.parent.name)
+                        logger.info("Mode from folder '%s': DIA", _parent)
                 if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
                     # Final default to DIA — most common QC mode
                     mode_obj = (
