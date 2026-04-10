@@ -275,7 +275,6 @@ def extract_tic_from_report(report_path: Path, n_bins: int = 128) -> TICTrace | 
         TICTrace with RT (minutes) and summed Ms1.Apex.Area, or None.
     """
     try:
-        import numpy as np
         import polars as pl
 
         # Check what columns are available
@@ -307,16 +306,18 @@ def extract_tic_from_report(report_path: Path, n_bins: int = 128) -> TICTrace | 
         if df.height < 10:
             return None
 
-        # Bin RT and sum signal
-        rt_min_val = df["RT"].min()
-        rt_max_val = df["RT"].max()
-        bin_edges = np.linspace(rt_min_val, rt_max_val, n_bins + 1)
-        bin_centers = [(bin_edges[i] + bin_edges[i + 1]) / 2.0 for i in range(n_bins)]
-        bin_width = bin_edges[1] - bin_edges[0]
+        # Bin RT and sum signal — pure Python, no numpy needed
+        rt_min_val = float(df["RT"].min())
+        rt_max_val = float(df["RT"].max())
+        rt_range = rt_max_val - rt_min_val
+        if rt_range <= 0:
+            return None
+        bin_width = rt_range / n_bins
+        bin_centers = [rt_min_val + (i + 0.5) * bin_width for i in range(n_bins)]
 
-        # Assign each row to a bin
-        rt_array = df["RT"].to_numpy()
-        signal_array = df[signal_col].to_numpy()
+        # Get arrays as Python lists (avoid numpy dependency)
+        rt_array = df["RT"].to_list()
+        signal_array = df[signal_col].to_list()
 
         binned_signal = [0.0] * n_bins
         for rt_val, sig_val in zip(rt_array, signal_array):
