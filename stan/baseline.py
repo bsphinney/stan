@@ -435,25 +435,64 @@ def run_baseline() -> None:
     # ── 1. Directory ─────────────────────────────────────────────
     console.print("[bold]Step 1: Raw data directory[/bold]")
 
-    # Try to suggest the watch_dir from instruments.yml
-    default_dir = ""
+    # Offer every configured watch_dir from instruments.yml as a numbered
+    # choice so the user doesn't have to retype paths after running
+    # `stan add-watch`. Each watched instrument is listed with its
+    # vendor and any configured QC filter so the user can tell which
+    # directory matches what.
+    watch_options: list[tuple[str, str, dict]] = []  # (label, path, instrument)
     try:
         from stan.config import load_instruments
         _, instruments = load_instruments()
-        if instruments:
-            wd = instruments[0].get("watch_dir", "")
+        for inst in instruments or []:
+            wd = inst.get("watch_dir", "")
             if wd and Path(wd).exists():
-                default_dir = wd
+                watch_options.append(
+                    (inst.get("name", "unnamed"), str(Path(wd)), inst)
+                )
     except Exception:
         pass
 
-    raw_dir = Prompt.ask(
-        "Directory containing HeLa QC runs",
-        default=default_dir or None,
-        console=console,
-    )
-    raw_path = Path(raw_dir)
+    raw_dir: str = ""
+    if watch_options:
+        console.print(
+            f"[dim]Found {len(watch_options)} configured watch "
+            f"{'directory' if len(watch_options) == 1 else 'directories'} "
+            "in instruments.yml:[/dim]"
+        )
+        for i, (label, wpath, inst) in enumerate(watch_options, start=1):
+            vendor = inst.get("vendor", "?")
+            qc_note = ""
+            if inst.get("qc_only", True):
+                pat = inst.get("qc_pattern")
+                qc_note = (
+                    f" [dim](QC filter: {pat})[/dim]"
+                    if pat
+                    else " [dim](QC filter: default)[/dim]"
+                )
+            else:
+                qc_note = " [dim](all files)[/dim]"
+            console.print(f"  [cyan]{i}[/cyan]  {label} ({vendor})  {wpath}{qc_note}")
+        console.print(f"  [cyan]c[/cyan]  Custom path")
+        console.print()
+        choices = [str(i) for i in range(1, len(watch_options) + 1)] + ["c"]
+        default_choice = "1" if len(watch_options) >= 1 else "c"
+        pick = Prompt.ask(
+            "Which directory?", choices=choices, default=default_choice, console=console
+        )
+        if pick == "c":
+            raw_dir = Prompt.ask(
+                "Directory containing HeLa QC runs", console=console
+            )
+        else:
+            raw_dir = watch_options[int(pick) - 1][1]
+            console.print(f"[dim]Using {raw_dir}[/dim]")
+    else:
+        raw_dir = Prompt.ask(
+            "Directory containing HeLa QC runs", console=console
+        )
 
+    raw_path = Path(raw_dir)
     if not raw_path.exists():
         console.print(f"[red]Directory not found: {raw_dir}[/red]")
         return
