@@ -58,12 +58,54 @@
     function useFetch(url, deps = []) {
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
       const reload = useCallback(() => {
         setLoading(true);
-        fetch(API + url).then(r => r.json()).then(d => { setData(d); setLoading(false); }).catch(() => setLoading(false));
+        fetch(API + url)
+          .then(r => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.json();
+          })
+          .then(d => { setData(d); setError(null); setLoading(false); })
+          .catch(e => { setError(e.message || String(e)); setLoading(false); });
       }, [url]);
       useEffect(() => { reload(); }, deps);
-      return { data, loading, reload };
+      return { data, loading, error, reload };
+    }
+
+    /* Catch any unhandled React render error and show a readable message
+       instead of a blank page. Dashboard bugs don't take down the whole
+       page — only the failing panel. */
+    class ErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { err: null };
+      }
+      static getDerivedStateFromError(err) {
+        return { err };
+      }
+      componentDidCatch(err, info) {
+        console.error('Dashboard render error:', err, info);
+      }
+      render() {
+        if (this.state.err) {
+          return (
+            <div className="card" style={{borderColor:'var(--fail)', color:'var(--fail)'}}>
+              <strong>Dashboard error</strong>
+              <div style={{fontSize:'0.85rem', marginTop:'0.3rem', fontFamily:'monospace', whiteSpace:'pre-wrap'}}>
+                {String(this.state.err && (this.state.err.stack || this.state.err.message || this.state.err))}
+              </div>
+              <button
+                style={{marginTop:'0.5rem'}}
+                onClick={() => this.setState({err: null})}
+              >
+                Dismiss
+              </button>
+            </div>
+          );
+        }
+        return this.props.children;
+      }
     }
 
     function GrsBadge({ score }) {
@@ -405,7 +447,7 @@
 
     /* ── Mini sparkline: last N runs of the primary metric for an instrument ── */
     function MiniSparkline({ allRuns, instrument, currentMode, n = 30 }) {
-      if (!allRuns) return null;
+      if (!Array.isArray(allRuns)) return null;
       const metricKey = currentMode === 'DDA' ? 'n_psms' : 'n_precursors';
       const metricLabel = currentMode === 'DDA' ? 'PSMs' : 'Precursors';
       // Most recent N runs for this instrument, ordered ascending for plotting
@@ -456,11 +498,15 @@
     }
 
     function LiveRuns() {
-      const { data: allRuns, loading, reload } = useFetch('/api/runs?limit=200');
+      const { data: allRuns, loading, reload, error } = useFetch('/api/runs?limit=200');
       useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [reload]);
 
       if (loading && !allRuns) return <div className="empty">Loading...</div>;
-      if (!allRuns || allRuns.length === 0) return <div className="empty">No QC runs yet. Start the watcher to begin monitoring.</div>;
+      // Defensive: /api/runs should return an array but a server error may
+      // return {detail:"…"}. Treat anything non-array as "no runs yet".
+      if (!Array.isArray(allRuns) || allRuns.length === 0) {
+        return <div className="empty">No QC runs yet. Start the watcher to begin monitoring.</div>;
+      }
 
       // Filter to runs from today only
       const today = new Date().toDateString();
@@ -515,7 +561,10 @@
       const [selectedRun, setSelectedRun] = useState(null);
 
       if (loading) return <div className="empty">Loading...</div>;
-      if (!runs || runs.length === 0) return <div className="empty">No runs recorded yet.</div>;
+      // Defensive: treat any non-array response as "no runs".
+      if (!Array.isArray(runs) || runs.length === 0) {
+        return <div className="empty">No runs recorded yet.</div>;
+      }
 
       // Filter by date range
       const now = new Date();

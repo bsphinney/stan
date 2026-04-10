@@ -356,6 +356,11 @@ def get_runs(
     if db_path is None:
         db_path = get_db_path()
 
+    # Fresh install or wrong host: no DB yet. Return an empty list
+    # instead of crashing the dashboard.
+    if not db_path.exists():
+        return []
+
     query = "SELECT * FROM runs"
     params: list = []
 
@@ -366,9 +371,13 @@ def get_runs(
     query += " ORDER BY run_date DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
 
-    with sqlite3.connect(str(db_path)) as con:
-        con.row_factory = sqlite3.Row
-        rows = con.execute(query, params).fetchall()
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(query, params).fetchall()
+    except sqlite3.OperationalError as e:
+        logger.warning("get_runs: %s (db=%s)", e, db_path)
+        return []
 
     return [dict(row) for row in rows]
 
@@ -378,9 +387,16 @@ def get_run(run_id: str, db_path: Path | None = None) -> dict | None:
     if db_path is None:
         db_path = get_db_path()
 
-    with sqlite3.connect(str(db_path)) as con:
-        con.row_factory = sqlite3.Row
-        row = con.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if not db_path.exists():
+        return None
+
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            row = con.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    except sqlite3.OperationalError as e:
+        logger.warning("get_run: %s", e)
+        return None
 
     return dict(row) if row else None
 
@@ -397,12 +413,19 @@ def get_trends(
     if db_path is None:
         db_path = get_db_path()
 
-    with sqlite3.connect(str(db_path)) as con:
-        con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT * FROM runs WHERE instrument = ? ORDER BY run_date ASC LIMIT ?",
-            (instrument, limit),
-        ).fetchall()
+    if not db_path.exists():
+        return []
+
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT * FROM runs WHERE instrument = ? ORDER BY run_date ASC LIMIT ?",
+                (instrument, limit),
+            ).fetchall()
+    except sqlite3.OperationalError as e:
+        logger.warning("get_trends: %s", e)
+        return []
 
     return [dict(row) for row in rows]
 
