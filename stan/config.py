@@ -22,6 +22,38 @@ else:
     _USER_CONFIG_DIR = Path.home() / ".stan"
 
 
+def setup_hive_mirror_logging(log_name: str) -> Path | None:
+    """Set up a file handler that writes logs to the Hive mirror directory.
+
+    Should be called at the start of any STAN command that needs its
+    output captured for remote debugging. Silently no-ops if the Hive
+    mirror isn't available.
+
+    Args:
+        log_name: Filename for the log (e.g. "build_library.log").
+
+    Returns:
+        The log file path if set up, else None.
+    """
+    hive_dir = get_hive_mirror_dir()
+    if not hive_dir:
+        return None
+    try:
+        log_path = hive_dir / log_name
+        file_handler = logging.FileHandler(str(log_path), mode="w", encoding="utf-8")
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        ))
+        file_handler.flush = file_handler.stream.flush  # type: ignore[assignment]
+        logging.getLogger().addHandler(file_handler)
+        logging.getLogger().setLevel(logging.DEBUG)
+        return log_path
+    except Exception:
+        return None
+
+
 def get_hive_mirror_dir() -> Path | None:
     """Return the Hive mirror directory if mapped, else None.
 

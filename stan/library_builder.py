@@ -210,10 +210,23 @@ def build_instrument_library(
             return output_path
         else:
             logger.error("DIA-NN did not produce output library")
+            # Dump the log file contents so we can see what happened
+            if log_file.exists():
+                logger.error("DIA-NN log (last 50 lines):")
+                with open(log_file) as lf:
+                    lines = lf.readlines()
+                    for line in lines[-50:]:
+                        logger.error("  %s", line.rstrip())
             return None
 
     except subprocess.CalledProcessError as e:
-        logger.error("DIA-NN library build failed: %s", e)
+        logger.error("DIA-NN library build failed with exit code %s", e.returncode)
+        if log_file.exists():
+            logger.error("DIA-NN log (last 50 lines):")
+            with open(log_file) as lf:
+                lines = lf.readlines()
+                for line in lines[-50:]:
+                    logger.error("  %s", line.rstrip())
         return None
     except Exception:
         logger.exception("Failed to build instrument library")
@@ -222,6 +235,12 @@ def build_instrument_library(
 
 def run_build_library() -> None:
     """Interactive CLI for building instrument-specific library."""
+    # Mirror log to Hive if Y:\STAN is mounted
+    from stan.config import setup_hive_mirror_logging
+    hive_log = setup_hive_mirror_logging("build_library.log")
+    if hive_log:
+        logger.info("Build library log mirroring to: %s", hive_log)
+
     console.print()
     console.print("[bold]STAN Instrument Library Builder[/bold]")
     console.print()
