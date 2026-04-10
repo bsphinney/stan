@@ -459,6 +459,7 @@
       const [sortDir, setSortDir] = useState('desc');
       const [dateFilter, setDateFilter] = useState('all');
       const [searchTerm, setSearchTerm] = useState('');
+      const [selectedRun, setSelectedRun] = useState(null);
 
       if (loading) return <div className="empty">Loading...</div>;
       if (!runs || runs.length === 0) return <div className="empty">No runs recorded yet.</div>;
@@ -576,8 +577,8 @@
               </tr></thead>
               <tbody>
                 {filtered.map(r => (
-                  <tr key={r.id}>
-                    <td title={r.run_name}>{r.run_name}</td>
+                  <tr key={r.id} onClick={() => setSelectedRun(r)} style={{cursor:'pointer'}}>
+                    <td title="Click for TIC viewer">{r.run_name}</td>
                     <td>{r.instrument}</td>
                     <td>{r.mode}</td>
                     <td><GateBadge result={r.gate_result} /></td>
@@ -593,6 +594,151 @@
                 ))}
               </tbody>
             </table>
+          </div>
+          {selectedRun && (
+            <TicViewer
+              runId={selectedRun.id}
+              runName={selectedRun.run_name}
+              instrument={selectedRun.instrument}
+              spd={selectedRun.spd}
+              onClose={() => setSelectedRun(null)}
+            />
+          )}
+        </div>
+      );
+    }
+
+    /* ── TIC Viewer Modal ──────────────────────────────────────────── */
+
+    function TicViewer({ runId, runName, instrument, spd, onClose }) {
+      const [tic, setTic] = useState(null);
+      const [communityTic, setCommunityTic] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [showCommunity, setShowCommunity] = useState(true);
+
+      useEffect(() => {
+        fetch(API + `/api/runs/${runId}/tic`)
+          .then(r => r.ok ? r.json() : null)
+          .then(setTic)
+          .catch(() => setTic(null))
+          .finally(() => setLoading(false));
+      }, [runId]);
+
+      useEffect(() => {
+        if (!instrument || !spd) return;
+        // Infer instrument family
+        const family = instrument.toLowerCase().includes('tims') ? 'timsTOF' :
+                       instrument.toLowerCase().includes('astral') ? 'Astral' :
+                       instrument.toLowerCase().includes('exploris') ? 'Exploris' :
+                       instrument.toLowerCase().includes('lumos') || instrument.toLowerCase().includes('fusion') ? 'Fusion Lumos' :
+                       'Orbitrap';
+        // Try common cohort ID patterns
+        const cohortIds = [
+          `${family}_${spd}spd_low`,
+          `${family}_${spd}spd`,
+        ];
+        (async () => {
+          for (const cid of cohortIds) {
+            try {
+              const r = await fetch(`https://brettsp-stan.hf.space/api/cohorts/${encodeURIComponent(cid)}/tic`);
+              if (r.ok) {
+                const data = await r.json();
+                if (data && data.median_tic) {
+                  setCommunityTic(data);
+                  return;
+                }
+              }
+            } catch (e) {}
+          }
+        })();
+      }, [instrument, spd]);
+
+      if (loading) {
+        return (
+          <div style={{position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000}}>
+            <div className="card">Loading TIC...</div>
+          </div>
+        );
+      }
+      if (!tic) {
+        return (
+          <div style={{position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.7)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000}} onClick={onClose}>
+            <div className="card" style={{maxWidth:'500px'}}>
+              <h3>No TIC data for this run</h3>
+              <p>Re-run baseline with 0.2.40+ to extract TIC data.</p>
+              <button onClick={onClose} style={{padding:'0.5rem 1rem', marginTop:'0.5rem'}}>Close</button>
+            </div>
+          </div>
+        );
+      }
+
+      // Build SVG TIC plot
+      const width = 900, height = 400, pad = 50;
+      const rt = tic.rt_min;
+      const intensity = tic.intensity;
+      const rtMin = Math.min(...rt);
+      const rtMax = Math.max(...rt);
+      const maxInt = Math.max(...intensity);
+
+      // Normalize run's TIC
+      const runPoints = rt.map((r, i) => {
+        const x = pad + ((r - rtMin) / (rtMax - rtMin)) * (width - 2*pad);
+        const y = height - pad - (intensity[i] / maxInt) * (height - 2*pad);
+        return [x, y];
+      });
+      const runPath = runPoints.map(([x,y],i) => `${i===0?'M':'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+
+      // Community median trace (if available and toggle on)
+      let commPath = null;
+      if (showCommunity && communityTic && communityTic.median_tic) {
+        const cRt = communityTic.median_tic.rt;
+        const cInt = communityTic.median_tic.intensity;
+        const cMax = Math.max(...cInt);
+        if (cMax > 0 && cRt.length > 1) {
+          const cPoints = cRt.map((r, i) => {
+            const x = pad + ((r - rtMin) / (rtMax - rtMin)) * (width - 2*pad);
+            const y = height - pad - (cInt[i] / cMax) * (height - 2*pad);
+            return [x, y];
+          });
+          commPath = cPoints.map(([x,y],i) => `${i===0?'M':'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+        }
+      }
+
+      return (
+        <div style={{position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000, padding:'1rem'}} onClick={onClose}>
+          <div className="card" style={{maxWidth:'1000px', width:'100%', maxHeight:'90vh', overflow:'auto'}} onClick={e => e.stopPropagation()}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:'1rem'}}>
+              <div>
+                <h3 style={{margin:0, wordBreak:'break-all'}}>{runName}</h3>
+                <div style={{color:'var(--muted)', fontSize:'0.85rem', marginTop:'0.25rem'}}>
+                  {instrument} · SPD {spd || '?'}
+                </div>
+              </div>
+              <button onClick={onClose} style={{padding:'0.4rem 0.8rem', background:'var(--bg)', color:'var(--text)', border:'1px solid var(--border)', borderRadius:'0.3rem', cursor:'pointer'}}>✕ Close</button>
+            </div>
+            {communityTic && (
+              <label style={{display:'inline-flex', alignItems:'center', gap:'0.4rem', marginBottom:'0.5rem', fontSize:'0.85rem', cursor:'pointer'}}>
+                <input type="checkbox" checked={showCommunity} onChange={e => setShowCommunity(e.target.checked)} />
+                Show community median ({communityTic.n_traces || 0} traces)
+              </label>
+            )}
+            <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:'auto', background:'var(--bg)', borderRadius:'0.3rem'}}>
+              {/* Axes */}
+              <line x1={pad} y1={height-pad} x2={width-pad} y2={height-pad} stroke="var(--muted)" strokeWidth="1" />
+              <line x1={pad} y1={pad} x2={pad} y2={height-pad} stroke="var(--muted)" strokeWidth="1" />
+              {/* Community median (dashed orange) */}
+              {commPath && <path d={commPath} fill="none" stroke="#ff6b35" strokeWidth="2.5" strokeDasharray="6,4" />}
+              {/* Run TIC (solid blue) */}
+              <path d={runPath} fill="none" stroke="#60a5fa" strokeWidth="2" />
+              {/* Labels */}
+              <text x={width/2} y={height-10} fill="var(--muted)" fontSize="12" textAnchor="middle">Retention Time (min)</text>
+              <text x={15} y={height/2} fill="var(--muted)" fontSize="12" textAnchor="middle" transform={`rotate(-90, 15, ${height/2})`}>Intensity</text>
+              <text x={pad} y={pad+15} fill="#60a5fa" fontSize="11">━ This run</text>
+              {commPath && <text x={pad} y={pad+30} fill="#ff6b35" fontSize="11">┅ Community median</text>}
+              <text x={width-pad} y={pad+15} fill="var(--muted)" fontSize="11" textAnchor="end">
+                RT: {rtMin.toFixed(1)} - {rtMax.toFixed(1)} min · {rt.length} bins
+              </text>
+            </svg>
           </div>
         </div>
       );

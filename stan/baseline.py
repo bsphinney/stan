@@ -1119,6 +1119,20 @@ def _process_files(
                     acquisition_mode=acq_mode,
                 )
 
+                # Send Slack alert if this run fails (silently no-ops if not configured)
+                try:
+                    from stan.alerts import send_slack_alert
+                    from stan.gating.evaluator import GateResult
+                    if decision.result == GateResult.FAIL:
+                        send_slack_alert(
+                            instrument=instrument_name,
+                            run_name=raw_file.name,
+                            decision=decision,
+                            ips_score=metrics.get("ips_score"),
+                        )
+                except Exception:
+                    logger.debug("Slack alert failed", exc_info=True)
+
                 # Use real acquisition date if available, otherwise fallback
                 run_date = file_meta.get("acquisition_date")
 

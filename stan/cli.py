@@ -180,6 +180,22 @@ def build_library() -> None:
     run_build_library()
 
 
+@app.command("test-alert")
+def test_alert() -> None:
+    """Send a test Slack message to verify alerts are configured.
+
+    Requires slack_webhook_url in ~/STAN/community.yml.
+    """
+    from stan.alerts import test_slack_alert
+
+    if test_slack_alert("STAN alert test"):
+        console.print("[green]Test alert sent.[/green] Check your Slack channel.")
+    else:
+        console.print("[yellow]No Slack webhook configured.[/yellow]")
+        console.print("  Add slack_webhook_url to ~/STAN/community.yml:")
+        console.print('  [cyan]slack_webhook_url: "https://hooks.slack.com/services/..."[/cyan]')
+
+
 @app.command()
 def sync() -> None:
     """Sync stan.db and config to Hive mirror (if Y:\\STAN is mapped).
