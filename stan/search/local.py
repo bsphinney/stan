@@ -350,6 +350,8 @@ def run_sage_local(
         return dest
 
     logger.error("Sage output not found in: %s", output_dir)
+    # Mirror the sage.log + directory listing so we can diagnose from Hive
+    _mirror_log_to_hive(log_file, raw_path.stem, "sage")
     return None
 
 
