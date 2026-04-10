@@ -1,4 +1,4 @@
-# STAN Updater - reinstalls STAN and checks for missing search engines
+# STAN Updater - reinstalls STAN and checks for missing/outdated search engines
 
 # SSL workaround for corporate/university proxy networks
 try {
@@ -123,14 +123,13 @@ if ((Test-Path $newStanExe) -and (Test-Path $oldVenvPython)) {
         $env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$cleanPath"
         Write-Host "  Removed old .stan\venv from PATH." -ForegroundColor Gray
     }
-    # Also update the old venv so any stale shortcuts still work
     $ticks = [DateTime]::Now.Ticks
     $zipUrl = "https://github.com/bsphinney/stan/archive/refs/heads/main.zip?t=$ticks"
     & $oldVenvPython -m pip install --no-cache-dir --force-reinstall --quiet @pipTrust $zipUrl 2>&1 | Out-Null
     Write-Host "  Old .stan venv also updated." -ForegroundColor Gray
 }
 
-# -- Check DIA-NN --
+# -- Check DIA-NN (2.3+ required for community benchmark) --
 Write-Host ""
 Write-Host "  [2/3] Checking DIA-NN..." -ForegroundColor Cyan
 $env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$([Environment]::GetEnvironmentVariable('Path','User'))"
@@ -150,7 +149,6 @@ foreach ($sp in $diannSearchPaths) {
         foreach ($e in $exes) { $allDiann += $e.FullName }
     }
 }
-# Also check PATH
 $onPath = Get-Command "DiaNN.exe" -ErrorAction SilentlyContinue
 if ($onPath) { $allDiann += $onPath.Source }
 
@@ -170,8 +168,14 @@ foreach ($p in $allDiann) {
     }
 }
 
+# Community benchmark requires DIA-NN 2.3+ for consistent results across labs
 $needsDiannInstall = $false
-if ($bestDiann -and $bestMajor -ge 2) {
+$isCompatible = $false
+if ($bestDiann -and ($bestMajor -gt 2 -or ($bestMajor -eq 2 -and $bestMinor -ge 3))) {
+    $isCompatible = $true
+}
+
+if ($isCompatible) {
     Write-Host "  DIA-NN found: $bestDiann (v$bestMajor.$bestMinor)" -ForegroundColor Green
     $diannDir = Split-Path $bestDiann -Parent
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
@@ -182,7 +186,7 @@ if ($bestDiann -and $bestMajor -ge 2) {
     }
 } elseif ($bestDiann) {
     Write-Host "  DIA-NN found but outdated: $bestDiann (v$bestMajor.$bestMinor)" -ForegroundColor Yellow
-    Write-Host "  Version 2.0+ required. Upgrading..." -ForegroundColor Yellow
+    Write-Host "  Community benchmark requires DIA-NN 2.3+. Upgrading..." -ForegroundColor Yellow
     $needsDiannInstall = $true
 } else {
     Write-Host "  DIA-NN not found. Installing..." -ForegroundColor Yellow
@@ -247,7 +251,6 @@ if (-not $sageExe) {
         $f = Get-ChildItem -Path $sageDir -Recurse -Filter "sage.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($f) { $sageExe = $f }
     }
-    # Also check old location
     $oldSageDir = "$env:USERPROFILE\.stan\tools\sage"
     if (-not $sageExe -and (Test-Path $oldSageDir)) {
         $f = Get-ChildItem -Path $oldSageDir -Recurse -Filter "sage.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
