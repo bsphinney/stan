@@ -180,6 +180,180 @@ def build_library() -> None:
     run_build_library()
 
 
+@app.command("add-watch")
+def add_watch(
+    path: str = typer.Argument(..., help="Watch directory path"),
+    name: str = typer.Option(None, "--name", "-n", help="Instrument name (auto-detected if omitted)"),
+    vendor: str = typer.Option(None, "--vendor", "-v", help="bruker or thermo (auto-detected)"),
+) -> None:
+    """Add a new watch directory to instruments.yml.
+
+    Example:
+        stan add-watch F:\\data\\new_hela_runs
+        stan add-watch D:\\Data\\HeLSTDs\\dia --name "timsTOF HT" --vendor bruker
+    """
+    from pathlib import Path as _Path
+    import yaml as _yaml
+    from stan.config import resolve_config_path, get_user_config_dir
+
+    watch_path = _Path(path)
+    if not watch_path.exists():
+        console.print(f"[red]Directory does not exist: {path}[/red]")
+        return
+
+    # Auto-detect vendor from contents
+    if vendor is None:
+        has_d = any(p.suffix == ".d" for p in watch_path.glob("*.d"))
+        has_raw = any(p.suffix == ".raw" for p in watch_path.glob("*.raw"))
+        if has_d and not has_raw:
+            vendor = "bruker"
+        elif has_raw and not has_d:
+            vendor = "thermo"
+        else:
+            console.print("[yellow]Could not auto-detect vendor. Specify --vendor bruker or --vendor thermo.[/yellow]")
+            return
+
+    # Auto-generate name if not given
+    if name is None:
+        name = f"{watch_path.name}_{vendor}"
+
+    # Load current instruments.yml
+    try:
+        config_path = resolve_config_path("instruments.yml")
+    except FileNotFoundError:
+        config_path = get_user_config_dir() / "instruments.yml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text("instruments: []\n")
+
+    with open(config_path) as f:
+        data = _yaml.safe_load(f) or {}
+
+    if "instruments" not in data:
+        data["instruments"] = []
+
+    # Check if already present
+    abs_path = str(watch_path.resolve())
+    for inst in data["instruments"]:
+        existing = str(_Path(inst.get("watch_dir", "")).resolve()) if inst.get("watch_dir") else ""
+        if existing == abs_path:
+            console.print(f"[yellow]Already watching: {abs_path}[/yellow]")
+            console.print(f"  (as instrument '{inst.get('name', 'unnamed')}')")
+            return
+
+    # Add new entry
+    extensions = [".d"] if vendor == "bruker" else [".raw"]
+    stable_secs = 60 if vendor == "bruker" else 30
+    new_inst = {
+        "name": name,
+        "vendor": vendor,
+        "watch_dir": abs_path,
+        "extensions": extensions,
+        "stable_secs": stable_secs,
+    }
+    data["instruments"].append(new_inst)
+
+    with open(config_path, "w") as f:
+        _yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+
+    console.print(f"[green]Added watch directory:[/green]")
+    console.print(f"  Name:   {name}")
+    console.print(f"  Vendor: {vendor}")
+    console.print(f"  Path:   {abs_path}")
+    console.print()
+    console.print(f"[dim]Config written to {config_path}[/dim]")
+    console.print(f"[dim]The watcher daemon picks up changes automatically (hot-reload).[/dim]")
+
+
+@app.command("list-watch")
+def list_watch() -> None:
+    """List all configured watch directories."""
+    from pathlib import Path as _Path
+    import yaml as _yaml
+    from stan.config import resolve_config_path
+
+    try:
+        config_path = resolve_config_path("instruments.yml")
+    except FileNotFoundError:
+        console.print("[yellow]No instruments configured yet.[/yellow]")
+        console.print("  Run [cyan]stan add-watch <path>[/cyan] to add one.")
+        return
+
+    with open(config_path) as f:
+        data = _yaml.safe_load(f) or {}
+
+    instruments = data.get("instruments", [])
+    if not instruments:
+        console.print("[yellow]No instruments configured.[/yellow]")
+        return
+
+    from rich.table import Table
+    table = Table(title="Watch Directories", show_header=True, border_style="blue")
+    table.add_column("#", style="dim")
+    table.add_column("Name")
+    table.add_column("Vendor")
+    table.add_column("Path")
+    table.add_column("Exists")
+    for i, inst in enumerate(instruments, 1):
+        path = inst.get("watch_dir", "")
+        exists = "✓" if path and _Path(path).exists() else "[red]✗[/red]"
+        table.add_row(
+            str(i),
+            inst.get("name", ""),
+            inst.get("vendor", ""),
+            path,
+            exists,
+        )
+    console.print(table)
+
+
+@app.command("remove-watch")
+def remove_watch(
+    name_or_number: str = typer.Argument(..., help="Instrument name or number from list-watch"),
+) -> None:
+    """Remove a watch directory from instruments.yml."""
+    from pathlib import Path as _Path
+    import yaml as _yaml
+    from stan.config import resolve_config_path
+
+    try:
+        config_path = resolve_config_path("instruments.yml")
+    except FileNotFoundError:
+        console.print("[yellow]No instruments configured.[/yellow]")
+        return
+
+    with open(config_path) as f:
+        data = _yaml.safe_load(f) or {}
+
+    instruments = data.get("instruments", [])
+    if not instruments:
+        console.print("[yellow]No instruments configured.[/yellow]")
+        return
+
+    # Resolve by number or name
+    target_idx = None
+    if name_or_number.isdigit():
+        idx = int(name_or_number) - 1
+        if 0 <= idx < len(instruments):
+            target_idx = idx
+    else:
+        for i, inst in enumerate(instruments):
+            if inst.get("name", "").lower() == name_or_number.lower():
+                target_idx = i
+                break
+
+    if target_idx is None:
+        console.print(f"[red]No instrument matching '{name_or_number}'[/red]")
+        return
+
+    removed = instruments.pop(target_idx)
+    data["instruments"] = instruments
+
+    with open(config_path, "w") as f:
+        _yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+
+    console.print(f"[green]Removed:[/green] {removed.get('name', '')} ({removed.get('watch_dir', '')})")
+
+
 @app.command("test-alert")
 def test_alert() -> None:
     """Send a test Slack message to verify alerts are configured.

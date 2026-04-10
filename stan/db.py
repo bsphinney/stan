@@ -158,6 +158,7 @@ def insert_run(
     spd: int | None = None,
     gradient_length_min: int | None = None,
     db_path: Path | None = None,
+    run_date: str | None = None,
 ) -> str:
     """Insert a QC run record into the database.
 
@@ -174,6 +175,9 @@ def insert_run(
         spd: Samples per day (primary throughput measure).
         gradient_length_min: LC gradient length in minutes (fallback).
         db_path: Optional override for database path.
+        run_date: ISO-format acquisition date (from raw file metadata or mtime).
+            Falls back to current UTC time if not provided. Historical
+            baseline runs must pass this to preserve real acquisition dates.
 
     Returns:
         The generated run ID (UUID).
@@ -188,7 +192,7 @@ def insert_run(
         "id": run_id,
         "instrument": instrument,
         "run_name": run_name,
-        "run_date": now,
+        "run_date": run_date or now,
         "raw_path": raw_path,
         "mode": mode,
         # DIA

@@ -1133,8 +1133,19 @@ def _process_files(
                 except Exception:
                     logger.debug("Slack alert failed", exc_info=True)
 
-                # Use real acquisition date if available, otherwise fallback
+                # Use real acquisition date if available, otherwise raw-file
+                # mtime. Falling back to "now" would stamp historical baseline
+                # runs with today's date — which corrupts the community
+                # benchmark view. Prefer mtime over insertion time.
                 run_date = file_meta.get("acquisition_date")
+                if not run_date:
+                    try:
+                        mtime = raw_file.stat().st_mtime
+                        run_date = datetime.fromtimestamp(
+                            mtime, tz=timezone.utc
+                        ).isoformat()
+                    except Exception:
+                        run_date = None
 
                 # Store in database
                 run_id = insert_run(
@@ -1149,6 +1160,7 @@ def _process_files(
                     amount_ng=amount_ng,
                     spd=spd,
                     gradient_length_min=grad_min,
+                    run_date=run_date,
                 )
 
                 # Compute per-file SPD from actual gradient

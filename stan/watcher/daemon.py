@@ -273,6 +273,16 @@ class InstrumentWatcher:
                 acquisition_mode=acq_mode,
             )
 
+            # Acquisition date from file mtime — preserves real run date
+            # even if STAN processes the file hours or days later.
+            from datetime import datetime, timezone
+            try:
+                raw_mtime = datetime.fromtimestamp(
+                    raw_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+            except Exception:
+                raw_mtime = None
+
             insert_run(
                 instrument=self._config.get("name", "unknown"),
                 run_name=raw_path.name,
@@ -285,6 +295,7 @@ class InstrumentWatcher:
                 amount_ng=self._config.get("hela_amount_ng", 50.0),
                 spd=self._config.get("spd"),
                 gradient_length_min=self._config.get("gradient_length_min"),
+                run_date=raw_mtime,
             )
 
             if decision.result.value == "fail":

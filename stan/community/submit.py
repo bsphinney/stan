@@ -130,6 +130,17 @@ def submit_to_benchmark(
         "diann_version": diann_version or "",
         "column_vendor": run.get("column_vendor", ""),
         "column_model": column_model,
+        # Original acquisition date (not submission date)
+        "run_name": run.get("run_name", ""),
+        "run_date": run.get("run_date", ""),
+        # Stats from DIA-NN report.stats.tsv
+        "ms1_signal": run.get("ms1_signal"),
+        "ms2_signal": run.get("ms2_signal"),
+        "fwhm_rt_min": run.get("fwhm_rt_min"),
+        "median_mass_acc_ms1_ppm": run.get("median_mass_acc_ms1_ppm"),
+        "median_mass_acc_ms2_ppm": run.get("median_mass_acc_ms2_ppm"),
+        "peak_capacity": run.get("peak_capacity"),
+        "dynamic_range_log10": run.get("dynamic_range_log10"),
     }
 
     # Add identified TIC trace if available (128 bins, ~500 bytes)
