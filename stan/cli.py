@@ -582,6 +582,224 @@ def fix_spds(
     )
 
 
+@app.command("repair-metadata")
+def repair_metadata(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show proposed changes without updating the DB."
+    ),
+    push: bool = typer.Option(
+        False, "--push",
+        help="Also push corrections to the community relay for runs that "
+             "were already submitted. Uses /api/update/{id}.",
+    ),
+) -> None:
+    """Re-read raw-file metadata and fix SPD, run_date, and lc_system.
+
+    Walks every row in the local runs table, re-reads the raw file at
+    ``raw_path``, and updates:
+
+      * ``spd`` — from validate_spd_from_metadata() (Bruker XML is
+        authoritative; Thermo falls back to fisher_py + gradient snap)
+      * ``run_date`` — from get_acquisition_date() (analysis.tdf
+        GlobalMetadata.AcquisitionDateTime for Bruker, fisher_py
+        CreationDate for Thermo)
+      * ``lc_system`` — from detect_lc_system() (Bruker .d XML tree
+        for Evosep; Thermo currently returns None so we leave the
+        column empty)
+
+    This is the fix for historical baselines where the client wrote
+    today's date + cohort-default SPD for every run. It does NOT
+    re-run DIA-NN or Sage — metadata only.
+
+    With --push, also forwards the corrections to the HF Space relay
+    at /api/update/{submission_id} for runs that were previously
+    submitted to the community benchmark. The relay rewrites the
+    stored parquet in place and invalidates its cache.
+    """
+    import json
+    import sqlite3
+    import urllib.error
+    import urllib.request
+
+    from stan.db import get_db_path, init_db
+    from stan.metrics.scoring import (
+        detect_lc_system,
+        gradient_min_to_spd,
+        validate_spd_from_metadata,
+    )
+    from stan.watcher.acquisition_date import get_acquisition_date
+
+    init_db()
+    db_path = get_db_path()
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT id, run_name, raw_path, spd, run_date, lc_system, "
+            "gradient_length_min, submission_id FROM runs"
+        ).fetchall()
+
+    console.print(
+        f"Repairing metadata for [bold]{len(rows)}[/bold] runs in "
+        f"[dim]{db_path}[/dim]..."
+    )
+
+    updates: list[dict] = []
+    missing = 0
+    unchanged = 0
+
+    for row in rows:
+        raw_path_str = row["raw_path"]
+        if not raw_path_str:
+            missing += 1
+            continue
+        raw_path = Path(raw_path_str)
+        if not raw_path.exists():
+            missing += 1
+            continue
+
+        # Extract from raw file
+        new_spd = validate_spd_from_metadata(raw_path)
+        if new_spd is None and row["gradient_length_min"]:
+            new_spd = gradient_min_to_spd(int(row["gradient_length_min"]))
+        new_date = get_acquisition_date(raw_path)
+        new_lc = detect_lc_system(raw_path)
+
+        # Compare against stored values
+        patch: dict = {}
+        if new_spd is not None and new_spd != row["spd"]:
+            patch["spd"] = new_spd
+        if new_date and new_date != row["run_date"]:
+            patch["run_date"] = new_date
+        if new_lc and new_lc != (row["lc_system"] or ""):
+            patch["lc_system"] = new_lc
+
+        if not patch:
+            unchanged += 1
+            continue
+
+        updates.append({
+            "run_id": row["id"],
+            "run_name": row["run_name"],
+            "submission_id": row["submission_id"],
+            "patch": patch,
+            "old": {
+                "spd": row["spd"],
+                "run_date": row["run_date"],
+                "lc_system": row["lc_system"],
+            },
+        })
+
+    # Print proposed changes
+    if updates:
+        console.print()
+        console.print(f"[bold]{len(updates)} runs need metadata correction:[/bold]")
+        from collections import Counter
+        field_counts: Counter = Counter()
+        spd_transitions: Counter = Counter()
+        for u in updates:
+            for k in u["patch"]:
+                field_counts[k] += 1
+            if "spd" in u["patch"]:
+                spd_transitions[(u["old"]["spd"], u["patch"]["spd"])] += 1
+        for field, n in field_counts.most_common():
+            console.print(f"  {field}: [cyan]{n}[/cyan] runs")
+        if spd_transitions:
+            console.print("[dim]SPD transitions:[/dim]")
+            for (old_s, new_s), n in sorted(
+                spd_transitions.items(), key=lambda x: -x[1]
+            ):
+                console.print(f"  {old_s} -> {new_s} SPD : [cyan]{n}[/cyan] runs")
+
+        console.print()
+        console.print("[dim]Examples (first 10):[/dim]")
+        for u in updates[:10]:
+            diffs = ", ".join(
+                f"{k}={u['old'].get(k)}->{u['patch'][k]}"
+                for k in u["patch"]
+            )
+            console.print(f"  {u['run_name']}  [{diffs}]")
+    else:
+        console.print("[green]All runs already have correct metadata.[/green]")
+
+    console.print()
+    console.print(
+        f"[dim]Unchanged: {unchanged}  Missing raw files: {missing}  "
+        f"Needs update: {len(updates)}[/dim]"
+    )
+
+    if dry_run:
+        console.print()
+        console.print("[yellow]--dry-run: no changes written.[/yellow]")
+        return
+
+    if not updates:
+        return
+
+    # Apply local DB updates
+    with sqlite3.connect(str(db_path)) as con:
+        for u in updates:
+            cols = ", ".join(f"{k} = ?" for k in u["patch"])
+            vals = list(u["patch"].values()) + [u["run_id"]]
+            con.execute(f"UPDATE runs SET {cols} WHERE id = ?", vals)
+        con.commit()
+    console.print(f"[green]Updated {len(updates)} runs in local DB.[/green]")
+
+    # Optional: push corrections to the community relay
+    if not push:
+        console.print(
+            "[dim]Run with [cyan]--push[/cyan] to also update "
+            "already-submitted runs on the community benchmark.[/dim]"
+        )
+        return
+
+    from stan.community.submit import RELAY_URL  # noqa: E402
+
+    submitted = [u for u in updates if u["submission_id"]]
+    if not submitted:
+        console.print(
+            "[dim]No submitted runs needed updating on the community relay.[/dim]"
+        )
+        return
+
+    console.print(
+        f"Pushing [bold]{len(submitted)}[/bold] corrections to the relay..."
+    )
+    pushed = 0
+    failed = 0
+    for u in submitted:
+        try:
+            data = json.dumps(u["patch"]).encode("utf-8")
+            req = urllib.request.Request(
+                f"{RELAY_URL}/api/update/{u['submission_id']}",
+                data=data,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                if resp.status == 200:
+                    pushed += 1
+                else:
+                    failed += 1
+        except urllib.error.HTTPError as e:
+            logger.warning(
+                "Relay update failed for %s: HTTP %s", u["submission_id"][:8], e.code
+            )
+            failed += 1
+        except Exception:
+            logger.exception("Relay update failed for %s", u["submission_id"][:8])
+            failed += 1
+
+    console.print(
+        f"[green]Pushed: {pushed}[/green]  [red]Failed: {failed}[/red]"
+    )
+    if pushed:
+        console.print(
+            "[dim]The HF Space dashboard cache will refresh within 5 minutes "
+            "(or now at https://brettsp-stan.hf.space/api/leaderboard?refresh=1).[/dim]"
+        )
+
+
 @app.command()
 def baseline_download(
     instrument_family: str = typer.Option(None, "--instrument", "-i", help="e.g. Astral, timsTOF, Exploris"),

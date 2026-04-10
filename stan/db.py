@@ -137,6 +137,8 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("median_mass_acc_ms2_ppm", "ALTER TABLE runs ADD COLUMN median_mass_acc_ms2_ppm REAL"),
         ("peak_capacity", "ALTER TABLE runs ADD COLUMN peak_capacity REAL"),
         ("dynamic_range_log10", "ALTER TABLE runs ADD COLUMN dynamic_range_log10 REAL"),
+        # LC system identification — 'evosep' | 'custom' | '' (added 2026-04-10)
+        ("lc_system", "ALTER TABLE runs ADD COLUMN lc_system TEXT DEFAULT ''"),
     ]
 
     for col, ddl in migrations:
