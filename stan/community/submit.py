@@ -130,6 +130,7 @@ def submit_to_benchmark(
         "diann_version": diann_version or "",
         "column_vendor": run.get("column_vendor", ""),
         "column_model": column_model,
+        "lc_system": run.get("lc_system", ""),
         # Original acquisition date (not submission date)
         "run_name": run.get("run_name", ""),
         "run_date": run.get("run_date", ""),

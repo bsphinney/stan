@@ -110,13 +110,23 @@ def validate_spd_from_metadata(raw_path) -> int | None:
 
     # ── Bruker .d ──────────────────────────────────────────────
     if path.suffix.lower() == ".d" and path.is_dir():
+        # 0. Richest source: XML files under .d/<N>.m/ that carry the
+        #    plain-English Evosep method label ("100 samples per day").
+        #    This is authoritative when present and works even when the
+        #    operator used a cryptic PAC method name like
+        #    "DIA_Bps_11x3-k07t13Ra85.proteoscape.m".
+        spd_from_xml = _bruker_spd_from_xml(path)
+        if spd_from_xml:
+            return spd_from_xml
+
         tdf = path / "analysis.tdf"
         if not tdf.exists():
             return None
         try:
             with sqlite3.connect(str(tdf)) as con:
-                # 1. Pattern-match the PAC method name first — this is
-                #    the most reliable source because the operator chose it.
+                # 1. Pattern-match the PAC method name next — unreliable
+                #    for UC Davis files but useful for labs that include
+                #    an explicit "SPD" token in the method name.
                 row = con.execute(
                     "SELECT Value FROM GlobalMetadata WHERE Key = 'MethodName'"
                 ).fetchone()
@@ -244,6 +254,150 @@ def _spd_from_method_string(method: str) -> int | None:
     for pattern, spd in _EVOSEP_METHOD_PATTERNS:
         if re.search(pattern, text):
             return spd
+    return None
+
+
+def _bruker_spd_from_xml(d_path) -> int | None:
+    """Read the Evosep method label from Bruker `.d` XML method files.
+
+    Bruker HyStar writes an XML method tree under `<N>.m/` inside every
+    `.d` directory. The HyStar_LC submethod carries the plain-English
+    method name (e.g. "100 samples per day"), which is the authoritative
+    source for Evosep throughput. Also checks the UTF-16 SampleInfo.xml
+    at the top of the .d as a secondary source.
+
+    Args:
+        d_path: Path to a `.d` directory.
+
+    Returns:
+        SPD as int if the method label parses, else None.
+    """
+    from pathlib import Path as _Path
+    import re
+    import xml.etree.ElementTree as ET
+
+    d = _Path(d_path)
+    if not d.is_dir():
+        return None
+
+    # 1. submethods.xml (UTF-8, clean schema). There's one <N>.m/ per
+    #    .d, where N is some integer — glob for it rather than guessing.
+    for m_dir in d.glob("*.m"):
+        submeth = m_dir / "submethods.xml"
+        if not submeth.exists():
+            continue
+        try:
+            tree = ET.parse(str(submeth))
+            root = tree.getroot()
+            for sm in root.iter("submethod"):
+                if sm.attrib.get("program") == "HyStar_LC":
+                    name_el = sm.find("name")
+                    if name_el is not None and name_el.text:
+                        spd = _spd_from_evosep_label(name_el.text)
+                        if spd:
+                            return spd
+        except (ET.ParseError, OSError):
+            logger.debug("Failed to parse %s", submeth, exc_info=True)
+
+    # 2. SampleInfo.xml (UTF-16, flat attribute list) as a fallback.
+    sample_info = d / "SampleInfo.xml"
+    if sample_info.exists():
+        try:
+            text = sample_info.read_text(encoding="utf-16")
+            # The HyStar property is stored as:
+            #   <Property ... Name="HyStar_LC_Method_Name" Value="100 samples per day" />
+            m = re.search(
+                r'Name="HyStar_LC_Method_Name"\s+Value="([^"]+)"',
+                text,
+            )
+            if m:
+                spd = _spd_from_evosep_label(m.group(1))
+                if spd:
+                    return spd
+            # Also look at the Sample@Method attribute which often
+            # points at the Evosep LC method file (e.g. "100spd.m").
+            m = re.search(r'Method="[^"]*?(\d+)\s*spd[^"]*"', text, re.IGNORECASE)
+            if m:
+                return int(m.group(1))
+        except (UnicodeError, OSError):
+            logger.debug("Failed to read %s", sample_info, exc_info=True)
+
+    return None
+
+
+# "<N> samples per day" → N. Evosep writes this label both in
+# submethods.xml and in the Agilent ICF method file.
+_EVOSEP_SPD_LABEL_RE = __import__("re").compile(
+    r"(\d+)\s*samples?\s*per\s*day", __import__("re").IGNORECASE
+)
+
+
+def _spd_from_evosep_label(label: str) -> int | None:
+    """Parse an Evosep HyStar LC label like '100 samples per day'."""
+    if not label:
+        return None
+    m = _EVOSEP_SPD_LABEL_RE.search(label)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            return None
+    # Fallback: try the generic Evosep method string matcher (catches
+    # "Whisper40", "Extended", explicit "100 SPD" tokens, etc.).
+    return _spd_from_method_string(label)
+
+
+def detect_lc_system(raw_path) -> str | None:
+    """Identify the LC system from raw-file metadata.
+
+    Returns one of "evosep", "custom", or None if unknown. Used to
+    split the community TIC overlay so Evosep standardized traces
+    aren't mixed with custom nanoLC gradients in the same bucket.
+    """
+    from pathlib import Path as _Path
+    import re
+
+    path = _Path(raw_path)
+    if not path.exists():
+        return None
+
+    # Bruker .d: authoritative signals inside the XML method tree.
+    if path.suffix.lower() == ".d" and path.is_dir():
+        # submethods.xml with an HyStar_LC submethod → Evosep One (it's
+        # the only LC HyStar ships with this tag for our instruments).
+        for m_dir in path.glob("*.m"):
+            hystar = m_dir / "hystar.method"
+            if hystar.exists():
+                try:
+                    text = hystar.read_text(errors="replace")
+                    if "Evosep One" in text or "EVOSEP_ONE" in text:
+                        return "evosep"
+                except OSError:
+                    pass
+            submeth = m_dir / "submethods.xml"
+            if submeth.exists():
+                try:
+                    t = submeth.read_text()
+                    if 'program="HyStar_LC"' in t and "samples per day" in t:
+                        return "evosep"
+                except OSError:
+                    pass
+        # SampleInfo.xml TrayType="96Evotip" is a strong Evosep indicator
+        sample_info = path / "SampleInfo.xml"
+        if sample_info.exists():
+            try:
+                text = sample_info.read_text(encoding="utf-16")
+                if re.search(r'TrayType"\s+Value="96Evotip"', text):
+                    return "evosep"
+                if re.search(r'Method="[^"]*evosep', text, re.IGNORECASE):
+                    return "evosep"
+            except (UnicodeError, OSError):
+                pass
+        return "custom"
+
+    # Thermo .raw: we don't have a reliable signal without opening the
+    # .raw header (fisher_py). Return None and let the caller fall
+    # back to its own inference (e.g., column_vendor substring match).
     return None
 
 

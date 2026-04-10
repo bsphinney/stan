@@ -56,29 +56,44 @@ def _bruker_acquisition_date(d_path: Path) -> str | None:
 
 
 def _thermo_acquisition_date(raw_path: Path) -> str | None:
-    """Read acquisition date from Thermo .raw metadata JSON sidecar.
+    """Read acquisition date from a Thermo .raw file.
 
-    ThermoRawFileParser writes a .json metadata file alongside the .raw
-    when run with -m=0. If that file exists, parse it. Otherwise return
-    None (we don't invoke ThermoRawFileParser just for the date — that
-    happens during the search step).
+    Tries three sources, in order:
+      1. fisher_py RawFile.CreationDate (from .raw header — accurate)
+      2. ThermoRawFileParser metadata JSON sidecar (if a previous step wrote one)
+      3. None — caller can fall back to file mtime
     """
-    # Check for metadata JSON sidecar (same name, .json extension)
-    json_path = raw_path.with_suffix(".json")
-    if not json_path.exists():
-        # Also check for -metadata.json variant
-        json_path = raw_path.parent / (raw_path.stem + "-metadata.json")
-    if not json_path.exists():
-        return None
-
+    # Try fisher_py first (reads straight from .raw header)
     try:
-        import json
-        meta = json.loads(json_path.read_text())
-        # ThermoRawFileParser metadata structure
-        acq_date = meta.get("CreationDate") or meta.get("creation_date")
-        if acq_date:
-            dt = datetime.fromisoformat(acq_date)
+        from fisher_py import RawFile  # type: ignore
+
+        rf = RawFile(str(raw_path))
+        # fisher_py exposes CreationDate as a .NET DateTime; convert to ISO
+        creation = getattr(rf, "creation_date", None) or getattr(rf, "CreationDate", None)
+        if creation is not None:
+            # .NET DateTime → ISO string; also handle already-ISO strings
+            if hasattr(creation, "ToString"):
+                dt_str = creation.ToString("o")
+            else:
+                dt_str = str(creation)
+            dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
             return dt.isoformat(timespec="seconds")
     except Exception:
-        logger.debug("Failed to read acquisition date from %s", json_path, exc_info=True)
+        logger.debug("fisher_py unavailable or failed for %s", raw_path, exc_info=True)
+
+    # Fall back to ThermoRawFileParser JSON sidecar if present
+    json_path = raw_path.with_suffix(".json")
+    if not json_path.exists():
+        json_path = raw_path.parent / (raw_path.stem + "-metadata.json")
+    if json_path.exists():
+        try:
+            import json as _json
+            meta = _json.loads(json_path.read_text())
+            acq_date = meta.get("CreationDate") or meta.get("creation_date")
+            if acq_date:
+                dt = datetime.fromisoformat(acq_date)
+                return dt.isoformat(timespec="seconds")
+        except Exception:
+            logger.debug("Failed to read %s", json_path, exc_info=True)
+
     return None

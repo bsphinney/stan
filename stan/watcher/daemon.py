@@ -273,15 +273,20 @@ class InstrumentWatcher:
                 acquisition_mode=acq_mode,
             )
 
-            # Acquisition date from file mtime — preserves real run date
-            # even if STAN processes the file hours or days later.
-            from datetime import datetime, timezone
-            try:
-                raw_mtime = datetime.fromtimestamp(
-                    raw_path.stat().st_mtime, tz=timezone.utc
-                ).isoformat()
-            except Exception:
-                raw_mtime = None
+            # Acquisition date from raw file metadata (Bruker analysis.tdf
+            # GlobalMetadata.AcquisitionDateTime or Thermo .raw header via
+            # fisher_py). Falls back to file mtime only if both fail —
+            # mtime can be wrong after copies/archive moves.
+            from stan.watcher.acquisition_date import get_acquisition_date
+            raw_mtime = get_acquisition_date(raw_path)
+            if not raw_mtime:
+                from datetime import datetime, timezone
+                try:
+                    raw_mtime = datetime.fromtimestamp(
+                        raw_path.stat().st_mtime, tz=timezone.utc
+                    ).isoformat()
+                except Exception:
+                    raw_mtime = None
 
             insert_run(
                 instrument=self._config.get("name", "unknown"),
