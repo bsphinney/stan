@@ -62,6 +62,32 @@ def find_report_parquets(reports_dir: Path | None = None) -> list[Path]:
     return reports
 
 
+def _get_raw_paths_from_reports(reports: list[Path]) -> list[Path]:
+    """Extract the original raw file paths from report.parquet files."""
+    import polars as pl
+    raw_paths: list[Path] = []
+    seen: set[str] = set()
+    for rp in reports:
+        try:
+            # The "Run" column in DIA-NN 2.x has the raw file basename
+            # But we need the full path — use the directory structure
+            # report is at: baseline_output/{run_stem}/report.parquet
+            run_stem = rp.parent.name
+            # Look for the raw file in the report's own metadata
+            df = pl.read_parquet(rp, columns=["Run"], n_rows=1)
+            if df.height > 0:
+                run_val = df["Run"][0]
+                if run_val and run_val not in seen:
+                    seen.add(run_val)
+                    # Run is the stem — we need to find the actual file
+                    # We'll use the existing community library approach instead:
+                    # find the raw files directly from the baseline directory
+                    raw_paths.append(Path(run_val))
+        except Exception:
+            logger.debug("Could not extract run from %s", rp, exc_info=True)
+    return raw_paths
+
+
 def build_instrument_library(
     reports_dir: Path | None = None,
     output_path: Path | None = None,
@@ -70,8 +96,9 @@ def build_instrument_library(
 ) -> Path | None:
     """Build an instrument-specific empirical library from baseline reports.
 
-    DIA-NN can combine multiple report.parquet files into a refined
-    empirical library using --lib on the combined reports.
+    Uses DIA-NN's --out-lib flag with --use-quant to reuse existing
+    .quant files. This requires that the original raw files still exist
+    at the paths recorded in the database.
 
     Args:
         reports_dir: Directory containing baseline_output subdirectories.
@@ -105,57 +132,63 @@ def build_instrument_library(
         logger.error("FASTA not found. Run stan baseline first to download it.")
         return None
 
-    # Find all report.parquet files
-    reports = find_report_parquets(reports_dir)
-    if not reports:
-        logger.error("No report.parquet files found in %s", reports_dir)
+    # Get raw file paths from the runs table (has full paths)
+    from stan.db import get_runs, get_db_path
+    all_runs = get_runs(limit=10000, db_path=get_db_path())
+    raw_paths: list[str] = []
+    for run in all_runs:
+        raw_path = run.get("raw_path")
+        mode = (run.get("mode") or "").lower()
+        # Only DIA files — library building doesn't make sense for DDA
+        if raw_path and Path(raw_path).exists() and "dia" in mode:
+            raw_paths.append(raw_path)
+
+    if len(raw_paths) < 3:
+        logger.error(
+            "Need at least 3 DIA raw files with valid paths to build library. Found %d",
+            len(raw_paths),
+        )
         return None
 
-    # Merge all reports into one combined report
-    logger.info("Found %d report.parquet files", len(reports))
+    logger.info("Building library from %d raw files", len(raw_paths))
+
+    # Find the community library used for the original search
+    community_lib = None
+    for vendor_lib in ["hela_timstof_202604.parquet", "hela_orbitrap_202604.parquet"]:
+        lib_candidate = get_user_config_dir() / "community_assets" / vendor_lib
+        if lib_candidate.exists():
+            community_lib = str(lib_candidate)
+            break
+
+    if not community_lib:
+        logger.error("No community library found in community_assets/")
+        return None
 
     try:
-        import polars as pl
-
-        dfs = []
-        for rp in reports:
-            try:
-                df = pl.read_parquet(rp)
-                dfs.append(df)
-            except Exception:
-                logger.debug("Skipping unreadable report: %s", rp)
-
-        if not dfs:
-            logger.error("No valid report.parquet files found")
-            return None
-
-        combined = pl.concat(dfs, how="diagonal_relaxed")
-
-        # Write combined report
-        combined_path = get_user_config_dir() / "baseline_output" / "_combined_report.parquet"
-        combined_path.parent.mkdir(parents=True, exist_ok=True)
-        combined.write_parquet(combined_path)
-
-        logger.info(
-            "Combined %d reports: %d total precursors",
-            len(dfs), combined.height,
-        )
-
-        # Run DIA-NN to generate empirical library from combined report
-        # --lib on an existing report extracts an empirical library
         import os
         threads = max(2, (os.cpu_count() or 4) // 2)
 
-        cmd = [
-            diann_exe,
-            "--lib", str(combined_path),
+        # Build DIA-NN command with --out-lib to generate empirical library
+        # --use-quant reuses existing .quant files from the original search
+        cmd = [diann_exe]
+        for rp in raw_paths:
+            cmd.extend(["--f", rp])
+        cmd.extend([
+            "--lib", community_lib,
             "--fasta", fasta_path,
             "--out-lib", str(output_path),
+            "--use-quant",
             "--threads", str(threads),
             "--qvalue", "0.01",
-        ]
+            "--min-pep-len", "7",
+            "--max-pep-len", "30",
+            "--missed-cleavages", "1",
+            "--min-pr-charge", "2",
+            "--max-pr-charge", "4",
+            "--cut", "K*,R*",
+        ])
 
-        logger.info("Building instrument library: %s", " ".join(cmd))
+        logger.info("Building instrument library with %d files", len(raw_paths))
 
         log_file = output_path.parent / "build_library.log"
         with open(log_file, "w") as lf:
