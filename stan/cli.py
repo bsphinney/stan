@@ -185,16 +185,43 @@ def add_watch(
     path: str = typer.Argument(..., help="Watch directory path"),
     name: str = typer.Option(None, "--name", "-n", help="Instrument name (auto-detected if omitted)"),
     vendor: str = typer.Option(None, "--vendor", "-v", help="bruker or thermo (auto-detected)"),
+    no_prompt: bool = typer.Option(
+        False, "--no-prompt", "-y",
+        help="Skip the QC filter prompt. Defaults to the standard HeLa/QC pattern.",
+    ),
+    qc_pattern: str = typer.Option(
+        None, "--qc-pattern",
+        help="Custom regex for QC filename detection. Implies --no-prompt.",
+    ),
+    qc_off: bool = typer.Option(
+        False, "--all-files",
+        help="Process every raw file in the directory, not just QC files. "
+             "Use for dedicated QC watch dirs where every file is a HeLa run.",
+    ),
 ) -> None:
     """Add a new watch directory to instruments.yml.
 
+    Interactive: when run without --qc-pattern or --all-files, this will
+    scan the directory, show how many files match the default QC pattern
+    vs. the total, and ask you to confirm the filter settings. Each
+    watch directory can have its own pattern, so mixed sample dirs can
+    be filtered while dedicated HeLa dirs process everything.
+
     Example:
         stan add-watch F:\\data\\new_hela_runs
-        stan add-watch D:\\Data\\HeLSTDs\\dia --name "timsTOF HT" --vendor bruker
+        stan add-watch D:\\Data\\HeLa --name "timsTOF HT" --vendor bruker
+        stan add-watch E:\\data\\shared --qc-pattern "(?i)(hela|qctest)"
+        stan add-watch G:\\qc_only --all-files
     """
     from pathlib import Path as _Path
     import yaml as _yaml
+    from rich.prompt import Confirm, Prompt
     from stan.config import resolve_config_path, get_user_config_dir
+    from stan.watcher.qc_filter import (
+        DEFAULT_QC_PATTERN,
+        compile_qc_pattern,
+        is_qc_file,
+    )
 
     watch_path = _Path(path)
     if not watch_path.exists():
@@ -216,6 +243,110 @@ def add_watch(
     # Auto-generate name if not given
     if name is None:
         name = f"{watch_path.name}_{vendor}"
+
+    # ── QC filter prompt ───────────────────────────────────────
+    # Each watch dir can have its own pattern — some are shared with
+    # non-QC samples, others are dedicated HeLa/QC folders.
+    qc_only_cfg = True
+    qc_pattern_cfg: str | None = None
+
+    if qc_off:
+        qc_only_cfg = False
+    elif qc_pattern:
+        # Explicit pattern supplied via flag — skip the prompt.
+        try:
+            compile_qc_pattern(qc_pattern)
+        except Exception:
+            console.print(f"[red]Invalid regex: {qc_pattern}[/red]")
+            return
+        qc_only_cfg = True
+        qc_pattern_cfg = qc_pattern
+    elif not no_prompt:
+        # Scan the directory and show a preview so the user can see
+        # what the default pattern actually catches before committing.
+        ext = ".d" if vendor == "bruker" else ".raw"
+        found_files: list[_Path] = []
+        if ext == ".d":
+            for p in watch_path.rglob("*.d"):
+                if p.is_dir():
+                    found_files.append(p)
+        else:
+            for p in watch_path.rglob("*.raw"):
+                if p.is_file():
+                    found_files.append(p)
+
+        default_pat = compile_qc_pattern()
+        matched = [f for f in found_files if is_qc_file(f, default_pat)]
+        total = len(found_files)
+
+        console.print()
+        console.print(
+            f"[bold]Scanning {path}[/bold] — found [cyan]{total}[/cyan] "
+            f"{ext} files total."
+        )
+        if total == 0:
+            console.print(
+                "[yellow]No raw files yet — that's fine, filtering will "
+                "apply to future files too.[/yellow]"
+            )
+        else:
+            console.print(
+                f"The default QC pattern [dim]{DEFAULT_QC_PATTERN}[/dim] "
+                f"matches [cyan]{len(matched)}[/cyan] / {total} files."
+            )
+            # Show a few examples of matched vs. unmatched so the user
+            # knows what they're picking.
+            if matched:
+                console.print("[green]Matched (will be processed):[/green]")
+                for f in matched[:3]:
+                    console.print(f"  ✓ {f.name}")
+                if len(matched) > 3:
+                    console.print(f"  [dim]... and {len(matched) - 3} more[/dim]")
+            unmatched = [f for f in found_files if f not in matched]
+            if unmatched:
+                console.print("[dim]Skipped (non-QC):[/dim]")
+                for f in unmatched[:3]:
+                    console.print(f"  [dim]✗ {f.name}[/dim]")
+                if len(unmatched) > 3:
+                    console.print(f"  [dim]... and {len(unmatched) - 3} more[/dim]")
+
+        console.print()
+        console.print("QC filtering options:")
+        console.print("  [cyan]1[/cyan]  Use the default HeLa/QC pattern (recommended)")
+        console.print("  [cyan]2[/cyan]  Custom regex pattern for this directory")
+        console.print("  [cyan]3[/cyan]  Process every file (no filter — for dedicated QC dirs)")
+        choice = Prompt.ask(
+            "Choice", choices=["1", "2", "3"], default="1", console=console
+        )
+
+        if choice == "1":
+            qc_only_cfg = True
+            qc_pattern_cfg = None  # implicit default
+        elif choice == "2":
+            while True:
+                pat = Prompt.ask(
+                    "Enter regex (e.g. (?i)(hela|myqc|std.*he))",
+                    default=DEFAULT_QC_PATTERN,
+                    console=console,
+                )
+                try:
+                    compiled = compile_qc_pattern(pat)
+                    # Preview the match count against found files
+                    if found_files:
+                        n_match = sum(1 for f in found_files if is_qc_file(f, compiled))
+                        console.print(
+                            f"[dim]Matches {n_match} / {total} files.[/dim]"
+                        )
+                    if Confirm.ask(
+                        "Accept this pattern?", default=True, console=console
+                    ):
+                        qc_only_cfg = True
+                        qc_pattern_cfg = pat
+                        break
+                except Exception as e:
+                    console.print(f"[red]Invalid regex: {e}[/red]")
+        else:  # choice == "3"
+            qc_only_cfg = False
 
     # Load current instruments.yml
     try:
@@ -243,22 +374,31 @@ def add_watch(
     # Add new entry
     extensions = [".d"] if vendor == "bruker" else [".raw"]
     stable_secs = 60 if vendor == "bruker" else 30
-    new_inst = {
+    new_inst: dict = {
         "name": name,
         "vendor": vendor,
         "watch_dir": abs_path,
         "extensions": extensions,
         "stable_secs": stable_secs,
+        "qc_only": qc_only_cfg,
     }
+    if qc_pattern_cfg:
+        new_inst["qc_pattern"] = qc_pattern_cfg
     data["instruments"].append(new_inst)
 
     with open(config_path, "w") as f:
         _yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
+    console.print()
     console.print(f"[green]Added watch directory:[/green]")
     console.print(f"  Name:   {name}")
     console.print(f"  Vendor: {vendor}")
     console.print(f"  Path:   {abs_path}")
+    if qc_only_cfg:
+        pat_label = qc_pattern_cfg if qc_pattern_cfg else "default HeLa/QC pattern"
+        console.print(f"  Filter: [cyan]{pat_label}[/cyan]")
+    else:
+        console.print(f"  Filter: [cyan]none (processing all files)[/cyan]")
     console.print()
     console.print(f"[dim]Config written to {config_path}[/dim]")
     console.print(f"[dim]The watcher daemon picks up changes automatically (hot-reload).[/dim]")
