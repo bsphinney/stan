@@ -1102,9 +1102,33 @@ def _process_files(
                         gradient_min=grad_min or 60,
                     )
 
-                # Compute IPS
+                # Resolve the authoritative per-file SPD BEFORE IPS scoring
+                # or DB insert. Previously the cohort default (`spd`) was
+                # used for every file, which mis-bucketed runs whose
+                # gradient didn't match the cohort (e.g. 30 SPD Whisper40
+                # files tagged as 100 SPD).
+                #
+                # Resolution order:
+                #   1. validate_spd_from_metadata() — reads MethodName
+                #      from the raw file, pattern-matches Evosep labels.
+                #   2. gradient_min_to_spd(grad_min) — snaps the actual
+                #      per-file gradient length to a known Evosep SPD.
+                #   3. cohort default `spd` — last-resort fallback.
+                from stan.metrics.scoring import (
+                    gradient_min_to_spd,
+                    validate_spd_from_metadata,
+                )
+
+                file_spd = validate_spd_from_metadata(raw_file)
+                if file_spd is None and grad_min:
+                    file_spd = gradient_min_to_spd(grad_min)
+                if file_spd is None:
+                    file_spd = spd
+
+                # Compute IPS using the per-file SPD (cohort reference
+                # lookup inside compute_ips_dia depends on metrics["spd"]).
                 metrics["instrument_family"] = instrument_model
-                metrics["spd"] = spd
+                metrics["spd"] = file_spd
                 if is_dia(mode_obj):
                     ips = compute_ips_dia(metrics)
                 else:
@@ -1147,7 +1171,7 @@ def _process_files(
                     except Exception:
                         run_date = None
 
-                # Store in database
+                # Store in database (use per-file SPD, not cohort default)
                 run_id = insert_run(
                     instrument=instrument_name,
                     run_name=raw_file.name,
@@ -1158,16 +1182,10 @@ def _process_files(
                     failed_gates=decision.failed_gates,
                     diagnosis=decision.diagnosis,
                     amount_ng=amount_ng,
-                    spd=spd,
+                    spd=file_spd,
                     gradient_length_min=grad_min,
                     run_date=run_date,
                 )
-
-                # Compute per-file SPD from actual gradient
-                file_spd = spd
-                if grad_min and grad_min != gradient_length_min:
-                    from stan.metrics.scoring import gradient_min_to_spd
-                    file_spd = gradient_min_to_spd(grad_min)
 
                 # Update run_date to the actual acquisition date if we have it
                 if run_date:

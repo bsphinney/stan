@@ -466,6 +466,122 @@ def backfill_tic() -> None:
     console.print(f"\nExtracted: {extracted}, Skipped: {skipped}")
 
 
+@app.command("fix-spds")
+def fix_spds(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show proposed changes without updating the DB."
+    ),
+) -> None:
+    """Re-validate SPD for every run in the local DB.
+
+    Walks the runs table, re-reads the raw file for each row, and updates
+    the ``spd`` column if ``validate_spd_from_metadata()`` disagrees with
+    the stored value. This fixes baselines where every run was stamped
+    with the cohort default instead of its per-file gradient.
+
+    Prints a diff summary at the end (old SPD → new SPD counts).
+    """
+    import sqlite3
+
+    from stan.db import get_db_path, init_db
+    from stan.metrics.scoring import (
+        gradient_min_to_spd,
+        validate_spd_from_metadata,
+    )
+
+    init_db()
+    db_path = get_db_path()
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT id, run_name, raw_path, spd, gradient_length_min FROM runs"
+        ).fetchall()
+
+    console.print(f"Checking [bold]{len(rows)}[/bold] runs for SPD mismatches...")
+
+    updates: list[tuple[str, str, int | None, int, int | None]] = []
+    missing = 0
+    unchanged = 0
+
+    for row in rows:
+        raw_path_str = row["raw_path"]
+        if not raw_path_str:
+            missing += 1
+            continue
+        raw_path = Path(raw_path_str)
+        if not raw_path.exists():
+            missing += 1
+            continue
+
+        new_spd = validate_spd_from_metadata(raw_path)
+        if new_spd is None and row["gradient_length_min"]:
+            new_spd = gradient_min_to_spd(int(row["gradient_length_min"]))
+        if new_spd is None:
+            missing += 1
+            continue
+
+        old_spd = row["spd"]
+        if old_spd == new_spd:
+            unchanged += 1
+            continue
+
+        updates.append(
+            (row["id"], row["run_name"], old_spd, new_spd, row["gradient_length_min"])
+        )
+
+    # Print proposed changes
+    if updates:
+        console.print()
+        console.print(f"[bold]{len(updates)} runs need SPD correction:[/bold]")
+        # Group by (old, new) for a compact summary
+        from collections import Counter
+        transitions: Counter = Counter()
+        for _rid, _name, old_spd, new_spd, _grad in updates:
+            transitions[(old_spd, new_spd)] += 1
+        for (old_spd, new_spd), n in sorted(transitions.items(), key=lambda x: -x[1]):
+            console.print(f"  {old_spd} SPD -> {new_spd} SPD : [cyan]{n}[/cyan] runs")
+
+        # Show first 10 examples
+        console.print()
+        console.print("[dim]Examples (first 10):[/dim]")
+        for rid, name, old_spd, new_spd, grad in updates[:10]:
+            console.print(
+                f"  {name}  grad={grad}m  {old_spd} -> {new_spd} SPD"
+            )
+    else:
+        console.print("[green]All runs already have correct SPDs.[/green]")
+
+    console.print()
+    console.print(
+        f"[dim]Unchanged: {unchanged}  Missing raw files: {missing}  "
+        f"Needs update: {len(updates)}[/dim]"
+    )
+
+    if dry_run:
+        console.print()
+        console.print("[yellow]--dry-run: no changes written.[/yellow]")
+        return
+
+    if not updates:
+        return
+
+    # Apply updates
+    with sqlite3.connect(str(db_path)) as con:
+        for rid, _name, _old, new_spd, _grad in updates:
+            con.execute(
+                "UPDATE runs SET spd = ? WHERE id = ?",
+                (new_spd, rid),
+            )
+        con.commit()
+
+    console.print(f"[green]Updated {len(updates)} runs.[/green]")
+    console.print(
+        "[dim]Run [cyan]stan sync[/cyan] to push corrected SPDs "
+        "to the community benchmark.[/dim]"
+    )
+
+
 @app.command()
 def baseline_download(
     instrument_family: str = typer.Option(None, "--instrument", "-i", help="e.g. Astral, timsTOF, Exploris"),

@@ -78,6 +78,175 @@ def gradient_min_to_spd(minutes: int) -> int:
     return max(1, int(1440 / cycle))
 
 
+def validate_spd_from_metadata(raw_path) -> int | None:
+    """Infer the true SPD of a run from raw-file metadata.
+
+    This is the authoritative SPD check used to catch mis-bucketed runs
+    (e.g. a 30 SPD Whisper40 run accidentally tagged as 100 SPD because
+    the cohort default was wrong).
+
+    Resolution order:
+      1. Bruker .d → read analysis.tdf GlobalMetadata MethodName and
+         pattern-match known Evosep gradients ("30 SPD", "100 SPD",
+         "Whisper40", etc).
+      2. Bruker .d → derive gradient length from Frames.Time span and
+         snap via gradient_min_to_spd().
+      3. Thermo .raw → try fisher_py for InstrumentMethod; else use
+         stan.tools.trfp.extract_metadata() to get gradient_length_min
+         and snap via gradient_min_to_spd().
+
+    Args:
+        raw_path: Path or str to a .d directory or .raw file.
+
+    Returns:
+        Inferred SPD as int, or None if metadata doesn't support it.
+    """
+    from pathlib import Path as _Path
+    import sqlite3
+
+    path = _Path(raw_path)
+    if not path.exists():
+        return None
+
+    # ── Bruker .d ──────────────────────────────────────────────
+    if path.suffix.lower() == ".d" and path.is_dir():
+        tdf = path / "analysis.tdf"
+        if not tdf.exists():
+            return None
+        try:
+            with sqlite3.connect(str(tdf)) as con:
+                # 1. Pattern-match the PAC method name first — this is
+                #    the most reliable source because the operator chose it.
+                row = con.execute(
+                    "SELECT Value FROM GlobalMetadata WHERE Key = 'MethodName'"
+                ).fetchone()
+                method_name = row[0] if row and row[0] else ""
+
+                if method_name:
+                    spd = _spd_from_method_string(method_name)
+                    if spd:
+                        return spd
+
+                # 2. Try a runtime/gradient field if Bruker stored one.
+                for key in ("Method_RunTime", "RunTime", "MethodRuntime"):
+                    row = con.execute(
+                        "SELECT Value FROM GlobalMetadata WHERE Key = ?", (key,)
+                    ).fetchone()
+                    if row and row[0]:
+                        try:
+                            minutes = float(row[0])
+                            if minutes > 1:
+                                return gradient_min_to_spd(int(round(minutes)))
+                        except (ValueError, TypeError):
+                            pass
+
+                # 3. Fall back to the Frames.Time span.
+                row = con.execute(
+                    "SELECT MIN(Time), MAX(Time) FROM Frames"
+                ).fetchone()
+                if row and row[0] is not None and row[1] is not None:
+                    grad_sec = row[1] - row[0]
+                    if grad_sec > 0:
+                        grad_min = int(round(grad_sec / 60))
+                        if grad_min > 0:
+                            return gradient_min_to_spd(grad_min)
+        except sqlite3.Error:
+            return None
+        return None
+
+    # ── Thermo .raw ────────────────────────────────────────────
+    if path.suffix.lower() == ".raw" and path.is_file():
+        # Try the instrument method via fisher_py (accurate, no TRFP needed).
+        try:
+            from fisher_py import RawFile  # type: ignore
+
+            rf = RawFile(str(path))
+            method = None
+            for attr in ("instrument_method", "InstrumentMethod",
+                         "method_text", "method"):
+                val = getattr(rf, attr, None)
+                if val:
+                    method = str(val)
+                    break
+            if method:
+                spd = _spd_from_method_string(method)
+                if spd:
+                    return spd
+        except Exception:
+            pass
+
+        # Fall back to TRFP-parsed gradient length.
+        try:
+            from stan.tools.trfp import extract_metadata
+            meta = extract_metadata(path)
+            # Method-name match first (Evosep names often appear here too).
+            acq_method = meta.get("acquisition_method", "")
+            if acq_method:
+                spd = _spd_from_method_string(acq_method)
+                if spd:
+                    return spd
+            grad_min = meta.get("gradient_length_min")
+            if grad_min and int(grad_min) > 0:
+                return gradient_min_to_spd(int(grad_min))
+        except Exception:
+            return None
+        return None
+
+    return None
+
+
+# Known Evosep method-name patterns. The first match wins.
+# Patterns are ordered so that longer/more-specific tokens come first.
+# We use (?<!\d) instead of \b before the number because method names
+# often separate tokens with underscores (e.g. "Evosep_60SPD"), and
+# underscores are word characters so \b fails to match there.
+_EVOSEP_METHOD_PATTERNS: list[tuple[str, int]] = [
+    # Explicit "<N> SPD" or "SPD<N>" tokens win over method-name shortcuts.
+    # Names like "Whisper40_SPD30_44min" must resolve to 30 (the SPD)
+    # not 40 (the Whisper variant).
+    (r"(?<!\d)500\s*spd(?!\d)", 500),
+    (r"(?<!\d)300\s*spd(?!\d)", 300),
+    (r"(?<!\d)200\s*spd(?!\d)", 200),
+    (r"(?<!\d)100\s*spd(?!\d)", 100),
+    (r"(?<!\d)60\s*spd(?!\d)", 60),
+    (r"(?<!\d)40\s*spd(?!\d)", 40),
+    (r"(?<!\d)30\s*spd(?!\d)", 30),
+    (r"(?<!\d)15\s*spd(?!\d)", 15),
+    # "SPD<N>" ordering (Bruker PAC sometimes writes it this way).
+    (r"spd\s*500(?!\d)", 500),
+    (r"spd\s*300(?!\d)", 300),
+    (r"spd\s*200(?!\d)", 200),
+    (r"spd\s*100(?!\d)", 100),
+    (r"spd\s*60(?!\d)", 60),
+    (r"spd\s*40(?!\d)", 40),
+    (r"spd\s*30(?!\d)", 30),
+    (r"spd\s*15(?!\d)", 15),
+    # Bruker PAC shortcut names (no explicit SPD token).
+    (r"whisper100_20min", 60),
+    (r"whisper100_40min", 30),
+    # Whisper fallbacks — only if nothing more specific matched.
+    (r"whisper\s*40", 40),
+    (r"whisper\s*20", 40),   # Whisper20 = 40 SPD equivalent throughput
+    (r"extended\b", 15),
+]
+
+
+def _spd_from_method_string(method: str) -> int | None:
+    """Parse a method/filename string for a known throughput label.
+
+    Returns an SPD value if the string contains a recognised Evosep or
+    Whisper token, else None. Case-insensitive; tolerates whitespace.
+    """
+    import re
+    if not method:
+        return None
+    text = method.lower()
+    for pattern, spd in _EVOSEP_METHOD_PATTERNS:
+        if re.search(pattern, text):
+            return spd
+    return None
+
+
 def throughput_bucket(spd: int | None = None, gradient_min: int | None = None) -> str:
     """Resolve throughput bucket from SPD (preferred) or gradient length (fallback).
 
