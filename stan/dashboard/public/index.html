@@ -188,11 +188,11 @@
                 }}>
                   <div style={{display:'flex', alignItems:'center', gap:'0.5rem', flexWrap:'wrap'}}>
                     <GateBadge result={r.gate_result} />
-                    <span style={{fontSize:'0.85rem', fontWeight:500, flex:'1 1 auto', wordBreak:'break-all'}}>
+                    <span title={r.run_name} style={{fontSize:'0.85rem', fontWeight:500, flex:'1 1 auto', wordBreak:'break-all'}}>
                       {r.run_name}
                     </span>
-                    <span style={{fontSize:'0.7rem', color:'var(--muted)', whiteSpace:'nowrap'}}>
-                      {r.instrument} &middot; {new Date(r.run_date).toLocaleString()}
+                    <span title={new Date(r.run_date).toLocaleString()} style={{fontSize:'0.7rem', color:'var(--muted)', whiteSpace:'nowrap'}}>
+                      {r.instrument} &middot; {new Date(r.run_date).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}
                     </span>
                   </div>
                   <div style={{display:'flex', gap:'1.5rem', flexWrap:'wrap', alignItems:'flex-start'}}>
@@ -403,6 +403,58 @@
       );
     }
 
+    /* ── Mini sparkline: last N runs of the primary metric for an instrument ── */
+    function MiniSparkline({ allRuns, instrument, currentMode, n = 30 }) {
+      if (!allRuns) return null;
+      const metricKey = currentMode === 'DDA' ? 'n_psms' : 'n_precursors';
+      const metricLabel = currentMode === 'DDA' ? 'PSMs' : 'Precursors';
+      // Most recent N runs for this instrument, ordered ascending for plotting
+      const instRuns = allRuns
+        .filter(r => r.instrument === instrument && (r[metricKey] || 0) > 0)
+        .slice(0, n)
+        .reverse();
+      if (instRuns.length < 2) {
+        return (
+          <div style={{fontSize:'0.7rem', color:'var(--muted)', marginTop:'0.5rem'}}>
+            Not enough history for trend
+          </div>
+        );
+      }
+      const values = instRuns.map(r => r[metricKey] || 0);
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const range = max - min || 1;
+      const W = 240, H = 36, PAD = 3;
+      const w = W - 2*PAD, h = H - 2*PAD;
+      const points = values.map((v, i) => {
+        const x = PAD + (values.length === 1 ? w/2 : (i / (values.length - 1)) * w);
+        const y = PAD + h - ((v - min) / range) * h;
+        return [x, y];
+      });
+      const pathD = points.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+      const last = values[values.length - 1];
+      const first = values[0];
+      const delta = first > 0 ? ((last - first) / first) * 100 : 0;
+      const trendColor = delta > 5 ? 'var(--pass)' : delta < -5 ? 'var(--fail)' : 'var(--muted)';
+      const sign = delta >= 0 ? '+' : '';
+      return (
+        <div style={{marginTop:'0.5rem', paddingTop:'0.5rem', borderTop:'1px solid var(--border)'}}>
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'baseline', fontSize:'0.7rem', color:'var(--muted)', marginBottom:'0.2rem'}}>
+            <span>{metricLabel} · last {values.length}</span>
+            <span style={{color: trendColor, fontWeight:600}}>{sign}{delta.toFixed(1)}%</span>
+          </div>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%', height:`${H}px`, display:'block'}}>
+            <path d={pathD} fill="none" stroke="#60a5fa" strokeWidth="1.5" />
+            {points.map(([x, y], i) => (
+              <circle key={i} cx={x} cy={y} r="1.5" fill="#60a5fa">
+                <title>{instRuns[i].run_name}: {values[i].toLocaleString()}</title>
+              </circle>
+            ))}
+          </svg>
+        </div>
+      );
+    }
+
     function LiveRuns() {
       const { data: allRuns, loading, reload } = useFetch('/api/runs?limit=200');
       useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [reload]);
@@ -437,13 +489,14 @@
                   <LastQcBadge instrument={name} />
                 </h3>
                 <ColumnLifeBadge instrument={name} />
-                <div className="metric"><span className="metric-label">Last run</span><span className="metric-value">{run.run_name}</span></div>
+                <div className="metric"><span className="metric-label">Last run</span><span className="metric-value" title={run.run_name} style={{maxWidth:'60%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{run.run_name}</span></div>
                 <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
                 <div className="metric"><span className="metric-label">Gate</span><GateBadge result={run.gate_result} /></div>
                 <div className="metric"><span className="metric-label">IPS</span><span className="badge badge-grs">IPS {run.ips_score || '—'}</span></div>
                 {run.mode === 'DIA' && <div className="metric"><span className="metric-label">Precursors</span><span className="metric-value">{run.n_precursors?.toLocaleString()}</span></div>}
                 {run.mode === 'DDA' && <div className="metric"><span className="metric-label">PSMs</span><span className="metric-value">{run.n_psms?.toLocaleString()}</span></div>}
-                <div className="metric"><span className="metric-label">Time</span><span className="metric-value">{new Date(run.run_date).toLocaleString()}</span></div>
+                <div className="metric"><span className="metric-label">Time</span><span className="metric-value" title={new Date(run.run_date).toLocaleString()}>{new Date(run.run_date).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}</span></div>
+                <MiniSparkline allRuns={allRuns} instrument={name} currentMode={run.mode} />
                 {run.diagnosis && <div className="diagnosis">{run.diagnosis}</div>}
                 <LogEventButton instrument={name} />
               </div>
@@ -497,9 +550,13 @@
           (r.instrument || '').toLowerCase().includes(term)
         );
       }
+      const getSortVal = (r) => {
+        if (sortKey === 'primary_ids') return (r.mode === 'DDA' ? r.n_psms : r.n_precursors) || 0;
+        return r[sortKey];
+      };
       filtered.sort((a, b) => {
-        let va = a[sortKey];
-        let vb = b[sortKey];
+        let va = getSortVal(a);
+        let vb = getSortVal(b);
         if (va == null) va = sortKey === 'run_date' ? '' : 0;
         if (vb == null) vb = sortKey === 'run_date' ? '' : 0;
         if (typeof va === 'string') {
@@ -523,15 +580,25 @@
         </th>
       );
 
-      const fmtNum = (n) => (n != null && n > 0) ? n.toLocaleString() : '—';
-      const fmtFloat = (n, d=1) => (n != null) ? n.toFixed(d) : '—';
+      const EM_DASH = '\u2014';
+      const fmtNum = (n) => (n != null && n > 0) ? n.toLocaleString() : EM_DASH;
+      const fmtFloat = (n, d=1) => (n != null) ? n.toFixed(d) : EM_DASH;
       const fmtSig = (n) => {
-        if (n == null || n === 0) return '—';
+        if (n == null || n === 0) return EM_DASH;
         if (n >= 1e12) return (n/1e12).toFixed(1) + 'T';
         if (n >= 1e9) return (n/1e9).toFixed(1) + 'B';
         if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
         return n.toFixed(0);
       };
+      const fmtSigned = (n, d=2) => {
+        if (n == null) return EM_DASH;
+        const sign = n >= 0 ? '+' : '';
+        return sign + n.toFixed(d);
+      };
+      // FWHM stored in minutes; display as seconds with 1 decimal
+      const fmtFwhmSec = (n) => (n != null && n > 0) ? (n * 60).toFixed(1) : EM_DASH;
+      // Primary identifications: precursors for DIA, PSMs for DDA
+      const primaryIds = (r) => r.mode === 'DDA' ? r.n_psms : r.n_precursors;
 
       return (
         <div className="card">
@@ -567,31 +634,37 @@
                 <SortHeader col="mode" label="Mode" />
                 <SortHeader col="gate_result" label="Gate" />
                 <SortHeader col="ips_score" label="IPS" />
-                <SortHeader col="n_precursors" label="Precursors" />
+                <SortHeader col="primary_ids" label="Precursors / PSMs" />
                 <SortHeader col="n_peptides" label="Peptides" />
                 <SortHeader col="n_proteins" label="Proteins" />
                 <SortHeader col="ms1_signal" label="MS1 Signal" />
-                <SortHeader col="fwhm_rt_min" label="FWHM (min)" />
-                <SortHeader col="median_mass_acc_ms1_ppm" label="Mass Acc" />
+                <SortHeader col="fwhm_rt_min" label="FWHM (s)" />
+                <SortHeader col="median_mass_acc_ms1_ppm" label="Mass Acc ppm" />
                 <SortHeader col="run_date" label="Date" />
               </tr></thead>
               <tbody>
-                {filtered.map(r => (
-                  <tr key={r.id} onClick={() => setSelectedRun(r)} style={{cursor:'pointer'}}>
-                    <td title="Click for TIC viewer">{r.run_name}</td>
-                    <td>{r.instrument}</td>
-                    <td>{r.mode}</td>
-                    <td><GateBadge result={r.gate_result} /></td>
-                    <td>{r.ips_score != null ? r.ips_score : '—'}</td>
-                    <td>{fmtNum(r.n_precursors)}</td>
-                    <td>{fmtNum(r.n_peptides)}</td>
-                    <td>{fmtNum(r.n_proteins)}</td>
-                    <td>{fmtSig(r.ms1_signal)}</td>
-                    <td>{fmtFloat(r.fwhm_rt_min, 2)}</td>
-                    <td>{fmtFloat(r.median_mass_acc_ms1_ppm, 2)}</td>
-                    <td>{new Date(r.run_date).toLocaleString()}</td>
-                  </tr>
-                ))}
+                {filtered.map(r => {
+                  const ids = primaryIds(r);
+                  const idsLabel = r.mode === 'DDA' ? 'PSMs' : 'Prec';
+                  return (
+                    <tr key={r.id} onClick={() => setSelectedRun(r)} style={{cursor:'pointer'}}>
+                      <td title={r.run_name + ' (click for TIC viewer)'} style={{maxWidth:'280px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{r.run_name}</td>
+                      <td>{r.instrument}</td>
+                      <td>{r.mode}</td>
+                      <td><GateBadge result={r.gate_result} /></td>
+                      <td>{r.ips_score != null ? r.ips_score : EM_DASH}</td>
+                      <td title={`${idsLabel}: ${ids != null ? ids.toLocaleString() : EM_DASH}`}>
+                        {fmtNum(ids)} <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>{ids > 0 ? idsLabel : ''}</span>
+                      </td>
+                      <td>{fmtNum(r.n_peptides)}</td>
+                      <td>{fmtNum(r.n_proteins)}</td>
+                      <td>{fmtSig(r.ms1_signal)}</td>
+                      <td>{fmtFwhmSec(r.fwhm_rt_min)}</td>
+                      <td>{fmtSigned(r.median_mass_acc_ms1_ppm, 2)}</td>
+                      <td>{new Date(r.run_date).toLocaleString([], {year:'2-digit', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
