@@ -22,13 +22,15 @@ else:
     _USER_CONFIG_DIR = Path.home() / ".stan"
 
 
-def sync_to_hive_mirror() -> bool:
-    """Copy stan.db and key files to the Hive mirror directory.
+def sync_to_hive_mirror(include_reports: bool = True) -> bool:
+    """Copy stan.db, configs, and baseline reports to the Hive mirror.
 
     Syncs:
     - stan.db (full QC database)
     - instruments.yml, community.yml (config)
     - instrument_library.parquet (if exists)
+    - baseline_output/*/report.parquet (DIA-NN reports — for deep analysis)
+    - baseline_output/*/report.stats.tsv (per-run stats)
 
     Runs after baseline completes or on demand. Silently no-ops if
     the Hive mirror isn't available.
@@ -52,6 +54,34 @@ def sync_to_hive_mirror() -> bool:
                 synced.append(fname)
             except Exception as e:
                 logger.debug("Could not sync %s to Hive: %s", fname, e)
+
+    # Mirror baseline_output — small per-run files (not mzML etc.)
+    if include_reports:
+        baseline_src = user_dir / "baseline_output"
+        if baseline_src.exists():
+            baseline_dest = hive_dir / "baseline_output"
+            baseline_dest.mkdir(parents=True, exist_ok=True)
+            report_count = 0
+            for run_dir in baseline_src.iterdir():
+                if not run_dir.is_dir():
+                    continue
+                dest_run = baseline_dest / run_dir.name
+                dest_run.mkdir(parents=True, exist_ok=True)
+                for fname in ["report.parquet", "report.stats.tsv", "report.log.txt",
+                              "sage_config.json", "results.sage.parquet", "results.json",
+                              "diann.log", "sage.log"]:
+                    src_file = run_dir / fname
+                    if src_file.exists():
+                        try:
+                            dest_file = dest_run / fname
+                            if not dest_file.exists() or src_file.stat().st_mtime > dest_file.stat().st_mtime:
+                                shutil.copy2(str(src_file), str(dest_file))
+                                if fname == "report.parquet":
+                                    report_count += 1
+                        except Exception:
+                            pass
+            if report_count > 0:
+                synced.append(f"{report_count} reports")
 
     if synced:
         logger.info("Synced to Hive mirror: %s", ", ".join(synced))

@@ -52,14 +52,28 @@ def spd_bucket(spd: int) -> str:
 
 
 def gradient_min_to_spd(minutes: int) -> int:
-    """Estimate SPD from gradient length for labs using custom LC methods.
+    """Estimate SPD from gradient length.
 
-    Uses cycle time ≈ gradient + 25 % overhead (wash, equilibration, loading).
-    SPD = 1440 / cycle_time.  This is an approximation — labs should set
-    their actual SPD in instruments.yml when possible.
+    For common Evosep methods (30/60/100 SPD), snaps to the exact value
+    so cross-lab comparison works. Otherwise estimates from cycle time.
+
+    Evosep ranges (gradient length → SPD):
+        10-12 min → 100 SPD
+        20-22 min → 60 SPD
+        43-45 min → 30 SPD
     """
     if minutes <= 0:
-        return 30  # fallback to default
+        return 30
+
+    # Snap to known Evosep methods
+    if 10 <= minutes <= 13:
+        return 100
+    if 19 <= minutes <= 23:
+        return 60
+    if 40 <= minutes <= 46:
+        return 30
+
+    # Otherwise estimate from cycle time with 25% overhead
     cycle = minutes * 1.25
     return max(1, int(1440 / cycle))
 
