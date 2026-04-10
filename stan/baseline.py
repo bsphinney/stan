@@ -1263,6 +1263,14 @@ def _process_files(
     # Clear progress file on successful completion
     _clear_progress()
 
+    # Sync stan.db to Hive mirror so Claude can analyze instrument performance
+    try:
+        from stan.config import sync_to_hive_mirror
+        if sync_to_hive_mirror():
+            console.print("  [dim]Synced to Hive mirror[/dim]")
+    except Exception:
+        logger.debug("Hive sync failed", exc_info=True)
+
     # Offer to build instrument-specific library from the baseline results
     if processed > 0 or skipped > 0:
         console.print()

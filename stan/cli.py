@@ -180,6 +180,29 @@ def build_library() -> None:
     run_build_library()
 
 
+@app.command()
+def sync() -> None:
+    """Sync stan.db and config to Hive mirror (if Y:\\STAN is mapped).
+
+    Copies the local QC database and configuration to the Hive mirror
+    directory so remote analysis tools (including Claude) can query
+    instrument performance history.
+    """
+    from stan.config import sync_to_hive_mirror, get_hive_mirror_dir
+
+    hive_dir = get_hive_mirror_dir()
+    if not hive_dir:
+        console.print("[yellow]No Hive mirror directory available.[/yellow]")
+        console.print("  Map Hive to Y:\\STAN or set HIVE_MIRROR_DIR env var.")
+        return
+
+    console.print(f"Syncing to: [cyan]{hive_dir}[/cyan]")
+    if sync_to_hive_mirror():
+        console.print("[green]Sync complete.[/green]")
+    else:
+        console.print("[red]Sync failed.[/red]")
+
+
 @app.command("backfill-tic")
 def backfill_tic() -> None:
     """Extract identified TIC traces from existing baseline reports.

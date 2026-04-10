@@ -22,6 +22,42 @@ else:
     _USER_CONFIG_DIR = Path.home() / ".stan"
 
 
+def sync_to_hive_mirror() -> bool:
+    """Copy stan.db and key files to the Hive mirror directory.
+
+    Syncs:
+    - stan.db (full QC database)
+    - instruments.yml, community.yml (config)
+    - instrument_library.parquet (if exists)
+
+    Runs after baseline completes or on demand. Silently no-ops if
+    the Hive mirror isn't available.
+
+    Returns:
+        True if sync succeeded, False otherwise.
+    """
+    hive_dir = get_hive_mirror_dir()
+    if not hive_dir:
+        return False
+
+    import shutil
+    user_dir = _USER_CONFIG_DIR
+    synced = []
+    for fname in ["stan.db", "instruments.yml", "community.yml", "instrument_library.parquet"]:
+        src = user_dir / fname
+        if src.exists():
+            try:
+                dest = hive_dir / fname
+                shutil.copy2(str(src), str(dest))
+                synced.append(fname)
+            except Exception as e:
+                logger.debug("Could not sync %s to Hive: %s", fname, e)
+
+    if synced:
+        logger.info("Synced to Hive mirror: %s", ", ".join(synced))
+    return len(synced) > 0
+
+
 def setup_hive_mirror_logging(log_name: str) -> Path | None:
     """Set up a file handler that writes logs to the Hive mirror directory.
 

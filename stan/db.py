@@ -128,6 +128,15 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("median_peak_width_sec", "ALTER TABLE runs ADD COLUMN median_peak_width_sec REAL"),
         ("median_points_across_peak", "ALTER TABLE runs ADD COLUMN median_points_across_peak REAL"),
         ("ips_score", "ALTER TABLE runs ADD COLUMN ips_score INTEGER"),
+        # From report.stats.tsv (added 2026-04-10)
+        ("ms1_signal", "ALTER TABLE runs ADD COLUMN ms1_signal REAL"),
+        ("ms2_signal", "ALTER TABLE runs ADD COLUMN ms2_signal REAL"),
+        ("fwhm_rt_min", "ALTER TABLE runs ADD COLUMN fwhm_rt_min REAL"),
+        ("fwhm_scans", "ALTER TABLE runs ADD COLUMN fwhm_scans REAL"),
+        ("median_mass_acc_ms1_ppm", "ALTER TABLE runs ADD COLUMN median_mass_acc_ms1_ppm REAL"),
+        ("median_mass_acc_ms2_ppm", "ALTER TABLE runs ADD COLUMN median_mass_acc_ms2_ppm REAL"),
+        ("peak_capacity", "ALTER TABLE runs ADD COLUMN peak_capacity REAL"),
+        ("dynamic_range_log10", "ALTER TABLE runs ADD COLUMN dynamic_range_log10 REAL"),
     ]
 
     for col, ddl in migrations:
@@ -206,6 +215,15 @@ def insert_run(
         "peak_rt_min": metrics.get("peak_rt_min"),
         "irt_max_deviation_min": metrics.get("irt_max_deviation_min"),
         "ms2_fill_time_median_ms": metrics.get("ms2_fill_time_median_ms"),
+        # From report.stats.tsv
+        "ms1_signal": metrics.get("ms1_signal"),
+        "ms2_signal": metrics.get("ms2_signal"),
+        "fwhm_rt_min": metrics.get("fwhm_rt_min"),
+        "fwhm_scans": metrics.get("fwhm_scans"),
+        "median_mass_acc_ms1_ppm": metrics.get("median_mass_acc_ms1_ppm"),
+        "median_mass_acc_ms2_ppm": metrics.get("median_mass_acc_ms2_ppm"),
+        "peak_capacity": metrics.get("peak_capacity"),
+        "dynamic_range_log10": metrics.get("dynamic_range_log10"),
         # Run metadata
         "amount_ng": amount_ng,
         "spd": spd,

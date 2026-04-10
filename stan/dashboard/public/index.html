@@ -51,7 +51,7 @@
 <body>
   <div id="root"></div>
   <script type="text/babel">
-    const { useState, useEffect, useCallback } = React;
+    const { useState, useEffect, useCallback, useMemo } = React;
 
     const API = '';
 
@@ -183,21 +183,44 @@
 
               return (
                 <div key={i} style={{
-                  display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.3rem 0.5rem',
-                  background: rowColor, borderRadius:'0.5rem', flexWrap:'wrap',
+                  display:'flex', flexDirection:'column', gap:'0.3rem', padding:'0.5rem 0.75rem',
+                  background: rowColor, borderRadius:'0.5rem',
                 }}>
-                  <div style={{width:'140px', flexShrink:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                  <div style={{display:'flex', alignItems:'center', gap:'0.5rem', flexWrap:'wrap'}}>
                     <GateBadge result={r.gate_result} />
-                    <span style={{marginLeft:'0.3rem', fontSize:'0.8rem'}}>{r.run_name}</span>
+                    <span style={{fontSize:'0.85rem', fontWeight:500, flex:'1 1 auto', wordBreak:'break-all'}}>
+                      {r.run_name}
+                    </span>
+                    <span style={{fontSize:'0.7rem', color:'var(--muted)', whiteSpace:'nowrap'}}>
+                      {r.instrument} &middot; {new Date(r.run_date).toLocaleString()}
+                    </span>
                   </div>
-                  <div style={{display:'flex', gap:'0.75rem', flexWrap:'wrap'}}>
-                    {s.precursors && <GasGauge value={depth} {...s.precursors} label={depthLabel} />}
-                    {s.peptides && <GasGauge value={pep} {...s.peptides} label="Pep" />}
-                    {s.proteins && <GasGauge value={pro} {...s.proteins} label="Pro" />}
+                  <div style={{display:'flex', gap:'1.5rem', flexWrap:'wrap', alignItems:'flex-start'}}>
+                    {s.precursors && (
+                      <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'0.2rem'}}>
+                        <GasGauge value={depth} {...s.precursors} label={depthLabel} />
+                        <span style={{fontSize:'0.75rem', fontWeight:600}}>{depth.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {s.peptides && (
+                      <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'0.2rem'}}>
+                        <GasGauge value={pep} {...s.peptides} label="Pep" />
+                        <span style={{fontSize:'0.75rem', fontWeight:600}}>{pep.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {s.proteins && (
+                      <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'0.2rem'}}>
+                        <GasGauge value={pro} {...s.proteins} label="Pro" />
+                        <span style={{fontSize:'0.75rem', fontWeight:600}}>{pro.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {r.ips_score != null && (
+                      <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'0.2rem', marginLeft:'auto'}}>
+                        <span style={{fontSize:'0.7rem', color:'var(--muted)'}}>IPS</span>
+                        <span style={{fontSize:'1.1rem', fontWeight:700, color:'var(--accent)'}}>{r.ips_score}</span>
+                      </div>
+                    )}
                   </div>
-                  <span style={{fontSize:'0.7rem', color:'var(--muted)', marginLeft:'auto'}}>
-                    {r.instrument} &middot; {new Date(r.run_date).toLocaleDateString()}
-                  </span>
                 </div>
               );
             })}
@@ -381,20 +404,31 @@
     }
 
     function LiveRuns() {
-      const { data: runs, loading, reload } = useFetch('/api/runs?limit=50');
+      const { data: allRuns, loading, reload } = useFetch('/api/runs?limit=200');
       useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [reload]);
 
-      if (loading && !runs) return <div className="empty">Loading...</div>;
-      if (!runs || runs.length === 0) return <div className="empty">No QC runs yet. Start the watcher to begin monitoring.</div>;
+      if (loading && !allRuns) return <div className="empty">Loading...</div>;
+      if (!allRuns || allRuns.length === 0) return <div className="empty">No QC runs yet. Start the watcher to begin monitoring.</div>;
 
+      // Filter to runs from today only
+      const today = new Date().toDateString();
+      const runs = allRuns.filter(r => new Date(r.run_date).toDateString() === today);
+
+      // Show most recent per instrument (always, even if not today)
       const byInstrument = {};
-      for (const r of runs) {
+      for (const r of allRuns) {
         if (!byInstrument[r.instrument]) byInstrument[r.instrument] = r;
       }
 
       return (
         <div>
-          <QuickStatus runs={runs} />
+          {runs.length > 0 ? (
+            <QuickStatus runs={runs} />
+          ) : (
+            <div className="card" style={{marginBottom:'1.5rem'}}>
+              <div style={{color:'var(--muted)'}}>No runs today yet. Showing most recent per instrument below.</div>
+            </div>
+          )}
           <div className="grid">
             {Object.entries(byInstrument).map(([name, run]) => (
               <div className="card" key={name}>
@@ -420,34 +454,146 @@
     }
 
     function RunHistory() {
-      const { data: runs, loading } = useFetch('/api/runs?limit=100');
+      const { data: runs, loading } = useFetch('/api/runs?limit=1000');
+      const [sortKey, setSortKey] = useState('run_date');
+      const [sortDir, setSortDir] = useState('desc');
+      const [dateFilter, setDateFilter] = useState('all');
+      const [searchTerm, setSearchTerm] = useState('');
+
       if (loading) return <div className="empty">Loading...</div>;
       if (!runs || runs.length === 0) return <div className="empty">No runs recorded yet.</div>;
 
+      // Filter by date range
+      const now = new Date();
+      const filterDate = (runDate) => {
+        const d = new Date(runDate);
+        if (dateFilter === 'all') return true;
+        if (dateFilter === 'today') {
+          return d.toDateString() === now.toDateString();
+        }
+        if (dateFilter === 'week') {
+          const weekAgo = new Date(now.getTime() - 7 * 86400000);
+          return d >= weekAgo;
+        }
+        if (dateFilter === 'month') {
+          return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+        }
+        if (dateFilter === 'year') {
+          return d.getFullYear() === now.getFullYear();
+        }
+        if (dateFilter === 'past') {
+          return d.getFullYear() < now.getFullYear();
+        }
+        return true;
+      };
+
+      // Filter + sort
+      let filtered = runs.filter(r => filterDate(r.run_date));
+      if (searchTerm) {
+        const term = searchTerm.toLowerCase();
+        filtered = filtered.filter(r =>
+          (r.run_name || '').toLowerCase().includes(term) ||
+          (r.instrument || '').toLowerCase().includes(term)
+        );
+      }
+      filtered.sort((a, b) => {
+        let va = a[sortKey];
+        let vb = b[sortKey];
+        if (va == null) va = sortKey === 'run_date' ? '' : 0;
+        if (vb == null) vb = sortKey === 'run_date' ? '' : 0;
+        if (typeof va === 'string') {
+          return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va);
+        }
+        return sortDir === 'asc' ? va - vb : vb - va;
+      });
+
+      const handleSort = (key) => {
+        if (sortKey === key) {
+          setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+        } else {
+          setSortKey(key);
+          setSortDir('desc');
+        }
+      };
+
+      const SortHeader = ({col, label}) => (
+        <th onClick={() => handleSort(col)} style={{cursor: 'pointer', userSelect: 'none'}}>
+          {label}{sortKey === col ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+        </th>
+      );
+
+      const fmtNum = (n) => (n != null && n > 0) ? n.toLocaleString() : '—';
+      const fmtFloat = (n, d=1) => (n != null) ? n.toFixed(d) : '—';
+      const fmtSig = (n) => {
+        if (n == null || n === 0) return '—';
+        if (n >= 1e12) return (n/1e12).toFixed(1) + 'T';
+        if (n >= 1e9) return (n/1e9).toFixed(1) + 'B';
+        if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+        return n.toFixed(0);
+      };
+
       return (
-        <div className="card" style={{overflowX: 'auto'}}>
-          <table>
-            <thead><tr>
-              <th>Run</th><th>Instrument</th><th>Mode</th><th>Gate</th><th>GRS</th>
-              <th>Precursors</th><th>Peptides</th><th>PSMs</th><th>CV%</th><th>Date</th>
-            </tr></thead>
-            <tbody>
-              {runs.map(r => (
-                <tr key={r.id}>
-                  <td>{r.run_name}</td>
-                  <td>{r.instrument}</td>
-                  <td>{r.mode}</td>
-                  <td><GateBadge result={r.gate_result} /></td>
-                  <td><GrsBadge score={r.grs_score} /></td>
-                  <td>{r.n_precursors?.toLocaleString() || '—'}</td>
-                  <td>{(r.n_peptides || r.n_peptides_dda)?.toLocaleString() || '—'}</td>
-                  <td>{r.n_psms?.toLocaleString() || '—'}</td>
-                  <td>{r.median_cv_precursor?.toFixed(1) || '—'}</td>
-                  <td>{new Date(r.run_date).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="card">
+          <div style={{display:'flex', gap:'0.75rem', marginBottom:'0.75rem', flexWrap:'wrap', alignItems:'center'}}>
+            <input
+              type="text"
+              placeholder="Search run name or instrument..."
+              value={searchTerm}
+              onChange={e => setSearchTerm(e.target.value)}
+              style={{flex:'1 1 250px', padding:'0.4rem 0.6rem', background:'var(--bg)', color:'var(--text)', border:'1px solid var(--border)', borderRadius:'0.3rem'}}
+            />
+            <select
+              value={dateFilter}
+              onChange={e => setDateFilter(e.target.value)}
+              style={{padding:'0.4rem 0.6rem', background:'var(--bg)', color:'var(--text)', border:'1px solid var(--border)', borderRadius:'0.3rem'}}
+            >
+              <option value="all">All time</option>
+              <option value="today">Today</option>
+              <option value="week">This week</option>
+              <option value="month">This month</option>
+              <option value="year">This year</option>
+              <option value="past">Past years</option>
+            </select>
+            <span style={{color:'var(--muted)', fontSize:'0.85rem'}}>
+              {filtered.length} / {runs.length} runs
+            </span>
+          </div>
+          <div style={{overflowX: 'auto'}}>
+            <table>
+              <thead><tr>
+                <SortHeader col="run_name" label="Run" />
+                <SortHeader col="instrument" label="Instrument" />
+                <SortHeader col="mode" label="Mode" />
+                <SortHeader col="gate_result" label="Gate" />
+                <SortHeader col="ips_score" label="IPS" />
+                <SortHeader col="n_precursors" label="Precursors" />
+                <SortHeader col="n_peptides" label="Peptides" />
+                <SortHeader col="n_proteins" label="Proteins" />
+                <SortHeader col="ms1_signal" label="MS1 Signal" />
+                <SortHeader col="fwhm_rt_min" label="FWHM (min)" />
+                <SortHeader col="median_mass_acc_ms1_ppm" label="Mass Acc" />
+                <SortHeader col="run_date" label="Date" />
+              </tr></thead>
+              <tbody>
+                {filtered.map(r => (
+                  <tr key={r.id}>
+                    <td title={r.run_name}>{r.run_name}</td>
+                    <td>{r.instrument}</td>
+                    <td>{r.mode}</td>
+                    <td><GateBadge result={r.gate_result} /></td>
+                    <td>{r.ips_score != null ? r.ips_score : '—'}</td>
+                    <td>{fmtNum(r.n_precursors)}</td>
+                    <td>{fmtNum(r.n_peptides)}</td>
+                    <td>{fmtNum(r.n_proteins)}</td>
+                    <td>{fmtSig(r.ms1_signal)}</td>
+                    <td>{fmtFloat(r.fwhm_rt_min, 2)}</td>
+                    <td>{fmtFloat(r.median_mass_acc_ms1_ppm, 2)}</td>
+                    <td>{new Date(r.run_date).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       );
     }
@@ -510,18 +656,42 @@
     }
 
     function TrendCharts() {
-      const { data: instruments } = useFetch('/api/instruments');
+      // Pull instruments from actual runs in the DB, not from instruments.yml config
+      const { data: allRuns } = useFetch('/api/runs?limit=1000');
       const [selected, setSelected] = useState(null);
       const [trends, setTrends] = useState(null);
       const [events, setEvents] = useState([]);
+      const [timeFilter, setTimeFilter] = useState('all');
 
-      const names = instruments?.instruments?.map(i => i.name) || [];
+      const names = useMemo(() => {
+        if (!allRuns) return [];
+        return [...new Set(allRuns.map(r => r.instrument).filter(Boolean))];
+      }, [allRuns]);
+
       useEffect(() => { if (names.length && !selected) setSelected(names[0]); }, [names]);
       useEffect(() => {
         if (!selected) return;
-        fetch(API + `/api/trends/${encodeURIComponent(selected)}?limit=50`).then(r => r.json()).then(setTrends);
+        fetch(API + `/api/trends/${encodeURIComponent(selected)}?limit=500`).then(r => r.json()).then(setTrends);
         fetch(API + `/api/instruments/${encodeURIComponent(selected)}/events?limit=50`).then(r => r.json()).then(d => setEvents(d || []));
       }, [selected]);
+
+      // Filter trends by time range
+      const filteredTrends = useMemo(() => {
+        if (!trends) return null;
+        if (timeFilter === 'all') return trends;
+        const now = new Date();
+        const cutoffs = {
+          week: 7,
+          month: 30,
+          '3month': 90,
+          '6month': 180,
+          year: 365,
+        };
+        const days = cutoffs[timeFilter] || 0;
+        if (!days) return trends;
+        const cutoff = new Date(now.getTime() - days * 86400000);
+        return trends.filter(r => new Date(r.run_date) >= cutoff);
+      }, [trends, timeFilter]);
 
       // Merge events into trend data by finding the nearest run date for each event
       function findEventsBetween(runs, idx) {
@@ -537,61 +707,160 @@
       return (
         <div>
           <div className="tabs" style={{marginBottom: '1rem'}}>
-            {names.map(n => <div key={n} className={`tab ${n === selected ? 'active' : ''}`} onClick={() => setSelected(n)}>{n}</div>)}
+            {names.length === 0 ? (
+              <div style={{color:'var(--muted)'}}>No runs in database yet. Run a baseline first.</div>
+            ) : names.map(n => <div key={n} className={`tab ${n === selected ? 'active' : ''}`} onClick={() => setSelected(n)}>{n}</div>)}
           </div>
-          {!trends || trends.length === 0
+          <div style={{display:'flex', gap:'0.5rem', marginBottom:'1rem', flexWrap:'wrap', alignItems:'center'}}>
+            <span style={{fontSize:'0.85rem', color:'var(--muted)'}}>Time range:</span>
+            {[['week','Week'], ['month','Month'], ['3month','3 Months'], ['6month','6 Months'], ['year','Year'], ['all','All']].map(([k, label]) => (
+              <button key={k}
+                onClick={() => setTimeFilter(k)}
+                style={{
+                  padding:'0.3rem 0.7rem',
+                  background: timeFilter === k ? 'var(--accent)' : 'var(--bg)',
+                  color: timeFilter === k ? '#000' : 'var(--text)',
+                  border:'1px solid var(--border)',
+                  borderRadius:'0.3rem',
+                  cursor:'pointer',
+                  fontSize:'0.8rem',
+                }}>{label}</button>
+            ))}
+            {filteredTrends && <span style={{fontSize:'0.85rem', color:'var(--muted)', marginLeft:'auto'}}>{filteredTrends.length} runs</span>}
+          </div>
+          {!filteredTrends || filteredTrends.length === 0
             ? <div className="empty">No trend data for {selected || 'this instrument'}.</div>
-            : <div className="grid">
-                <div className="card">
-                  <h3>Precursors / PSMs</h3>
-                  {trends.map((r, i) => (
-                    <React.Fragment key={i}>
-                      {findEventsBetween(trends, i).map((ev, j) => (
-                        <div key={`ev-${j}`} style={{padding:'0.2rem 0', display:'flex', alignItems:'center'}}>
-                          <EventMarker event={ev} />
-                        </div>
-                      ))}
-                      <div className="metric">
-                        <span className="metric-label">{r.run_name}</span>
-                        <span className="metric-value">{(r.n_precursors || r.n_psms || 0).toLocaleString()}</span>
-                      </div>
-                    </React.Fragment>
-                  ))}
-                </div>
-                <div className="card">
-                  <h3>GRS Score</h3>
-                  {trends.map((r, i) => (
-                    <React.Fragment key={i}>
-                      {findEventsBetween(trends, i).map((ev, j) => (
-                        <div key={`ev-${j}`} style={{padding:'0.2rem 0', display:'flex', alignItems:'center'}}>
-                          <EventMarker event={ev} />
-                        </div>
-                      ))}
-                      <div className="metric">
-                        <span className="metric-label">{r.run_name}</span>
-                        <GrsBadge score={r.grs_score} />
-                      </div>
-                    </React.Fragment>
-                  ))}
-                </div>
-                <div className="card">
-                  <h3>CV %</h3>
-                  {trends.map((r, i) => (
-                    <React.Fragment key={i}>
-                      {findEventsBetween(trends, i).map((ev, j) => (
-                        <div key={`ev-${j}`} style={{padding:'0.2rem 0', display:'flex', alignItems:'center'}}>
-                          <EventMarker event={ev} />
-                        </div>
-                      ))}
-                      <div className="metric">
-                        <span className="metric-label">{r.run_name}</span>
-                        <span className="metric-value">{r.median_cv_precursor?.toFixed(1) || '—'}</span>
-                      </div>
-                    </React.Fragment>
-                  ))}
-                </div>
-              </div>
+            : <TrendGraphs runs={filteredTrends} events={events} />
           }
+        </div>
+      );
+    }
+
+    // Simple SVG sparkline trend component
+    function Sparkline({ values, maintEvents, runs, label, color='#60a5fa', height=120 }) {
+      if (!values || values.length < 2) {
+        return <div style={{color:'var(--muted)', fontSize:'0.8rem'}}>Not enough data</div>;
+      }
+      const validValues = values.map(v => v == null || isNaN(v) ? 0 : v);
+      const min = Math.min(...validValues);
+      const max = Math.max(...validValues);
+      const range = max - min || 1;
+      const width = 800;
+      const padding = 10;
+      const w = width - padding * 2;
+      const h = height - padding * 2;
+      const points = validValues.map((v, i) => {
+        const x = padding + (validValues.length === 1 ? w/2 : (i / (validValues.length - 1)) * w);
+        const y = padding + h - ((v - min) / range) * h;
+        return [x, y];
+      });
+      const pathD = points.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+
+      // Compute mean for the reference line
+      const mean = validValues.reduce((a, b) => a + b, 0) / validValues.length;
+      const meanY = padding + h - ((mean - min) / range) * h;
+
+      // Find maintenance event positions
+      const eventMarks = [];
+      if (maintEvents && runs) {
+        for (const ev of maintEvents) {
+          const evDate = new Date(ev.event_date).getTime();
+          // Find the run closest to this event
+          let closestIdx = -1;
+          let minDist = Infinity;
+          runs.forEach((r, i) => {
+            const rd = new Date(r.run_date).getTime();
+            const dist = Math.abs(rd - evDate);
+            if (dist < minDist) { minDist = dist; closestIdx = i; }
+          });
+          if (closestIdx >= 0 && runs.length > 1) {
+            const x = padding + (closestIdx / (runs.length - 1)) * w;
+            eventMarks.push({ x, event: ev });
+          }
+        }
+      }
+
+      return (
+        <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:`${height}px`}}>
+          {/* Mean reference line */}
+          <line x1={padding} y1={meanY} x2={width-padding} y2={meanY} stroke="var(--muted)" strokeDasharray="4,4" strokeWidth="1" opacity="0.4" />
+          {/* Event markers */}
+          {eventMarks.map((em, i) => {
+            const colors = {column_change:'#60a5fa', source_clean:'#22c55e', calibration:'#eab308', pm:'#a78bfa', lc_service:'#f472b6', other:'#94a3b8'};
+            const c = colors[em.event.event_type] || '#94a3b8';
+            return (
+              <g key={i}>
+                <line x1={em.x} y1={padding} x2={em.x} y2={height-padding} stroke={c} strokeDasharray="3,3" strokeWidth="2" opacity="0.7">
+                  <title>{em.event.event_type}: {em.event.notes || em.event.event_date}</title>
+                </line>
+              </g>
+            );
+          })}
+          {/* Trend line */}
+          <path d={pathD} fill="none" stroke={color} strokeWidth="2" />
+          {/* Points */}
+          {points.map(([x, y], i) => (
+            <circle key={i} cx={x} cy={y} r="3" fill={color}>
+              <title>{runs?.[i]?.run_name}: {validValues[i].toLocaleString()}</title>
+            </circle>
+          ))}
+          {/* Label */}
+          <text x={padding} y={padding+4} fill="var(--muted)" fontSize="11">{label}</text>
+          <text x={width-padding} y={padding+4} fill="var(--muted)" fontSize="11" textAnchor="end">
+            min: {min.toLocaleString()} · max: {max.toLocaleString()}
+          </text>
+        </svg>
+      );
+    }
+
+    function TrendGraphs({ runs, events }) {
+      // Sort runs by date ascending for trend plotting
+      const sorted = [...runs].sort((a, b) => new Date(a.run_date) - new Date(b.run_date));
+      return (
+        <div className="grid" style={{gridTemplateColumns:'1fr'}}>
+          <div className="card">
+            <h3>Precursors / PSMs over time</h3>
+            <Sparkline
+              values={sorted.map(r => r.n_precursors || r.n_psms || 0)}
+              maintEvents={events}
+              runs={sorted}
+              label="Identifications"
+              color="#60a5fa"
+            />
+          </div>
+          <div className="card">
+            <h3>IPS Score over time</h3>
+            <Sparkline
+              values={sorted.map(r => r.ips_score || 0)}
+              maintEvents={events}
+              runs={sorted}
+              label="IPS (0-100)"
+              color="#22c55e"
+            />
+          </div>
+          <div className="card">
+            <h3>MS1 Signal over time</h3>
+            <Sparkline
+              values={sorted.map(r => r.ms1_signal || 0)}
+              maintEvents={events}
+              runs={sorted}
+              label="Total MS1 ion current"
+              color="#a78bfa"
+            />
+          </div>
+          <div className="card">
+            <h3>Peak Width (FWHM) over time</h3>
+            <Sparkline
+              values={sorted.map(r => r.fwhm_rt_min || 0)}
+              maintEvents={events}
+              runs={sorted}
+              label="FWHM in minutes"
+              color="#eab308"
+            />
+          </div>
+          <div style={{fontSize:'0.75rem', color:'var(--muted)', padding:'0.5rem'}}>
+            Dashed vertical lines = maintenance events. Hover for details.
+          </div>
         </div>
       );
     }
@@ -765,7 +1034,7 @@
             <span className="version">{ver ? `v${ver.version}` : ''}</span>
           </header>
           <div className="tabs">
-            {[['live', 'Live Runs'], ['history', 'Run History'], ['trends', 'Trends'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
+            {[['live', "Today's Runs"], ['history', 'Run History'], ['trends', 'Trends'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
               <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
             )}
           </div>
