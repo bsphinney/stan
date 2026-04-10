@@ -1263,6 +1263,22 @@ def _process_files(
     # Clear progress file on successful completion
     _clear_progress()
 
+    # Offer to build instrument-specific library from the baseline results
+    if processed > 0 or skipped > 0:
+        console.print()
+        build_lib = Confirm.ask(
+            "Build instrument-specific spectral library from baseline? "
+            "(Produces faster searches for future QC runs)",
+            default=True, console=console,
+        )
+        if build_lib:
+            try:
+                from stan.library_builder import run_build_library
+                run_build_library()
+            except Exception as e:
+                console.print(f"[yellow]Library build failed: {e}[/yellow]")
+                console.print("[dim]You can try again later with: stan build-library[/dim]")
+
     console.print()
     console.print("View results:")
     console.print("  [cyan]stan status[/cyan]")
