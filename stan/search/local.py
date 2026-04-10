@@ -285,7 +285,9 @@ def run_sage_local(
     config_path = output_dir / "sage_config.json"
     config_path.write_text(json.dumps(params, indent=2))
 
-    cmd = [sage_exe, str(config_path)]
+    # --parquet: write results.sage.parquet instead of results.sage.tsv
+    # (STAN's extractor reads parquet, not TSV)
+    cmd = [sage_exe, "--parquet", str(config_path)]
 
     logger.info("Running Sage locally: %s", raw_path.name)
     logger.info("Command: %s", " ".join(cmd))
