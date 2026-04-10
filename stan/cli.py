@@ -228,16 +228,45 @@ def add_watch(
         console.print(f"[red]Directory does not exist: {path}[/red]")
         return
 
-    # Auto-detect vendor from contents
+    # Auto-detect vendor from contents. The watch dir may have raw files
+    # at any depth (per-project subdirs, date folders, etc.), so we scan
+    # recursively with a hard cap to avoid hanging on huge trees.
     if vendor is None:
-        has_d = any(p.suffix == ".d" for p in watch_path.glob("*.d"))
-        has_raw = any(p.suffix == ".raw" for p in watch_path.glob("*.raw"))
-        if has_d and not has_raw:
+        n_d = 0
+        n_raw = 0
+        SCAN_LIMIT = 5000  # stop after this many entries
+        for i, p in enumerate(watch_path.rglob("*")):
+            if i >= SCAN_LIMIT:
+                break
+            try:
+                if p.suffix == ".d" and p.is_dir():
+                    n_d += 1
+                elif p.suffix == ".raw" and p.is_file():
+                    n_raw += 1
+            except OSError:
+                continue
+            # Short-circuit once we're confident
+            if (n_d >= 3 and n_raw == 0) or (n_raw >= 3 and n_d == 0):
+                break
+
+        if n_d > 0 and n_raw == 0:
             vendor = "bruker"
-        elif has_raw and not has_d:
+        elif n_raw > 0 and n_d == 0:
             vendor = "thermo"
+        elif n_d > 0 and n_raw > 0:
+            # Mixed-vendor directory — pick the majority, warn.
+            vendor = "bruker" if n_d >= n_raw else "thermo"
+            console.print(
+                f"[yellow]Mixed-vendor directory ({n_d} .d, {n_raw} .raw) — "
+                f"picking '{vendor}'. Specify --vendor to override.[/yellow]"
+            )
         else:
-            console.print("[yellow]Could not auto-detect vendor. Specify --vendor bruker or --vendor thermo.[/yellow]")
+            console.print(
+                "[yellow]No .d or .raw files found (scanned recursively up "
+                f"to {SCAN_LIMIT} entries). Specify --vendor bruker or "
+                "--vendor thermo, or check that the directory path is "
+                "correct.[/yellow]"
+            )
             return
 
     # Auto-generate name if not given
