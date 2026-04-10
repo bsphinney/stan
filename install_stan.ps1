@@ -36,6 +36,48 @@ public class TrustAll {
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# Helper: pick the latest DIA-NN .msi asset from a release by parsing version from filename
+function Select-LatestDiannMsi {
+    param($assets)
+    $bestAsset = $null
+    $bestMajor = 0
+    $bestMinor = 0
+    $bestPatch = 0
+    foreach ($asset in $assets) {
+        $name = $asset.name
+        # Only Windows .msi, skip linux/preview
+        if ($name -notmatch "\.msi$") { continue }
+        if ($name -match "linux") { continue }
+        if ($name -match "[Pp]review") { continue }
+        # Parse version like "DIA-NN-2.3.2-Academia.msi"
+        if ($name -match "(\d+)\.(\d+)\.(\d+)") {
+            $maj = [int]$Matches[1]
+            $min = [int]$Matches[2]
+            $pat = [int]$Matches[3]
+            if ($maj -gt $bestMajor -or
+                ($maj -eq $bestMajor -and $min -gt $bestMinor) -or
+                ($maj -eq $bestMajor -and $min -eq $bestMinor -and $pat -gt $bestPatch)) {
+                $bestMajor = $maj
+                $bestMinor = $min
+                $bestPatch = $pat
+                $bestAsset = $asset
+            }
+        } elseif ($name -match "(\d+)\.(\d+)") {
+            # Handle "DIA-NN-2.0-Academia.msi" (no patch)
+            $maj = [int]$Matches[1]
+            $min = [int]$Matches[2]
+            if ($maj -gt $bestMajor -or
+                ($maj -eq $bestMajor -and $min -gt $bestMinor)) {
+                $bestMajor = $maj
+                $bestMinor = $min
+                $bestPatch = 0
+                $bestAsset = $asset
+            }
+        }
+    }
+    return $bestAsset
+}
+
 # -- Find Python --
 Write-Host ""
 Write-Host "  [1/7] Checking for Python..." -ForegroundColor Cyan
@@ -87,7 +129,6 @@ if (-not $python) {
         Invoke-WebRequest -Uri $pyUrl -OutFile $pyInst -UseBasicParsing
     } catch {
         Write-Host "  ERROR: Download failed." -ForegroundColor Red
-        Write-Host "  Install Python 3.12 from https://www.python.org/downloads/" -ForegroundColor Yellow
         exit 1
     }
     Write-Host "  Installing Python..." -ForegroundColor Yellow
@@ -170,7 +211,7 @@ foreach ($sp in $diannSearchPaths) {
     }
 }
 
-# Find the best DIA-NN — prefer 2.3+ for community benchmark compatibility
+# Find best existing installation
 $bestDiann = $null
 $bestMajor = 0
 $bestMinor = 0
@@ -209,23 +250,17 @@ if (-not $diannInstalled) {
     $ErrorActionPreference = "Continue"
     try {
         $diannRelease = Invoke-RestMethod "https://api.github.com/repos/vdemichev/DiaNN/releases/latest" -TimeoutSec 15
-        $diannAsset = $diannRelease.assets | Where-Object { $_.name -match "\.msi$" -and $_.name -notmatch "linux" } | Select-Object -First 1
-        if (-not $diannAsset) {
-            $diannAsset = $diannRelease.assets | Where-Object { $_.name -match "\.exe$" -and $_.name -notmatch "linux" } | Select-Object -First 1
-        }
+        # Select the LATEST version from the assets (release contains multiple versions)
+        $diannAsset = Select-LatestDiannMsi $diannRelease.assets
         if ($diannAsset) {
             $diannInstaller = "$env:TEMP\$($diannAsset.name)"
             Write-Host "  Downloading $($diannAsset.name)..." -ForegroundColor Gray
             Invoke-WebRequest -Uri $diannAsset.browser_download_url -OutFile $diannInstaller -UseBasicParsing
             Write-Host "  Running installer (silent)..." -ForegroundColor Gray
-            if ($diannInstaller -match "\.msi$") {
-                $diannProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/quiet", "/norestart" -Wait -PassThru
-                if ($diannProc.ExitCode -ne 0) {
-                    Write-Host "  Silent install failed. Trying with admin prompt..." -ForegroundColor Yellow
-                    Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/passive", "/norestart" -Wait -Verb RunAs
-                }
-            } else {
-                Start-Process -FilePath $diannInstaller -ArgumentList "/S" -Wait
+            $diannProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/quiet", "/norestart" -Wait -PassThru
+            if ($diannProc.ExitCode -ne 0) {
+                Write-Host "  Silent install failed. Trying with admin prompt..." -ForegroundColor Yellow
+                Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$diannInstaller`"", "/passive", "/norestart" -Wait -Verb RunAs
             }
             Remove-Item $diannInstaller -ErrorAction SilentlyContinue
 
@@ -248,7 +283,8 @@ if (-not $diannInstalled) {
                 }
             }
         } else {
-            Write-Host "  No installer found. Install manually: https://github.com/vdemichev/DiaNN/releases" -ForegroundColor Yellow
+            Write-Host "  No Windows MSI found in latest DIA-NN release." -ForegroundColor Yellow
+            Write-Host "  Install manually: https://github.com/vdemichev/DiaNN/releases" -ForegroundColor Yellow
         }
     } catch {
         Write-Host "  Could not install DIA-NN: $_" -ForegroundColor Yellow
@@ -312,7 +348,6 @@ Write-Host "  [7/7] Adding to PATH..." -ForegroundColor Cyan
 $sp = "$venv\Scripts"
 $up = [Environment]::GetEnvironmentVariable("PATH", "User")
 
-# Remove old .stan\venv from PATH if it exists (avoid shadowing new STAN\venv)
 $oldScripts = "$env:USERPROFILE\.stan\venv\Scripts"
 if ($up -like "*$oldScripts*") {
     $parts = $up -split ";"
@@ -331,7 +366,7 @@ if ($up -notlike "*$sp*") {
     Write-Host "  Already in PATH." -ForegroundColor Green
 }
 
-# -- Self-update .bat files for next run --
+# -- Self-update .bat files --
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $scriptDir) { $scriptDir = Get-Location }
 try {

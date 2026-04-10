@@ -18,6 +18,47 @@ public class TrustAllUpdate {
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# Helper: pick the latest DIA-NN .msi asset from a release by parsing version from filename
+# The DIA-NN "latest" release contains multiple versions (2.0, 2.1, 2.2, 2.3.x) as assets
+function Select-LatestDiannMsi {
+    param($assets)
+    $bestAsset = $null
+    $bestMajor = 0
+    $bestMinor = 0
+    $bestPatch = 0
+    foreach ($asset in $assets) {
+        $name = $asset.name
+        if ($name -notmatch "\.msi$") { continue }
+        if ($name -match "linux") { continue }
+        if ($name -match "[Pp]review") { continue }
+        # Parse version like "DIA-NN-2.3.2-Academia.msi"
+        if ($name -match "(\d+)\.(\d+)\.(\d+)") {
+            $maj = [int]$Matches[1]
+            $min = [int]$Matches[2]
+            $pat = [int]$Matches[3]
+            if ($maj -gt $bestMajor -or
+                ($maj -eq $bestMajor -and $min -gt $bestMinor) -or
+                ($maj -eq $bestMajor -and $min -eq $bestMinor -and $pat -gt $bestPatch)) {
+                $bestMajor = $maj
+                $bestMinor = $min
+                $bestPatch = $pat
+                $bestAsset = $asset
+            }
+        } elseif ($name -match "(\d+)\.(\d+)") {
+            $maj = [int]$Matches[1]
+            $min = [int]$Matches[2]
+            if ($maj -gt $bestMajor -or
+                ($maj -eq $bestMajor -and $min -gt $bestMinor)) {
+                $bestMajor = $maj
+                $bestMinor = $min
+                $bestPatch = 0
+                $bestAsset = $asset
+            }
+        }
+    }
+    return $bestAsset
+}
+
 # Use new STAN directory, fall back to old .stan
 $venv = "$env:USERPROFILE\STAN\venv"
 $venvPython = "$venv\Scripts\python.exe"
@@ -27,14 +68,12 @@ $newStanDir = "$env:USERPROFILE\STAN"
 
 if (-not (Test-Path $venvPython)) {
     if (Test-Path $oldVenvPython) {
-        # Auto-migrate: create new STAN dir and copy venv from .stan
         Write-Host "  Migrating from .stan to STAN..." -ForegroundColor Yellow
         if (-not (Test-Path $newStanDir)) { New-Item -ItemType Directory -Path $newStanDir -Force | Out-Null }
         try {
             $destVenv = Join-Path $newStanDir "venv"
             Copy-Item -Path $oldVenv -Destination $destVenv -Recurse -Force
             Write-Host "  Copied venv" -ForegroundColor Gray
-            # Copy config files
             $oldStanDir = Join-Path $env:USERPROFILE ".stan"
             $configFiles = Get-ChildItem $oldStanDir -File -ErrorAction SilentlyContinue
             foreach ($cf in $configFiles) {
@@ -44,7 +83,6 @@ if (-not (Test-Path $venvPython)) {
                     Write-Host "  Copied $($cf.Name)" -ForegroundColor Gray
                 }
             }
-            # Copy subdirectories except venv
             $subDirs = Get-ChildItem $oldStanDir -Directory -ErrorAction SilentlyContinue
             foreach ($sd in $subDirs) {
                 if ($sd.Name -ne "venv") {
@@ -55,7 +93,6 @@ if (-not (Test-Path $venvPython)) {
                     }
                 }
             }
-            # Update PATH
             $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
             $oldScripts = Join-Path $oldVenv "Scripts"
             $newScripts = Join-Path $destVenv "Scripts"
@@ -70,7 +107,6 @@ if (-not (Test-Path $venvPython)) {
             }
             [Environment]::SetEnvironmentVariable("PATH", $userPath, "User")
             $env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$userPath"
-            Write-Host "  PATH updated." -ForegroundColor Gray
             Write-Host "  Migration complete." -ForegroundColor Green
         } catch {
             Write-Host "  Migration failed, using old location." -ForegroundColor Yellow
@@ -83,7 +119,6 @@ if (-not (Test-Path $venvPython)) {
     }
 }
 
-# Ensure venvPython points to the right place after potential migration
 $venvPython = Join-Path $venv "Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
     $venv = $oldVenv
@@ -103,7 +138,6 @@ $t = [DateTime]::Now.Ticks
 
 if (-not (Test-Path $stanExe)) {
     Write-Host "  ERROR: STAN update failed." -ForegroundColor Red
-    Write-Host "  Close all STAN windows and retry." -ForegroundColor Yellow
     exit 1
 }
 Write-Host "  STAN updated." -ForegroundColor Green
@@ -141,7 +175,6 @@ $diannSearchPaths = @(
     "C:\Program Files\DiaNN"
 )
 
-# Find all DIA-NN installs
 $allDiann = @()
 foreach ($sp in $diannSearchPaths) {
     if (Test-Path $sp) {
@@ -152,7 +185,6 @@ foreach ($sp in $diannSearchPaths) {
 $onPath = Get-Command "DiaNN.exe" -ErrorAction SilentlyContinue
 if ($onPath) { $allDiann += $onPath.Source }
 
-# Pick newest version
 $bestDiann = $null
 $bestMajor = 0
 $bestMinor = 0
@@ -168,7 +200,6 @@ foreach ($p in $allDiann) {
     }
 }
 
-# Community benchmark requires DIA-NN 2.3+ for consistent results across labs
 $needsDiannInstall = $false
 $isCompatible = $false
 if ($bestDiann -and ($bestMajor -gt 2 -or ($bestMajor -eq 2 -and $bestMinor -ge 3))) {
@@ -197,24 +228,19 @@ if ($needsDiannInstall) {
     $ErrorActionPreference = "Continue"
     try {
         $rel = Invoke-RestMethod "https://api.github.com/repos/vdemichev/DiaNN/releases/latest" -TimeoutSec 15
-        $asset = $rel.assets | Where-Object { $_.name -match "\.msi$" -and $_.name -notmatch "linux" } | Select-Object -First 1
-        if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -match "\.exe$" -and $_.name -notmatch "linux" } | Select-Object -First 1 }
+        # The "latest" release contains multiple versions — pick the highest
+        $asset = Select-LatestDiannMsi $rel.assets
         if ($asset) {
             $installer = "$env:TEMP\$($asset.name)"
             Write-Host "  Downloading $($asset.name)..." -ForegroundColor Gray
             Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $installer -UseBasicParsing
             Write-Host "  Running installer (silent)..." -ForegroundColor Gray
-            if ($installer -match "\.msi$") {
-                $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" -Wait -PassThru
-                if ($proc.ExitCode -ne 0) {
-                    Write-Host "  Silent failed. Trying with admin..." -ForegroundColor Yellow
-                    Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$installer`"", "/passive", "/norestart" -Wait -Verb RunAs
-                }
-            } else {
-                Start-Process -FilePath $installer -ArgumentList "/S" -Wait
+            $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$installer`"", "/quiet", "/norestart" -Wait -PassThru
+            if ($proc.ExitCode -ne 0) {
+                Write-Host "  Silent failed. Trying with admin..." -ForegroundColor Yellow
+                Start-Process -FilePath "msiexec.exe" -ArgumentList "/i", "`"$installer`"", "/passive", "/norestart" -Wait -Verb RunAs
             }
             Remove-Item $installer -ErrorAction SilentlyContinue
-            # Find installed exe
             $env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$([Environment]::GetEnvironmentVariable('Path','User'))"
             foreach ($sp in $diannSearchPaths) {
                 if (Test-Path $sp) {
@@ -231,7 +257,7 @@ if ($needsDiannInstall) {
                 }
             }
         } else {
-            Write-Host "  No installer found. Install manually: https://github.com/vdemichev/DiaNN/releases" -ForegroundColor Yellow
+            Write-Host "  No MSI found. Install manually: https://github.com/vdemichev/DiaNN/releases" -ForegroundColor Yellow
         }
     } catch {
         Write-Host "  Could not install DIA-NN: $_" -ForegroundColor Yellow
