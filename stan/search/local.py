@@ -28,6 +28,28 @@ from pathlib import Path
 
 from stan.search.convert import get_mzml_path
 
+
+def _mirror_log_to_hive(log_file: Path, run_stem: str, engine: str) -> None:
+    """Copy a failed search log to the Hive mirror directory.
+
+    Silently does nothing if Y:\\STAN (or configured mirror) isn't mounted.
+    Writes to a per-instrument subdirectory to avoid collisions.
+    """
+    try:
+        from stan.config import get_hive_mirror_dir
+        hive_dir = get_hive_mirror_dir()
+        if not hive_dir or not log_file.exists():
+            return
+        failures_dir = hive_dir / "failures"
+        failures_dir.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = failures_dir / f"{timestamp}_{engine}_{run_stem}.log"
+        shutil.copy2(str(log_file), str(dest))
+        logger.info("Mirrored log to Hive: %s", dest)
+    except Exception:
+        logger.debug("Could not mirror log to Hive", exc_info=True)
+
 logger = logging.getLogger(__name__)
 
 
@@ -183,11 +205,13 @@ def run_diann_local(
         logger.error("DIA-NN timed out after 4 hours: %s", raw_path.name)
         from stan.telemetry import report_error
         report_error(e, {"search_engine": "diann", "vendor": vendor})
+        _mirror_log_to_hive(log_file, raw_path.stem, "diann")
         return None
     except subprocess.CalledProcessError as e:
         logger.error("DIA-NN failed: %s\nstderr:\n%s", raw_path.name, e.stderr)
         from stan.telemetry import report_error
         report_error(e, {"search_engine": "diann", "vendor": vendor})
+        _mirror_log_to_hive(log_file, raw_path.stem, "diann")
         return None
 
     report = output_dir / "report.parquet"
@@ -290,11 +314,13 @@ def run_sage_local(
         logger.error("Sage timed out after 4 hours: %s", raw_path.name)
         from stan.telemetry import report_error
         report_error(e, {"search_engine": "sage", "vendor": vendor})
+        _mirror_log_to_hive(log_file, raw_path.stem, "sage")
         return None
     except subprocess.CalledProcessError as e:
         logger.error("Sage failed: %s\nstderr:\n%s", raw_path.name, e.stderr)
         from stan.telemetry import report_error
         report_error(e, {"search_engine": "sage", "vendor": vendor})
+        _mirror_log_to_hive(log_file, raw_path.stem, "sage")
         return None
     finally:
         # Clean up mzML if requested

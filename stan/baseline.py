@@ -388,6 +388,23 @@ def run_baseline() -> None:
     logging.getLogger().setLevel(logging.DEBUG)
     logger.info("Baseline log: %s", log_path)
 
+    # Also log to Hive mirror if available (enables remote debugging)
+    from stan.config import get_hive_mirror_dir
+    hive_dir = get_hive_mirror_dir()
+    if hive_dir:
+        try:
+            hive_log_path = hive_dir / "baseline.log"
+            hive_handler = logging.FileHandler(str(hive_log_path), mode="w", encoding="utf-8")
+            hive_handler.setLevel(logging.DEBUG)
+            hive_handler.setFormatter(logging.Formatter(
+                "%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+            ))
+            hive_handler.flush = hive_handler.stream.flush  # type: ignore[assignment]
+            logging.getLogger().addHandler(hive_handler)
+            logger.info("Hive mirror log: %s", hive_log_path)
+        except Exception:
+            logger.debug("Could not write to Hive mirror", exc_info=True)
+
     console.print()
     console.print(Panel(
         "[bold]STAN Baseline Builder v3[/bold]\n\n"

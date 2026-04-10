@@ -22,6 +22,53 @@ else:
     _USER_CONFIG_DIR = Path.home() / ".stan"
 
 
+def get_hive_mirror_dir() -> Path | None:
+    """Return the Hive mirror directory if mapped, else None.
+
+    Checks common locations where STAN may be set up to sync logs to Hive:
+    - Y:\\STAN  (Windows mapped network drive — default convention)
+    - Any path in community.yml under hive_mirror_dir
+    - HIVE_MIRROR_DIR environment variable
+
+    Returns a per-instrument subdirectory (so multiple instruments can
+    share the same mirror without overwriting each other).
+    """
+    import os
+    candidates = []
+
+    # Environment variable override
+    env_dir = os.environ.get("HIVE_MIRROR_DIR")
+    if env_dir:
+        candidates.append(Path(env_dir))
+
+    # Config file
+    try:
+        comm = load_community()
+        cfg_dir = comm.get("hive_mirror_dir")
+        if cfg_dir:
+            candidates.append(Path(cfg_dir))
+    except Exception:
+        pass
+
+    # Default: Y:\STAN on Windows
+    if _plat.system() == "Windows":
+        candidates.append(Path("Y:/STAN"))
+
+    for base in candidates:
+        try:
+            if base.exists() and base.is_dir():
+                # Create a per-instrument subdirectory based on hostname
+                import socket
+                hostname = socket.gethostname().replace(" ", "_")
+                instrument_dir = base / hostname
+                instrument_dir.mkdir(parents=True, exist_ok=True)
+                return instrument_dir
+        except (OSError, PermissionError):
+            continue
+
+    return None
+
+
 
 
 def resolve_config_path(filename: str) -> Path:
