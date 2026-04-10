@@ -168,15 +168,20 @@ def build_instrument_library(
         import os
         threads = max(2, (os.cpu_count() or 4) // 2)
 
-        # Build DIA-NN command with --out-lib to generate empirical library
-        # --use-quant reuses existing .quant files from the original search
+        # Build DIA-NN command with --gen-spec-lib + --out-lib to generate
+        # an empirical library. --gen-spec-lib is REQUIRED, otherwise --out-lib
+        # is ignored by DIA-NN.
+        # --use-quant reuses existing .quant files from the original search (fast).
+        report_path = output_path.parent / "library_build_report.parquet"
         cmd = [diann_exe]
         for rp in raw_paths:
             cmd.extend(["--f", rp])
         cmd.extend([
             "--lib", community_lib,
             "--fasta", fasta_path,
+            "--out", str(report_path),
             "--out-lib", str(output_path),
+            "--gen-spec-lib",
             "--use-quant",
             "--threads", str(threads),
             "--qvalue", "0.01",
