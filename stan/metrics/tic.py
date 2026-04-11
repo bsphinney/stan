@@ -169,10 +169,10 @@ def extract_tic_thermo(raw_path: Path) -> TICTrace | None:
         from fisher_py import RawFile
     except ImportError:
         logger.debug(
-            "fisher_py not installed — cannot extract Thermo TIC. "
-            "Install with: pip install fisher_py"
+            "fisher_py not installed — trying TRFP JSON metadata fallback "
+            "for Thermo TIC. Install fisher_py for full-resolution extraction."
         )
-        return None
+        return _extract_tic_thermo_trfp(raw_path)
 
     try:
         raw = RawFile(str(raw_path))

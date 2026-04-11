@@ -1172,6 +1172,7 @@ def _process_files(
                 #      per-file gradient length to a known Evosep SPD.
                 #   3. cohort default `spd` — last-resort fallback.
                 from stan.metrics.scoring import (
+                    detect_lc_system,
                     gradient_min_to_spd,
                     validate_spd_from_metadata,
                 )
@@ -1182,10 +1183,22 @@ def _process_files(
                 if file_spd is None:
                     file_spd = spd
 
+                # Detect LC system from the same XML tree. Returns
+                # "evosep", "custom", or None. Used by the community
+                # TIC overlay filter so Evosep standardized runs can
+                # be shown separately from custom nanoLC runs.
+                try:
+                    lc_system_detected = detect_lc_system(raw_file) or ""
+                except Exception:
+                    logger.debug("detect_lc_system failed for %s", raw_file.name, exc_info=True)
+                    lc_system_detected = ""
+
                 # Compute IPS using the per-file SPD (cohort reference
                 # lookup inside compute_ips_dia depends on metrics["spd"]).
                 metrics["instrument_family"] = instrument_model
                 metrics["spd"] = file_spd
+                if lc_system_detected:
+                    metrics["lc_system"] = lc_system_detected
                 if is_dia(mode_obj):
                     ips = compute_ips_dia(metrics)
                 else:
@@ -1299,6 +1312,7 @@ def _process_files(
                         "mode": acq_mode.upper(),
                         "gradient_length_min": grad_min,
                         "spd": file_spd,
+                        "lc_system": lc_system_detected,
                         **metrics,
                     }
                     # Include identified TIC for community if available

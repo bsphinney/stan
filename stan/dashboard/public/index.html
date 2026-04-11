@@ -1306,16 +1306,22 @@
               <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
             )}
           </div>
-          {tab === 'live' && <LiveRuns />}
-          {tab === 'history' && <RunHistory />}
-          {tab === 'trends' && <TrendCharts />}
-          {tab === 'config' && <ConfigEditor />}
-          {tab === 'community' && <CommunityTab />}
+          <ErrorBoundary key={tab}>
+            {tab === 'live' && <LiveRuns />}
+            {tab === 'history' && <RunHistory />}
+            {tab === 'trends' && <TrendCharts />}
+            {tab === 'config' && <ConfigEditor />}
+            {tab === 'community' && <CommunityTab />}
+          </ErrorBoundary>
         </div>
       );
     }
 
-    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    ReactDOM.createRoot(document.getElementById('root')).render(
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    );
   </script>
 </body>
 </html>

@@ -162,17 +162,20 @@ def _sanitize_path_for_diann(raw_path: Path, staging_dir: Path) -> Path:
         staging_dir.mkdir(parents=True, exist_ok=True)
         if sys.platform == "win32":
             if raw_path.is_dir():
-                # Directory junction — no admin privs needed on NTFS
+                # Directory junction — no admin privs needed on NTFS.
+                # Junctions work on the same volume only; if staging and
+                # raw are on different drives we fall back to copytree.
                 result = subprocess.run(
                     ["cmd", "/c", "mklink", "/J", str(junction), str(raw_path)],
                     capture_output=True, text=True, check=False,
                 )
                 if result.returncode != 0:
                     logger.warning(
-                        "mklink /J failed for %s: %s",
+                        "mklink /J failed for %s: %s — falling back to copytree",
                         raw_path.name, result.stderr.strip() or result.stdout.strip(),
                     )
-                    return raw_path
+                    import shutil
+                    shutil.copytree(str(raw_path), str(junction))
             else:
                 import os
                 try:

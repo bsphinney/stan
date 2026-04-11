@@ -327,8 +327,9 @@ def _bruker_spd_from_xml(d_path) -> int | None:
 
 # "<N> samples per day" → N. Evosep writes this label both in
 # submethods.xml and in the Agilent ICF method file.
-_EVOSEP_SPD_LABEL_RE = __import__("re").compile(
-    r"(\d+)\s*samples?\s*per\s*day", __import__("re").IGNORECASE
+import re as _re
+_EVOSEP_SPD_LABEL_RE = _re.compile(
+    r"(\d+)\s*samples?\s*per\s*day", _re.IGNORECASE
 )
 
 

@@ -230,6 +230,8 @@ def insert_run(
         "median_mass_acc_ms2_ppm": metrics.get("median_mass_acc_ms2_ppm"),
         "peak_capacity": metrics.get("peak_capacity"),
         "dynamic_range_log10": metrics.get("dynamic_range_log10"),
+        # LC system (from detect_lc_system on the raw file)
+        "lc_system": metrics.get("lc_system") or "",
         # Run metadata
         "amount_ng": amount_ng,
         "spd": spd,
