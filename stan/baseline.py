@@ -1236,25 +1236,41 @@ def _process_files(
                     from stan.metrics.tic import (
                         extract_tic_bruker, extract_tic_thermo,
                         extract_tic_from_report, compute_tic_metrics,
+                        downsample_trace,
                     )
                     # Raw TIC from instrument file (preferred for community — search-independent)
                     raw_tic = None
                     if vendor == "bruker" and raw_file.is_dir():
                         raw_tic = extract_tic_bruker(raw_file)
-                    # Identified TIC from DIA-NN report (works for all vendors)
+                    elif vendor == "thermo":
+                        raw_tic = extract_tic_thermo(raw_file)
+                    # Identified TIC from DIA-NN report (DIA only; Sage DDA
+                    # doesn't produce a comparable identified TIC)
                     id_tic = None
                     if result_path and result_path.exists() and is_dia(mode_obj):
                         id_tic = extract_tic_from_report(result_path)
 
-                    # Store the best available TIC locally
+                    # Store the best available TIC locally. raw_tic can be
+                    # 10k+ points (one per MS1 frame on Bruker); bin to
+                    # 128 so the community payload stays small and the
+                    # overlay shape is comparable to id_tic (which is
+                    # already 128-binned by extract_tic_from_report).
                     tic_trace = raw_tic or id_tic
                     if tic_trace:
+                        tic_trace = downsample_trace(tic_trace, n_bins=128)
                         tic_metrics = compute_tic_metrics(tic_trace)
                         insert_tic_trace(run_id, tic_trace.rt_min, tic_trace.intensity)
                         if tic_metrics.total_auc > 0:
                             _update_tic_metrics(run_id, tic_metrics)
+                    else:
+                        logger.warning(
+                            "No TIC extracted for %s (raw_tic=%s, id_tic=%s, "
+                            "search_result_exists=%s)",
+                            raw_file.name, bool(raw_tic), bool(id_tic),
+                            result_path.exists() if result_path else False,
+                        )
                 except Exception:
-                    logger.debug("TIC extraction failed for %s", raw_file.name, exc_info=True)
+                    logger.warning("TIC extraction failed for %s", raw_file.name, exc_info=True)
 
                 # Track for community upload (per-file gradient and SPD)
                 if community_submit:

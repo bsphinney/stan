@@ -109,6 +109,50 @@ def extract_tic_bruker(d_path: Path) -> TICTrace | None:
     )
 
 
+def downsample_trace(trace: TICTrace, n_bins: int = 128) -> TICTrace:
+    """Bin a TIC trace to a fixed number of RT bins.
+
+    Bruker ``extract_tic_bruker`` returns one point per MS1 frame, which
+    can be 5–20k points for a 1 h run — too much for a community
+    submission payload and too noisy for cross-lab overlay plots. This
+    bins the trace into ``n_bins`` equal-width RT bins by summing
+    intensities within each bin (NOT averaging — the total signal
+    matters more than the instantaneous value).
+
+    The downsampled trace has the same shape as the output of
+    ``extract_tic_from_report``, so both sources produce comparable
+    community traces.
+    """
+    if not trace.rt_min or not trace.intensity:
+        return trace
+    if len(trace.rt_min) <= n_bins:
+        return trace  # already small enough
+
+    rt_lo = float(min(trace.rt_min))
+    rt_hi = float(max(trace.rt_min))
+    span = rt_hi - rt_lo
+    if span <= 0:
+        return trace
+
+    bin_width = span / n_bins
+    bin_centers = [rt_lo + (i + 0.5) * bin_width for i in range(n_bins)]
+    bin_intensity = [0.0] * n_bins
+
+    for rt, inten in zip(trace.rt_min, trace.intensity):
+        idx = int((rt - rt_lo) / bin_width)
+        if idx >= n_bins:
+            idx = n_bins - 1
+        if idx < 0:
+            idx = 0
+        bin_intensity[idx] += float(inten)
+
+    return TICTrace(
+        rt_min=bin_centers,
+        intensity=bin_intensity,
+        run_name=trace.run_name,
+    )
+
+
 def extract_tic_thermo(raw_path: Path) -> TICTrace | None:
     """Extract MS1 TIC trace from a Thermo .raw file using fisher_py.
 
