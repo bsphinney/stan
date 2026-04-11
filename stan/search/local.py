@@ -119,6 +119,86 @@ def _build_local_sage_params(
     }
 
 
+def _sanitize_path_for_diann(raw_path: Path, staging_dir: Path) -> Path:
+    """Return a DIA-NN-safe path, creating a junction/symlink if needed.
+
+    DIA-NN mis-parses filenames containing double-dashes on Windows —
+    it splits the name at each ``--`` and treats every fragment as a
+    separate CLI flag. A file named
+    ``hela__100spd--toGgBps--C43-tf9d0c24.d`` produces:
+
+        WARNING: unrecognised option [--toGgBps]
+        WARNING: unrecognised option [--C43-tf9d0c24.d]
+        WARNING: skipping ...hela__100spd - invalid raw MS data format
+        0 files will be processed
+
+    Passing the name as a single quoted argv entry does not help because
+    DIA-NN does its own argv rescan after Windows tokenization.
+
+    Workaround: for any filename containing ``--`` or other problematic
+    characters, create a directory junction (Bruker ``.d``) or hardlink
+    (Thermo ``.raw``) with a hash-derived safe name in the per-run
+    staging directory, and return that junction path. The original raw
+    file is never modified. Returns ``raw_path`` unchanged when
+    sanitization isn't needed.
+    """
+    name = raw_path.name
+    if "--" not in name:
+        return raw_path
+
+    import hashlib
+    import sys
+
+    # Hash of the full absolute path so different files with the same
+    # basename can't collide in the staging dir.
+    digest = hashlib.md5(str(raw_path.resolve()).encode("utf-8")).hexdigest()[:12]
+    safe_name = f"stan_{digest}{raw_path.suffix}"
+    junction = staging_dir / safe_name
+
+    if junction.exists():
+        return junction
+
+    try:
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            if raw_path.is_dir():
+                # Directory junction — no admin privs needed on NTFS
+                result = subprocess.run(
+                    ["cmd", "/c", "mklink", "/J", str(junction), str(raw_path)],
+                    capture_output=True, text=True, check=False,
+                )
+                if result.returncode != 0:
+                    logger.warning(
+                        "mklink /J failed for %s: %s",
+                        raw_path.name, result.stderr.strip() or result.stdout.strip(),
+                    )
+                    return raw_path
+            else:
+                import os
+                try:
+                    os.link(str(raw_path), str(junction))
+                except OSError:
+                    # Hardlink failed (cross-volume?) — fall back to copy.
+                    import shutil
+                    shutil.copy2(str(raw_path), str(junction))
+        else:
+            import os
+            os.symlink(str(raw_path), str(junction))
+    except Exception:
+        logger.warning(
+            "Could not create sanitized alias for %s; DIA-NN may fail "
+            "to parse the filename.", raw_path.name, exc_info=True,
+        )
+        return raw_path
+
+    logger.info(
+        "DIA-NN filename sanitized: %s -> %s "
+        "(filename contained '--' which DIA-NN misparses)",
+        raw_path.name, safe_name,
+    )
+    return junction
+
+
 def run_diann_local(
     raw_path: Path,
     output_dir: Path,
@@ -162,7 +242,13 @@ def run_diann_local(
         params = _build_local_diann_params(fasta_path, lib_path, vendor=vendor)
 
     report_path = output_dir / "report.parquet"
-    cmd = [diann_exe, "--f", str(raw_path), "--out", str(report_path)]
+
+    # Work around DIA-NN's double-dash filename parsing bug by creating
+    # a junction/symlink with a safe name when necessary.
+    staging_dir = output_dir.parent / "_stan_diann_staging"
+    raw_for_diann = _sanitize_path_for_diann(raw_path, staging_dir)
+
+    cmd = [diann_exe, "--f", str(raw_for_diann), "--out", str(report_path)]
 
     for key, val in params.items():
         if val == "":
@@ -218,7 +304,25 @@ def run_diann_local(
     if report.exists():
         return report
 
-    logger.error("DIA-NN output not found: %s", report)
+    # DIA-NN exits with rc=0 even when it processed zero files (e.g. when
+    # the filename confused its argv parser). Scan the log and surface a
+    # clear error message + mirror the log to Hive for remote debugging.
+    diagnosis = "output file missing"
+    try:
+        log_text = log_file.read_text(errors="replace")
+        if "0 files will be processed" in log_text:
+            diagnosis = "DIA-NN processed 0 files — filename parsing error?"
+        elif "invalid raw MS data format" in log_text:
+            diagnosis = "DIA-NN rejected the raw file (invalid format or unreadable)"
+        elif "unrecognised option" in log_text:
+            diagnosis = "DIA-NN rejected one or more CLI options"
+        elif "Library does not contain" in log_text or "Spectral library" in log_text and "loaded" not in log_text:
+            diagnosis = "Spectral library problem"
+    except Exception:
+        pass
+
+    logger.error("DIA-NN failed: %s — %s", raw_path.name, diagnosis)
+    _mirror_log_to_hive(log_file, raw_path.stem, "diann")
     return None
 
 
