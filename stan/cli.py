@@ -562,67 +562,128 @@ def sync() -> None:
         console.print("[red]Sync failed.[/red]")
 
 
-@app.command("backfill-tic")
-def backfill_tic() -> None:
-    """Extract identified TIC traces from existing baseline reports.
+def _backfill_tic_impl(
+    push: bool = False,
+    verbose: bool = True,
+) -> tuple[int, int, int]:
+    """Core backfill logic shared by the CLI command and the baseline
+    startup sweep.
 
-    Reads all report.parquet files in baseline_output/ and extracts
-    TIC chromatograms without re-running any searches. Fast — takes
-    seconds per file.
+    Finds runs in the local DB that are missing TIC traces and re-extracts
+    them from the best available source, in this order:
+
+      1. ``analysis.tdf`` inside the .d directory at ``raw_path``
+         (Bruker raw TIC — works even when the DIA-NN search failed)
+      2. ``report.parquet`` in ``baseline_output/<run_name>/``
+         (identified TIC from DIA-NN, DIA only)
+      3. ``extract_tic_thermo`` for Thermo ``.raw`` if fisher_py works
+
+    All traces are downsampled to 128 bins before storage so they match
+    the identified-TIC format.
+
+    Returns (extracted, skipped, failed).
     """
+    import json
+    import sqlite3
+    import urllib.error
+    import urllib.request
+
     from stan.config import get_user_config_dir
     from stan.db import get_db_path, get_runs, init_db, insert_tic_trace
-    from stan.metrics.tic import extract_tic_from_report, compute_tic_metrics
-
-    import sqlite3
+    from stan.metrics.tic import (
+        compute_tic_metrics,
+        downsample_trace,
+        extract_tic_bruker,
+        extract_tic_from_report,
+        extract_tic_thermo,
+    )
 
     init_db()
     db_path = get_db_path()
     output_dir = get_user_config_dir() / "baseline_output"
 
-    if not output_dir.exists():
-        console.print("[red]No baseline_output directory found.[/red]")
-        return
+    # Pull every run and work out which ones are missing a TIC trace.
+    all_runs = get_runs(limit=100000, db_path=db_path)
+    if not all_runs:
+        if verbose:
+            console.print("[dim]No runs in local DB — nothing to backfill.[/dim]")
+        return (0, 0, 0)
 
-    # Find all report.parquet files
-    reports = sorted(output_dir.rglob("report.parquet"))
-    console.print(f"Found [bold]{len(reports)}[/bold] report.parquet files")
+    with sqlite3.connect(str(db_path)) as con:
+        have_tic = {
+            row[0] for row in con.execute(
+                "SELECT DISTINCT run_id FROM tic_traces"
+            ).fetchall()
+        }
 
-    # Get all runs from DB to match report dirs to run IDs
-    all_runs = get_runs(limit=10000, db_path=db_path)
-    run_map = {}
-    for run in all_runs:
-        run_map[run["run_name"]] = run["id"]
+    missing = [r for r in all_runs if r["id"] not in have_tic]
+    if not missing:
+        if verbose:
+            console.print("[green]Every run already has a TIC trace.[/green]")
+        return (0, 0, 0)
+
+    if verbose:
+        console.print(
+            f"Re-extracting TIC for [bold]{len(missing)}[/bold] runs "
+            f"(of {len(all_runs)} total)..."
+        )
 
     extracted = 0
     skipped = 0
-    for rp in reports:
-        dir_name = rp.parent.name
-        # Match directory name to run_name (with extension)
-        run_id = None
-        for ext in [".d", ".raw", ""]:
-            candidate = dir_name + ext
-            if candidate in run_map:
-                run_id = run_map[candidate]
-                break
+    failed = 0
+    pushed_rows: list[tuple[str, list, list]] = []
 
-        if not run_id:
-            skipped += 1
+    for run in missing:
+        run_id = run["id"]
+        run_name = run.get("run_name", "")
+        raw_path_str = run.get("raw_path", "") or ""
+        raw_path = Path(raw_path_str) if raw_path_str else None
+
+        trace = None
+
+        # 1. Try Bruker .d raw TIC
+        if raw_path and raw_path.exists() and raw_path.suffix.lower() == ".d":
+            try:
+                trace = extract_tic_bruker(raw_path)
+            except Exception:
+                logger.debug("extract_tic_bruker failed for %s", raw_path, exc_info=True)
+
+        # 2. Try the identified TIC from the DIA-NN report.parquet
+        if trace is None and output_dir.exists():
+            # The baseline output dir for a file is named after the stem
+            report_path = None
+            for stem_variant in (Path(run_name).stem, run_name, Path(raw_path_str).stem if raw_path_str else ""):
+                if not stem_variant:
+                    continue
+                candidate = output_dir / stem_variant / "report.parquet"
+                if candidate.exists():
+                    report_path = candidate
+                    break
+            if report_path is not None:
+                try:
+                    trace = extract_tic_from_report(report_path)
+                except Exception:
+                    logger.debug("extract_tic_from_report failed for %s", report_path, exc_info=True)
+
+        # 3. Try Thermo .raw via fisher_py
+        if trace is None and raw_path and raw_path.exists() and raw_path.suffix.lower() == ".raw":
+            try:
+                trace = extract_tic_thermo(raw_path)
+            except Exception:
+                logger.debug("extract_tic_thermo failed for %s", raw_path, exc_info=True)
+
+        if trace is None:
+            failed += 1
+            if verbose:
+                console.print(f"  [red]no source[/red] {run_name}")
             continue
 
-        # Check if TIC already exists
-        with sqlite3.connect(str(db_path)) as con:
-            existing = con.execute(
-                "SELECT 1 FROM tic_traces WHERE run_id = ?", (run_id,)
-            ).fetchone()
-        if existing:
-            skipped += 1
-            continue
+        # Bin to 128 points so local storage + community submission match
+        trace = downsample_trace(trace, n_bins=128)
 
-        trace = extract_tic_from_report(rp)
-        if trace:
-            tic_metrics = compute_tic_metrics(trace)
+        try:
             insert_tic_trace(run_id, trace.rt_min, trace.intensity, db_path=db_path)
+            tic_metrics = compute_tic_metrics(trace)
             if tic_metrics.total_auc > 0:
                 with sqlite3.connect(str(db_path)) as con:
                     con.execute(
@@ -630,9 +691,74 @@ def backfill_tic() -> None:
                         (tic_metrics.total_auc, tic_metrics.peak_rt_min, run_id),
                     )
             extracted += 1
-            console.print(f"  [green]TIC[/green] {dir_name}")
+            if verbose:
+                console.print(f"  [green]TIC[/green] {run_name}")
+        except Exception:
+            logger.exception("Failed to store TIC for %s", run_name)
+            failed += 1
+            continue
 
-    console.print(f"\nExtracted: {extracted}, Skipped: {skipped}")
+        # Queue for community push if this run was already submitted
+        if push and run.get("submission_id"):
+            pushed_rows.append(
+                (run["submission_id"], trace.rt_min, trace.intensity)
+            )
+
+    if verbose:
+        console.print(
+            f"\n[bold]Extracted:[/bold] {extracted}  "
+            f"[bold]Failed:[/bold] {failed}  "
+            f"[bold]Skipped:[/bold] {skipped}"
+        )
+
+    # Push corrections to the community relay
+    if push and pushed_rows:
+        from stan.community.submit import RELAY_URL
+        console.print(
+            f"Pushing [bold]{len(pushed_rows)}[/bold] TIC corrections to the relay..."
+        )
+        ok = 0
+        for sub_id, rt, inten in pushed_rows:
+            try:
+                data = json.dumps({
+                    "tic_rt_bins": [round(float(r), 3) for r in rt],
+                    "tic_intensity": [round(float(v), 0) for v in inten],
+                }).encode("utf-8")
+                req = urllib.request.Request(
+                    f"{RELAY_URL}/api/update/{sub_id}",
+                    data=data, method="POST",
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    if resp.status == 200:
+                        ok += 1
+            except Exception:
+                logger.exception("Relay TIC push failed for %s", sub_id[:8])
+        console.print(f"  [green]{ok}[/green] pushed, [red]{len(pushed_rows) - ok}[/red] failed")
+
+    return (extracted, skipped, failed)
+
+
+@app.command("backfill-tic")
+def backfill_tic(
+    push: bool = typer.Option(
+        False, "--push",
+        help="Also push extracted TIC traces to the community relay for "
+             "runs that were already submitted.",
+    ),
+) -> None:
+    """Re-extract TIC traces for runs that are missing one.
+
+    Walks the local runs table and, for each run without a TIC, tries
+    (in order) the raw Bruker analysis.tdf, the DIA-NN report.parquet,
+    and fisher_py for Thermo .raw. All traces are downsampled to 128
+    bins before storage. Fast — seconds per file.
+
+    With ``--push``, also uploads corrections to the community benchmark
+    relay via /api/update/{submission_id} for runs that already have a
+    submission_id.
+    """
+    _backfill_tic_impl(push=push, verbose=True)
 
 
 @app.command("fix-spds")

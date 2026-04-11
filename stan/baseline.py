@@ -432,6 +432,24 @@ def run_baseline() -> None:
             _clear_progress()
             console.print("[dim]Starting fresh.[/dim]")
 
+    # ── 0. TIC backfill sweep ───────────────────────────────────
+    # Before processing anything new, re-extract TIC for any prior
+    # runs that ended up without one (failed DIA-NN searches, silent
+    # TIC extraction errors, or runs imported before the downsample
+    # fix). This is cheap — it just reads analysis.tdf / report.parquet
+    # for each affected run, binned to 128 points.
+    try:
+        from stan.cli import _backfill_tic_impl
+        extracted, _, failed = _backfill_tic_impl(push=False, verbose=False)
+        if extracted or failed:
+            console.print(
+                f"[dim]TIC backfill: recovered {extracted} trace"
+                f"{'s' if extracted != 1 else ''}"
+                f"{f', {failed} still missing' if failed else ''}[/dim]"
+            )
+    except Exception:
+        logger.debug("TIC backfill sweep failed", exc_info=True)
+
     # ── 1. Directory ─────────────────────────────────────────────
     console.print("[bold]Step 1: Raw data directory[/bold]")
 
