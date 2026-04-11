@@ -575,6 +575,25 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | Dashboard Config tab | Done | Remove button on instrument cards for deleting duplicates |
 | Outlier detection (amount mismatch) | **Planned** | Flag submissions where metrics don't match declared amount/SPD |
 | Failed run rejection | **Planned** | Block near-zero results from entering benchmark (failed injection, empty spray) |
+| Bruker `.d` XML metadata parser | Done | Reads `<N>.m/submethods.xml`, `hystar.method`, `SampleInfo.xml` for authoritative SPD + Evosep detection (v0.2.56) |
+| `validate_spd_from_metadata()` | Done | XML → MethodName → Frames.Time span fallback chain; handles PAC method names (v0.2.55) |
+| `detect_lc_system()` | Done | Evosep vs custom detection from .d XML tree + TrayType; powers LC filter on community TIC overlay (v0.2.56) |
+| Real acquisition-date preservation | Done | `insert_run` stores `analysis.tdf` AcquisitionDateTime or fisher_py CreationDate, not insertion time (v0.2.54) |
+| DIA-NN filename sanitizer | Done | Junction/symlink workaround for DIA-NN's `--` parsing bug that broke PAC-style filenames (v0.2.63) |
+| Dashboard error boundary + null guards | Done | React ErrorBoundary + Array.isArray guards; `/api/runs` empty-DB graceful fallback (v0.2.62) |
+| `stan repair-metadata [--push]` CLI | Done | Walks local DB, re-reads raw files, updates SPD/run_date/lc_system; optionally pushes to community relay (v0.2.57) |
+| `stan fix-spds [--dry-run]` CLI | Done | Per-run SPD correction against raw-file metadata (v0.2.55) |
+| `stan backfill-tic [--push]` CLI | Done | Multi-source TIC recovery (Bruker TDF → DIA-NN report → Thermo fisher_py) with 128-bin downsample + relay push (v0.2.65) |
+| `stan baseline` auto-TIC backfill sweep | Done | Recovers missing TIC traces silently at startup; no manual command needed (v0.2.65) |
+| `stan baseline` multi-directory picker | Done | Lists every configured watch dir as a numbered choice (v0.2.61) |
+| `stan add-watch` with QC filter prompt | Done | Interactive scan/filter preview; `-y` / `--qc-pattern` / `--all-files` non-interactive flags (v0.2.59) |
+| `stan add-watch` recursive vendor detect | Done | rglob with 5000-entry scan cap for nested subdirectories (v0.2.60) |
+| `POST /api/update/{id}` relay endpoint | Done | Metadata-only whitelist (spd, run_date, lc_system, tic_rt_bins, tic_intensity, stats); used by `repair-metadata --push` (v0.2.57) |
+| HF Space leaderboard TTL cache + snapshot_download | Done | 5 min in-memory cache; parallel submission downloads; cache-bust on `/api/submit`; `?refresh=1` override (server-side) |
+| Community TIC LC filter (Evosep / Custom / All) | Done | Client-side filter on submissions by `lc_system` with inference fallback |
+| Community TIC DIA/DDA separator | Done | Dropdown with DIA/DDA/Mixed options; defaults to DIA so cycle-time differences don't corrupt median shape |
+| `downsample_trace(n_bins=128)` helper | Done | Bins arbitrary-length TIC to canonical 128-point format before local store + submission (v0.2.64) |
+| Dashboard "Today's Runs" + MiniSparkline + IPS / FWHM-sec / signed mass-acc | Done | Cleaner Run History columns, per-instrument 30-run trend sparkline, unified Precursors/PSMs column (v0.2.58) |
 
 ---
 
@@ -591,7 +610,31 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [x] Opt-in anonymous error telemetry with local log
 - [x] Recursive watcher with Bruker .d event filtering
 - [x] Dashboard Config tab with instrument Remove button
+- [x] Bruker `.d` XML method-tree parser for authoritative SPD + LC detection
+- [x] `stan repair-metadata` CLI for re-extracting SPD/run_date/lc_system from raw files
+- [x] `stan fix-spds` CLI for per-run SPD correction against raw-file metadata
+- [x] `stan backfill-tic --push` for multi-source TIC recovery with community relay push
+- [x] `stan baseline` auto-TIC-backfill sweep on startup
+- [x] `stan baseline` multi-directory picker
+- [x] `stan add-watch` with interactive QC filter prompt + non-interactive flags
+- [x] `stan add-watch` recursive vendor auto-detect for nested watch dirs
+- [x] DIA-NN filename-with-`--` sanitizer (junction/symlink workaround)
+- [x] `POST /api/update/{id}` relay endpoint with metadata whitelist
+- [x] HF Space leaderboard TTL cache + snapshot_download
+- [x] Community TIC overlay: LC system filter (Evosep/Custom/All)
+- [x] Community TIC overlay: DIA/DDA separator (defaults to DIA)
+- [x] Dashboard ErrorBoundary + null-safety for empty DB
+- [x] Dashboard Today's Runs MiniSparkline + Run History column refresh
+- [x] `downsample_trace()` for canonical 128-bin TIC shape
+- [x] Real acquisition-date preservation from `analysis.tdf.AcquisitionDateTime`
+- [x] HF Dataset historical backfill: 81/83 submissions corrected with real SPD + run_date + lc_system
 - [ ] Add small real DIA-NN and Sage output files to `tests/fixtures/`
+- [ ] Maintenance log UI — enter column swaps/source cleans/PMs with date+notes, overlay as vertical markers on Trends charts
+- [ ] Column tracking — log column installs (vendor, model, serial, install date) to explain TIC variance
+- [ ] TIC filter by pseudonym (your traces vs community vs all)
+- [ ] TIC color by lab when showing all traces
+- [ ] Lumos/Exploris Thermo TIC backfill via Hive-side `report.parquet` identified-TIC path
+- [ ] Thermo `.raw` fisher_py-based SPD extraction from InstrumentMethod header
 - [ ] Generate and upload Astral HeLa predicted spectral library to HF Dataset
 - [ ] Generate and upload timsTOF HeLa predicted spectral library to HF Dataset
 - [ ] Build React frontend for dashboard (run history, trend charts, community leaderboard)

@@ -344,12 +344,16 @@ stan baseline
 
 The baseline builder walks you through:
 
-1. **Directory selection** -- point it at a directory of existing HeLa QC runs
+0. **TIC backfill sweep (v0.2.65+)** -- silently scans the local DB for runs that are missing a TIC trace (from failed DIA-NN searches, pre-0.2.64 runs, or older baseline imports) and re-extracts them in order: Bruker `analysis.tdf` → DIA-NN `report.parquet` → Thermo `fisher_py`. Recovered traces are downsampled to 128 points. Prints a one-line summary only if something was actually recovered.
+1. **Directory selection** -- lists every configured watch directory from `instruments.yml` as a numbered menu (v0.2.61+), or accepts a custom path. Each choice shows the vendor and QC filter settings so you can tell which directory is which.
 2. **File discovery** -- recursively finds all `.d` and `.raw` files in subdirectories
-3. **Metadata extraction** -- auto-detects instrument model, gradient length (Thermo via TRFP metadata, Bruker via `Frames.Time` in `analysis.tdf`), LC system (U3000, Vanquish Neo, Evosep, etc.), and acquisition mode from each file
-4. **Summary** -- shows a table of discovered files broken down by instrument before committing
-5. **Pre-flight tests** -- runs a quick test search with DIA-NN and Sage to verify they work before processing your files
-6. **Processing** -- searches all files with standardized parameters and stores metrics in the database
+3. **Metadata extraction** -- auto-detects instrument model, gradient length, LC system, and acquisition mode. On Bruker `.d` files the XML method tree under `<N>.m/` is read first (`submethods.xml` contains `"100 samples per day"`, `hystar.method` contains `<SubDeviceName>Evosep One</SubDeviceName>`), then the TDF `MethodName`, then `Frames.Time` span. On Thermo `.raw` files, `fisher_py` is tried before `ThermoRawFileParser`.
+4. **Per-file SPD validation** (v0.2.55+) -- each file's SPD is resolved from its own raw-file metadata via `validate_spd_from_metadata()` BEFORE the DB insert, so mixed-gradient directories get the correct per-run SPD instead of the cohort default.
+5. **Acquisition date preservation** (v0.2.54+) -- `run_date` is pulled from `analysis.tdf.AcquisitionDateTime` (Bruker) or the `.raw` header (Thermo) instead of being stamped with insertion time. Historical files keep their real timestamps.
+6. **Summary** -- shows a table of discovered files broken down by instrument before committing
+7. **Pre-flight tests** -- runs a quick test search with DIA-NN and Sage to verify they work before processing your files
+8. **Processing** -- searches all files with standardized parameters and stores metrics in the database. Filenames containing `--` are automatically aliased via a directory junction (v0.2.63+) to work around a DIA-NN 2.3.2 argv-parsing bug.
+9. **TIC extraction** -- raw Bruker TIC from `Frames.SummedIntensities` or identified TIC from the DIA-NN report, downsampled to 128 bins before local storage and community submission.
 
 If a search engine is not found or fails pre-flight, the builder prompts for a custom executable path. DIA-NN 2.x is preferred over 1.x when both are installed.
 
@@ -360,6 +364,43 @@ Additional features:
 - **Resume** -- progress is tracked in `~/.stan/baseline_progress.json`; interrupted runs resume where they left off
 - **Duplicate detection** -- files already in the database are skipped
 - **Community upload** -- if community submission is enabled, metrics are batch-uploaded after processing
+
+### Adding a new watch directory (v0.2.59+)
+
+You don't need to hand-edit `instruments.yml`. Use:
+
+```bash
+stan add-watch D:\Data                                          # interactive
+stan add-watch D:\Data -y                                       # default QC pattern, no prompt
+stan add-watch D:\Data --qc-pattern "(?i)(hela|mylab_qc)"       # custom regex
+stan add-watch G:\qc_only --all-files                           # dedicated QC dir, no filter
+```
+
+The interactive mode scans the directory (recursively, up to 5000 entries), shows how many files match the default HeLa/QC regex, and asks whether to keep the default, provide a custom regex, or process every file. Each watch directory gets its own `qc_only` + `qc_pattern` fields in `instruments.yml`, so mixed-sample dirs and dedicated QC dirs can have different filters side by side. The vendor is auto-detected from contents (`.d` → bruker, `.raw` → thermo). The watcher daemon hot-reloads the config within 30 seconds of the change.
+
+### Repairing historical metadata (v0.2.57+)
+
+If you have prior baseline runs with wrong SPD, wrong `run_date`, or missing `lc_system`:
+
+```bash
+stan repair-metadata --dry-run       # preview diffs
+stan repair-metadata                 # apply to local DB
+stan repair-metadata --push          # also push corrections to the community
+                                     # relay for runs that were already submitted
+```
+
+`stan repair-metadata` walks every row in the local `runs` table, re-reads the raw file at `raw_path`, and updates SPD (from `validate_spd_from_metadata`), acquisition date (from `get_acquisition_date`), and LC system (from `detect_lc_system`). With `--push` it forwards corrections to `POST /api/update/{submission_id}` on the community relay so the benchmark reflects reality without re-running any searches.
+
+### Repairing missing TIC traces (v0.2.65+)
+
+```bash
+stan backfill-tic                    # local DB only
+stan backfill-tic --push             # also push to community relay
+```
+
+For each run without a TIC trace in the local DB, the command tries the Bruker raw `analysis.tdf`, the DIA-NN `report.parquet` under `baseline_output/<stem>/`, and Thermo `fisher_py` in that order. Every recovered trace is downsampled to 128 bins before storage. With `--push`, already-submitted runs also get their TIC patched on the community benchmark via `POST /api/update/{submission_id}`.
+
+Note: `stan baseline` runs this sweep automatically at startup now, so you only need the manual command if you want to force a refresh or use `--push`.
 
 ---
 
