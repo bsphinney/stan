@@ -204,7 +204,14 @@ def submit_to_benchmark(
 
 
 def _instrument_family(model: str) -> str:
-    """Map instrument model name to family for cohort bucketing."""
+    """Map instrument model name to family for cohort bucketing.
+
+    Returns the broad instrument class, not the full model variant.
+    This is the single authoritative source for the family string —
+    both baseline.py and submit_to_benchmark() call through here so
+    cohort_ids, dashboard scatter colors, and community TIC overlay
+    groupings stay consistent.
+    """
     model_lower = model.lower()
     if "timstof" in model_lower or "tims tof" in model_lower:
         return "timsTOF"
@@ -212,6 +219,10 @@ def _instrument_family(model: str) -> str:
         return "Astral"
     if "exploris" in model_lower:
         return "Exploris"
+    if "lumos" in model_lower or "fusion" in model_lower:
+        return "Lumos"
+    if "eclipse" in model_lower:
+        return "Eclipse"
     if "orbitrap" in model_lower:
         return "Orbitrap"
     return model
