@@ -204,10 +204,12 @@ async def api_events(instrument: str, limit: int = 50) -> list[dict]:
 
 class LogEventRequest(BaseModel):
     event_type: str
+    event_date: str | None = None
     notes: str = ""
     operator: str = ""
     column_vendor: str | None = None
     column_model: str | None = None
+    column_serial: str | None = None
 
 
 @app.post("/api/instruments/{instrument}/events")
@@ -219,10 +221,12 @@ async def api_log_event(instrument: str, body: LogEventRequest) -> dict:
     event_id = log_event(
         instrument=instrument,
         event_type=body.event_type,
+        event_date=body.event_date,
         notes=body.notes,
         operator=body.operator,
         column_vendor=body.column_vendor,
         column_model=body.column_model,
+        column_serial=body.column_serial,
     )
     return {"event_id": event_id, "status": "logged"}
 

@@ -346,30 +346,38 @@
 
     /* ── Maintenance Event Log Button ──────────────────────────────── */
 
-    function LogEventButton({ instrument }) {
+    function LogEventButton({ instrument, onSaved }) {
       const [open, setOpen] = useState(false);
       const [eventType, setEventType] = useState('column_change');
+      const [eventDate, setEventDate] = useState(new Date().toISOString().slice(0, 10));
       const [notes, setNotes] = useState('');
       const [operator, setOperator] = useState('');
       const [colVendor, setColVendor] = useState('');
       const [colModel, setColModel] = useState('');
+      const [colSerial, setColSerial] = useState('');
       const [status, setStatus] = useState('');
 
       const eventTypes = [
-        { value: 'column_change', label: 'Column change' },
-        { value: 'source_clean', label: 'Source clean' },
+        { value: 'column_change', label: 'Column Change' },
+        { value: 'source_clean', label: 'Source Clean' },
         { value: 'calibration', label: 'Calibration' },
-        { value: 'pm', label: 'Preventive maintenance' },
+        { value: 'pm', label: 'PM (Preventive Maintenance)' },
         { value: 'lc_service', label: 'LC service' },
         { value: 'other', label: 'Other' },
       ];
 
       async function submit() {
         setStatus('Saving...');
-        const payload = { event_type: eventType, notes, operator };
+        const payload = {
+          event_type: eventType,
+          event_date: eventDate ? eventDate + 'T12:00:00Z' : null,
+          notes,
+          operator,
+        };
         if (eventType === 'column_change') {
           payload.column_vendor = colVendor || null;
           payload.column_model = colModel || null;
+          payload.column_serial = colSerial || null;
         }
         try {
           const r = await fetch(API + `/api/instruments/${encodeURIComponent(instrument)}/events`, {
@@ -383,7 +391,10 @@
             setOperator('');
             setColVendor('');
             setColModel('');
-            setTimeout(() => { setStatus(''); setOpen(false); }, 1500);
+            setColSerial('');
+            setEventDate(new Date().toISOString().slice(0, 10));
+            if (onSaved) onSaved();
+            setTimeout(() => { setStatus(''); setOpen(false); }, 1200);
           } else {
             const err = await r.json();
             setStatus(`Error: ${err.detail || 'Unknown error'}`);
@@ -411,21 +422,31 @@
           </button>
           {open && (
             <div style={{marginTop:'0.5rem', padding:'0.75rem', background:'var(--bg)', borderRadius:'0.5rem', border:'1px solid var(--border)'}}>
-              <div style={{marginBottom:'0.4rem'}}>
-                <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Event type</label>
-                <select value={eventType} onChange={e => setEventType(e.target.value)} style={selectStyle}>
-                  {eventTypes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                </select>
+              <div style={{display:'flex', gap:'0.4rem', marginBottom:'0.4rem'}}>
+                <div style={{flex:2}}>
+                  <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Event type</label>
+                  <select value={eventType} onChange={e => setEventType(e.target.value)} style={selectStyle}>
+                    {eventTypes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                </div>
+                <div style={{flex:1}}>
+                  <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Date</label>
+                  <input type="date" value={eventDate} onChange={e => setEventDate(e.target.value)} style={inputStyle} />
+                </div>
               </div>
               {eventType === 'column_change' && (
-                <div style={{display:'flex', gap:'0.4rem', marginBottom:'0.4rem'}}>
-                  <div style={{flex:1}}>
+                <div style={{display:'flex', gap:'0.4rem', marginBottom:'0.4rem', flexWrap:'wrap'}}>
+                  <div style={{flex:'1 1 120px'}}>
                     <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Column vendor</label>
                     <input value={colVendor} onChange={e => setColVendor(e.target.value)} placeholder="e.g. IonOpticks" style={inputStyle} />
                   </div>
-                  <div style={{flex:1}}>
+                  <div style={{flex:'1 1 120px'}}>
                     <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Column model</label>
                     <input value={colModel} onChange={e => setColModel(e.target.value)} placeholder="e.g. Aurora 25cm" style={inputStyle} />
+                  </div>
+                  <div style={{flex:'1 1 120px'}}>
+                    <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Column serial</label>
+                    <input value={colSerial} onChange={e => setColSerial(e.target.value)} placeholder="Optional" style={inputStyle} />
                   </div>
                 </div>
               )}
@@ -923,6 +944,69 @@
       );
     }
 
+    /* ── Maintenance Events Table ─────────────────────────────────── */
+
+    function MaintenanceEventsTable({ events }) {
+      if (!events || events.length === 0) {
+        return <div style={{color:'var(--muted)', fontSize:'0.85rem', padding:'0.5rem 0'}}>No maintenance events recorded.</div>;
+      }
+
+      const typeLabels = {
+        column_change: 'Column Change',
+        source_clean: 'Source Clean',
+        calibration: 'Calibration',
+        pm: 'PM',
+        lc_service: 'LC Service',
+        other: 'Other',
+      };
+      const typeColors = {
+        column_change: '#60a5fa',
+        source_clean: '#22c55e',
+        calibration: '#eab308',
+        pm: '#a78bfa',
+        lc_service: '#f472b6',
+        other: '#94a3b8',
+      };
+
+      return (
+        <div style={{overflowX:'auto'}}>
+          <table style={{fontSize:'0.8rem'}}>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Type</th>
+                <th>Notes</th>
+                <th>Column Info</th>
+                <th>Operator</th>
+              </tr>
+            </thead>
+            <tbody>
+              {events.slice(0, 20).map(ev => {
+                const color = typeColors[ev.event_type] || '#94a3b8';
+                const colInfo = [ev.column_vendor, ev.column_model, ev.column_serial].filter(Boolean).join(' / ');
+                return (
+                  <tr key={ev.id}>
+                    <td style={{whiteSpace:'nowrap'}}>{new Date(ev.event_date).toLocaleDateString([], {year:'2-digit', month:'short', day:'numeric'})}</td>
+                    <td>
+                      <span style={{
+                        display:'inline-block', padding:'0.1rem 0.4rem', borderRadius:'999px',
+                        fontSize:'0.72rem', fontWeight:600, background:color, color:'#000',
+                      }}>
+                        {typeLabels[ev.event_type] || ev.event_type}
+                      </span>
+                    </td>
+                    <td style={{maxWidth:'300px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}} title={ev.notes}>{ev.notes || '\u2014'}</td>
+                    <td style={{color:'var(--muted)', fontSize:'0.75rem'}}>{colInfo || '\u2014'}</td>
+                    <td style={{color:'var(--muted)'}}>{ev.operator || '\u2014'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
+
     function TrendCharts() {
       // Pull instruments from actual runs in the DB, not from instruments.yml config
       const { data: allRuns } = useFetch('/api/runs?limit=1000');
@@ -930,6 +1014,7 @@
       const [trends, setTrends] = useState(null);
       const [events, setEvents] = useState([]);
       const [timeFilter, setTimeFilter] = useState('all');
+      const [eventsVersion, setEventsVersion] = useState(0);
 
       const names = useMemo(() => {
         if (!allRuns) return [];
@@ -941,7 +1026,11 @@
         if (!selected) return;
         fetch(API + `/api/trends/${encodeURIComponent(selected)}?limit=500`).then(r => r.json()).then(setTrends);
         fetch(API + `/api/instruments/${encodeURIComponent(selected)}/events?limit=50`).then(r => r.json()).then(d => setEvents(d || []));
-      }, [selected]);
+      }, [selected, eventsVersion]);
+
+      const handleEventSaved = useCallback(() => {
+        setEventsVersion(v => v + 1);
+      }, []);
 
       // Filter trends by time range
       const filteredTrends = useMemo(() => {
@@ -979,6 +1068,15 @@
               <div style={{color:'var(--muted)'}}>No runs in database yet. Run a baseline first.</div>
             ) : names.map(n => <div key={n} className={`tab ${n === selected ? 'active' : ''}`} onClick={() => setSelected(n)}>{n}</div>)}
           </div>
+          {selected && (
+            <div className="card" style={{marginBottom:'1rem'}}>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'0.5rem'}}>
+                <h3 style={{margin:0}}>Maintenance Log</h3>
+                <LogEventButton instrument={selected} onSaved={handleEventSaved} />
+              </div>
+              <MaintenanceEventsTable events={events} />
+            </div>
+          )}
           <div style={{display:'flex', gap:'0.5rem', marginBottom:'1rem', flexWrap:'wrap', alignItems:'center'}}>
             <span style={{fontSize:'0.85rem', color:'var(--muted)'}}>Time range:</span>
             {[['week','Week'], ['month','Month'], ['3month','3 Months'], ['6month','6 Months'], ['year','Year'], ['all','All']].map(([k, label]) => (
