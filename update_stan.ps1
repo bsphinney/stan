@@ -331,8 +331,9 @@ try {
     # instrument always has the current version (the .bat lives at the
     # repo root, not in the pip package, so update-stan.bat has to
     # fetch it explicitly).
-    $loopDest = "$env:USERPROFILE\STAN\start_stan_loop.bat"
-    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/start_stan_loop.bat?t=$t" -OutFile $loopDest -UseBasicParsing -ErrorAction SilentlyContinue
+    # Dropped alongside update-stan.bat in $scriptDir so operators find
+    # both in the same location (typically %USERPROFILE%\Downloads).
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/start_stan_loop.bat?t=$t" -OutFile "$scriptDir\start_stan_loop.bat" -UseBasicParsing -ErrorAction SilentlyContinue
 } catch {}
 
 # -- Done --
