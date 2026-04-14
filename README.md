@@ -652,6 +652,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [x] `stan verify` CLI — check auth token + relay name claim (v0.2.75)
 - [x] Dashboard UTF-8 `read_text` fix for Windows (v0.2.76)
 - [x] Server-side dashboard error log mirrored to Hive (v0.2.77)
+- [ ] Thermo ion-injection-time drift detection — `fisher_py` exposes per-scan injection time; add `median_ion_injection_time_ms` plus a mid-run upward-drift flag to the Thermo Sample Health pipeline. AGC compensation for a collapsing spray forces longer inject times before the TIC shows it, so this should catch marginal spray stutters that the TIC-only dropout test misses
 - [ ] Remote `run_baseline` / `baseline_status` control actions — kick off a baseline from the fleet dashboard or `stan send-command`, poll progress via a mirrored `baseline_progress.json`, so operators don't need to shell into the instrument PC
 - [ ] Mobile PWA — responsive dashboard CSS, `manifest.json` + service worker, push notifications on gate failure, auth layer for off-campus access (Tailscale / Cloudflare Tunnel / HF Space relay)
 - [ ] Add small real DIA-NN and Sage output files to `tests/fixtures/`
