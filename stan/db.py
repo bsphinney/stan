@@ -121,6 +121,14 @@ CREATE TABLE IF NOT EXISTS sample_health (
 CREATE INDEX IF NOT EXISTS idx_health_instrument ON sample_health(instrument);
 CREATE INDEX IF NOT EXISTS idx_health_date       ON sample_health(run_date);
 CREATE INDEX IF NOT EXISTS idx_health_verdict    ON sample_health(verdict);
+
+CREATE TABLE IF NOT EXISTS scan_cache (
+    raw_path    TEXT PRIMARY KEY,
+    mtime       REAL NOT NULL,     -- seconds since epoch
+    size        INTEGER NOT NULL,  -- bytes (for .d dirs: total tree size)
+    metadata    TEXT NOT NULL,     -- JSON blob of _extract_file_metadata output
+    cached_at   TEXT NOT NULL      -- ISO 8601
+);
 """
 
 
@@ -388,6 +396,118 @@ def rolling_median_ms1_max_intensity(
         return None
     import statistics
     return statistics.median(vals)
+
+
+def _path_fingerprint(path: Path) -> tuple[float, int]:
+    """Return (mtime, size) for cache-key purposes.
+
+    For Bruker .d directories we use the directory mtime + the total
+    size of the tree — single `stat()` on the dir isn't sufficient
+    because internal file updates (mid-acquisition) don't always
+    bump the dir mtime.
+    """
+    st = path.stat()
+    if path.is_dir():
+        total = 0
+        latest_mtime = st.st_mtime
+        try:
+            for p in path.rglob("*"):
+                try:
+                    ps = p.stat()
+                    total += ps.st_size
+                    if ps.st_mtime > latest_mtime:
+                        latest_mtime = ps.st_mtime
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        return (latest_mtime, total)
+    return (st.st_mtime, st.st_size)
+
+
+def get_cached_scan(path: Path, db_path: Path | None = None) -> dict | None:
+    """Return cached `_extract_file_metadata` output if the file hasn't
+    changed since the last scan. None on miss — caller should extract
+    fresh and call `cache_scan_metadata` after."""
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return None
+    try:
+        mtime, size = _path_fingerprint(path)
+    except OSError:
+        return None
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            row = con.execute(
+                "SELECT mtime, size, metadata FROM scan_cache WHERE raw_path = ?",
+                (str(path),),
+            ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    cached_mtime, cached_size, metadata_json = row
+    # Accept a small mtime tolerance for network filesystems
+    if abs(cached_mtime - mtime) > 1.0 or cached_size != size:
+        return None
+    try:
+        return json.loads(metadata_json)
+    except json.JSONDecodeError:
+        return None
+
+
+def cache_scan_metadata(path: Path, metadata: dict,
+                        db_path: Path | None = None) -> None:
+    """Persist `_extract_file_metadata` output keyed by (path, mtime, size)
+    so subsequent baseline runs skip the slow TRFP re-extraction."""
+    if db_path is None:
+        db_path = get_db_path()
+    try:
+        mtime, size = _path_fingerprint(path)
+    except OSError:
+        return
+
+    # AcquisitionMode enum isn't JSON-serializable — convert to .value string
+    serializable: dict = {}
+    for k, v in (metadata or {}).items():
+        if hasattr(v, "value"):
+            serializable[k] = {"__enum__": True, "value": v.value,
+                               "class": v.__class__.__name__}
+        elif isinstance(v, Path):
+            serializable[k] = str(v)
+        else:
+            serializable[k] = v
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.execute(
+                "INSERT OR REPLACE INTO scan_cache "
+                "(raw_path, mtime, size, metadata, cached_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    str(path), float(mtime), int(size),
+                    json.dumps(serializable, default=str),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+    except sqlite3.Error as e:
+        logger.debug("scan_cache write failed for %s: %s", path.name, e)
+
+
+def _hydrate_cached_metadata(raw: dict) -> dict:
+    """Convert the JSON-serialized form from scan_cache back into the
+    dict shape that baseline expects (AcquisitionMode enum restored)."""
+    from stan.watcher.detector import AcquisitionMode
+    out: dict = {}
+    for k, v in raw.items():
+        if isinstance(v, dict) and v.get("__enum__") and v.get("class") == "AcquisitionMode":
+            try:
+                out[k] = AcquisitionMode(v["value"])
+            except ValueError:
+                out[k] = AcquisitionMode.UNKNOWN
+        else:
+            out[k] = v
+    return out
 
 
 def insert_tic_trace(

@@ -548,6 +548,13 @@ def run_baseline() -> None:
     _first_dia_file: Path | None = None
     _first_dda_file: Path | None = None
     _scan_vendor: str = ""
+    # scan_cache lets us skip _extract_file_metadata for any file whose
+    # (path, mtime, size) fingerprint still matches a previously-scanned
+    # entry. Thermo extraction calls TRFP (~5-10 s each) so on a 300-
+    # file Lumos directory this turns a 30-40 min scan into near-instant.
+    from stan.db import init_db, cache_scan_metadata, get_cached_scan, _hydrate_cached_metadata
+    init_db()
+    _n_cached = 0
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -560,7 +567,16 @@ def run_baseline() -> None:
         for f in all_files:
             vendor = _classify_vendor(f)
             _scan_vendor = vendor
-            meta = _extract_file_metadata(f, vendor)
+            cached = get_cached_scan(f)
+            if cached is not None:
+                meta = _hydrate_cached_metadata(cached)
+                _n_cached += 1
+            else:
+                meta = _extract_file_metadata(f, vendor)
+                try:
+                    cache_scan_metadata(f, meta)
+                except Exception:
+                    logger.debug("scan_cache write failed for %s", f.name, exc_info=True)
             meta["path"] = f
             meta["name"] = f.name
             file_metadata.append(meta)
@@ -571,6 +587,9 @@ def run_baseline() -> None:
             if mode and _first_dda_file is None and is_dda(mode):
                 _first_dda_file = f
             progress.advance(task)
+    if _n_cached:
+        console.print(f"  [dim]{_n_cached}/{len(all_files)} files served from scan cache "
+                      f"(skipped TRFP/metadata re-extraction)[/dim]")
 
     # ── 3. Build summary table ──────────────────────────────────
     # Group by instrument model and mode
