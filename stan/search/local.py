@@ -211,6 +211,7 @@ def run_diann_local(
     fasta_path: str | None = None,
     lib_path: str | None = None,
     search_mode: str = "local",
+    timeout_sec: int = 1200,
 ) -> Path | None:
     """Run DIA-NN locally as a subprocess.
 
@@ -278,7 +279,7 @@ def run_diann_local(
                 stdout=lf,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=14400,  # 4 hour timeout for local execution
+                timeout=timeout_sec,
             )
         logger.info("DIA-NN complete: %s", raw_path.name)
     except FileNotFoundError as e:
@@ -291,7 +292,10 @@ def run_diann_local(
         report_error(e, {"search_engine": "diann", "vendor": vendor})
         return None
     except subprocess.TimeoutExpired as e:
-        logger.error("DIA-NN timed out after 4 hours: %s", raw_path.name)
+        logger.error(
+            "DIA-NN timed out after %d min: %s",
+            timeout_sec // 60, raw_path.name,
+        )
         from stan.telemetry import report_error
         report_error(e, {"search_engine": "diann", "vendor": vendor})
         _mirror_log_to_hive(log_file, raw_path.stem, "diann")
@@ -339,6 +343,7 @@ def run_sage_local(
     threads: int = 0,
     fasta_path: str | None = None,
     search_mode: str = "local",
+    timeout_sec: int = 1200,
 ) -> Path | None:
     """Run Sage locally as a subprocess.
 
@@ -408,7 +413,7 @@ def run_sage_local(
                 stdout=lf,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=14400,
+                timeout=timeout_sec,
             )
         logger.info("Sage complete: %s", raw_path.name)
     except FileNotFoundError as e:
@@ -420,7 +425,10 @@ def run_sage_local(
         report_error(e, {"search_engine": "sage", "vendor": vendor})
         return None
     except subprocess.TimeoutExpired as e:
-        logger.error("Sage timed out after 4 hours: %s", raw_path.name)
+        logger.error(
+            "Sage timed out after %d min: %s",
+            timeout_sec // 60, raw_path.name,
+        )
         from stan.telemetry import report_error
         report_error(e, {"search_engine": "sage", "vendor": vendor})
         _mirror_log_to_hive(log_file, raw_path.stem, "sage")

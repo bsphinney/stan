@@ -1076,6 +1076,14 @@ def _process_files(
                     r"(?:^|[_\-])dda(?:$|[_\-])",
                     r"(?:^|[_\-])hcdit(?:$|[_\-\d])",
                     r"(?:^|[_\-])hcdot(?:$|[_\-\d])",
+                    # Lumos DDA method names that TRFP scan-ratio can't disambiguate
+                    r"(?:^|[_\-])unvpep(?:$|[_\-\d])",
+                    r"(?:^|[_\-])unvid(?:$|[_\-\d])",
+                    r"(?:^|[_\-])univ(?:$|[_\-\d])",
+                    r"(?:^|[_\-])\dstphcd",        # 1StpHCD37, 2StpHCD36a43
+                    r"(?:^|[_\-])pepmx(?:$|[_\-\d])",
+                    r"(?:^|[_\-])hcd-it(?:$|[_\-\d])",
+                    r"(?:^|[_\-])hcd-ot(?:$|[_\-\d])",
                 ]
                 _strong_dia = [
                     r"(?:^|[_\-])dia(?:$|[_\-])",
