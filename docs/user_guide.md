@@ -344,6 +344,52 @@ The dashboard serves a FastAPI backend with a basic HTML frontend. The full Reac
 
 **Instrument Config** -- View instrument cards with Remove button (implemented). Full YAML editor with live preview **(planned)**.
 
+### Remote control & fleet status (v0.2.81+)
+
+If you run STAN on more than one instrument PC, the same Hive mirror drive
+(`Y:\STAN\` on the instruments, `/Volumes/proteomics-grp/STAN/` on a Mac)
+doubles as a command queue and an aggregated status board. No HuggingFace
+relay, no token, no cloud — just the network share you already use for log
+mirroring.
+
+**Per-instrument heartbeat.** Every ~5 minutes, `stan watch` writes a
+`status.json` file to its own subdirectory on the mirror: STAN version,
+`stan.db` row count, last run name + gate result, free disk space, and a
+UTC timestamp.
+
+**Command queue.** Every ~30 seconds, `stan watch` also scans
+`<mirror>/<host>/commands/pending/` for JSON command files. The action
+name must be one of a hardcoded whitelist (currently read-only only —
+`ping`, `status`, `tail_log`, `export_db_snapshot`); unknown or stale
+actions (>10 min old) are rejected without side effects. Results are
+written to `<mirror>/<host>/commands/results/<id>.result.json` and the
+request is moved to `commands/done/` for auditing. There is no shell
+passthrough anywhere — every action is a pure Python function.
+
+**Central workstation CLIs.** From any machine that mounts the shared
+drive:
+
+```bash
+# Fleet overview
+stan fleet-status
+
+# Ask one instrument for its current status and wait for the answer
+stan send-command status --host lumosRox --wait
+
+# Tail the last 50 lines of baseline.log on a specific instrument
+stan send-command tail_log --host lumosRox --arg name=baseline --arg n=50 --wait
+
+# Force an instrument to write a full parquet snapshot of stan.db
+stan send-command export_db_snapshot --host TIMS-10878 --wait
+```
+
+`stan poll-commands` runs one pass of the poller manually; normally you
+don't need it because `stan watch` polls automatically.
+
+Destructive actions (remote `update-stan.bat`, process kill) are
+intentionally NOT in the whitelist yet. They'll arrive in a later
+release after the diagnostic channel has been proven out.
+
 ### Maintenance Log (v0.2.68+)
 
 The Trends tab has a maintenance log form for recording column swaps, source cleans, PMs, and calibrations. Each event stores a date, an event type, and free-text notes. Logged events render as vertical markers on every trend chart for that instrument, so a sudden shift in precursor count or IPS is immediately traceable to a known maintenance action rather than being mistaken for instrument drift. Events are persisted in the `maintenance_events` SQLite table and are never submitted to the community benchmark.

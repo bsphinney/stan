@@ -606,6 +606,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | `/api/update` auth-token enforcement | Done | Relay requires `X-STAN-Auth` (or admin `X-STAN-Admin`) for PATCHes; `stan backfill-tic --push` and `stan repair-metadata --push` now send the client token from `community.yml`. Set `ADMIN_SECRET` on the HF Space to fully lock down the endpoint (v0.2.78) |
 | Explicit DDA/DIA filename tokens override sniffers | Done | Files with explicit `-Dda-`, `-HCDIT-`, `-HCDOT-` (DDA) or `-Dia-`, `-diaW<N>-` (DIA) tokens now override TRFP's scan-ratio verdict so Lumos DDA files are no longer DIA-searched for 4 hours before timing out (v0.2.79) |
 | Extra Lumos DDA tokens + tighter search timeout | Done | Added `UnvPep`/`UnvID`/`Univ`/`1StpHCD`/`2StpHCD`/`Pepmx`/`HCD-IT`/`HCD-OT` to explicit-DDA override list; DIA-NN and Sage default timeout dropped from 4 h to 20 min to cap hung-search blast radius (v0.2.80) |
+| Fleet control queue over the Hive mirror | Done | `stan/control.py` whitelist-dispatch poller wired into `stan watch`; instruments heartbeat `status.json` to `<mirror>/<host>/` every ~5 min; `stan send-command --host <h> --wait`, `stan fleet-status`, `stan poll-commands` CLIs. Read-only actions only for now (`ping`, `status`, `tail_log`, `export_db_snapshot`) — no remote process-kill or updater yet (v0.2.81) |
 
 ---
 

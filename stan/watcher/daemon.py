@@ -337,6 +337,7 @@ class WatcherDaemon:
         if not self._watchers:
             logger.info("No enabled instruments configured. Waiting for config changes...")
 
+        tick = 0
         while not self._stop_event.is_set():
             # Check for config changes
             if self._config_watcher.is_stale():
@@ -344,6 +345,25 @@ class WatcherDaemon:
                 self._config_watcher.reload()
                 self._apply_config(self._config_watcher.data)
 
+            # Poll the Hive mirror for remote-control commands (diagnostic
+            # whitelist only — see stan.control). Swallows all errors so a
+            # broken share cannot take the watcher down.
+            try:
+                from stan.control import poll_once
+                poll_once()
+            except Exception:
+                logger.debug("control: poll_once failed", exc_info=True)
+
+            # Heartbeat: write status.json to the mirror every ~5 minutes
+            # so `stan fleet-status` on any workstation can see whether
+            # this instrument is alive and what state it's in.
+            if tick % 10 == 0:
+                try:
+                    _write_heartbeat()
+                except Exception:
+                    logger.debug("control: heartbeat failed", exc_info=True)
+
+            tick += 1
             self._stop_event.wait(timeout=CONFIG_POLL_INTERVAL)
 
         self._stop_all()
@@ -388,6 +408,30 @@ class WatcherDaemon:
             watcher.stop()
         self._watchers.clear()
         logger.info("All watchers stopped")
+
+
+def _write_heartbeat() -> None:
+    """Write status.json to the Hive mirror so `stan fleet-status` can
+    see whether this instrument is alive and current.
+
+    Atomic write: temp file + os.replace so a reader never sees a
+    half-written JSON blob.
+    """
+    import json
+    import os
+
+    from stan.config import get_hive_mirror_dir
+    from stan.control import _action_status
+
+    mirror = get_hive_mirror_dir()
+    if mirror is None:
+        return
+
+    payload = _action_status({})
+    out = mirror / "status.json"
+    tmp = out.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    os.replace(tmp, out)
 
 
 def _resolve_forced_mode(forced: str, vendor: str) -> AcquisitionMode:

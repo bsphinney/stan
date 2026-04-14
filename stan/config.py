@@ -151,6 +151,9 @@ def get_hive_mirror_dir() -> Path | None:
     # Default: Y:\STAN on Windows
     if _plat.system() == "Windows":
         candidates.append(Path("Y:/STAN"))
+    # Default: macOS Quobyte / SMB mounts (Brett's Mac, `stan fleet-status`)
+    if _plat.system() == "Darwin":
+        candidates.append(Path("/Volumes/proteomics-grp/STAN"))
 
     for base in candidates:
         try:
@@ -164,6 +167,46 @@ def get_hive_mirror_dir() -> Path | None:
         except (OSError, PermissionError):
             continue
 
+    return None
+
+
+def get_hive_mirror_root() -> Path | None:
+    """Return the shared `Y:\\STAN` (or equivalent) root — NOT the
+    per-hostname subdirectory.
+
+    Distinct from `get_hive_mirror_dir()` because read-only clients
+    (e.g. Brett's Mac running `stan fleet-status`) need to iterate
+    *every* host's subdir without creating their own. Calling code
+    that needs to write WON'T use this — it'll use the host-scoped
+    `get_hive_mirror_dir()` so it gets a guaranteed-writable dir.
+    """
+    import os as _os
+
+    candidates = []
+
+    env_dir = _os.environ.get("HIVE_MIRROR_DIR")
+    if env_dir:
+        candidates.append(Path(env_dir))
+
+    try:
+        comm = load_community()
+        cfg_dir = comm.get("hive_mirror_dir")
+        if cfg_dir:
+            candidates.append(Path(cfg_dir))
+    except Exception:
+        pass
+
+    if _plat.system() == "Windows":
+        candidates.append(Path("Y:/STAN"))
+    if _plat.system() == "Darwin":
+        candidates.append(Path("/Volumes/proteomics-grp/STAN"))
+
+    for base in candidates:
+        try:
+            if base.exists() and base.is_dir():
+                return base
+        except (OSError, PermissionError):
+            continue
     return None
 
 

@@ -1622,3 +1622,160 @@ def status() -> None:
             console.print(f"  Last run: {last['run_name']} ({last['instrument']}, {last['gate_result']})")
     else:
         console.print(f"  Database: {db_path} [yellow](not created yet)[/yellow]")
+
+
+# ── Remote-control helpers (stan.control) ───────────────────────────────
+
+def _mirror_root() -> Path | None:
+    """Resolve the shared `Y:\\STAN\\` (or equivalent) root, not the
+    per-host subdir. Returns None if no mirror is reachable."""
+    from stan.config import get_hive_mirror_root
+    return get_hive_mirror_root()
+
+
+@app.command("send-command")
+def send_command(
+    action: str = typer.Argument(..., help="Whitelisted action name: ping, status, tail_log, export_db_snapshot"),
+    host: str = typer.Option("", "--host", "-h", help="Target hostname (subdir of the mirror root). Omit to target this machine."),
+    arg: list[str] = typer.Option([], "--arg", "-a", help="Action arguments as key=value (repeatable)"),
+    wait: bool = typer.Option(False, "--wait", help="Block until the result file appears."),
+    timeout: int = typer.Option(120, "--timeout", help="Seconds to wait for a result when --wait is set."),
+) -> None:
+    """Drop a command file into an instrument's control queue on the shared mirror.
+
+    Examples:
+      stan send-command status --host lumosRox --wait
+      stan send-command tail_log --host lumosRox --arg name=baseline --arg n=50 --wait
+      stan send-command export_db_snapshot --host TIMS-10878
+    """
+    import time
+    from stan.control import enqueue_command
+
+    # Parse --arg key=value repeats
+    args_dict: dict = {}
+    for a in arg:
+        if "=" not in a:
+            console.print(f"[red]--arg must be key=value, got {a!r}[/red]")
+            raise typer.Exit(2)
+        k, v = a.split("=", 1)
+        # Best-effort int coercion
+        if v.lstrip("-").isdigit():
+            args_dict[k] = int(v)
+        else:
+            args_dict[k] = v
+
+    if host:
+        root = _mirror_root()
+        if root is None:
+            console.print("[red]No hive mirror mounted on this machine.[/red]")
+            raise typer.Exit(1)
+        target = root / host
+        if not target.exists():
+            console.print(f"[red]No such host directory under the mirror: {target}[/red]")
+            raise typer.Exit(1)
+        cmd_file = enqueue_command(action, args_dict, mirror_dir=target)
+    else:
+        cmd_file = enqueue_command(action, args_dict)
+
+    console.print(f"Queued {action!r} → {cmd_file}")
+    if not wait:
+        return
+
+    cmd_id = cmd_file.stem
+    results_dir = cmd_file.parent.parent / "results"
+    result_path = results_dir / f"{cmd_id}.result.json"
+
+    console.print(f"Waiting up to {timeout}s for result...")
+    start = time.time()
+    while time.time() - start < timeout:
+        if result_path.exists():
+            import json
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+            console.print_json(data=payload)
+            return
+        time.sleep(2)
+    console.print(f"[yellow]Timeout — no result after {timeout}s.[/yellow]")
+    raise typer.Exit(2)
+
+
+@app.command("fleet-status")
+def fleet_status(
+    stale_min: int = typer.Option(30, "--stale-min", help="Flag hosts whose heartbeat is older than this many minutes."),
+) -> None:
+    """Aggregate status.json across every host directory on the shared mirror.
+
+    Reads `<mirror>/<host>/status.json` — written periodically by each
+    running `stan watch` daemon — and prints a one-line summary per host.
+    Useful from a central Mac/laptop that mounts the same share as all
+    the instrument PCs.
+    """
+    import json
+    from datetime import datetime, timezone
+    from rich.table import Table
+
+    root = _mirror_root()
+    if root is None:
+        console.print("[red]No hive mirror mounted on this machine.[/red]")
+        raise typer.Exit(1)
+
+    hosts = sorted(p for p in root.iterdir() if p.is_dir())
+    if not hosts:
+        console.print(f"[yellow]No host directories under {root}[/yellow]")
+        return
+
+    now = datetime.now(timezone.utc)
+    table = Table(title=f"STAN fleet status — {root}")
+    table.add_column("Host")
+    table.add_column("Heartbeat")
+    table.add_column("Version")
+    table.add_column("Runs", justify="right")
+    table.add_column("Last run")
+    table.add_column("Gate")
+
+    for h in hosts:
+        status_file = h / "status.json"
+        if not status_file.exists():
+            table.add_row(h.name, "[dim]no status.json[/dim]", "-", "-", "-", "-")
+            continue
+        try:
+            payload = json.loads(status_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            table.add_row(h.name, f"[red]parse error: {e}[/red]", "-", "-", "-", "-")
+            continue
+
+        # Heartbeat age
+        try:
+            ts = datetime.fromisoformat(payload.get("timestamp", "").replace("Z", "+00:00"))
+            age_min = (now - ts).total_seconds() / 60
+            if age_min < 1:
+                hb = f"{int(age_min * 60)}s ago"
+            elif age_min < 60:
+                hb = f"{age_min:.0f}m ago"
+            else:
+                hb = f"{age_min / 60:.1f}h ago"
+            if age_min > stale_min:
+                hb = f"[yellow]{hb}[/yellow]"
+        except Exception:
+            hb = "[red]bad timestamp[/red]"
+
+        last = payload.get("last_run") or {}
+        table.add_row(
+            h.name,
+            hb,
+            str(payload.get("stan_version", "?")),
+            str(payload.get("n_runs", "?")),
+            last.get("run_name", "-"),
+            last.get("gate_result", "-"),
+        )
+
+    console.print(table)
+
+
+@app.command("poll-commands")
+def poll_commands_cmd() -> None:
+    """Run one pass of the control-queue poller and exit. (Normally
+    `stan watch` polls every 30s automatically — this is for testing.)"""
+    from stan.control import poll_once
+
+    n = poll_once()
+    console.print(f"Processed {n} command(s).")
