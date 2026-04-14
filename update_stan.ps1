@@ -139,20 +139,28 @@ Write-Host "  Stopping running stan.exe processes..." -ForegroundColor Gray
 Get-Process stan -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 
-# Capture pip exit code so we can distinguish real success from
-# "STAN updated" lies after a locked-file failure.
-$pipError = $false
+# Real failures we should actually block on. Deliberately narrow — pip
+# prints plenty of noise that looks scary but isn't. "uninstall-no-
+# record-file" in particular is just "I can't remove the prior install
+# because its RECORD manifest is gone; moving on" and always resolves
+# fine under --force-reinstall. Trust pip's exit code as the final
+# word; match only the dramatic, unambiguous-failure strings here.
+$pipFatalError = $false
 & $venvPython -m pip install --no-cache-dir --force-reinstall @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip?t=$t" 2>&1 | ForEach-Object {
     $line = $_.ToString()
-    if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
-    elseif ($line -match "ERROR|error") {
+    if ($line -match "Successfully installed") {
+        Write-Host "  $line" -ForegroundColor Green
+    } elseif ($line -match "WinError 32|Could not install packages|No matching distribution|HTTP error") {
         Write-Host "  $line" -ForegroundColor Red
-        $script:pipError = $true
+        $script:pipFatalError = $true
+    } elseif ($line -match "^error|^ERROR") {
+        # Warnings like 'error: uninstall-no-record-file' — yellow, not red.
+        Write-Host "  $line" -ForegroundColor DarkYellow
     }
 }
 
-if ($pipError -or $LASTEXITCODE -ne 0) {
-    Write-Host "  ERROR: pip reported errors. The venv may be in a partial state." -ForegroundColor Red
+if ($pipFatalError -or $LASTEXITCODE -ne 0) {
+    Write-Host "  ERROR: pip reported fatal errors (exit=$LASTEXITCODE). The venv may be in a partial state." -ForegroundColor Red
     Write-Host "         Close every cmd window running stan.exe, then re-run this script." -ForegroundColor Yellow
     exit 1
 }
