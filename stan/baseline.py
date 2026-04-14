@@ -1562,14 +1562,50 @@ def _process_files(
     except Exception:
         logger.debug("Hive sync failed", exc_info=True)
 
-    # Offer to build instrument-specific library from the baseline results
+    # Offer to build instrument-specific library from the baseline results.
+    # If one already exists, surface its stats and default to skip so
+    # Brett doesn't unknowingly spend 10+ minutes rebuilding an identical
+    # library (happens when baseline is run multiple times in a week).
     if processed > 0 or skipped > 0:
         console.print()
-        build_lib = Confirm.ask(
-            "Build instrument-specific spectral library from baseline? "
-            "(Produces faster searches for future QC runs)",
-            default=True, console=console,
-        )
+        lib_file = get_user_config_dir() / "instrument_library.parquet"
+        if lib_file.exists():
+            try:
+                st = lib_file.stat()
+                age_days = (datetime.now(timezone.utc).timestamp() - st.st_mtime) / 86400
+                size_mb = st.st_size / (1024 * 1024)
+                n_rows = None
+                try:
+                    import polars as _pl
+                    n_rows = _pl.scan_parquet(str(lib_file)).select(_pl.len()).collect().item()
+                except Exception:
+                    pass
+                details = f"{size_mb:.1f} MB"
+                if n_rows is not None:
+                    details += f", {n_rows:,} rows"
+                details += f", {age_days:.1f} d old"
+                console.print(
+                    f"[dim]Existing library found: {lib_file.name} ({details})[/dim]"
+                )
+                prompt_text = (
+                    "Rebuild the instrument-specific library from this baseline? "
+                    "(No keeps the existing one)"
+                )
+                build_default = False
+            except OSError:
+                prompt_text = (
+                    "Build instrument-specific spectral library from baseline? "
+                    "(Produces faster searches for future QC runs)"
+                )
+                build_default = True
+        else:
+            prompt_text = (
+                "Build instrument-specific spectral library from baseline? "
+                "(Produces faster searches for future QC runs)"
+            )
+            build_default = True
+
+        build_lib = Confirm.ask(prompt_text, default=build_default, console=console)
         if build_lib:
             try:
                 from stan.library_builder import run_build_library
