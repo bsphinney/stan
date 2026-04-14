@@ -99,6 +99,16 @@ def detect_thermo_mode(
             trfp_path,
         )
         return AcquisitionMode.UNKNOWN
+    except subprocess.CalledProcessError as e:
+        # TRFP sometimes exits non-zero on certain .raw files (0x8007000C
+        # path errors, locked files, etc.). Non-fatal — the caller falls
+        # back to filename tokens or the DIA default. Quiet INFO log so
+        # the traceback doesn't scare operators.
+        logger.info(
+            "TRFP mode-detect returned exit %d for %s; falling back",
+            e.returncode, raw_path.name,
+        )
+        return AcquisitionMode.UNKNOWN
     except subprocess.SubprocessError:
         logger.exception("ThermoRawFileParser failed for %s", raw_path)
         return AcquisitionMode.UNKNOWN

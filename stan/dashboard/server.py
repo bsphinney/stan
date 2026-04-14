@@ -367,6 +367,28 @@ async def api_dashboard_errors() -> list[dict]:
     return _DASH_ERROR_LOG
 
 
+# ── Sample Health (rawmeat-based monitor for non-QC files) ──────────
+
+@app.get("/api/sample-health")
+async def api_sample_health(
+    instrument: str | None = None,
+    verdict: str | None = None,
+    limit: int = 200,
+) -> dict:
+    """Return recent Sample Health Monitor rows for the dashboard tab.
+
+    These are non-QC, non-excluded files processed via rawmeat — separate
+    from the QC `runs` table and not part of the community benchmark."""
+    from stan.db import get_sample_health
+    rows = get_sample_health(instrument=instrument, verdict=verdict, limit=limit)
+    counts = {"pass": 0, "warn": 0, "fail": 0}
+    for r in rows:
+        v = r.get("verdict")
+        if v in counts:
+            counts[v] += 1
+    return {"rows": rows, "counts": counts}
+
+
 # ── Fleet (stan.control) ─────────────────────────────────────────────
 
 @app.get("/api/fleet/hosts")

@@ -95,6 +95,32 @@ CREATE TABLE IF NOT EXISTS tic_traces (
     n_frames    INTEGER,
     UNIQUE(run_id)
 );
+
+CREATE TABLE IF NOT EXISTS sample_health (
+    id                      TEXT PRIMARY KEY,
+    instrument              TEXT NOT NULL,
+    run_name                TEXT NOT NULL,
+    run_date                TEXT NOT NULL,   -- ISO 8601 from analysis.tdf
+    raw_path                TEXT,
+    verdict                 TEXT NOT NULL,   -- pass | warn | fail
+    reasons                 TEXT,            -- JSON array of human-readable reasons
+
+    -- rawmeat summary — kept flat for simple charting
+    n_ms1_frames            INTEGER,
+    n_ms2_frames            INTEGER,
+    rt_duration_min         REAL,
+    ms1_max_intensity       REAL,
+    ms1_total_tic           REAL,
+    dynamic_range_log10     REAL,
+    dropout_rate_per_100_ms1 REAL,
+    pressure_mean_mbar      REAL,
+    pressure_range_mbar     REAL,
+    median_ms1_acc_ms       REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_health_instrument ON sample_health(instrument);
+CREATE INDEX IF NOT EXISTS idx_health_date       ON sample_health(run_date);
+CREATE INDEX IF NOT EXISTS idx_health_verdict    ON sample_health(verdict);
 """
 
 
@@ -250,6 +276,118 @@ def insert_run(
 
     logger.info("Inserted run %s: %s (%s)", run_id[:8], run_name, gate_result)
     return run_id
+
+
+def insert_sample_health(
+    instrument: str,
+    run_name: str,
+    run_date: str,
+    raw_path: str,
+    verdict: str,
+    reasons: list[str],
+    rawmeat_summary: dict,
+    db_path: Path | None = None,
+) -> str:
+    """Store a Sample Health Monitor result.
+
+    Sample-health rows are completely separate from the QC `runs` table —
+    different primary metric, different threshold logic, different
+    users. Keeping them in `sample_health` avoids polluting cohort
+    percentiles with non-QC injections.
+
+    Returns the generated row id.
+    """
+    import uuid
+    if db_path is None:
+        db_path = get_db_path()
+    row_id = uuid.uuid4().hex[:12]
+    s = rawmeat_summary or {}
+    with sqlite3.connect(str(db_path)) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO sample_health "
+            "(id, instrument, run_name, run_date, raw_path, verdict, reasons, "
+            " n_ms1_frames, n_ms2_frames, rt_duration_min, ms1_max_intensity, "
+            " ms1_total_tic, dynamic_range_log10, dropout_rate_per_100_ms1, "
+            " pressure_mean_mbar, pressure_range_mbar, median_ms1_acc_ms) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                row_id, instrument, run_name, run_date, raw_path, verdict,
+                json.dumps(reasons or []),
+                s.get("n_ms1_frames"), s.get("n_ms2_frames"),
+                s.get("rt_duration_min"), s.get("ms1_max_intensity"),
+                s.get("ms1_total_tic"), s.get("dynamic_range_log10"),
+                s.get("dropout_rate_per_100_ms1"),
+                s.get("pressure_mean_mbar"), s.get("pressure_range_mbar"),
+                s.get("median_ms1_acc_ms"),
+            ),
+        )
+    return row_id
+
+
+def get_sample_health(
+    instrument: str | None = None,
+    verdict: str | None = None,
+    limit: int = 200,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Fetch recent Sample Health rows, newest first."""
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return []
+    clauses = []
+    args: list = []
+    if instrument:
+        clauses.append("instrument = ?")
+        args.append(instrument)
+    if verdict:
+        clauses.append("verdict = ?")
+        args.append(verdict)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    args.append(limit)
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            f"SELECT * FROM sample_health {where} "
+            f"ORDER BY run_date DESC LIMIT ?", args,
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["reasons"] = json.loads(d.get("reasons") or "[]")
+        except Exception:
+            d["reasons"] = []
+        out.append(d)
+    return out
+
+
+def rolling_median_ms1_max_intensity(
+    instrument: str, days: int = 30, db_path: Path | None = None,
+) -> float | None:
+    """Median of `ms1_max_intensity` across this instrument's last N
+    days of sample_health rows. Used as the baseline for the
+    evaluate_sample_health ratio check."""
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return None
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            rows = con.execute(
+                "SELECT ms1_max_intensity FROM sample_health "
+                "WHERE instrument = ? "
+                "  AND ms1_max_intensity IS NOT NULL "
+                "  AND run_date >= datetime('now', ?)",
+                (instrument, f'-{days} days'),
+            ).fetchall()
+    except sqlite3.Error:
+        return None
+    vals = [r[0] for r in rows if r[0] and r[0] > 0]
+    if not vals:
+        return None
+    import statistics
+    return statistics.median(vals)
 
 
 def insert_tic_trace(

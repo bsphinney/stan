@@ -44,18 +44,38 @@ class _AcquisitionHandler(FileSystemEventHandler):
         self,
         instrument_config: dict,
         trackers: dict[str, StabilityTracker],
+        tracker_modes: dict[str, str],
         lock: threading.Lock,
         on_event=None,
     ) -> None:
         super().__init__()
         self._config = instrument_config
         self._trackers = trackers
+        # Parallel map: tracker path → "qc" | "monitor". Lets
+        # _on_acquisition_complete route QC files to search and
+        # monitor-only files to rawmeat without plumbing a flag
+        # through StabilityTracker.
+        self._tracker_modes = tracker_modes
         self._lock = lock
         self._extensions = set(instrument_config.get("extensions", []))
         self._vendor = instrument_config.get("vendor", "")
         self._stable_secs = instrument_config.get("stable_secs", 60)
         self._qc_only = instrument_config.get("qc_only", True)
         self._qc_pattern = compile_qc_pattern(instrument_config.get("qc_pattern"))
+        self._monitor_all_files = bool(instrument_config.get("monitor_all_files", False))
+        # Exclude pattern — files matching this are skipped entirely at
+        # both the QC path and the monitor path. Typical value:
+        # "(?i)(wash|blank)". None = disabled.
+        exc = instrument_config.get("exclude_pattern")
+        self._exclude_pattern = None
+        if exc:
+            import re as _re
+            try:
+                self._exclude_pattern = _re.compile(exc)
+            except _re.error:
+                logger.warning(
+                    "watcher: invalid exclude_pattern %r — ignoring", exc,
+                )
         # Callback used by InstrumentWatcher to record a ring-buffer entry
         # for each event. Takes (category, path, detail).
         self._on_event = on_event or (lambda *a, **kw: None)
@@ -96,12 +116,25 @@ class _AcquisitionHandler(FileSystemEventHandler):
                            f"extensions={sorted(self._extensions)}")
 
     def _register_tracker(self, path: Path, ev_kind: str = "") -> None:
-        # Skip non-QC files when qc_only is enabled
-        if self._qc_only and not is_qc_file(path, self._qc_pattern):
+        # Hard exclude — wash/blank/etc. are skipped at both paths
+        if self._exclude_pattern and self._exclude_pattern.search(path.stem):
+            self._on_event("exclude_pattern_match", path,
+                           f"pattern={self._exclude_pattern.pattern!r}")
+            return
+
+        is_qc = is_qc_file(path, self._qc_pattern)
+        if is_qc:
+            mode = "qc"
+        elif self._monitor_all_files:
+            mode = "monitor"
+        elif self._qc_only:
+            # QC-only mode (default): non-QC files are ignored
             pat = getattr(self._qc_pattern, "pattern", None) if self._qc_pattern else None
             logger.info("watcher: QC filter rejected %s (pattern=%r)", path.name, pat)
             self._on_event("qc_filter_reject", path, f"pattern={pat!r}")
             return
+        else:
+            mode = "qc"  # qc_only=false treats everything as QC (legacy behavior)
 
         key = str(path)
         with self._lock:
@@ -111,9 +144,16 @@ class _AcquisitionHandler(FileSystemEventHandler):
                     vendor=self._vendor,
                     stable_secs=self._stable_secs,
                 )
-                logger.info("watcher: tracking new QC acquisition: %s "
-                            "(stable_secs=%d)", path.name, self._stable_secs)
-                self._on_event("tracked", path, f"stable_secs={self._stable_secs}")
+                self._tracker_modes[key] = mode
+                logger.info(
+                    "watcher: tracking new %s acquisition: %s (stable_secs=%d)",
+                    "QC" if mode == "qc" else "monitor-only",
+                    path.name, self._stable_secs,
+                )
+                self._on_event(
+                    "tracked_qc" if mode == "qc" else "tracked_monitor",
+                    path, f"stable_secs={self._stable_secs}",
+                )
             else:
                 self._on_event("already_tracked", path, "")
 
@@ -127,6 +167,10 @@ class InstrumentWatcher:
         self._name = instrument_config.get("name", "unknown")
         self._watch_dir = instrument_config.get("watch_dir", "")
         self._trackers: dict[str, StabilityTracker] = {}
+        # Parallel map of tracker path → "qc" | "monitor". Written by
+        # the handler, consumed by _on_acquisition_complete to decide
+        # whether to run a full search or just rawmeat.
+        self._tracker_modes: dict[str, str] = {}
         self._lock = threading.Lock()
 
         # Ring buffer of recent events for remote debugging via the
@@ -139,8 +183,8 @@ class InstrumentWatcher:
         self._event_counts: dict[str, int] = {}
 
         self._handler = _AcquisitionHandler(
-            instrument_config, self._trackers, self._lock,
-            on_event=self._record_event,
+            instrument_config, self._trackers, self._tracker_modes,
+            self._lock, on_event=self._record_event,
         )
 
         # Use polling observer for network paths
@@ -273,12 +317,17 @@ class InstrumentWatcher:
             for key in stable_paths:
                 with self._lock:
                     tracker = self._trackers.pop(key, None)
+                    mode = self._tracker_modes.pop(key, "qc")
                 if tracker is not None:
                     self._record_event(
-                        "acquisition_complete_start", tracker.path, "",
+                        "acquisition_complete_start", tracker.path,
+                        f"mode={mode}",
                     )
                     try:
-                        self._on_acquisition_complete(tracker.path)
+                        if mode == "monitor":
+                            self._on_monitor_complete(tracker.path)
+                        else:
+                            self._on_acquisition_complete(tracker.path)
                         self._record_event(
                             "acquisition_complete_end", tracker.path, "ok",
                         )
@@ -296,6 +345,71 @@ class InstrumentWatcher:
                         )
 
             self._stop_event.wait(timeout=10)
+
+    def _on_monitor_complete(self, path: Path) -> None:
+        """Sample Health Monitor path — runs only for non-QC, non-excluded
+        files when `monitor_all_files: true`. Extracts rawmeat metrics,
+        classifies verdict, and stores in `sample_health`. Never runs a
+        search, never writes a HOLD flag, never submits anywhere. The
+        point is just to surface bad injections in the dashboard for
+        the operator to review.
+
+        Thermo support is TBD — `rawmeat.py` is currently Bruker-only.
+        For Thermo files we skip with a recorded event so the operator
+        can see the monitor fired but had no data source."""
+        if self._config.get("vendor") != "bruker":
+            self._record_event(
+                "monitor_skip_not_bruker", path,
+                "rawmeat.py is Bruker-only in v0.2.89",
+            )
+            return
+
+        from stan.db import (
+            init_db, insert_sample_health,
+            rolling_median_ms1_max_intensity,
+        )
+        from stan.metrics.rawmeat import (
+            evaluate_sample_health, extract_rawmeat_metrics,
+        )
+
+        init_db()
+        rawmeat = extract_rawmeat_metrics(path)
+        if not rawmeat:
+            self._record_event(
+                "monitor_rawmeat_empty", path,
+                "analysis.tdf unreadable or empty Frames table",
+            )
+            return
+
+        rolling_median = rolling_median_ms1_max_intensity(self._name)
+        verdict = evaluate_sample_health(
+            rawmeat,
+            rolling_median_max_intensity=rolling_median,
+        )
+
+        run_date = rawmeat.get("metadata", {}).get("acquisition_date") or ""
+        if not run_date:
+            run_date = datetime.now(timezone.utc).isoformat()
+
+        insert_sample_health(
+            instrument=self._name,
+            run_name=path.name,
+            run_date=run_date,
+            raw_path=str(path),
+            verdict=verdict["verdict"],
+            reasons=verdict["reasons"],
+            rawmeat_summary=rawmeat.get("summary", {}),
+        )
+
+        logger.info(
+            "monitor: %s → %s (%s)",
+            path.name, verdict["verdict"],
+            "; ".join(verdict["reasons"]) or "no issues",
+        )
+        self._record_event(
+            f"monitor_{verdict['verdict']}", path,
+            "; ".join(verdict["reasons"]) or "no issues",
+        )
 
     def _on_acquisition_complete(self, path: Path) -> None:
         """Handle a completed acquisition: validate, detect mode, dispatch search.

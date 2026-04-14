@@ -1572,6 +1572,92 @@
       );
     }
 
+    /* ── Sample Health tab ─────────────────────────────────────────
+       Shows non-QC files the rawmeat monitor flagged. Separate from
+       Run History so QC and non-QC don't share the same table. */
+    function SampleHealthPanel() {
+      const [verdictFilter, setVerdictFilter] = useState('');
+      const url = '/api/sample-health' + (verdictFilter ? `?verdict=${verdictFilter}` : '');
+      const { data, loading, error, reload } = useFetch(url, [verdictFilter]);
+
+      useEffect(() => {
+        const t = setInterval(reload, 60000);
+        return () => clearInterval(t);
+      }, [reload]);
+
+      const verdictColor = v => v === 'pass' ? '#6b6' : v === 'warn' ? '#c93' : '#c33';
+
+      if (loading && !data) return <div className="card">Loading sample health…</div>;
+      if (error) return <div className="card" style={{ color: '#c33' }}>Error: {error}</div>;
+      if (!data) return null;
+      const rows = data.rows || [];
+      const c = data.counts || {};
+
+      return (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.5rem' }}>
+            <h2>Sample Health</h2>
+            <div style={{ fontSize: '0.85rem' }}>
+              <span style={{ color: verdictColor('pass') }}>✓ {c.pass ?? 0} pass</span>
+              {' · '}
+              <span style={{ color: verdictColor('warn') }}>△ {c.warn ?? 0} warn</span>
+              {' · '}
+              <span style={{ color: verdictColor('fail') }}>✗ {c.fail ?? 0} fail</span>
+              {' · '}
+              <select value={verdictFilter} onChange={e => setVerdictFilter(e.target.value)}>
+                <option value="">all</option>
+                <option value="fail">fail only</option>
+                <option value="warn">warn only</option>
+                <option value="pass">pass only</option>
+              </select>
+              {' · '}<button onClick={reload}>↻</button>
+            </div>
+          </div>
+          <p style={{ fontSize: '0.8rem', color: '#888', marginTop: 0 }}>
+            Rawmeat-based health check for every non-QC, non-excluded file the watcher sees.
+            Separate from QC gating — flagged files are surfaced for review, not held.
+            (Bruker <code>.d</code> only in v0.2.89; Thermo support TBD.)
+          </p>
+          {rows.length === 0 ? (
+            <p style={{ color: '#666' }}>No sample health rows yet. Enable <code>monitor_all_files: true</code> on a Bruker instrument to populate.</p>
+          ) : (
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+              <thead>
+                <tr style={{ textAlign: 'left', borderBottom: '1px solid #ddd' }}>
+                  <th>Instrument</th>
+                  <th>Run</th>
+                  <th>Date</th>
+                  <th>Verdict</th>
+                  <th style={{ textAlign: 'right' }}>MS1 max</th>
+                  <th style={{ textAlign: 'right' }}>Dropouts/100</th>
+                  <th style={{ textAlign: 'right' }}>Dur (min)</th>
+                  <th style={{ textAlign: 'right' }}>Pressure σ</th>
+                  <th>Reasons</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.id} style={{ borderBottom: '1px solid #f2f2f2' }}>
+                    <td>{r.instrument}</td>
+                    <td style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>{r.run_name}</td>
+                    <td>{(r.run_date || '').substring(0, 19).replace('T', ' ')}</td>
+                    <td style={{ color: verdictColor(r.verdict), fontWeight: 'bold' }}>{r.verdict}</td>
+                    <td style={{ textAlign: 'right' }}>{r.ms1_max_intensity ? r.ms1_max_intensity.toExponential(2) : '—'}</td>
+                    <td style={{ textAlign: 'right' }}>{r.dropout_rate_per_100_ms1 ?? '—'}</td>
+                    <td style={{ textAlign: 'right' }}>{r.rt_duration_min ?? '—'}</td>
+                    <td style={{ textAlign: 'right' }}>{r.pressure_range_mbar?.toFixed(4) ?? '—'}</td>
+                    <td style={{ fontSize: '0.75rem', color: '#666' }}>
+                      {(r.reasons || []).join(' · ') || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      );
+    }
+
     function App() {
       const [tab, setTab] = useState('live');
       const { data: ver } = useFetch('/api/version');
@@ -1583,7 +1669,7 @@
             <span className="version">{ver ? `v${ver.version}` : ''}</span>
           </header>
           <div className="tabs">
-            {[['live', "Today's Runs"], ['history', 'Run History'], ['trends', 'Trends'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
+            {[['live', "Today's Runs"], ['history', 'Run History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
               <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
             )}
           </div>
@@ -1591,6 +1677,7 @@
             {tab === 'live' && <LiveRuns />}
             {tab === 'history' && <RunHistory />}
             {tab === 'trends' && <TrendCharts />}
+            {tab === 'health' && <SampleHealthPanel />}
             {tab === 'fleet' && <FleetPanel />}
             {tab === 'config' && <ConfigEditor />}
             {tab === 'community' && <CommunityTab />}

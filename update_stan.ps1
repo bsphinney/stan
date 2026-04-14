@@ -326,6 +326,13 @@ try {
     $t = [DateTime]::Now.Ticks
     Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat?t=$t" -OutFile "$scriptDir\update-stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
     Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/start_stan.bat?t=$t" -OutFile "$scriptDir\start_stan.bat" -UseBasicParsing -ErrorAction SilentlyContinue
+    # start_stan_loop.bat is the supervised wrapper used by the fleet
+    # restart_watcher action. Refreshed here on every update so each
+    # instrument always has the current version (the .bat lives at the
+    # repo root, not in the pip package, so update-stan.bat has to
+    # fetch it explicitly).
+    $loopDest = "$env:USERPROFILE\STAN\start_stan_loop.bat"
+    Invoke-WebRequest -Uri "https://raw.githubusercontent.com/bsphinney/stan/main/start_stan_loop.bat?t=$t" -OutFile $loopDest -UseBasicParsing -ErrorAction SilentlyContinue
 } catch {}
 
 # -- Done --
