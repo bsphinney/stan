@@ -356,75 +356,115 @@ def upload_configs(mirror_dir: Path | None = None) -> int:
 
 
 def _action_update_stan(args: dict) -> dict:
-    """Run the platform-appropriate STAN updater and report the result.
+    """Schedule a STAN update for the next supervisor restart.
 
-    On Windows: runs `%USERPROFILE%\\STAN\\update-stan.bat` (or looks up
-    the repo-local copy as a fallback). On Linux/macOS: runs `pip install
-    --upgrade --no-cache-dir` against the main branch zip.
+    Architectural note: we CAN'T just pip-install here. The `stan watch`
+    process that's running this action holds `stan.exe` open, and
+    Windows blocks pip from overwriting locked executables (WinError 32).
+    Past attempts resulted in half-installed venvs and ModuleNotFoundError
+    on relaunch.
 
-    The currently-running `stan watch` process is NOT killed here — to
-    actually load the new code, follow this action with `restart_watcher`.
-    A loop wrapper (`start_stan_loop.bat` / systemd unit) is required on
-    the host side for the restart to take effect.
+    Instead we write `update_pending.flag`. The v0.2.90+ `start_stan_loop.bat`
+    supervisor checks for this flag AFTER `stan watch` exits and BEFORE
+    relaunching — by which point nothing has stan.exe open, so pip can
+    overwrite cleanly. Pair with `restart_watcher` to actually trigger
+    the exit.
+
+    Safety: refuses to set the flag if a baseline is in progress
+    (baseline_progress.json has been touched within the last 10 minutes)
+    so a schema change doesn't land under a running baseline process.
+    Override with `{force: true}`.
     """
     import os
     import platform
-    import subprocess
+    import time
 
-    timeout_sec = int(args.get("timeout_sec", 300))
-
-    if platform.system() == "Windows":
-        userprofile = Path(os.environ.get("USERPROFILE", ""))
-        candidates = [
-            userprofile / "STAN" / "update-stan.bat",
-            userprofile / ".stan" / "update-stan.bat",
-            # Brett's convention: keep it in Downloads after the one-time install
-            userprofile / "Downloads" / "update-stan.bat",
-            userprofile / "Desktop" / "update-stan.bat",
-        ]
-        script = next((p for p in candidates if p.exists()), None)
-
-        # If the user has never run the updater manually, update-stan.bat
-        # isn't on disk — it's always self-downloaded. Fetch it from
-        # GitHub now so this action is self-sufficient.
-        if script is None:
-            import urllib.request
-            try:
-                stan_dir = Path(os.environ.get("USERPROFILE", "")) / "STAN"
-                stan_dir.mkdir(parents=True, exist_ok=True)
-                script = stan_dir / "update-stan.bat"
-                url = "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat"
-                with urllib.request.urlopen(url, timeout=30) as resp:
-                    script.write_bytes(resp.read())
-            except Exception as e:
-                return {"error": f"update-stan.bat not found locally and "
-                                 f"GitHub fetch failed: {type(e).__name__}: {e}",
-                        "searched": [str(p) for p in candidates]}
-        cmd = ["cmd.exe", "/c", str(script)]
-    else:
+    if platform.system() != "Windows":
+        # Linux/macOS: no supervisor convention yet; pip directly.
+        # These platforms typically don't have the stan.exe file-lock
+        # issue because ELF binaries can be unlinked while in use.
+        import subprocess
+        timeout_sec = int(args.get("timeout_sec", 300))
         cmd = [
             "pip", "install", "--upgrade", "--no-cache-dir",
             "https://github.com/bsphinney/stan/archive/refs/heads/main.zip",
         ]
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                timeout=timeout_sec, check=False,
+            )
+        except subprocess.TimeoutExpired as e:
+            return {"error": f"updater timed out after {timeout_sec}s",
+                    "stdout_tail": (e.stdout or "")[-2000:],
+                    "stderr_tail": (e.stderr or "")[-2000:]}
+        return {
+            "returncode": proc.returncode, "cmd": cmd,
+            "stdout_tail": (proc.stdout or "")[-2000:],
+            "stderr_tail": (proc.stderr or "")[-2000:],
+            "hint": "run `restart_watcher` next to load the new code",
+        }
 
-    try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout_sec,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as e:
-        return {"error": f"updater timed out after {timeout_sec}s",
-                "stdout_tail": (e.stdout or "")[-2000:],
-                "stderr_tail": (e.stderr or "")[-2000:]}
-    except Exception as e:
-        return {"error": f"{type(e).__name__}: {e}"}
+    # Windows path — write the flag, don't pip.
+    from stan.config import get_user_config_dir
+
+    force = bool(args.get("force", False))
+    cfg_dir = get_user_config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+
+    # Baseline-in-progress safety gate
+    progress_file = cfg_dir / "baseline_progress.json"
+    if not force and progress_file.exists():
+        age_sec = time.time() - progress_file.stat().st_mtime
+        if age_sec < 600:
+            return {
+                "error": "baseline in progress — refusing to schedule update",
+                "baseline_progress_age_sec": round(age_sec, 1),
+                "hint": "wait for baseline to finish, or retry with "
+                        "args={'force': true} if you're sure",
+            }
+
+    flag = cfg_dir / "update_pending.flag"
+    flag.write_text(
+        f"update scheduled at {datetime.now(timezone.utc).isoformat()}\n"
+        "start_stan_loop.bat will run update-stan.bat on next restart\n",
+        encoding="utf-8",
+    )
+
+    # Verify the supervisor will find the updater
+    userprofile = Path(os.environ.get("USERPROFILE", ""))
+    updater_candidates = [
+        userprofile / "Downloads" / "update-stan.bat",
+        userprofile / "STAN" / "update-stan.bat",
+    ]
+    updater = next((p for p in updater_candidates if p.exists()), None)
+    if updater is None:
+        # Try to fetch it so start_stan_loop.bat can find it later
+        import urllib.request
+        try:
+            dest = userprofile / "STAN" / "update-stan.bat"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            url = "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat"
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                dest.write_bytes(resp.read())
+            updater = dest
+        except Exception as e:
+            return {
+                "flag_path": str(flag),
+                "warning": f"flag written but update-stan.bat not found and "
+                           f"GitHub fetch failed: {type(e).__name__}: {e}. "
+                           f"Supervisor will skip the update step.",
+                "searched": [str(p) for p in updater_candidates],
+            }
 
     return {
-        "returncode": proc.returncode,
-        "cmd": cmd,
-        "stdout_tail": (proc.stdout or "")[-2000:],
-        "stderr_tail": (proc.stderr or "")[-2000:],
-        "hint": "run `restart_watcher` next to load the new code",
+        "flag_path": str(flag),
+        "updater": str(updater),
+        "note": (
+            "Update scheduled. Queue `restart_watcher` next — the "
+            "supervisor will run the updater when stan watch exits, "
+            "then relaunch on the new version."
+        ),
     }
 
 
