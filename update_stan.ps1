@@ -139,6 +139,22 @@ Write-Host "  Stopping running stan.exe processes..." -ForegroundColor Gray
 Get-Process stan -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 
+# Nuke any half-broken stan install artifacts. Past failed updates
+# leave a stan-0.2.XX.dist-info\ dir WITHOUT a RECORD manifest — pip
+# then can't determine what to uninstall under --force-reinstall,
+# reports 'error: uninstall-no-record-file', and exits 1. Removing
+# the package dir + dist-info before install skips the uninstall
+# step entirely. Brett's Exploris 2026-04-14 regression.
+$sitePackages = Join-Path $venv "Lib\site-packages"
+if (Test-Path $sitePackages) {
+    Write-Host "  Clearing stale stan package artifacts..." -ForegroundColor Gray
+    $stanPkg = Join-Path $sitePackages "stan"
+    if (Test-Path $stanPkg) { Remove-Item -Recurse -Force $stanPkg -ErrorAction SilentlyContinue }
+    Get-ChildItem $sitePackages -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like "stan-*.dist-info" -or $_.Name -like "stan_proteomics-*.dist-info" } |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # Real failures we should actually block on. Deliberately narrow — pip
 # prints plenty of noise that looks scary but isn't. "uninstall-no-
 # record-file" in particular is just "I can't remove the prior install

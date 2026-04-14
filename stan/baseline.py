@@ -926,6 +926,45 @@ def _resume_baseline(progress_data: dict) -> None:
         _clear_progress()
         return
 
+    # Re-apply the original run's QC filter. Pre-v0.2.96 this resume
+    # path skipped filtering entirely — so any interruption (auto-update
+    # restart, power cycle) turned a QC-only baseline into "process
+    # every file in the directory", which is how blanks and washes
+    # ended up getting DIA-NN'd. Fixed by persisting qc_filter_on +
+    # qc_pattern into progress_data at start time.
+    qc_filter_on = progress_data.get("qc_filter_on", True)
+    if qc_filter_on:
+        from stan.watcher.qc_filter import compile_qc_pattern, filter_qc_files
+        qc_pat = compile_qc_pattern(progress_data.get("qc_pattern"))
+        matched = filter_qc_files(all_files, qc_pat)
+        if matched:
+            all_files = matched
+            console.print(
+                f"[dim]Resume: re-applied QC filter, "
+                f"{len(all_files)} files remain[/dim]"
+            )
+        else:
+            console.print(
+                "[yellow]Resume: QC filter matched nothing; "
+                "continuing with unfiltered list[/yellow]"
+            )
+
+    # Also honor exclude_pattern on resume so washes/blanks stay out
+    exc = progress_data.get("exclude_pattern")
+    if exc:
+        import re as _re
+        try:
+            exc_re = _re.compile(exc)
+            before = len(all_files)
+            all_files = [f for f in all_files if not exc_re.search(f.stem)]
+            if len(all_files) < before:
+                console.print(
+                    f"[dim]Resume: exclude_pattern dropped "
+                    f"{before - len(all_files)} file(s)[/dim]"
+                )
+        except _re.error:
+            pass
+
     # Rebuild minimal metadata for sorting
     file_metadata: list[dict] = []
     for f in all_files:
