@@ -651,6 +651,8 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [x] `stan verify` CLI — check auth token + relay name claim (v0.2.75)
 - [x] Dashboard UTF-8 `read_text` fix for Windows (v0.2.76)
 - [x] Server-side dashboard error log mirrored to Hive (v0.2.77)
+- [ ] Remote `run_baseline` / `baseline_status` control actions — kick off a baseline from the fleet dashboard or `stan send-command`, poll progress via a mirrored `baseline_progress.json`, so operators don't need to shell into the instrument PC
+- [ ] Mobile PWA — responsive dashboard CSS, `manifest.json` + service worker, push notifications on gate failure, auth layer for off-campus access (Tailscale / Cloudflare Tunnel / HF Space relay)
 - [ ] Add small real DIA-NN and Sage output files to `tests/fixtures/`
 - [ ] Column tracking — log column installs (vendor, model, serial, install date) to explain TIC variance
 - [ ] TIC filter by pseudonym (your traces vs community vs all)
