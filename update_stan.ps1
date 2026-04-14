@@ -130,15 +130,48 @@ Write-Host "  [1/3] Updating STAN..." -ForegroundColor Cyan
 $stanExe = "$venv\Scripts\stan.exe"
 $pipTrust = @("--trusted-host", "pypi.org", "--trusted-host", "files.pythonhosted.org", "--trusted-host", "github.com", "--trusted-host", "objects.githubusercontent.com")
 $t = [DateTime]::Now.Ticks
+
+# Kill any running stan.exe (watcher, dashboard, etc) so pip can
+# overwrite the executable. Without this, pip hits WinError 32 and
+# leaves the venv half-installed → ModuleNotFoundError on next launch.
+# This is the root cause of the 16:22 and 16:28 update failures today.
+Write-Host "  Stopping running stan.exe processes..." -ForegroundColor Gray
+Get-Process stan -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+
+# Capture pip exit code so we can distinguish real success from
+# "STAN updated" lies after a locked-file failure.
+$pipError = $false
 & $venvPython -m pip install --no-cache-dir --force-reinstall @pipTrust "https://github.com/bsphinney/stan/archive/refs/heads/main.zip?t=$t" 2>&1 | ForEach-Object {
     $line = $_.ToString()
     if ($line -match "Successfully installed") { Write-Host "  $line" -ForegroundColor Green }
-    elseif ($line -match "ERROR|error") { Write-Host "  $line" -ForegroundColor Red }
+    elseif ($line -match "ERROR|error") {
+        Write-Host "  $line" -ForegroundColor Red
+        $script:pipError = $true
+    }
 }
 
+if ($pipError -or $LASTEXITCODE -ne 0) {
+    Write-Host "  ERROR: pip reported errors. The venv may be in a partial state." -ForegroundColor Red
+    Write-Host "         Close every cmd window running stan.exe, then re-run this script." -ForegroundColor Yellow
+    exit 1
+}
 if (-not (Test-Path $stanExe)) {
     Write-Host "  ERROR: STAN update failed." -ForegroundColor Red
     exit 1
+}
+
+# Confirm the new install actually imports — catches the broken-venv
+# case where files land but the package is incomplete.
+& $venvPython -c "import stan; print('  STAN v' + stan.__version__)" 2>&1 | ForEach-Object {
+    $line = $_.ToString()
+    if ($line -match "ModuleNotFoundError|Error") {
+        Write-Host "  ERROR: installed package does not import:" -ForegroundColor Red
+        Write-Host "  $line" -ForegroundColor Red
+        exit 1
+    } else {
+        Write-Host $line -ForegroundColor Green
+    }
 }
 Write-Host "  STAN updated." -ForegroundColor Green
 
