@@ -231,6 +231,8 @@ class InstrumentWatcher:
                 }
                 for key, tr in self._trackers.items()
             ]
+        exc_pat = getattr(self._handler._exclude_pattern, "pattern", None) \
+            if self._handler._exclude_pattern else None
         return {
             "name": self._name,
             "watch_dir": self._watch_dir,
@@ -240,6 +242,8 @@ class InstrumentWatcher:
             "stable_secs": self._config.get("stable_secs", 60),
             "qc_only": self._config.get("qc_only", True),
             "qc_pattern": pat,
+            "monitor_all_files": self._handler._monitor_all_files,
+            "exclude_pattern": exc_pat,
             "observer_type": self._observer_type,
             "observer_alive": self._observer.is_alive() if hasattr(self._observer, "is_alive") else None,
             "uptime_sec": round(now - self._started_at, 1) if self._started_at else None,
