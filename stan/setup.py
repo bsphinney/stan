@@ -102,35 +102,31 @@ def run_setup() -> None:
         )
 
         if existing_name:
-            display_name = Prompt.ask(
-                "  Enter your existing name",
-                console=console,
-            )
+            while True:
+                display_name = Prompt.ask(
+                    "  Enter your existing name",
+                    console=console,
+                )
+                if len(display_name.strip()) >= 3:
+                    break
+                console.print(
+                    "  [yellow]Name must be at least 3 characters. "
+                    "Try again.[/yellow]"
+                )
             console.print(f"  Using: [bold cyan]{display_name}[/bold cyan]")
             # Re-verify ownership via email
             auth_token = _verify_name_ownership(display_name, reclaim=True)
         else:
-            console.print("  [dim]Checking community site for existing names...[/dim]")
-            suggested = generate_unique_pseudonym()
+            console.print("  [dim]Generating your anonymous lab name...[/dim]")
+            display_name = generate_unique_pseudonym()
             console.print(
-                f"  Your anonymous lab name: [bold cyan]{suggested}[/bold cyan]"
+                f"\n  Your lab name: [bold cyan]{display_name}[/bold cyan]\n"
             )
             console.print(
-                "  [dim]Only you know which name is yours. Use the same name on all instruments.[/dim]"
+                "  [dim]This is your permanent anonymous identity on the "
+                "community benchmark. Use the same name on all your "
+                "instruments so your data stays together.[/dim]"
             )
-            keep = Confirm.ask(
-                f"  Use '{suggested}'?",
-                default=True,
-                console=console,
-            )
-            if keep:
-                display_name = suggested
-            else:
-                display_name = Prompt.ask(
-                    "  Your display name",
-                    default=suggested,
-                    console=console,
-                )
 
             # Claim the name with email verification
             auth_token = _verify_name_ownership(display_name, reclaim=False)
