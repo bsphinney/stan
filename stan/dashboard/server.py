@@ -377,7 +377,7 @@ async def index() -> HTMLResponse:
     """Serve the dashboard frontend."""
     index_path = _FRONTEND_DIR / "index.html"
     if index_path.exists():
-        return HTMLResponse(index_path.read_text())
+        return HTMLResponse(index_path.read_text(encoding="utf-8"))
     return HTMLResponse(_FALLBACK_HTML)
 
 
