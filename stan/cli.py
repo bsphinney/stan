@@ -49,6 +49,94 @@ def version() -> None:
 
 
 @app.command()
+def verify() -> None:
+    """Check community benchmark auth status and refresh if needed.
+
+    Shows your current lab name, auth token status, and whether the
+    relay accepts your credentials. If your token is missing or
+    invalid, offers to re-verify via email.
+    """
+    from stan.config import load_community
+
+    try:
+        comm = load_community()
+    except Exception:
+        comm = {}
+
+    display_name = comm.get("display_name", "")
+    auth_token = comm.get("auth_token", "")
+    community_submit = comm.get("community_submit", False)
+
+    console.print()
+    console.print("[bold]Community Benchmark Status[/bold]")
+    console.print()
+    console.print(f"  Lab name:     [cyan]{display_name or 'Not set'}[/cyan]")
+    console.print(f"  Auth token:   {'[green]present[/green]' if auth_token else '[red]missing[/red]'}")
+    console.print(f"  Submissions:  {'[green]enabled[/green]' if community_submit else '[yellow]disabled[/yellow]'}")
+
+    if not display_name:
+        console.print()
+        console.print("[yellow]No lab name configured. Run [cyan]stan setup[/cyan] to register.[/yellow]")
+        return
+
+    # Verify the token against the relay
+    if auth_token:
+        import json
+        import urllib.error
+        import urllib.request
+        from stan.community.submit import RELAY_URL
+
+        console.print()
+        console.print("  Verifying with relay...", end=" ")
+        try:
+            # Use the /api/names endpoint to check if our name is claimed
+            req = urllib.request.Request(
+                f"{RELAY_URL}/api/names",
+                headers={"User-Agent": f"STAN/{__version__}"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                names_data = json.loads(resp.read())
+                claimed = names_data.get("claimed_names", {})
+                if display_name in claimed:
+                    console.print("[green]verified[/green]")
+                    console.print(f"  [dim]Your name '{display_name}' is claimed and protected.[/dim]")
+                else:
+                    console.print("[yellow]name not found on relay[/yellow]")
+                    console.print(
+                        f"  [dim]'{display_name}' may not have completed email "
+                        "verification. Run [cyan]stan setup[/cyan] to re-verify.[/dim]"
+                    )
+        except urllib.error.URLError:
+            console.print("[yellow]relay unreachable[/yellow]")
+            console.print("  [dim]Could not connect to the community relay. Check your internet.[/dim]")
+        except Exception as e:
+            console.print(f"[red]error: {e}[/red]")
+    else:
+        console.print()
+        console.print(
+            "[yellow]No auth token. Your submissions will be accepted during "
+            "the grace period, but run [cyan]stan setup[/cyan] to get "
+            "a verified token for permanent access.[/yellow]"
+        )
+
+    # Show recent submission count from local DB
+    try:
+        from stan.db import get_runs, init_db
+        init_db()
+        runs = get_runs(limit=100000)
+        submitted = [r for r in runs if r.get("submission_id")]
+        console.print()
+        console.print(f"  Local runs:      {len(runs)}")
+        console.print(f"  Submitted:       {len(submitted)}")
+        if submitted:
+            last = submitted[0]
+            console.print(f"  Last submission: {last.get('run_name', '?')} ({last.get('submission_id', '?')[:8]})")
+    except Exception:
+        pass
+    console.print()
+
+
+@app.command()
 def init() -> None:
     """Initialize STAN config directory (~/.stan/).
 
