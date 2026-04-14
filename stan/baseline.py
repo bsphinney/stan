@@ -1063,13 +1063,51 @@ def _process_files(
                 continue
 
             try:
-                # Detect mode — check metadata, then parent folder name, then default
-                mode_obj = file_meta.get("acquisition_mode")
+                import re as _re
+
+                # Explicit filename tokens override everything else. On the
+                # Lumos, files like FL050525_HeL50-Dda-newDualIT-HCDIT_60m_1.raw
+                # were burning 4-hour DIA-NN timeouts because TRFP's scan-ratio
+                # heuristic returned DIA for them (Orbitrap DDA with short cycle
+                # time looks DIA-ish). When the user explicitly wrote -Dda- or
+                # -Dia- in the filename, trust that over any sniffing.
+                _fname_lower = raw_file.stem.lower()
+                _strong_dda = [
+                    r"(?:^|[_\-])dda(?:$|[_\-])",
+                    r"(?:^|[_\-])hcdit(?:$|[_\-\d])",
+                    r"(?:^|[_\-])hcdot(?:$|[_\-\d])",
+                ]
+                _strong_dia = [
+                    r"(?:^|[_\-])dia(?:$|[_\-])",
+                    r"(?:^|[_\-])diaw\d",
+                    r"(?:^|[_\-])fdia(?:$|[_\-])",
+                ]
+                mode_obj = None
+                for pat in _strong_dda:
+                    if _re.search(pat, _fname_lower):
+                        mode_obj = (
+                            AcquisitionMode.DDA_PASEF if vendor == "bruker"
+                            else AcquisitionMode.DDA_ORBITRAP
+                        )
+                        logger.info("Mode from explicit filename token: DDA (%s)", raw_file.name)
+                        break
+                if mode_obj is None:
+                    for pat in _strong_dia:
+                        if _re.search(pat, _fname_lower):
+                            mode_obj = (
+                                AcquisitionMode.DIA_PASEF if vendor == "bruker"
+                                else AcquisitionMode.DIA_ORBITRAP
+                            )
+                            logger.info("Mode from explicit filename token: DIA (%s)", raw_file.name)
+                            break
+
+                # Fall through to sniffers when no explicit token was found
+                if mode_obj is None:
+                    mode_obj = file_meta.get("acquisition_mode")
                 if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
                     mode_obj = detect_mode(raw_file, vendor=vendor)
                 if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
                     # Check if immediate parent folder is exactly "dda" or "dia"
-                    import re as _re
                     _parent = raw_file.parent.name
                     if _re.match(r"^dda$", _parent, _re.IGNORECASE):
                         mode_obj = (
@@ -1083,11 +1121,9 @@ def _process_files(
                             else AcquisitionMode.DIA_ORBITRAP
                         )
                         logger.info("Mode from folder '%s': DIA", _parent)
-                # Check filename for DDA/DIA keywords before defaulting.
-                # Files like FL290524_HeL50-HCDOT_60m_1.raw or
-                # Ex040825_HeL50Dda_120m.raw contain clear mode hints
-                # that TRFP's scan-ratio heuristic can miss (ratios
-                # near 8–12 are ambiguous for Orbitrap DDA).
+                # Weaker filename tokens (hcd/cid/etd/w\d\d) — only apply if
+                # still ambiguous. These can appear in mixed contexts so they
+                # are NOT treated as explicit overrides.
                 if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
                     _fname_lower = raw_file.stem.lower()
                     _B = r"(?:^|[_\-])"    # start or delimiter
