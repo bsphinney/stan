@@ -569,14 +569,20 @@ def _backfill_tic_impl(
     """Core backfill logic shared by the CLI command and the baseline
     startup sweep.
 
-    Finds runs in the local DB that are missing TIC traces and re-extracts
-    them from the best available source, in this order:
+    Finds runs in the local DB that are missing TIC traces OR have
+    zero peptide/protein counts despite having a report.parquet in
+    baseline_output. Repairs both in one pass:
 
-      1. ``analysis.tdf`` inside the .d directory at ``raw_path``
-         (Bruker raw TIC — works even when the DIA-NN search failed)
-      2. ``report.parquet`` in ``baseline_output/<run_name>/``
-         (identified TIC from DIA-NN, DIA only)
-      3. ``extract_tic_thermo`` for Thermo ``.raw`` if fisher_py works
+      TIC sources (in order):
+        1. ``analysis.tdf`` inside the .d directory at ``raw_path``
+        2. ``report.parquet`` in ``baseline_output/<run_name>/``
+        3. ``extract_tic_thermo`` for Thermo ``.raw`` if fisher_py works
+
+      Peptide/protein repair:
+        If ``n_peptides`` is 0 or NULL but a ``report.parquet`` exists,
+        recompute from ``Stripped.Sequence`` / ``Protein.Group`` at 1% FDR.
+        This fixes the Lumos zero-peptide bug where older STAN versions
+        populated precursors but not peptides.
 
     All traces are downsampled to 128 bins before storage so they match
     the identified-TIC format.
@@ -616,16 +622,39 @@ def _backfill_tic_impl(
             ).fetchall()
         }
 
-    missing = [r for r in all_runs if r["id"] not in have_tic]
+    # Runs that need TIC or have zero peptides (or both)
+    missing_tic = [r for r in all_runs if r["id"] not in have_tic]
+    missing_pep = [r for r in all_runs
+                   if r["id"] in have_tic  # already has TIC
+                   and (not r.get("n_peptides") or r["n_peptides"] == 0)
+                   and r.get("n_precursors", 0) > 0]  # has search results
+
+    missing = missing_tic + missing_pep
+    # Deduplicate by run_id (a run could be in both lists)
+    seen_ids = set()
+    deduped = []
+    for r in missing:
+        if r["id"] not in seen_ids:
+            seen_ids.add(r["id"])
+            deduped.append(r)
+    missing = deduped
+
     if not missing:
         if verbose:
-            console.print("[green]Every run already has a TIC trace.[/green]")
+            console.print("[green]Every run already has TIC + peptide counts.[/green]")
         return (0, 0, 0)
 
+    n_need_tic = len([r for r in missing if r["id"] not in have_tic])
+    n_need_pep = len([r for r in missing if (not r.get("n_peptides") or r["n_peptides"] == 0) and r.get("n_precursors", 0) > 0])
     if verbose:
+        parts = []
+        if n_need_tic:
+            parts.append(f"{n_need_tic} missing TIC")
+        if n_need_pep:
+            parts.append(f"{n_need_pep} missing peptides")
         console.print(
-            f"Re-extracting TIC for [bold]{len(missing)}[/bold] runs "
-            f"(of {len(all_runs)} total)..."
+            f"Repairing [bold]{' + '.join(parts)}[/bold] "
+            f"(of {len(all_runs)} total runs)..."
         )
 
     extracted = 0
@@ -698,11 +727,62 @@ def _backfill_tic_impl(
             failed += 1
             continue
 
+        # ── Peptide/protein count repair ──────────────────────────
+        # If this run has precursors but zero peptides, recompute from
+        # the report.parquet. This fixes the Lumos bug where older STAN
+        # versions populated precursors but not peptides/proteins.
+        pep_patch: dict = {}
+        if (not run.get("n_peptides") or run["n_peptides"] == 0) and run.get("n_precursors", 0) > 0:
+            report_path = None
+            for stem_variant in (Path(run_name).stem, run_name, Path(raw_path_str).stem if raw_path_str else ""):
+                if not stem_variant:
+                    continue
+                candidate = output_dir / stem_variant / "report.parquet"
+                if candidate.exists():
+                    report_path = candidate
+                    break
+            if report_path:
+                try:
+                    import polars as _pl
+                    schema = _pl.read_parquet_schema(report_path)
+                    avail = set(schema.keys()) if hasattr(schema, "keys") else set(schema)
+                    cols_needed = []
+                    if "Q.Value" in avail:
+                        cols_needed.append("Q.Value")
+                    if "Stripped.Sequence" in avail:
+                        cols_needed.append("Stripped.Sequence")
+                    if "Protein.Group" in avail:
+                        cols_needed.append("Protein.Group")
+                    if cols_needed and "Q.Value" in cols_needed:
+                        rdf = _pl.read_parquet(report_path, columns=cols_needed)
+                        rdf = rdf.filter(_pl.col("Q.Value") <= 0.01)
+                        if "Stripped.Sequence" in rdf.columns:
+                            pep_patch["n_peptides"] = rdf["Stripped.Sequence"].n_unique()
+                        if "Protein.Group" in rdf.columns:
+                            pep_patch["n_proteins"] = rdf["Protein.Group"].n_unique()
+                        if pep_patch:
+                            with sqlite3.connect(str(db_path)) as con:
+                                for k, v in pep_patch.items():
+                                    con.execute(f"UPDATE runs SET {k} = ? WHERE id = ?", (v, run_id))
+                            if verbose:
+                                console.print(
+                                    f"  [cyan]peptides[/cyan] {run_name} "
+                                    f"pep={pep_patch.get('n_peptides', '?')} "
+                                    f"prot={pep_patch.get('n_proteins', '?')}"
+                                )
+                except Exception:
+                    logger.debug("Peptide repair failed for %s", run_name, exc_info=True)
+
         # Queue for community push if this run was already submitted
         if push and run.get("submission_id"):
-            pushed_rows.append(
-                (run["submission_id"], trace.rt_min, trace.intensity)
-            )
+            push_data: dict = {}
+            if trace:
+                push_data["tic_rt_bins"] = [round(float(r), 3) for r in trace.rt_min]
+                push_data["tic_intensity"] = [round(float(v), 0) for v in trace.intensity]
+            if pep_patch:
+                push_data.update(pep_patch)
+            if push_data:
+                pushed_rows.append((run["submission_id"], push_data))
 
     if verbose:
         console.print(
@@ -715,15 +795,12 @@ def _backfill_tic_impl(
     if push and pushed_rows:
         from stan.community.submit import RELAY_URL
         console.print(
-            f"Pushing [bold]{len(pushed_rows)}[/bold] TIC corrections to the relay..."
+            f"Pushing [bold]{len(pushed_rows)}[/bold] corrections to the relay..."
         )
         ok = 0
-        for sub_id, rt, inten in pushed_rows:
+        for sub_id, push_data in pushed_rows:
             try:
-                data = json.dumps({
-                    "tic_rt_bins": [round(float(r), 3) for r in rt],
-                    "tic_intensity": [round(float(v), 0) for v in inten],
-                }).encode("utf-8")
+                data = json.dumps(push_data).encode("utf-8")
                 req = urllib.request.Request(
                     f"{RELAY_URL}/api/update/{sub_id}",
                     data=data, method="POST",
