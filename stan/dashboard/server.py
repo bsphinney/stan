@@ -367,6 +367,78 @@ async def api_dashboard_errors() -> list[dict]:
     return _DASH_ERROR_LOG
 
 
+# ── Fleet (stan.control) ─────────────────────────────────────────────
+
+@app.get("/api/fleet/hosts")
+async def api_fleet_hosts() -> dict:
+    """List every host directory on the shared mirror and surface each
+    host's most recent status.json for the Fleet tab."""
+    import json
+    from stan.config import get_hive_mirror_root
+
+    root = get_hive_mirror_root()
+    if root is None:
+        return {"root": None, "hosts": []}
+
+    hosts = []
+    for h in sorted(p for p in root.iterdir() if p.is_dir()):
+        entry: dict = {"name": h.name, "status": None, "error": None}
+        sp = h / "status.json"
+        if sp.exists():
+            try:
+                entry["status"] = json.loads(sp.read_text(encoding="utf-8"))
+            except Exception as e:
+                entry["error"] = f"status.json parse error: {e}"
+        hosts.append(entry)
+    return {"root": str(root), "hosts": hosts}
+
+
+@app.post("/api/fleet/command")
+async def api_fleet_command(body: dict) -> dict:
+    """Enqueue a whitelisted command for the named host and return the
+    command id. Poll /api/fleet/result/<host>/<id> to see the response."""
+    from stan.config import get_hive_mirror_root
+    from stan.control import COMMAND_WHITELIST, enqueue_command
+
+    host = body.get("host", "")
+    action = body.get("action", "")
+    args = body.get("args") or {}
+    if not host or not action:
+        raise HTTPException(status_code=400, detail="host and action required")
+    if action not in COMMAND_WHITELIST:
+        raise HTTPException(status_code=400, detail=f"action {action!r} not in whitelist")
+
+    root = get_hive_mirror_root()
+    if root is None:
+        raise HTTPException(status_code=503, detail="no hive mirror mounted")
+    host_dir = root / host
+    if not host_dir.exists():
+        raise HTTPException(status_code=404, detail=f"no such host: {host}")
+
+    cmd_file = enqueue_command(action, args, mirror_dir=host_dir)
+    return {"id": cmd_file.stem, "action": action, "host": host}
+
+
+@app.get("/api/fleet/result/{host}/{cmd_id}")
+async def api_fleet_result(host: str, cmd_id: str) -> dict:
+    """Return the result file for the given command, or `pending: true`
+    if it hasn't been processed yet. Frontend polls this until the
+    action completes."""
+    import json
+    from stan.config import get_hive_mirror_root
+
+    root = get_hive_mirror_root()
+    if root is None:
+        raise HTTPException(status_code=503, detail="no hive mirror mounted")
+    result_path = root / host / "commands" / "results" / f"{cmd_id}.result.json"
+    if not result_path.exists():
+        return {"pending": True, "id": cmd_id, "host": host}
+    try:
+        return json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"result parse error: {e}")
+
+
 # ── Static frontend ──────────────────────────────────────────────────
 
 _FRONTEND_DIR = Path(__file__).parent / "public"

@@ -50,6 +50,26 @@
 </head>
 <body>
   <div id="root"></div>
+  <!-- Global JS error capture — sends unhandled errors to /api/dashboard-error
+       so they show up in the Hive mirror logs for remote debugging. Also keeps
+       the last 10 errors in a visible diagnostic panel toggled by triple-clicking
+       the version badge in the header. -->
+  <script>
+    window.__dashErrors = [];
+    window.onerror = function(msg, src, line, col, err) {
+      var entry = {ts: new Date().toISOString(), msg: String(msg), src: src, line: line, col: col, stack: err && err.stack ? err.stack : ''};
+      window.__dashErrors.push(entry);
+      if (window.__dashErrors.length > 20) window.__dashErrors.shift();
+      // Fire-and-forget POST to the dashboard server
+      try {
+        fetch('/api/dashboard-error', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(entry)}).catch(function(){});
+      } catch(e) {}
+    };
+    window.onunhandledrejection = function(ev) {
+      var msg = ev.reason ? (ev.reason.stack || ev.reason.message || String(ev.reason)) : 'unhandled promise rejection';
+      window.onerror(msg, '', 0, 0, ev.reason);
+    };
+  </script>
   <script type="text/babel">
     const { useState, useEffect, useCallback, useMemo } = React;
 
@@ -1389,6 +1409,168 @@
       );
     }
 
+    /* ── Fleet tab ─────────────────────────────────────────────────
+       Reads <mirror>/<host>/status.json for every instrument mounted
+       on the shared drive. Lets the user fire a whitelisted command
+       (ping / status / tail_log / export_db_snapshot) and poll the
+       result file. Read-only view by default; command buttons are
+       hidden behind a toggle so they can't be clicked by accident. */
+    function formatHeartbeat(iso) {
+      if (!iso) return '—';
+      try {
+        const ts = new Date(iso);
+        const ageSec = (Date.now() - ts.getTime()) / 1000;
+        if (ageSec < 60) return `${Math.round(ageSec)}s ago`;
+        if (ageSec < 3600) return `${Math.round(ageSec / 60)}m ago`;
+        if (ageSec < 86400) return `${(ageSec / 3600).toFixed(1)}h ago`;
+        return `${(ageSec / 86400).toFixed(1)}d ago`;
+      } catch (e) { return '—'; }
+    }
+
+    function FleetHostRow({ host, expanded, onToggle, onCommand, result }) {
+      const s = host.status || {};
+      const hbIso = s.timestamp;
+      const ageSec = hbIso ? (Date.now() - new Date(hbIso).getTime()) / 1000 : Infinity;
+      const stale = ageSec > 30 * 60;
+      const last = s.last_run || {};
+
+      return (
+        <>
+          <tr style={{ cursor: 'pointer' }} onClick={() => onToggle(host.name)}>
+            <td>{expanded ? '▾' : '▸'} {host.name}</td>
+            <td style={{ color: stale ? '#c77' : '#6b6' }}>{formatHeartbeat(hbIso)}</td>
+            <td>{s.stan_version || '—'}</td>
+            <td style={{ textAlign: 'right' }}>{s.n_runs ?? '—'}</td>
+            <td>{last.run_name || '—'}</td>
+            <td>{last.gate_result || '—'}</td>
+            <td>{s.disk_free_gb ? `${s.disk_free_gb} GB` : '—'}</td>
+          </tr>
+          {expanded && (
+            <tr>
+              <td colSpan={7} style={{ background: '#fafafa', padding: '0.75rem 1rem' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                  <button onClick={() => onCommand(host.name, 'ping')}>Ping</button>
+                  <button onClick={() => onCommand(host.name, 'status')}>Refresh status</button>
+                  <button onClick={() => onCommand(host.name, 'tail_log', { name: 'baseline', n: 50 })}>Tail baseline.log (50)</button>
+                  <button onClick={() => onCommand(host.name, 'export_db_snapshot')}>Export DB snapshot</button>
+                </div>
+                {host.error && <div style={{ color: '#c33' }}>{host.error}</div>}
+                {result && (
+                  <pre style={{ background: '#eee', padding: '0.5rem', borderRadius: 4, maxHeight: '24rem', overflow: 'auto', fontSize: '0.75rem' }}>
+                    {JSON.stringify(result, null, 2)}
+                  </pre>
+                )}
+              </td>
+            </tr>
+          )}
+        </>
+      );
+    }
+
+    function FleetPanel() {
+      const { data, loading, error, reload } = useFetch('/api/fleet/hosts');
+      const [expanded, setExpanded] = useState(null);
+      const [pending, setPending] = useState({});   // {host: cmd_id}
+      const [results, setResults] = useState({});   // {host: payload}
+
+      // Auto-refresh host list every 30s
+      useEffect(() => {
+        const t = setInterval(reload, 30000);
+        return () => clearInterval(t);
+      }, [reload]);
+
+      // Poll for a pending command's result
+      useEffect(() => {
+        const active = Object.entries(pending).filter(([, id]) => id);
+        if (active.length === 0) return;
+        const t = setInterval(() => {
+          active.forEach(([host, cmdId]) => {
+            fetch(API + `/api/fleet/result/${host}/${cmdId}`)
+              .then(r => r.json())
+              .then(d => {
+                if (!d.pending) {
+                  setResults(prev => ({ ...prev, [host]: d }));
+                  setPending(prev => { const n = { ...prev }; delete n[host]; return n; });
+                }
+              })
+              .catch(() => { /* transient, keep polling */ });
+          });
+        }, 2000);
+        return () => clearInterval(t);
+      }, [pending]);
+
+      const sendCommand = (host, action, args) => {
+        setResults(prev => ({ ...prev, [host]: { pending: true, action } }));
+        fetch(API + '/api/fleet/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host, action, args: args || {} }),
+        })
+          .then(r => r.ok ? r.json() : r.json().then(e => Promise.reject(e)))
+          .then(d => {
+            setPending(prev => ({ ...prev, [host]: d.id }));
+          })
+          .catch(e => {
+            setResults(prev => ({ ...prev, [host]: { status: 'error', message: e.detail || String(e) } }));
+          });
+      };
+
+      if (loading && !data) return <div className="card">Loading fleet…</div>;
+      if (error) return <div className="card" style={{ color: '#c33' }}>Fleet API error: {error}</div>;
+      if (!data || !data.root) {
+        return (
+          <div className="card">
+            <p><strong>No Hive mirror mounted on this machine.</strong></p>
+            <p style={{ color: '#666', fontSize: '0.9rem' }}>
+              The Fleet view reads <code>status.json</code> from each instrument's subdirectory
+              on the shared mirror (default: <code>Y:\STAN\</code> on Windows,
+              <code>/Volumes/proteomics-grp/STAN/</code> on macOS). Mount the share and reload.
+            </p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <h2>Fleet</h2>
+            <div style={{ fontSize: '0.8rem', color: '#888' }}>
+              <code>{data.root}</code> · {data.hosts.length} host(s) · auto-refresh 30s · <button onClick={reload}>↻</button>
+            </div>
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', borderBottom: '1px solid #ddd' }}>
+                <th>Host</th>
+                <th>Heartbeat</th>
+                <th>Version</th>
+                <th style={{ textAlign: 'right' }}>Runs</th>
+                <th>Last run</th>
+                <th>Gate</th>
+                <th>Disk free</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.hosts.map(h => (
+                <FleetHostRow
+                  key={h.name}
+                  host={h}
+                  expanded={expanded === h.name}
+                  onToggle={n => setExpanded(expanded === n ? null : n)}
+                  onCommand={sendCommand}
+                  result={results[h.name]}
+                />
+              ))}
+            </tbody>
+          </table>
+          <p style={{ fontSize: '0.75rem', color: '#888', marginTop: '1rem' }}>
+            Click a row to expand the command panel. Only read-only actions are wired up.
+            Destructive actions (updater, process kill) are intentionally not exposed yet.
+          </p>
+        </div>
+      );
+    }
+
     function App() {
       const [tab, setTab] = useState('live');
       const { data: ver } = useFetch('/api/version');
@@ -1400,7 +1582,7 @@
             <span className="version">{ver ? `v${ver.version}` : ''}</span>
           </header>
           <div className="tabs">
-            {[['live', "Today's Runs"], ['history', 'Run History'], ['trends', 'Trends'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
+            {[['live', "Today's Runs"], ['history', 'Run History'], ['trends', 'Trends'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
               <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
             )}
           </div>
@@ -1408,6 +1590,7 @@
             {tab === 'live' && <LiveRuns />}
             {tab === 'history' && <RunHistory />}
             {tab === 'trends' && <TrendCharts />}
+            {tab === 'fleet' && <FleetPanel />}
             {tab === 'config' && <ConfigEditor />}
             {tab === 'community' && <CommunityTab />}
           </ErrorBoundary>
