@@ -27,6 +27,11 @@ from stan.watcher.stability import StabilityTracker
 logger = logging.getLogger(__name__)
 
 
+# Module-level singleton populated by WatcherDaemon.run(). Read by
+# stan.control._action_watcher_debug to expose runtime state.
+_ACTIVE_DAEMON: "WatcherDaemon | None" = None
+
+
 def _is_network_path(path: str) -> bool:
     """Detect UNC or network paths where native OS events may not work."""
     return path.startswith("\\\\") or path.startswith("//")
@@ -40,6 +45,7 @@ class _AcquisitionHandler(FileSystemEventHandler):
         instrument_config: dict,
         trackers: dict[str, StabilityTracker],
         lock: threading.Lock,
+        on_event=None,
     ) -> None:
         super().__init__()
         self._config = instrument_config
@@ -50,6 +56,9 @@ class _AcquisitionHandler(FileSystemEventHandler):
         self._stable_secs = instrument_config.get("stable_secs", 60)
         self._qc_only = instrument_config.get("qc_only", True)
         self._qc_pattern = compile_qc_pattern(instrument_config.get("qc_pattern"))
+        # Callback used by InstrumentWatcher to record a ring-buffer entry
+        # for each event. Takes (category, path, detail).
+        self._on_event = on_event or (lambda *a, **kw: None)
 
     def _is_inside_dot_d(self, path: Path) -> bool:
         """Check if path is inside a Bruker .d directory (not the .d itself)."""
@@ -60,26 +69,38 @@ class _AcquisitionHandler(FileSystemEventHandler):
 
     def on_created(self, event) -> None:
         path = Path(event.src_path)
+        ev_kind = "dir" if isinstance(event, DirCreatedEvent) else "file"
 
         # Ignore anything inside a .d directory — those are Bruker internals
         # (analysis.tdf, analysis.tdf_bin, etc.), not new acquisitions
         if self._is_inside_dot_d(path):
+            self._on_event("ignore_inside_dot_d", path, ev_kind)
             return
 
         # Bruker .d: directory creation event
         if isinstance(event, DirCreatedEvent) and path.suffix == ".d":
             if ".d" in self._extensions:
-                self._register_tracker(path)
+                self._register_tracker(path, ev_kind)
+            else:
+                self._on_event("ignore_ext_mismatch", path,
+                               f"{ev_kind}; extensions={sorted(self._extensions)}")
 
         # Thermo .raw: file creation event
         elif isinstance(event, FileCreatedEvent) and path.suffix in self._extensions:
             if path.suffix != ".d":
-                self._register_tracker(path)
+                self._register_tracker(path, ev_kind)
 
-    def _register_tracker(self, path: Path) -> None:
+        else:
+            self._on_event("ignore_other", path,
+                           f"{ev_kind}; suffix={path.suffix!r}; "
+                           f"extensions={sorted(self._extensions)}")
+
+    def _register_tracker(self, path: Path, ev_kind: str = "") -> None:
         # Skip non-QC files when qc_only is enabled
         if self._qc_only and not is_qc_file(path, self._qc_pattern):
-            logger.debug("Skipping non-QC file: %s", path.name)
+            pat = getattr(self._qc_pattern, "pattern", None) if self._qc_pattern else None
+            logger.info("watcher: QC filter rejected %s (pattern=%r)", path.name, pat)
+            self._on_event("qc_filter_reject", path, f"pattern={pat!r}")
             return
 
         key = str(path)
@@ -90,21 +111,40 @@ class _AcquisitionHandler(FileSystemEventHandler):
                     vendor=self._vendor,
                     stable_secs=self._stable_secs,
                 )
-                logger.info("Tracking new QC acquisition: %s", path.name)
+                logger.info("watcher: tracking new QC acquisition: %s "
+                            "(stable_secs=%d)", path.name, self._stable_secs)
+                self._on_event("tracked", path, f"stable_secs={self._stable_secs}")
+            else:
+                self._on_event("already_tracked", path, "")
 
 
 class InstrumentWatcher:
     """Watches a single instrument's raw data directory."""
 
     def __init__(self, instrument_config: dict) -> None:
+        import collections
         self._config = instrument_config
         self._name = instrument_config.get("name", "unknown")
         self._watch_dir = instrument_config.get("watch_dir", "")
         self._trackers: dict[str, StabilityTracker] = {}
         self._lock = threading.Lock()
-        self._handler = _AcquisitionHandler(instrument_config, self._trackers, self._lock)
+
+        # Ring buffer of recent events for remote debugging via the
+        # `watcher_debug` control action. Every event the handler sees —
+        # including ones it chose to ignore — lands here with a category
+        # so we can tell "we got a create but skipped it" apart from
+        # "we never got any events at all".
+        self._recent_events: "collections.deque[dict]" = collections.deque(maxlen=100)
+        self._started_at: float | None = None
+        self._event_counts: dict[str, int] = {}
+
+        self._handler = _AcquisitionHandler(
+            instrument_config, self._trackers, self._lock,
+            on_event=self._record_event,
+        )
 
         # Use polling observer for network paths
+        self._observer_type = "PollingObserver" if _is_network_path(self._watch_dir) else "Observer"
         if _is_network_path(self._watch_dir):
             self._observer = PollingObserver(timeout=10)
         else:
@@ -117,6 +157,54 @@ class InstrumentWatcher:
     def name(self) -> str:
         return self._name
 
+    def _record_event(self, category: str, path: Path, detail: str) -> None:
+        """Append one row to the recent-events ring buffer."""
+        import time
+        self._recent_events.append({
+            "ts": time.time(),
+            "category": category,
+            "path": str(path),
+            "detail": detail,
+        })
+        self._event_counts[category] = self._event_counts.get(category, 0) + 1
+
+    def debug_snapshot(self) -> dict:
+        """Expose internal state for the `watcher_debug` control action.
+
+        Returns everything a remote diagnostician would need to tell
+        whether events are arriving at all, being filtered, or stuck in
+        the stability tracker."""
+        import time
+        pat = getattr(self._handler._qc_pattern, "pattern", None) if self._handler._qc_pattern else None
+        now = time.time()
+        with self._lock:
+            trackers = [
+                {
+                    "path": key,
+                    "age_sec": round(now - tr.first_seen, 1)
+                        if hasattr(tr, "first_seen") else None,
+                    "last_size": getattr(tr, "last_size", None),
+                }
+                for key, tr in self._trackers.items()
+            ]
+        return {
+            "name": self._name,
+            "watch_dir": self._watch_dir,
+            "watch_dir_exists": Path(self._watch_dir).exists() if self._watch_dir else False,
+            "vendor": self._config.get("vendor"),
+            "extensions": sorted(self._config.get("extensions", [])),
+            "stable_secs": self._config.get("stable_secs", 60),
+            "qc_only": self._config.get("qc_only", True),
+            "qc_pattern": pat,
+            "observer_type": self._observer_type,
+            "observer_alive": self._observer.is_alive() if hasattr(self._observer, "is_alive") else None,
+            "uptime_sec": round(now - self._started_at, 1) if self._started_at else None,
+            "event_counts": dict(self._event_counts),
+            "n_trackers_active": len(trackers),
+            "trackers_active": trackers,
+            "recent_events": list(self._recent_events)[-25:],
+        }
+
     def start(self) -> None:
         """Start watching the directory and the stability check loop."""
         watch_path = Path(self._watch_dir)
@@ -124,10 +212,14 @@ class InstrumentWatcher:
             logger.warning(
                 "Watch directory does not exist for %s: %s", self._name, self._watch_dir
             )
+            self._record_event("watch_dir_missing", watch_path, self._watch_dir)
             return
 
         self._observer.schedule(self._handler, str(watch_path), recursive=True)
         self._observer.start()
+
+        import time
+        self._started_at = time.time()
 
         self._stop_event.clear()
         self._stability_thread = threading.Thread(
@@ -136,7 +228,16 @@ class InstrumentWatcher:
             daemon=True,
         )
         self._stability_thread.start()
-        logger.info("Started watching: %s → %s", self._name, self._watch_dir)
+        logger.info(
+            "watcher: started %s → %s (observer=%s, extensions=%s, "
+            "qc_only=%s, qc_pattern=%r, stable_secs=%d)",
+            self._name, self._watch_dir, self._observer_type,
+            sorted(self._config.get("extensions", [])),
+            self._config.get("qc_only", True),
+            getattr(self._handler._qc_pattern, "pattern", None)
+                if self._handler._qc_pattern else None,
+            self._config.get("stable_secs", 60),
+        )
 
     def stop(self) -> None:
         """Stop the observer and stability loop."""
@@ -325,6 +426,12 @@ class WatcherDaemon:
 
     def run(self) -> None:
         """Blocking main loop. Start all watchers and poll for config changes."""
+        # Register in the module-level singleton so stan.control can
+        # reach the running daemon's state for the `watcher_debug`
+        # diagnostic action.
+        global _ACTIVE_DAEMON
+        _ACTIVE_DAEMON = self
+
         # Register signal handlers for clean shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -408,6 +515,12 @@ class WatcherDaemon:
             watcher.stop()
         self._watchers.clear()
         logger.info("All watchers stopped")
+
+
+def get_active_daemon() -> "WatcherDaemon | None":
+    """Return the running WatcherDaemon singleton, if any. Used by
+    stan.control to surface watcher state in diagnostic actions."""
+    return _ACTIVE_DAEMON
 
 
 def _write_heartbeat() -> None:

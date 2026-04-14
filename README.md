@@ -608,6 +608,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | Extra Lumos DDA tokens + tighter search timeout | Done | Added `UnvPep`/`UnvID`/`Univ`/`1StpHCD`/`2StpHCD`/`Pepmx`/`HCD-IT`/`HCD-OT` to explicit-DDA override list; DIA-NN and Sage default timeout dropped from 4 h to 20 min to cap hung-search blast radius (v0.2.80) |
 | Fleet control queue over the Hive mirror | Done | `stan/control.py` whitelist-dispatch poller wired into `stan watch`; instruments heartbeat `status.json` to `<mirror>/<host>/` every ~5 min; `stan send-command --host <h> --wait`, `stan fleet-status`, `stan poll-commands` CLIs. Read-only actions only for now (`ping`, `status`, `tail_log`, `export_db_snapshot`) — no remote process-kill or updater yet (v0.2.81) |
 | Fleet dashboard tab | Done | New **Fleet** tab in `stan dashboard` aggregates `status.json` across every host on the shared mirror, auto-refreshes every 30 s, and exposes per-host command buttons (ping / status / tail_log / export_db_snapshot) that post to `/api/fleet/command` and poll `/api/fleet/result/{host}/{id}` (v0.2.82) |
+| Watcher debug telemetry | Done | `InstrumentWatcher` now keeps a 100-entry ring buffer of every event the handler sees — including ones it ignored (inside `.d`, extension mismatch, QC-filter reject) — with per-category counts and per-tracker age. New whitelisted control action `watcher_debug` exposes a structured snapshot of all active watchers for remote diagnosis; also reachable via the Fleet tab's "Watcher debug" button (v0.2.83) |
 
 ---
 

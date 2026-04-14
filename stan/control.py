@@ -152,6 +152,36 @@ def _action_tail_log(args: dict) -> dict:
     return {"log_name": name, "error": "log file not found in any known location"}
 
 
+def _action_watcher_debug(args: dict) -> dict:
+    """Dump the running `stan watch` daemon's internal state so a
+    remote diagnostician can tell whether events are arriving, being
+    filtered, or stuck in the stability tracker.
+
+    Returns a list of per-watcher snapshots (watch dir, observer type,
+    event counts, active trackers with age, and the last 25 events the
+    handler saw — including the ones it intentionally ignored)."""
+    try:
+        from stan.watcher.daemon import get_active_daemon
+    except Exception as e:
+        return {"error": f"cannot import watcher daemon: {e}"}
+
+    daemon = get_active_daemon()
+    if daemon is None:
+        return {
+            "error": "no active watcher daemon in this process",
+            "hint": "run `stan watch` on the host you're querying; the "
+                    "control poller shares its process with the daemon",
+        }
+
+    watchers = []
+    for name, w in daemon._watchers.items():
+        try:
+            watchers.append(w.debug_snapshot())
+        except Exception as e:
+            watchers.append({"name": name, "snapshot_error": str(e)})
+    return {"n_watchers": len(watchers), "watchers": watchers}
+
+
 def _action_export_db_snapshot(args: dict) -> dict:
     """Export the runs + maintenance_events tables to the mirror as parquet.
 
@@ -204,6 +234,7 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "status":              _action_status,
     "tail_log":            _action_tail_log,
     "export_db_snapshot":  _action_export_db_snapshot,
+    "watcher_debug":       _action_watcher_debug,
 }
 
 

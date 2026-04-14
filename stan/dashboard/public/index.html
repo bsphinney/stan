@@ -1448,10 +1448,11 @@
           {expanded && (
             <tr>
               <td colSpan={7} style={{ background: '#fafafa', padding: '0.75rem 1rem' }}>
-                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
                   <button onClick={() => onCommand(host.name, 'ping')}>Ping</button>
                   <button onClick={() => onCommand(host.name, 'status')}>Refresh status</button>
                   <button onClick={() => onCommand(host.name, 'tail_log', { name: 'baseline', n: 50 })}>Tail baseline.log (50)</button>
+                  <button onClick={() => onCommand(host.name, 'watcher_debug')}>Watcher debug</button>
                   <button onClick={() => onCommand(host.name, 'export_db_snapshot')}>Export DB snapshot</button>
                 </div>
                 {host.error && <div style={{ color: '#c33' }}>{host.error}</div>}
