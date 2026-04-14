@@ -1083,6 +1083,54 @@ def _process_files(
                             else AcquisitionMode.DIA_ORBITRAP
                         )
                         logger.info("Mode from folder '%s': DIA", _parent)
+                # Check filename for DDA/DIA keywords before defaulting.
+                # Files like FL290524_HeL50-HCDOT_60m_1.raw or
+                # Ex040825_HeL50Dda_120m.raw contain clear mode hints
+                # that TRFP's scan-ratio heuristic can miss (ratios
+                # near 8–12 are ambiguous for Orbitrap DDA).
+                if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
+                    _fname_lower = raw_file.stem.lower()
+                    _B = r"(?:^|[_\-])"    # start or delimiter
+                    _A = r"(?:$|[_\-\d])"  # end, delimiter, or digit
+                    _dda_patterns = [
+                        _B + r"dda" + _A,
+                        _B + r"hcd" + _A,
+                        _B + r"hcdit" + _A,
+                        _B + r"hcdot" + _A,
+                        _B + r"cid" + _A,
+                        _B + r"etd" + _A,
+                        r"dda",  # catch-all: "dda" anywhere (StepDda)
+                        r"hcd",  # catch-all: "hcd" anywhere (1StpHCD37)
+                    ]
+                    _dia_patterns = [
+                        _B + r"dia" + _A,
+                        _B + r"diaw\d",
+                        _B + r"fdia" + _A,
+                        _B + r"w\d{2}" + _A,  # DIA window width (W46)
+                    ]
+                    _detected_from_name = None
+                    for pat in _dda_patterns:
+                        if _re.search(pat, _fname_lower):
+                            _detected_from_name = "dda"
+                            break
+                    if not _detected_from_name:
+                        for pat in _dia_patterns:
+                            if _re.search(pat, _fname_lower):
+                                _detected_from_name = "dia"
+                                break
+                    if _detected_from_name == "dda":
+                        mode_obj = (
+                            AcquisitionMode.DDA_PASEF if vendor == "bruker"
+                            else AcquisitionMode.DDA_ORBITRAP
+                        )
+                        logger.info("Mode from filename '%s': DDA", raw_file.name)
+                    elif _detected_from_name == "dia":
+                        mode_obj = (
+                            AcquisitionMode.DIA_PASEF if vendor == "bruker"
+                            else AcquisitionMode.DIA_ORBITRAP
+                        )
+                        logger.info("Mode from filename '%s': DIA", raw_file.name)
+
                 if mode_obj is None or mode_obj == AcquisitionMode.UNKNOWN:
                     # Final default to DIA — most common QC mode
                     mode_obj = (
@@ -1194,9 +1242,18 @@ def _process_files(
                     lc_system_detected = ""
 
                 # Compute IPS using the per-file SPD (cohort reference
-                # lookup inside compute_ips_dia depends on metrics["spd"]).
-                metrics["instrument_family"] = instrument_model
+                # lookup inside compute_ips_dia depends on metrics["spd"]
+                # AND metrics["instrument_family"] — the latter must be
+                # the broad class ("Exploris", "timsTOF", "Astral"), not
+                # the full model string ("Orbitrap Exploris 480"). The
+                # submit_to_benchmark() path in community/submit.py uses
+                # the same mapping for consistency across everything
+                # downstream (cohort_id, dashboard scatter colors, etc).
+                from stan.community.submit import _instrument_family, _detect_sample_type
+                metrics["instrument_family"] = _instrument_family(instrument_model)
                 metrics["spd"] = file_spd
+                sample_type = _detect_sample_type(raw_file.name)
+                metrics["sample_type"] = sample_type
                 if lc_system_detected:
                     metrics["lc_system"] = lc_system_detected
                 if is_dia(mode_obj):
@@ -1313,6 +1370,7 @@ def _process_files(
                         "gradient_length_min": grad_min,
                         "spd": file_spd,
                         "lc_system": lc_system_detected,
+                        "sample_type": sample_type,
                         **metrics,
                     }
                     # Include identified TIC for community if available

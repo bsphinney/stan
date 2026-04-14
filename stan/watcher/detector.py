@@ -152,14 +152,33 @@ def detect_mode(path: Path, vendor: str, **kwargs) -> AcquisitionMode:
     Args:
         path: Path to .d directory or .raw file.
         vendor: "bruker" or "thermo".
-        **kwargs: For thermo, requires trfp_path and output_dir.
+        **kwargs: For thermo, optional trfp_path and output_dir overrides.
+            If not provided, TRFP is auto-discovered from the installed
+            tools directory (the one-click installer puts it in
+            ~/.stan/tools/trfp/).
     """
     if vendor == "bruker":
         return detect_bruker_mode(path)
     if vendor == "thermo":
         trfp_path = kwargs.get("trfp_path")
         output_dir = kwargs.get("output_dir")
-        if trfp_path is None or output_dir is None:
+
+        # Auto-discover TRFP if not provided — the one-click installer
+        # and `stan setup` both install it to a known location.
+        if trfp_path is None:
+            try:
+                from stan.tools.trfp import ensure_installed
+                trfp_path = str(ensure_installed())
+            except Exception:
+                logger.debug(
+                    "TRFP auto-discovery failed for mode detection: %s",
+                    path.name, exc_info=True,
+                )
+        if output_dir is None:
+            import tempfile
+            output_dir = Path(tempfile.mkdtemp(prefix="stan_mode_"))
+
+        if trfp_path is None:
             logger.debug("TRFP not available for mode detection: %s", path.name)
             return AcquisitionMode.UNKNOWN
         return detect_thermo_mode(path, Path(trfp_path), Path(output_dir))
