@@ -374,9 +374,13 @@ def _action_update_stan(args: dict) -> dict:
     timeout_sec = int(args.get("timeout_sec", 300))
 
     if platform.system() == "Windows":
+        userprofile = Path(os.environ.get("USERPROFILE", ""))
         candidates = [
-            Path(os.environ.get("USERPROFILE", "")) / "STAN" / "update-stan.bat",
-            Path(os.environ.get("USERPROFILE", "")) / ".stan" / "update-stan.bat",
+            userprofile / "STAN" / "update-stan.bat",
+            userprofile / ".stan" / "update-stan.bat",
+            # Brett's convention: keep it in Downloads after the one-time install
+            userprofile / "Downloads" / "update-stan.bat",
+            userprofile / "Desktop" / "update-stan.bat",
         ]
         script = next((p for p in candidates if p.exists()), None)
 
