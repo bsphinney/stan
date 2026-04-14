@@ -13,6 +13,8 @@ from rich.logging import RichHandler
 from stan import __version__
 from stan.config import get_default_config_dir, get_user_config_dir
 
+logger = logging.getLogger(__name__)
+
 app = typer.Typer(
     name="stan",
     help="STAN — Standardized proteomic Throughput ANalyzer. Know your instrument.",

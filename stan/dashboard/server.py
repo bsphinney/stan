@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -23,7 +23,7 @@ from stan.config import (
     load_yaml,
     resolve_config_path,
 )
-from stan.db import get_run, get_runs, get_tic_trace, get_tic_traces_for_instrument, get_trends, init_db
+from stan.db import get_db_path, get_run, get_runs, get_tic_trace, get_tic_traces_for_instrument, get_trends, init_db
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +317,54 @@ async def api_community_submit(body: CommunitySubmitRequest) -> dict:
     except Exception as e:
         logger.exception("Community submission failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Dashboard error capture ──────────────────────────────────────────
+# The frontend's window.onerror POSTs JS errors here so they show up
+# in the server log (and the Hive mirror) for remote debugging.
+
+_DASH_ERROR_LOG: list[dict] = []
+_DASH_ERROR_MAX = 50
+
+
+@app.post("/api/dashboard-error")
+async def api_dashboard_error(request: Request) -> dict:
+    """Receive a frontend JS error report."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {"status": "ignored"}
+    entry = {
+        "ts": body.get("ts", ""),
+        "msg": str(body.get("msg", ""))[:500],
+        "src": str(body.get("src", ""))[:200],
+        "line": body.get("line"),
+        "col": body.get("col"),
+        "stack": str(body.get("stack", ""))[:2000],
+    }
+    _DASH_ERROR_LOG.append(entry)
+    if len(_DASH_ERROR_LOG) > _DASH_ERROR_MAX:
+        _DASH_ERROR_LOG.pop(0)
+    logger.warning(
+        "Dashboard JS error: %s (line %s:%s)\n%s",
+        entry["msg"][:100], entry["line"], entry["col"], entry["stack"][:500],
+    )
+    # Also write to a dedicated file for Hive mirror
+    try:
+        err_log = get_db_path().parent / "dashboard_errors.log"
+        with open(err_log, "a", encoding="utf-8") as f:
+            f.write(f"{entry['ts']} | {entry['msg'][:200]} | line {entry['line']}:{entry['col']}\n")
+            if entry["stack"]:
+                f.write(f"  {entry['stack'][:500]}\n")
+    except Exception:
+        pass
+    return {"status": "logged"}
+
+
+@app.get("/api/dashboard-errors")
+async def api_dashboard_errors() -> list[dict]:
+    """Return the last N dashboard JS errors for remote debugging."""
+    return _DASH_ERROR_LOG
 
 
 # ── Static frontend ──────────────────────────────────────────────────
