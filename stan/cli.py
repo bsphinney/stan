@@ -884,6 +884,13 @@ def _backfill_tic_impl(
     # Push corrections to the community relay
     if push and pushed_rows:
         from stan.community.submit import RELAY_URL
+        from stan.config import load_community
+        try:
+            _comm = load_community()
+        except Exception:
+            _comm = {}
+        _push_token = _comm.get("auth_token", "")
+
         console.print(
             f"Pushing [bold]{len(pushed_rows)}[/bold] corrections to the relay..."
         )
@@ -891,10 +898,13 @@ def _backfill_tic_impl(
         for sub_id, push_data in pushed_rows:
             try:
                 data = json.dumps(push_data).encode("utf-8")
+                _hdrs = {"Content-Type": "application/json"}
+                if _push_token:
+                    _hdrs["X-STAN-Auth"] = _push_token
                 req = urllib.request.Request(
                     f"{RELAY_URL}/api/update/{sub_id}",
                     data=data, method="POST",
-                    headers={"Content-Type": "application/json"},
+                    headers=_hdrs,
                 )
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     if resp.status == 200:
@@ -1224,6 +1234,9 @@ def repair_metadata(
         )
         return
 
+    # Auth token for /api/update — prevents forks from patching data
+    _repair_token = community_config.get("auth_token", "")
+
     console.print(
         f"Pushing [bold]{len(submitted)}[/bold] corrections to the relay..."
     )
@@ -1232,11 +1245,14 @@ def repair_metadata(
     for u in submitted:
         try:
             data = json.dumps(u["patch"]).encode("utf-8")
+            _hdrs = {"Content-Type": "application/json"}
+            if _repair_token:
+                _hdrs["X-STAN-Auth"] = _repair_token
             req = urllib.request.Request(
                 f"{RELAY_URL}/api/update/{u['submission_id']}",
                 data=data,
                 method="POST",
-                headers={"Content-Type": "application/json"},
+                headers=_hdrs,
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
                 if resp.status == 200:
