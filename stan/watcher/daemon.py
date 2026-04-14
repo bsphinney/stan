@@ -357,10 +357,10 @@ class InstrumentWatcher:
         Thermo support is TBD — `rawmeat.py` is currently Bruker-only.
         For Thermo files we skip with a recorded event so the operator
         can see the monitor fired but had no data source."""
-        if self._config.get("vendor") != "bruker":
+        vendor = self._config.get("vendor", "").lower()
+        if vendor not in ("bruker", "thermo"):
             self._record_event(
-                "monitor_skip_not_bruker", path,
-                "rawmeat.py is Bruker-only in v0.2.89",
+                "monitor_skip_unknown_vendor", path, f"vendor={vendor!r}",
             )
             return
 
@@ -369,11 +369,16 @@ class InstrumentWatcher:
             rolling_median_ms1_max_intensity,
         )
         from stan.metrics.rawmeat import (
-            evaluate_sample_health, extract_rawmeat_metrics,
+            evaluate_sample_health,
+            extract_rawmeat_metrics,
+            extract_rawmeat_thermo,
         )
 
         init_db()
-        rawmeat = extract_rawmeat_metrics(path)
+        if vendor == "bruker":
+            rawmeat = extract_rawmeat_metrics(path)
+        else:  # thermo
+            rawmeat = extract_rawmeat_thermo(path)
         if not rawmeat:
             self._record_event(
                 "monitor_rawmeat_empty", path,

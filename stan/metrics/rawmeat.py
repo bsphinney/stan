@@ -212,6 +212,85 @@ def extract_rawmeat_metrics(d_path) -> dict:
     }
 
 
+# ── Thermo adapter ──────────────────────────────────────────────────────
+
+def extract_rawmeat_thermo(raw_path) -> dict:
+    """Thermo `.raw` analog of `extract_rawmeat_metrics` for Bruker `.d`.
+
+    Reuses `stan.metrics.tic.extract_tic_thermo` (fisher_py fast path,
+    TRFP mzML fallback) to pull MS1 TIC, then derives the same summary
+    keys the Sample Health Monitor needs so `evaluate_sample_health()`
+    works unchanged across vendors.
+
+    Fields NOT available from Thermo TIC (pressure, accumulation time,
+    frame-type counts for ddaPASEF/diaPASEF) are simply absent from
+    the summary — the evaluator skips them gracefully.
+
+    Costs a lot more than Bruker rawmeat (~1-3 s with fisher_py, up to
+    5 min with TRFP fallback on a 60-min DIA run) because fisher_py
+    iterates every MS1 scan and TRFP has to convert to mzML. For QC
+    cadences (1 file per hour) that's fine.
+    """
+    from pathlib import Path as _Path
+    from stan.metrics.tic import extract_tic_thermo
+
+    raw_path = _Path(raw_path)
+    trace = extract_tic_thermo(raw_path)
+    if trace is None or not trace.rt_min:
+        return {}
+
+    rt_min = list(trace.rt_min)
+    intensity = [float(v) for v in trace.intensity]
+    n_ms1 = len(intensity)
+
+    # Rolling-median dropout test — identical to the Bruker path but
+    # on MS1 TIC values instead of per-frame MaxIntensity.
+    dropouts_rt = []
+    if n_ms1 >= _ROLLING_WINDOW * 2:
+        half = _ROLLING_WINDOW
+        for i in range(half, n_ms1 - half):
+            window = intensity[i - half: i] + intensity[i + 1: i + half + 1]
+            local_med = statistics.median(window)
+            if local_med > 0 and intensity[i] < _DROPOUT_THRESHOLD * local_med:
+                dropouts_rt.append(round(rt_min[i], 2))
+
+    dropout_rate_per_100 = round(100 * len(dropouts_rt) / n_ms1, 2) if n_ms1 else 0.0
+
+    nz = [v for v in intensity if v > 0]
+    dyn_range = None
+    if nz:
+        med_nz = statistics.median(nz)
+        peak = max(nz)
+        if med_nz > 0 and peak > 0:
+            dyn_range = round(math.log10(peak / med_nz), 1)
+
+    rt_start = min(rt_min) if rt_min else 0.0
+    rt_end = max(rt_min) if rt_min else 0.0
+
+    summary = {
+        "n_frames_total":           n_ms1,
+        "n_ms1_frames":             n_ms1,
+        "n_ms2_frames":             None,          # Thermo: not tracked here
+        "frame_types":              {"MS1": n_ms1},
+        "rt_start_s":               round(rt_start * 60, 1),
+        "rt_end_s":                 round(rt_end * 60, 1),
+        "rt_duration_min":          round(rt_end - rt_start, 2),
+        "ms1_total_tic":            sum(intensity),
+        "ms1_max_intensity":        max(intensity) if intensity else 0,
+        "dynamic_range_log10":      dyn_range,
+        "n_dropouts":               len(dropouts_rt),
+        "dropout_rate_per_100_ms1": dropout_rate_per_100,
+    }
+
+    return {
+        "tic": {"ms1_rt": rt_min, "ms1_int": intensity,
+                "ms2_rt": [], "ms2_int": []},
+        "dropouts_rt": dropouts_rt,
+        "summary": summary,
+        "metadata": {},   # Thermo metadata could be added via fisher_py later
+    }
+
+
 # ── Sample-health heuristic ──────────────────────────────────────────────
 
 def evaluate_sample_health(rawmeat: dict, rolling_median_max_intensity: float | None = None,
