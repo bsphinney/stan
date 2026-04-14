@@ -85,6 +85,18 @@ stan version
 
 This should print the installed STAN version. If the `stan` command is not found, ensure your Python scripts directory is on your `PATH`.
 
+### Verify Community Benchmark Credentials
+
+```bash
+stan verify
+```
+
+Prints your lab pseudonym, whether an auth token is present in `~/.stan/community.yml`, and whether the community relay still recognizes that name as claimed. Run this if you are unsure whether your email verification is still valid, or after migrating to a new workstation. If the token is missing or unclaimed, run `stan setup` to re-verify by email.
+
+### ThermoRawFileParser (auto-discovered)
+
+On Windows, the one-click installer places ThermoRawFileParser under `%USERPROFILE%\.stan\tools\trfp\`. STAN's `detect_mode()` and search dispatch call `stan.tools.trfp.ensure_installed()` to locate it automatically -- you do **not** need to set `trfp_path` in `instruments.yml` unless you are on Linux/macOS or want to override with a cluster-side install (v0.2.72+).
+
 ---
 
 ## Configuration Walkthrough
@@ -332,6 +344,17 @@ The dashboard serves a FastAPI backend with a basic HTML frontend. The full Reac
 
 **Instrument Config** -- View instrument cards with Remove button (implemented). Full YAML editor with live preview **(planned)**.
 
+### Maintenance Log (v0.2.68+)
+
+The Trends tab has a maintenance log form for recording column swaps, source cleans, PMs, and calibrations. Each event stores a date, an event type, and free-text notes. Logged events render as vertical markers on every trend chart for that instrument, so a sudden shift in precursor count or IPS is immediately traceable to a known maintenance action rather than being mistaken for instrument drift. Events are persisted in the `maintenance_events` SQLite table and are never submitted to the community benchmark.
+
+### Error Logs
+
+The dashboard writes two kinds of error logs:
+
+- **Client-side** -- browser JavaScript errors are POSTed to `/api/client-error` and appended to `dashboard_errors.log` in the output directory.
+- **Server-side** (v0.2.77+) -- the `GET /` handler wraps `index_path.read_text()` and writes any exception (for example the Windows UTF-8 decode crash fixed in v0.2.76) to the same log before re-raising. This makes otherwise-invisible server crashes visible in the Hive mirror for remote debugging.
+
 ---
 
 ## Baseline Builder
@@ -402,6 +425,10 @@ For each run without a TIC trace in the local DB, the command tries the Bruker r
 
 Note: `stan baseline` runs this sweep automatically at startup now, so you only need the manual command if you want to force a refresh or use `--push`.
 
+### Repairing zero-peptide submissions (v0.2.71+)
+
+Older STAN versions stored `n_precursors` from DIA-NN but never recomputed `n_peptides` (unique `Stripped.Sequence` at 1% FDR) or `n_proteins` (unique `Protein.Group`). `stan backfill-tic` now detects rows where `n_peptides = 0` but `baseline_output/<stem>/report.parquet` still exists, recomputes both counts from the parquet, and updates the local DB. With `--push`, repaired counts are also sent to the community relay via `POST /api/update/{submission_id}`. The `stan baseline` startup sweep calls the same code path, so this repairs itself the next time baseline runs.
+
 ---
 
 ## Community Benchmark Submission
@@ -412,6 +439,19 @@ Note: `stan baseline` runs this sweep automatically at startup now, so you only 
 2. A valid HeLa QC run that passes the community hard gates
 
 No HuggingFace account or token is needed -- STAN submits through a relay API automatically.
+
+### Auth Token and Fork Protection (v0.2.74+)
+
+When you run `stan setup` and verify your email, the relay at `brettsp-stan.hf.space` issues an `auth_token` that is stored in `~/.stan/community.yml` alongside your `display_name`. Every submission and every `/api/update/{id}` call sends this token in an `X-STAN-Auth` header so the relay can verify that the claimed lab name still belongs to a setup-verified installation. Forks that skip `stan setup` or modify the submission code will not have a valid token and cannot spoof a claimed name. If the HF Space operator sets an `ADMIN_SECRET` env var, PATCH requests without a valid client token are rejected entirely (403).
+
+The commands that send the token automatically:
+
+- `stan submit` (manual submission)
+- Automatic submissions after a gated run (`community_submit: true`)
+- `stan backfill-tic --push`
+- `stan repair-metadata --push`
+
+Use `stan verify` to confirm your token is present and your name is still claimed server-side.
 
 ### Hard Validation Gates
 

@@ -594,6 +594,16 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 | Community TIC DIA/DDA separator | Done | Dropdown with DIA/DDA/Mixed options; defaults to DIA so cycle-time differences don't corrupt median shape |
 | `downsample_trace(n_bins=128)` helper | Done | Bins arbitrary-length TIC to canonical 128-point format before local store + submission (v0.2.64) |
 | Dashboard "Today's Runs" + MiniSparkline + IPS / FWHM-sec / signed mass-acc | Done | Cleaner Run History columns, per-instrument 30-run trend sparkline, unified Precursors/PSMs column (v0.2.58) |
+| Lumos + Eclipse instrument family mapping | Done | `_instrument_family` now routes Lumos and Eclipse raw files to the right cohort (v0.2.67) |
+| Maintenance log UI | Done | Trends tab form for logging column swaps, source cleans, PMs, calibrations; events render as vertical markers on trend charts (v0.2.68) |
+| Setup wizard auto-assigns pseudonym | Done | `stan setup` picks an anonymous lab name automatically -- no opt-out, no prompt (v0.2.70) |
+| `stan backfill-tic` zero-peptide repair | Done | Also recomputes `n_peptides` + `n_proteins` at 1% FDR from `baseline_output/<stem>/report.parquet` when the DB row has zero peptides; `--push` patches the community relay (v0.2.71) |
+| Lumos DDA misdetection fix + TRFP auto-discovery | Done | `detect_mode()` now auto-finds TRFP via `stan.tools.trfp.ensure_installed()` (one-click installer path); filename tokens `HCD`/`DDA`/`CID`/`ETD` also force DDA routing so Thermo DDA files are no longer DIA-searched for 4 hours before timing out (v0.2.72) |
+| Community auth token on submissions | Done | `stan setup` email-verifies the lab pseudonym and stores an `auth_token` in `community.yml`; submissions send `X-STAN-Auth` so forks that skip setup cannot spoof a claimed lab name (v0.2.74) |
+| `stan verify` CLI | Done | Prints lab name, token presence, relay-side name claim status, submission count; directs to `stan setup` when the token is missing or unclaimed (v0.2.75) |
+| Dashboard Windows UTF-8 read_text fix | Done | `index_path.read_text(encoding="utf-8")` — cp1252 default on Windows was failing to decode `—` and `≥` (v0.2.76) |
+| Server-side dashboard error log | Done | GET `/` handler writes exceptions to `dashboard_errors.log` (mirrored to Hive) before re-raising so invisible server-side crashes are captured (v0.2.77) |
+| `/api/update` auth-token enforcement | Done | Relay requires `X-STAN-Auth` (or admin `X-STAN-Admin`) for PATCHes; `stan backfill-tic --push` and `stan repair-metadata --push` now send the client token from `community.yml`. Set `ADMIN_SECRET` on the HF Space to fully lock down the endpoint (v0.2.78) |
 
 ---
 
@@ -628,8 +638,14 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [x] `downsample_trace()` for canonical 128-bin TIC shape
 - [x] Real acquisition-date preservation from `analysis.tdf.AcquisitionDateTime`
 - [x] HF Dataset historical backfill: 81/83 submissions corrected with real SPD + run_date + lc_system
+- [x] Maintenance log UI — enter column swaps/source cleans/PMs with date+notes, overlay as vertical markers on Trends charts (v0.2.68)
+- [x] `stan backfill-tic` zero-peptide repair — recomputes n_peptides/n_proteins from report.parquet at 1% FDR (v0.2.71)
+- [x] Lumos DDA misdetection fix + TRFP auto-discovery — filename-token fallback when TRFP unavailable (v0.2.72)
+- [x] Community auth token + relay `X-STAN-Auth` enforcement — fork protection for lab pseudonyms (v0.2.74, v0.2.78)
+- [x] `stan verify` CLI — check auth token + relay name claim (v0.2.75)
+- [x] Dashboard UTF-8 `read_text` fix for Windows (v0.2.76)
+- [x] Server-side dashboard error log mirrored to Hive (v0.2.77)
 - [ ] Add small real DIA-NN and Sage output files to `tests/fixtures/`
-- [ ] Maintenance log UI — enter column swaps/source cleans/PMs with date+notes, overlay as vertical markers on Trends charts
 - [ ] Column tracking — log column installs (vendor, model, serial, install date) to explain TIC variance
 - [ ] TIC filter by pseudonym (your traces vs community vs all)
 - [ ] TIC color by lab when showing all traces
