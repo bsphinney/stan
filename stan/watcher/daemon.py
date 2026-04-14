@@ -255,14 +255,45 @@ class InstrumentWatcher:
 
             with self._lock:
                 for key, tracker in self._trackers.items():
+                    # Every pass, record the tracker's current state so
+                    # watcher_debug can tell the difference between "no
+                    # events" and "events arriving but never stable".
+                    try:
+                        size = getattr(tracker, "last_size", None)
+                    except Exception:
+                        size = None
+                    self._record_event(
+                        "stability_poll", tracker.path,
+                        f"last_size={size}",
+                    )
                     if tracker.check():
                         stable_paths.append(key)
+                        self._record_event("stable", tracker.path, "")
 
             for key in stable_paths:
                 with self._lock:
                     tracker = self._trackers.pop(key, None)
                 if tracker is not None:
-                    self._on_acquisition_complete(tracker.path)
+                    self._record_event(
+                        "acquisition_complete_start", tracker.path, "",
+                    )
+                    try:
+                        self._on_acquisition_complete(tracker.path)
+                        self._record_event(
+                            "acquisition_complete_end", tracker.path, "ok",
+                        )
+                    except Exception as e:
+                        # _on_acquisition_complete catches most things,
+                        # but belt-and-braces so a raise here doesn't
+                        # kill the stability thread.
+                        logger.exception(
+                            "Unhandled error in _on_acquisition_complete "
+                            "for %s", tracker.path.name,
+                        )
+                        self._record_event(
+                            "acquisition_complete_exception",
+                            tracker.path, f"{type(e).__name__}: {e}",
+                        )
 
             self._stop_event.wait(timeout=10)
 
@@ -446,6 +477,25 @@ class WatcherDaemon:
 
         tick = 0
         while not self._stop_event.is_set():
+            # Remote restart request (from stan.control.restart_watcher).
+            # The presence of ~/.stan/restart.flag means someone on the
+            # mirror asked this daemon to exit cleanly — consume the
+            # flag and stop. If start_stan_loop.bat (or equivalent) is
+            # supervising, a fresh process picks up the current code.
+            try:
+                from stan.config import get_user_config_dir
+                flag = get_user_config_dir() / "restart.flag"
+                if flag.exists():
+                    logger.info("Remote restart requested — exiting cleanly")
+                    try:
+                        flag.unlink()
+                    except OSError:
+                        pass
+                    self._stop_event.set()
+                    break
+            except Exception:
+                logger.debug("restart-flag check failed", exc_info=True)
+
             # Check for config changes
             if self._config_watcher.is_stale():
                 logger.info("instruments.yml changed — reloading")
@@ -525,7 +575,8 @@ def get_active_daemon() -> "WatcherDaemon | None":
 
 def _write_heartbeat() -> None:
     """Write status.json to the Hive mirror so `stan fleet-status` can
-    see whether this instrument is alive and current.
+    see whether this instrument is alive and current, and mirror the
+    current instrument config YAMLs so a remote operator can read them.
 
     Atomic write: temp file + os.replace so a reader never sees a
     half-written JSON blob.
@@ -534,7 +585,7 @@ def _write_heartbeat() -> None:
     import os
 
     from stan.config import get_hive_mirror_dir
-    from stan.control import _action_status
+    from stan.control import _action_status, upload_configs
 
     mirror = get_hive_mirror_dir()
     if mirror is None:
@@ -545,6 +596,13 @@ def _write_heartbeat() -> None:
     tmp = out.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     os.replace(tmp, out)
+
+    # Also sync config YAMLs so a remote operator can see what this
+    # instrument is actually running (and edit them via apply_config).
+    try:
+        upload_configs(mirror)
+    except Exception:
+        logger.debug("heartbeat: config upload failed", exc_info=True)
 
 
 def _resolve_forced_mode(forced: str, vendor: str) -> AcquisitionMode:

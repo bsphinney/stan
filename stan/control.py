@@ -152,6 +152,134 @@ def _action_tail_log(args: dict) -> dict:
     return {"log_name": name, "error": "log file not found in any known location"}
 
 
+def _action_qc_filter_report(args: dict) -> dict:
+    """Audit the QC-filter function against real files in each watch dir.
+
+    For every enabled instrument, walks `watch_dir` up to `max_files`
+    entries (default 200, ordered newest-first by mtime), runs
+    `is_qc_file()` with the instrument's configured regex, and returns
+    a breakdown: counts + example matches + example rejects.
+
+    Args (all optional):
+        max_files        : int, default 200 (files to scan per instrument)
+        max_age_days     : int, default 14  (only consider files newer than this)
+        candidate_pattern: str, a trial regex to also test against every file
+                           — lets you see "would THIS regex work better?"
+                           without restarting the daemon
+    """
+    from stan.config import resolve_config_path
+    from stan.watcher.qc_filter import (
+        DEFAULT_QC_PATTERN, compile_qc_pattern, is_qc_file,
+    )
+    import time
+    import yaml
+
+    max_files = int(args.get("max_files", 200))
+    max_age_days = int(args.get("max_age_days", 14))
+    candidate_pattern = args.get("candidate_pattern")
+
+    try:
+        cfg_path = resolve_config_path("instruments.yml")
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        return {"error": f"cannot load instruments.yml: {e}"}
+
+    now = time.time()
+    cutoff = now - (max_age_days * 86400)
+    out: dict = {
+        "default_pattern": DEFAULT_QC_PATTERN,
+        "candidate_pattern": candidate_pattern,
+        "max_files": max_files,
+        "max_age_days": max_age_days,
+        "instruments": [],
+    }
+
+    cand_pat = None
+    if candidate_pattern:
+        try:
+            import re
+            cand_pat = re.compile(candidate_pattern)
+        except Exception as e:
+            out["candidate_pattern_error"] = str(e)
+
+    for inst in cfg.get("instruments", []):
+        if not inst.get("enabled", False):
+            continue
+        name = inst.get("name", "?")
+        watch_dir = inst.get("watch_dir", "")
+        exts = set(inst.get("extensions", []))
+        qc_pattern_str = inst.get("qc_pattern")
+        qc_only = inst.get("qc_only", True)
+        pat = compile_qc_pattern(qc_pattern_str)
+
+        wd = Path(watch_dir) if watch_dir else None
+        entry: dict = {
+            "name": name,
+            "watch_dir": watch_dir,
+            "watch_dir_exists": wd.exists() if wd else False,
+            "extensions": sorted(exts),
+            "qc_only": qc_only,
+            "qc_pattern": getattr(pat, "pattern", None),
+            "n_scanned": 0,
+            "n_match": 0,
+            "n_reject": 0,
+            "examples_match": [],
+            "examples_reject": [],
+        }
+        if cand_pat is not None:
+            entry["candidate_n_match"] = 0
+            entry["candidate_examples_match"] = []
+
+        if wd is None or not wd.exists():
+            out["instruments"].append(entry)
+            continue
+
+        # Collect candidate files — anything with a watched extension,
+        # newer than cutoff, sorted newest-first, capped at max_files.
+        candidates = []
+        try:
+            for p in wd.rglob("*"):
+                if p.suffix not in exts:
+                    continue
+                try:
+                    mt = p.stat().st_mtime
+                except OSError:
+                    continue
+                if mt < cutoff:
+                    continue
+                candidates.append((mt, p))
+                if len(candidates) > max_files * 4:
+                    # keep scan bounded even on huge dirs
+                    break
+        except Exception as e:
+            entry["scan_error"] = str(e)
+            out["instruments"].append(entry)
+            continue
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        candidates = candidates[:max_files]
+
+        for mt, p in candidates:
+            entry["n_scanned"] += 1
+            matched = is_qc_file(p, pat)
+            if matched:
+                entry["n_match"] += 1
+                if len(entry["examples_match"]) < 5:
+                    entry["examples_match"].append(p.name)
+            else:
+                entry["n_reject"] += 1
+                if len(entry["examples_reject"]) < 10:
+                    entry["examples_reject"].append(p.name)
+            if cand_pat is not None and cand_pat.search(p.stem):
+                entry["candidate_n_match"] += 1
+                if len(entry["candidate_examples_match"]) < 5:
+                    entry["candidate_examples_match"].append(p.name)
+
+        out["instruments"].append(entry)
+
+    return out
+
+
 def _action_watcher_debug(args: dict) -> dict:
     """Dump the running `stan watch` daemon's internal state so a
     remote diagnostician can tell whether events are arriving, being
@@ -180,6 +308,219 @@ def _action_watcher_debug(args: dict) -> dict:
         except Exception as e:
             watchers.append({"name": name, "snapshot_error": str(e)})
     return {"n_watchers": len(watchers), "watchers": watchers}
+
+
+# ── Config sync (upload + apply) ────────────────────────────────────────
+
+# Only these filenames can be written via apply_config. Hardcoded so an
+# attacker with mirror-write access cannot overwrite arbitrary files in
+# the user's STAN directory.
+_EDITABLE_CONFIGS = frozenset({"instruments.yml", "thresholds.yml", "community.yml"})
+
+# Cap per file — these are human-edited YAMLs, anything bigger is
+# almost certainly a malformed command, not a real config.
+_MAX_CONFIG_BYTES = 100_000
+
+
+def upload_configs(mirror_dir: Path | None = None) -> int:
+    """Copy the current user config YAMLs into `<mirror>/config/` so a
+    remote operator can read them without shelling into the instrument.
+
+    Called from the watcher heartbeat so the mirrored copies stay fresh.
+    Returns the number of files copied. Silent no-op if no mirror."""
+    from stan.config import get_hive_mirror_dir, get_user_config_dir
+
+    if mirror_dir is None:
+        mirror_dir = get_hive_mirror_dir()
+    if mirror_dir is None:
+        return 0
+
+    user_dir = get_user_config_dir()
+    out_dir = mirror_dir / "config"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for fname in _EDITABLE_CONFIGS:
+        src = user_dir / fname
+        if not src.exists():
+            continue
+        try:
+            content = src.read_text(encoding="utf-8")
+            dst = out_dir / fname
+            tmp = dst.with_suffix(dst.suffix + ".tmp")
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(dst)
+            n += 1
+        except Exception:
+            logger.exception("control: config upload failed for %s", fname)
+    return n
+
+
+def _action_update_stan(args: dict) -> dict:
+    """Run the platform-appropriate STAN updater and report the result.
+
+    On Windows: runs `%USERPROFILE%\\STAN\\update-stan.bat` (or looks up
+    the repo-local copy as a fallback). On Linux/macOS: runs `pip install
+    --upgrade --no-cache-dir` against the main branch zip.
+
+    The currently-running `stan watch` process is NOT killed here — to
+    actually load the new code, follow this action with `restart_watcher`.
+    A loop wrapper (`start_stan_loop.bat` / systemd unit) is required on
+    the host side for the restart to take effect.
+    """
+    import os
+    import platform
+    import subprocess
+
+    timeout_sec = int(args.get("timeout_sec", 300))
+
+    if platform.system() == "Windows":
+        candidates = [
+            Path(os.environ.get("USERPROFILE", "")) / "STAN" / "update-stan.bat",
+            Path(os.environ.get("USERPROFILE", "")) / ".stan" / "update-stan.bat",
+        ]
+        script = next((p for p in candidates if p.exists()), None)
+        if script is None:
+            return {"error": "update-stan.bat not found in any known location",
+                    "searched": [str(p) for p in candidates]}
+        cmd = ["cmd.exe", "/c", str(script)]
+    else:
+        cmd = [
+            "pip", "install", "--upgrade", "--no-cache-dir",
+            "https://github.com/bsphinney/stan/archive/refs/heads/main.zip",
+        ]
+
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout_sec,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        return {"error": f"updater timed out after {timeout_sec}s",
+                "stdout_tail": (e.stdout or "")[-2000:],
+                "stderr_tail": (e.stderr or "")[-2000:]}
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+    return {
+        "returncode": proc.returncode,
+        "cmd": cmd,
+        "stdout_tail": (proc.stdout or "")[-2000:],
+        "stderr_tail": (proc.stderr or "")[-2000:],
+        "hint": "run `restart_watcher` next to load the new code",
+    }
+
+
+def _action_restart_watcher(args: dict) -> dict:
+    """Ask the running `stan watch` daemon to exit cleanly.
+
+    Writes `<user_config_dir>/restart.flag`. The daemon main loop checks
+    for this flag on each tick (~30 s), deletes it, and exits via
+    self.stop(). A supervisor wrapper (start_stan_loop.bat or systemd)
+    relaunches `stan watch` and thus loads whatever code is currently
+    installed — typically v0.N.N+1 after `update_stan`.
+
+    Without a supervisor the daemon just stops; the operator has to
+    manually relaunch it. Flagged prominently in the return value.
+    """
+    from stan.config import get_user_config_dir
+    from stan.watcher.daemon import get_active_daemon
+
+    cfg_dir = get_user_config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    flag = cfg_dir / "restart.flag"
+    flag.write_text("restart requested via control queue\n", encoding="utf-8")
+
+    return {
+        "flag_path": str(flag),
+        "daemon_active": get_active_daemon() is not None,
+        "note": (
+            "Watcher will exit within ~30 s. For auto-relaunch, the "
+            "host must be running start_stan_loop.bat (or equivalent "
+            "supervisor). Without one, the watcher just stops."
+        ),
+    }
+
+
+def _action_apply_config(args: dict) -> dict:
+    """Write a new config YAML on this instrument.
+
+    The existing `ConfigWatcher` polls `instruments.yml` mtime every 30 s,
+    so a successful write triggers an automatic hot-reload — no daemon
+    restart needed.
+
+    Args:
+        filename: one of instruments.yml / thresholds.yml / community.yml
+        content:  full YAML text to write (must parse cleanly)
+        backup:   bool, default True — keep a .bak of the previous file
+
+    Safety:
+        * Filename is validated against a hardcoded allowlist; no path
+          traversal is possible because only the basename is used.
+        * Content is YAML-parsed before any write — a malformed edit
+          cannot silently corrupt a live config.
+        * Size is capped to prevent pathological payloads from filling
+          the command queue.
+        * Atomic write (tmp file + os.replace) so a reader never sees a
+          half-written config.
+    """
+    import os
+    import yaml
+
+    from stan.config import get_user_config_dir
+
+    filename = args.get("filename", "")
+    content = args.get("content", "")
+    backup = bool(args.get("backup", True))
+
+    if filename not in _EDITABLE_CONFIGS:
+        return {"error": f"filename not editable: {filename!r}. "
+                         f"Allowed: {sorted(_EDITABLE_CONFIGS)}"}
+    if not isinstance(content, str) or not content.strip():
+        return {"error": "content must be a non-empty string"}
+    if len(content.encode("utf-8")) > _MAX_CONFIG_BYTES:
+        return {"error": f"content exceeds {_MAX_CONFIG_BYTES} bytes"}
+
+    # Validate YAML before touching disk
+    try:
+        parsed = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        return {"error": f"YAML parse failed: {e}"}
+    if parsed is None:
+        return {"error": "parsed YAML is empty"}
+
+    target = get_user_config_dir() / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    prev_size = None
+    if target.exists():
+        prev_size = target.stat().st_size
+        if backup:
+            try:
+                bak = target.with_suffix(target.suffix + ".bak")
+                bak.write_text(target.read_text(encoding="utf-8"),
+                               encoding="utf-8")
+            except Exception:
+                logger.exception("apply_config: backup failed for %s", target)
+
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, target)
+
+    # Re-upload so the mirror reflects the new state immediately (don't
+    # wait 5 min for the next heartbeat)
+    try:
+        upload_configs()
+    except Exception:
+        pass
+
+    return {
+        "filename": filename,
+        "path": str(target),
+        "bytes_written": len(content.encode("utf-8")),
+        "prev_bytes": prev_size,
+        "backup_made": backup and prev_size is not None,
+        "hot_reload": "ConfigWatcher picks up mtime changes within 30 s",
+    }
 
 
 def _action_export_db_snapshot(args: dict) -> dict:
@@ -235,6 +576,14 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "tail_log":            _action_tail_log,
     "export_db_snapshot":  _action_export_db_snapshot,
     "watcher_debug":       _action_watcher_debug,
+    "qc_filter_report":    _action_qc_filter_report,
+    # First write actions — each is narrowly scoped:
+    #   apply_config       → only 3 YAML files in user_config_dir
+    #   update_stan        → only invokes update-stan.bat
+    #   restart_watcher    → only writes a restart.flag the daemon consumes
+    "apply_config":        _action_apply_config,
+    "update_stan":         _action_update_stan,
+    "restart_watcher":     _action_restart_watcher,
 }
 
 
