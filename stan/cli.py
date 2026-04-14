@@ -717,7 +717,7 @@ def _backfill_tic_impl(
     missing_pep = [r for r in all_runs
                    if r["id"] in have_tic  # already has TIC
                    and (not r.get("n_peptides") or r["n_peptides"] == 0)
-                   and r.get("n_precursors", 0) > 0]  # has search results
+                   and (r.get("n_precursors") or 0) > 0]  # has search results
 
     missing = missing_tic + missing_pep
     # Deduplicate by run_id (a run could be in both lists)
