@@ -379,9 +379,23 @@ def _action_update_stan(args: dict) -> dict:
             Path(os.environ.get("USERPROFILE", "")) / ".stan" / "update-stan.bat",
         ]
         script = next((p for p in candidates if p.exists()), None)
+
+        # If the user has never run the updater manually, update-stan.bat
+        # isn't on disk — it's always self-downloaded. Fetch it from
+        # GitHub now so this action is self-sufficient.
         if script is None:
-            return {"error": "update-stan.bat not found in any known location",
-                    "searched": [str(p) for p in candidates]}
+            import urllib.request
+            try:
+                stan_dir = Path(os.environ.get("USERPROFILE", "")) / "STAN"
+                stan_dir.mkdir(parents=True, exist_ok=True)
+                script = stan_dir / "update-stan.bat"
+                url = "https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat"
+                with urllib.request.urlopen(url, timeout=30) as resp:
+                    script.write_bytes(resp.read())
+            except Exception as e:
+                return {"error": f"update-stan.bat not found locally and "
+                                 f"GitHub fetch failed: {type(e).__name__}: {e}",
+                        "searched": [str(p) for p in candidates]}
         cmd = ["cmd.exe", "/c", str(script)]
     else:
         cmd = [
@@ -726,7 +740,10 @@ def enqueue_command(action: str, args: dict | None = None,
 
     dirs = _ensure_dirs(mirror_dir)
     now = datetime.now(timezone.utc)
-    cmd_id = now.strftime("%Y%m%dT%H%M%S") + f"-{action}-{os.getpid()}"
+    # Include microseconds so two calls in the same second sort in call
+    # order (matters when callers queue update_stan + restart_watcher
+    # back-to-back and need them processed in that order).
+    cmd_id = now.strftime("%Y%m%dT%H%M%S%f") + f"-{action}-{os.getpid()}"
     payload = {
         "id": cmd_id,
         "action": action,
