@@ -377,7 +377,19 @@ async def index() -> HTMLResponse:
     """Serve the dashboard frontend."""
     index_path = _FRONTEND_DIR / "index.html"
     if index_path.exists():
-        return HTMLResponse(index_path.read_text(encoding="utf-8"))
+        try:
+            return HTMLResponse(index_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            # Log server-side crashes so they show up in the Hive mirror
+            logger.exception("Failed to serve dashboard HTML: %s", e)
+            try:
+                err_log = get_db_path().parent / "dashboard_errors.log"
+                with open(err_log, "a", encoding="utf-8") as f:
+                    import traceback
+                    f.write(f"SERVER {e}\n{traceback.format_exc()}\n")
+            except Exception:
+                pass
+            raise
     return HTMLResponse(_FALLBACK_HTML)
 
 
