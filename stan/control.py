@@ -632,7 +632,13 @@ def poll_once(mirror_dir: Path | None = None) -> int:
         return 0
 
     dirs = _ensure_dirs(mirror_dir)
-    pending = sorted(dirs["pending"].glob("*.json"))
+    # Skip macOS AppleDouble sidecars (._filename) and other hidden
+    # files — macOS creates these automatically on SMB shares and they
+    # trip the JSON parser on Windows readers.
+    pending = sorted(
+        p for p in dirs["pending"].glob("*.json")
+        if not p.name.startswith(".")
+    )
     if not pending:
         return 0
 
