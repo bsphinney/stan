@@ -26,6 +26,26 @@ logger = logging.getLogger(__name__)
 RELAY_URL = "https://brettsp-stan.hf.space"
 
 
+def _detect_sample_type(run_name: str) -> str:
+    """Detect QC standard from the run filename.
+
+    Returns a short identifier for the cell line / digest used as the QC
+    standard.  Default is "hela" (most common).  This drives cohort
+    separation so that K562, yeast, etc. are never compared against HeLa.
+    """
+    name_lower = run_name.lower()
+    if "k562" in name_lower:
+        return "k562"
+    if "yeast" in name_lower or "sc_" in name_lower:
+        return "yeast"
+    if "ecoli" in name_lower or "e.coli" in name_lower or "e_coli" in name_lower:
+        return "ecoli"
+    if "hek293" in name_lower or "hek-293" in name_lower or "hek_293" in name_lower:
+        return "hek293"
+    # Default: HeLa (most common QC standard)
+    return "hela"
+
+
 def submit_to_benchmark(
     run: dict,
     spd: int | None = None,
@@ -91,9 +111,10 @@ def submit_to_benchmark(
     instrument_family = _instrument_family(instrument)
 
     column_model = run.get("column_model", "")
+    sample_type = run.get("sample_type") or _detect_sample_type(run.get("run_name", ""))
     cohort_id = compute_cohort_id(
         instrument_family, amount_ng, spd=spd, gradient_min=gradient_length_min,
-        column_model=column_model,
+        column_model=column_model, sample_type=sample_type,
     )
 
     # Compute fingerprint for dedup — same (lab, instrument, run_name, amount, spd)
@@ -126,6 +147,7 @@ def submit_to_benchmark(
         "ips_score": run.get("ips_score") or 0,
         "missed_cleavage_rate": run.get("missed_cleavage_rate") or 0.0,
         "cohort_id": cohort_id,
+        "sample_type": sample_type,
         "fingerprint": fingerprint,
         "diann_version": diann_version or "",
         "column_vendor": run.get("column_vendor", ""),
@@ -151,15 +173,23 @@ def submit_to_benchmark(
         submit_payload["tic_rt_bins"] = tic_rt
         submit_payload["tic_intensity"] = tic_int
 
+    # Send the auth_token from community.yml so the relay can verify
+    # this is an official STAN installation that went through email
+    # verification. Forks that skip `stan setup` won't have a token.
+    auth_token = community_config.get("auth_token", "")
+
     try:
         data = json.dumps(submit_payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": f"STAN/{__version__}",
+        }
+        if auth_token:
+            headers["X-STAN-Auth"] = auth_token
         req = urllib.request.Request(
             f"{RELAY_URL}/api/submit",
             data=data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": f"STAN/{__version__}",
-            },
+            headers=headers,
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read())
