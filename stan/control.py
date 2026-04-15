@@ -499,6 +499,131 @@ def _action_restart_watcher(args: dict) -> dict:
     }
 
 
+def _action_cleanup_excluded(args: dict) -> dict:
+    """Retroactively enforce each instrument's `exclude_pattern` on the
+    runs table.
+
+    Born from the 2026-04-14 baseline-resume bug: 16 blank/wash files
+    on the timsTOF made it past baseline (resume path skipped the
+    QC filter pre-v0.2.96). Now they sit in `runs` polluting Run
+    History even though they should never have been processed.
+
+    Action:
+      * For every instrument in instruments.yml that has an
+        exclude_pattern, find every row in `runs` whose run_name
+        matches that pattern.
+      * Delete those rows from `runs`, plus matching rows from
+        `tic_traces` and `sample_health` (cascade).
+      * Delete the corresponding `baseline_output/<stem>/` directories
+        to reclaim disk.
+      * Refuse to delete rows that have already been submitted to
+        the community benchmark (`submitted_to_benchmark = 1`) —
+        those need a relay-side delete via `/api/update` instead.
+
+    Args:
+      dry_run: bool, default True. Returns the list of rows that
+        WOULD be deleted without actually touching anything. Set
+        False to actually delete.
+
+    Safety: pattern source is the live instruments.yml — only
+    things the operator has already declared as 'exclude'. There
+    is no user-supplied pattern argument; you can't ask this
+    action to delete rows matching arbitrary regexes.
+    """
+    import re as _re
+    import shutil
+    import yaml
+
+    from stan.config import (
+        get_user_config_dir, resolve_config_path,
+    )
+    from stan.db import get_db_path
+
+    dry_run = bool(args.get("dry_run", True))
+
+    try:
+        cfg_path = resolve_config_path("instruments.yml")
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        return {"error": f"cannot load instruments.yml: {e}"}
+
+    db_path = get_db_path()
+    if not db_path.exists():
+        return {"error": "stan.db does not exist"}
+
+    output_base = get_user_config_dir() / "baseline_output"
+    instruments = cfg.get("instruments", []) or []
+
+    summary: list[dict] = []
+    for inst in instruments:
+        name = inst.get("name", "?")
+        pat_str = inst.get("exclude_pattern")
+        if not pat_str:
+            continue
+        try:
+            pat = _re.compile(pat_str)
+        except _re.error as e:
+            summary.append({"instrument": name, "error": f"bad regex: {e}"})
+            continue
+
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT id, run_name, submitted_to_benchmark "
+                "FROM runs WHERE instrument = ?",
+                (name,),
+            ).fetchall()
+
+        matched = [dict(r) for r in rows if pat.search(r["run_name"])]
+        deletable = [r for r in matched if not r["submitted_to_benchmark"]]
+        skipped_submitted = [r for r in matched if r["submitted_to_benchmark"]]
+
+        actions = {
+            "instrument": name,
+            "exclude_pattern": pat_str,
+            "n_matched": len(matched),
+            "n_deletable": len(deletable),
+            "n_skipped_already_submitted": len(skipped_submitted),
+            "matched_examples": [r["run_name"] for r in matched[:8]],
+            "skipped_already_submitted": [r["run_name"] for r in skipped_submitted[:5]],
+            "deleted": [],
+            "directories_removed": 0,
+        }
+
+        if not dry_run and deletable:
+            ids = [r["id"] for r in deletable]
+            placeholders = ",".join("?" * len(ids))
+            with sqlite3.connect(str(db_path)) as con:
+                con.execute(f"DELETE FROM tic_traces WHERE run_id IN ({placeholders})", ids)
+                con.execute(f"DELETE FROM sample_health WHERE id IN ({placeholders})", ids)
+                con.execute(f"DELETE FROM runs WHERE id IN ({placeholders})", ids)
+            actions["deleted"] = [r["run_name"] for r in deletable]
+
+            # Reclaim disk in baseline_output
+            removed_dirs = 0
+            for r in deletable:
+                stem = r["run_name"].rsplit(".", 1)[0]
+                d = output_base / stem
+                if d.exists():
+                    try:
+                        shutil.rmtree(d)
+                        removed_dirs += 1
+                    except OSError:
+                        pass
+            actions["directories_removed"] = removed_dirs
+
+        summary.append(actions)
+
+    return {
+        "dry_run": dry_run,
+        "summary": summary,
+        "hint": ("Re-run with args={'dry_run': false} to actually delete."
+                 if dry_run else
+                 "Already-submitted rows must be cleared from the community "
+                 "relay separately via /api/update."),
+    }
+
+
 def _action_apply_config(args: dict) -> dict:
     """Write a new config YAML on this instrument.
 
@@ -642,6 +767,9 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "apply_config":        _action_apply_config,
     "update_stan":         _action_update_stan,
     "restart_watcher":     _action_restart_watcher,
+    # Retroactive cleanup — only deletes rows matching an instrument's
+    # *already-declared* exclude_pattern. Cannot delete arbitrary rows.
+    "cleanup_excluded":    _action_cleanup_excluded,
 }
 
 
