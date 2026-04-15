@@ -287,6 +287,86 @@ class InstrumentWatcher:
             self._config.get("stable_secs", 60),
         )
 
+        # Catch acquisitions that were already in flight when the
+        # daemon started up. watchdog's on_created only fires for
+        # newly-appearing paths, so without this scan an in-progress
+        # .d existing at startup time would never be tracked —
+        # meaning any restart (update, reboot, recover_stan) during
+        # an acquisition would silently lose that run. v0.2.101+.
+        try:
+            self._scan_for_in_flight()
+        except Exception:
+            logger.debug("in-flight scan failed", exc_info=True)
+
+    def _scan_for_in_flight(self, max_age_min: int = 30) -> None:
+        """Register StabilityTrackers for any recently-modified raw
+        files/dirs in the watch_dir that aren't already in the DB.
+
+        Runs once on watcher start. Relies on StabilityTracker's
+        v0.2.100 size+growth checks to avoid firing the pipeline on
+        genuinely abandoned partial acquisitions."""
+        import time
+        from stan.db import get_db_path
+
+        watch = Path(self._watch_dir)
+        exts = set(self._config.get("extensions", []))
+        if not watch.exists() or not exts:
+            return
+
+        # Pull existing DB run_names so we don't re-track processed files
+        existing: set[str] = set()
+        try:
+            import sqlite3
+            db = get_db_path()
+            if db.exists():
+                with sqlite3.connect(str(db)) as con:
+                    for row in con.execute(
+                        "SELECT run_name FROM runs WHERE instrument = ?",
+                        (self._name,),
+                    ):
+                        existing.add(row[0])
+        except Exception:
+            logger.debug("startup-scan DB lookup failed", exc_info=True)
+
+        cutoff = time.time() - (max_age_min * 60)
+        n_registered = 0
+        try:
+            for p in watch.rglob("*"):
+                # Bruker .d is a directory; Thermo .raw is a file.
+                # Skip nested files inside .d.
+                is_d_dir = p.is_dir() and p.suffix == ".d"
+                is_raw = p.is_file() and p.suffix in exts and p.suffix != ".d"
+                if not (is_d_dir or is_raw):
+                    continue
+                if p.suffix not in exts:
+                    continue
+                if p.name in existing:
+                    continue
+                try:
+                    mt = p.stat().st_mtime
+                except OSError:
+                    continue
+                if mt < cutoff:
+                    continue
+                # Hand off to the same handler path a normal on_created
+                # event would take — honors qc_only, qc_pattern,
+                # exclude_pattern, monitor_all_files uniformly.
+                self._handler._register_tracker(p, ev_kind="startup_scan")
+                n_registered += 1
+        except Exception:
+            logger.debug("startup-scan walk failed", exc_info=True)
+
+        if n_registered:
+            logger.info(
+                "watcher: startup scan registered %d in-flight "
+                "acquisition(s) on %s",
+                n_registered, self._name,
+            )
+            self._record_event(
+                "startup_scan_registered", watch,
+                f"count={n_registered} max_age_min={max_age_min}",
+            )
+
     def stop(self) -> None:
         """Stop the observer and stability loop."""
         self._stop_event.set()
