@@ -339,12 +339,16 @@ def extract_dia_metrics(
         if peak_widths.height > 0:
             median_peak_width_sec = float(peak_widths["peak_width_sec"].median())
 
-            # Estimate cycle time from consecutive RTs in the same file
-            if "RT" in filt.columns and "File.Name" in filt.columns:
+            # Estimate cycle time from consecutive RTs in the same file.
+            # DIA-NN 1.x used "File.Name", 2.x renamed it to "Run".
+            file_col = "Run" if "Run" in filt.columns else (
+                "File.Name" if "File.Name" in filt.columns else None
+            )
+            if "RT" in filt.columns and file_col is not None:
                 cycle_times = (
-                    filt.sort(["File.Name", "RT"])
+                    filt.sort([file_col, "RT"])
                     .with_columns(
-                        (pl.col("RT").diff().over("File.Name") * 60).alias("dt_sec")
+                        (pl.col("RT").diff().over(file_col) * 60).alias("dt_sec")
                     )
                     .filter(pl.col("dt_sec") > 0)
                     .filter(pl.col("dt_sec") < 10)  # filter outliers (>10s gaps)
