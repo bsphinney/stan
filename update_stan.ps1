@@ -199,6 +199,25 @@ if (-not (Test-Path $stanExe)) {
 }
 Write-Host "  STAN updated." -ForegroundColor Green
 
+# Install fisher_py for fast Thermo .raw TIC extraction + Sample Health
+# monitor. Depends on pythonnet + .NET — optional, STAN falls back to
+# ThermoRawFileParser if this fails. Don't block the update on failure.
+Write-Host "  Installing fisher_py (Thermo fast-path)..." -ForegroundColor Gray
+& $venvPython -m pip install --quiet @pipTrust fisher_py 2>&1 | ForEach-Object {
+    $line = $_.ToString()
+    if ($line -match "Successfully installed") {
+        Write-Host "  $line" -ForegroundColor Green
+    } elseif ($line -match "error|ERROR") {
+        Write-Host "  fisher_py: $line" -ForegroundColor DarkYellow
+    }
+}
+$fisherOk = & $venvPython -c "import fisher_py; print('ok')" 2>&1
+if ($fisherOk -match "ok") {
+    Write-Host "  fisher_py available." -ForegroundColor Green
+} else {
+    Write-Host "  fisher_py not available (Thermo TIC falls back to TRFP — slower but works)." -ForegroundColor Yellow
+}
+
 # If both venvs exist, clean up the old .stan location
 $newStanExe = Join-Path $env:USERPROFILE "STAN\venv\Scripts\stan.exe"
 if ((Test-Path $newStanExe) -and (Test-Path $oldVenvPython)) {
