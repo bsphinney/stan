@@ -1301,7 +1301,8 @@ def _process_files(
                 grad_min = file_meta.get("gradient_length_min") or gradient_length_min
                 if is_dia(mode_obj):
                     metrics = extract_dia_metrics(
-                        result_path, gradient_min=float(grad_min) if grad_min else None
+                        result_path, gradient_min=float(grad_min) if grad_min else None,
+                        raw_path=raw_file, vendor=vendor,
                     )
                 else:
                     metrics = extract_dda_metrics(

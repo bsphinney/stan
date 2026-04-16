@@ -587,7 +587,11 @@ class InstrumentWatcher:
 
         try:
             if is_dia(mode):
-                metrics = extract_dia_metrics(str(result_path))
+                metrics = extract_dia_metrics(
+                    str(result_path),
+                    raw_path=raw_path,
+                    vendor=self._config.get("vendor"),
+                )
                 from stan.metrics.chromatography import compute_ips_dia
                 metrics["instrument_family"] = self._config.get("family") or self._config.get("vendor_family")
                 metrics["spd"] = self._config.get("spd")

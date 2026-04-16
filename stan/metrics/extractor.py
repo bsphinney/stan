@@ -22,6 +22,9 @@ from __future__ import annotations
 import csv
 import logging
 import math
+import shutil
+import sqlite3
+import tempfile
 from pathlib import Path
 
 import polars as pl
@@ -218,10 +221,173 @@ def _dynamic_range(df: pl.DataFrame) -> float | None:
     return math.log10(p99 / p01)
 
 
+def _compute_pts_peak_bruker(
+    d_path: Path,
+    report_df: pl.DataFrame,
+    q_cutoff: float = 0.01,
+    max_precursors: int = 2000,
+) -> float | None:
+    """Compute median points-across-peak from Bruker DIA window scheme.
+
+    Reads the DIA window layout and frame times from analysis.tdf inside
+    the .d directory, then for each precursor counts how many DIA frames
+    fall within the precursor's elution window AND cover its m/z.
+
+    Validated against Spectronaut on 12 Affinisep Dec 2025 test files.
+
+    Args:
+        d_path: Path to the .d directory (Bruker raw data).
+        report_df: DIA-NN report DataFrame, already filtered to 1% FDR.
+        q_cutoff: FDR threshold (used only if report_df is unfiltered).
+        max_precursors: Subsample to this many precursors for performance.
+
+    Returns:
+        Median points-across-peak, or None if data is unavailable.
+    """
+    tdf_path = d_path / "analysis.tdf"
+    if not tdf_path.exists():
+        logger.debug("analysis.tdf not found in %s", d_path)
+        return None
+
+    # Required columns in report_df
+    need_cols = {"RT.Start", "RT.Stop"}
+    # Precursor.Mz may be named differently — check variants
+    mz_col = None
+    for candidate in ("Precursor.Mz", "Precursor.mz"):
+        if candidate in report_df.columns:
+            mz_col = candidate
+            break
+    if mz_col is None or not need_cols.issubset(set(report_df.columns)):
+        logger.debug(
+            "Missing columns for Bruker pts/peak (need Precursor.Mz, RT.Start, RT.Stop). "
+            "Available: %s", report_df.columns
+        )
+        return None
+
+    # Copy TDF to temp file — sqlite3 can't open files on network/Quobyte mounts
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="stan_tdf_")
+        tmp_tdf = Path(tmp_dir) / "analysis.tdf"
+        shutil.copy2(tdf_path, tmp_tdf)
+    except Exception:
+        logger.exception("Failed to copy analysis.tdf to temp dir")
+        return None
+
+    try:
+        con = sqlite3.connect(str(tmp_tdf))
+
+        # 1. Read DIA window scheme
+        try:
+            windows = con.execute(
+                "SELECT WindowGroup, IsolationMz, IsolationWidth "
+                "FROM DiaFrameMsMsWindows"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            logger.debug("DiaFrameMsMsWindows table not found in %s", tdf_path)
+            con.close()
+            return None
+
+        if not windows:
+            logger.debug("No DIA windows found in %s", tdf_path)
+            con.close()
+            return None
+
+        # Build lookup: window_group -> list of (mz_low, mz_high)
+        wg_windows: dict[int, list[tuple[float, float]]] = {}
+        for wg, iso_mz, iso_width in windows:
+            half = iso_width / 2.0
+            wg_windows.setdefault(wg, []).append((iso_mz - half, iso_mz + half))
+
+        # 2. Read DIA frame times with window groups
+        try:
+            frames = con.execute(
+                "SELECT f.Time, i.WindowGroup "
+                "FROM Frames f "
+                "JOIN DiaFrameMsMsInfo i ON f.Id = i.Frame "
+                "WHERE f.MsMsType = 9"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            logger.debug("Failed to query DIA frame times from %s", tdf_path)
+            con.close()
+            return None
+
+        con.close()
+
+        if not frames:
+            logger.debug("No diaPASEF frames found in %s", tdf_path)
+            return None
+
+        # Sort frames by time for efficient slicing
+        frames.sort(key=lambda x: x[0])
+        frame_times = [f[0] for f in frames]
+        frame_wgs = [f[1] for f in frames]
+
+        # 3. For each precursor, count DIA frames covering its m/z within its RT window
+        # Subsample for performance
+        prec = report_df.select([mz_col, "RT.Start", "RT.Stop"]).drop_nulls()
+        if prec.height == 0:
+            return None
+
+        if prec.height > max_precursors:
+            prec = prec.sample(n=max_precursors, seed=42)
+
+        mz_vals = prec[mz_col].to_list()
+        rt_starts = prec["RT.Start"].to_list()  # in minutes
+        rt_stops = prec["RT.Stop"].to_list()     # in minutes
+
+        import bisect
+
+        counts = []
+        n_frames = len(frame_times)
+        for mz, rt_start, rt_stop in zip(mz_vals, rt_starts, rt_stops):
+            # Convert RT from minutes to seconds (analysis.tdf times are in seconds)
+            t_start = rt_start * 60.0
+            t_stop = rt_stop * 60.0
+
+            # Binary search for frame time range
+            i_lo = bisect.bisect_left(frame_times, t_start)
+            i_hi = bisect.bisect_right(frame_times, t_stop)
+
+            count = 0
+            for i in range(i_lo, min(i_hi, n_frames)):
+                wg = frame_wgs[i]
+                # Check if any window in this group covers the precursor m/z
+                mz_ranges = wg_windows.get(wg)
+                if mz_ranges:
+                    for mz_lo, mz_hi in mz_ranges:
+                        if mz_lo <= mz <= mz_hi:
+                            count += 1
+                            break
+            counts.append(count)
+
+        if not counts:
+            return None
+
+        # Median
+        counts.sort()
+        n = len(counts)
+        if n % 2 == 1:
+            return float(counts[n // 2])
+        else:
+            return float((counts[n // 2 - 1] + counts[n // 2]) / 2.0)
+
+    except Exception:
+        logger.exception("Failed to compute Bruker pts/peak from %s", d_path)
+        return None
+    finally:
+        # Clean up temp copy
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def extract_dia_metrics(
     report_path: Path,
     q_cutoff: float = 0.01,
     gradient_min: float | None = None,
+    raw_path: Path | None = None,
+    vendor: str | None = None,
 ) -> dict:
     """Extract DIA QC metrics from DIA-NN report.parquet.
 
@@ -231,6 +397,11 @@ def extract_dia_metrics(
         q_cutoff: FDR threshold (default 1%).
         gradient_min: Gradient length in minutes. Used to compute peak
             capacity. If None, peak_capacity will be None in the result.
+        raw_path: Path to the raw data file/directory (.d for Bruker).
+            Used for accurate pts/peak calculation on Bruker instruments.
+        vendor: Instrument vendor ("bruker" or "thermo"). When "bruker"
+            and raw_path is a .d directory, pts/peak is computed from
+            DIA window coverage in analysis.tdf.
 
     Returns:
         Dict of metric name → value.
@@ -247,6 +418,7 @@ def extract_dia_metrics(
         "Precursor.Id", "Stripped.Sequence", "Protein.Group",
         "Q.Value", "PG.Q.Value", "Fragment.Info", "Fragment.Quant.Corrected",
         "Precursor.Charge", "Missed.Cleavages", file_col, "Precursor.Normalised",
+        "Precursor.Mz",
     ]
 
     # Optional RT columns for points-across-peak (column names vary by DIA-NN version)
@@ -326,7 +498,9 @@ def extract_dia_metrics(
     total_frag_quantified = filt["n_frag_quantified"].sum() if "n_frag_quantified" in filt.columns else 0
 
     # ── Points across peak (Matthews & Hayes 1976) ────────────────
-    # Compute from RT.Start/RT.Stop if available, or estimate from RT + Evidence
+    # For Bruker timsTOF: count actual DIA frames covering each precursor's
+    # m/z within its elution window using the DIA scheme from analysis.tdf.
+    # For Thermo (or when .d path unavailable): fall back to cycle-time estimate.
     median_peak_width_sec: float | None = None
     median_points_across_peak: float | None = None
 
@@ -339,21 +513,32 @@ def extract_dia_metrics(
         if peak_widths.height > 0:
             median_peak_width_sec = float(peak_widths["peak_width_sec"].median())
 
-            # Estimate cycle time from consecutive RTs in the same file.
-            # DIA-NN 1.x used "File.Name", 2.x renamed it to "Run".
-            file_col = "Run" if "Run" in filt.columns else (
+        # Bruker: use DIA window coverage from analysis.tdf (accurate method)
+        is_bruker = (
+            vendor == "bruker"
+            or (raw_path is not None and str(raw_path).endswith(".d"))
+        )
+        d_path = raw_path if (raw_path and raw_path.suffix == ".d") else None
+        if is_bruker and d_path and d_path.is_dir():
+            bruker_pts = _compute_pts_peak_bruker(d_path, filt)
+            if bruker_pts is not None:
+                median_points_across_peak = bruker_pts
+
+        # Thermo / fallback: cycle-time estimate (will be fixed in v0.2.106)
+        if median_points_across_peak is None and not is_bruker:
+            fc = "Run" if "Run" in filt.columns else (
                 "File.Name" if "File.Name" in filt.columns else None
             )
-            if "RT" in filt.columns and file_col is not None:
+            if "RT" in filt.columns and fc is not None:
                 cycle_times = (
-                    filt.sort([file_col, "RT"])
+                    filt.sort([fc, "RT"])
                     .with_columns(
-                        (pl.col("RT").diff().over(file_col) * 60).alias("dt_sec")
+                        (pl.col("RT").diff().over(fc) * 60).alias("dt_sec")
                     )
                     .filter(pl.col("dt_sec") > 0)
                     .filter(pl.col("dt_sec") < 10)  # filter outliers (>10s gaps)
                 )
-                if cycle_times.height > 0:
+                if cycle_times.height > 0 and median_peak_width_sec:
                     median_cycle_sec = float(cycle_times["dt_sec"].median())
                     if median_cycle_sec > 0:
                         median_points_across_peak = median_peak_width_sec / median_cycle_sec
