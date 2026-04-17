@@ -133,6 +133,84 @@
       return <span className="badge badge-grs">GRS {score}</span>;
     }
 
+    /* ── IPS tooltip: shows the 3-component breakdown on hover ──────
+       Recomputes on the fly from the run's raw metrics + embedded
+       cohort reference tables. No schema change needed. */
+    const IPS_REFS = {
+      'Exploris 480': { deep: [26974,31698,35425,23845,28545,32111,3373,3993,4195],
+                        medium: [19159,25259,29874,17550,23020,27081,2539,3104,3478],
+                        '*': [19159,25908,31036,17550,23474,28321,2539,3166,3775] },
+      'Lumos':        { deep: [31423,39149,56834,29066,35762,50551,3982,4510,5509],
+                        medium: [16705,27251,37839,15452,24847,33727,2657,3614,4347],
+                        '*': [18519,30522,47340,16941,27907,43154,2965,3917,4906] },
+      'timsTOF HT':   { fast: [32305,42778,48757,28864,38195,43578,4300,4768,5104],
+                        medium: [36153,45262,50142,32779,40531,44574,4730,4972,5160],
+                        ultra: [25203,37051,45731,23722,33106,40851,3940,4509,4945],
+                        '*': [30003,40364,47857,26423,36155,42531,4141,4703,5068] },
+      '_global':      { '*': [19000,35000,48000,17000,31000,42000,2900,4200,5100] },
+    };
+    const IPS_DDA_REFS = {
+      'Exploris 480': { '*': [13705,18565,22165,11335,16630,19589,2730,3420,3815] },
+      'timsTOF HT':   { '*': [27005,27310,42141,24596,24950,37620,3917,4074,4853] },
+      '_fallback':    { '*': [15000,40000,80000,12000,25000,45000,2500,3800,5000] },
+    };
+
+    function ipsBreakdown(run) {
+      const isDDA = (run.mode || '').toLowerCase().includes('dda');
+      const fam = run.instrument_family || run.instrument || '';
+      const spd = run.spd || 0;
+      const bucket = spd <= 0 ? 'medium' : spd <= 15 ? 'deep' : spd <= 40 ? 'medium' : spd <= 80 ? 'fast' : 'ultra';
+
+      let refs;
+      if (isDDA) {
+        const famRef = IPS_DDA_REFS[fam] || IPS_DDA_REFS['_fallback'];
+        refs = famRef[bucket] || famRef['*'] || IPS_DDA_REFS['_fallback']['*'];
+      } else {
+        const famRef = IPS_REFS[fam] || IPS_REFS['_global'];
+        refs = famRef[bucket] || famRef['*'] || IPS_REFS['_global']['*'];
+      }
+      // refs = [p10_prec, p50_prec, p90_prec, p10_pep, p50_pep, p90_pep, p10_pro, p50_pro, p90_pro]
+      function score(val, p10, p50, p90) {
+        if (!val || val <= 0 || p10 <= 0) return 0;
+        if (val <= p10) return 30 * val / p10;
+        if (val <= p50) return 30 + 30 * (val - p10) / (p50 - p10);
+        if (val <= p90) return 60 + 30 * (val - p50) / (p90 - p50);
+        const excess = Math.min((val - p90) / (0.5 * p90), 1);
+        return 90 + 10 * excess;
+      }
+
+      const depthVal = isDDA ? (run.n_psms || 0) : (run.n_precursors || 0);
+      const depthLabel = isDDA ? 'PSMs' : 'Precursors';
+      const s_depth = score(depthVal, refs[0], refs[1], refs[2]);
+      const s_pep   = score(run.n_peptides || 0, refs[3], refs[4], refs[5]);
+      const s_pro   = score(run.n_proteins || 0, refs[6], refs[7], refs[8]);
+
+      const total = Math.round(0.5 * s_depth + 0.3 * s_pep + 0.2 * s_pro);
+      return {
+        total,
+        components: [
+          { label: depthLabel, val: depthVal, score: Math.round(s_depth * 0.5), max: 50, ref: refs[1] },
+          { label: 'Peptides', val: run.n_peptides || 0, score: Math.round(s_pep * 0.3), max: 30, ref: refs[4] },
+          { label: 'Proteins', val: run.n_proteins || 0, score: Math.round(s_pro * 0.2), max: 20, ref: refs[7] },
+        ],
+      };
+    }
+
+    function IpsBadge({ run }) {
+      if (run.ips_score == null) return <span>{'\u2014'}</span>;
+      const bd = ipsBreakdown(run);
+      const color = run.ips_score >= 80 ? 'var(--green,#22c55e)' : run.ips_score >= 60 ? 'var(--accent,#eab308)' : '#ef4444';
+      const tip = bd.components.map(c =>
+        `${c.label}: ${c.score}/${c.max} (${c.val?.toLocaleString()} vs ref ${c.ref?.toLocaleString()})`
+      ).join('\n');
+      return (
+        <span title={`IPS ${bd.total}/100\n${'━'.repeat(20)}\n${tip}`}
+              style={{cursor:'help', fontWeight:600, color}}>
+          {run.ips_score}
+        </span>
+      );
+    }
+
     function GateBadge({ result }) {
       if (!result) return null;
       const cls = result === 'pass' ? 'badge-pass' : result === 'warn' ? 'badge-warn' : 'badge-fail';
@@ -279,7 +357,7 @@
                     {r.ips_score != null && (
                       <div style={{display:'flex', flexDirection:'column', alignItems:'center', gap:'0.2rem', marginLeft:'auto'}}>
                         <span style={{fontSize:'0.7rem', color:'var(--muted)'}}>IPS</span>
-                        <span style={{fontSize:'1.1rem', fontWeight:700, color:'var(--accent)'}}>{r.ips_score}</span>
+                        <IpsBadge run={r} />
                       </div>
                     )}
                   </div>
@@ -742,7 +820,7 @@
                       <td>{r.instrument}</td>
                       <td>{r.mode}</td>
                       <td><GateBadge result={r.gate_result} /></td>
-                      <td>{r.ips_score != null ? r.ips_score : EM_DASH}</td>
+                      <td><IpsBadge run={r} /></td>
                       <td title={`${idsLabel}: ${ids != null ? ids.toLocaleString() : EM_DASH}`}>
                         {fmtNum(ids)} <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>{ids > 0 ? idsLabel : ''}</span>
                       </td>
