@@ -91,9 +91,15 @@ def submit_to_benchmark(
         asset_hashes=asset_hashes,
     )
     if not validation.is_valid:
-        raise ValueError(
-            f"Submission rejected: {'; '.join(validation.rejected_gates)}"
-        )
+        # Include BOTH rejected_gates and errors in the message.
+        # rejected_gates = threshold failures (n_proteins<1500, etc.)
+        # errors = "Missing required metric: foo" from extractor gaps
+        # Previously only gates were shown — runs with missing metrics
+        # produced empty "Submission rejected: " messages and were
+        # impossible to diagnose from the submit-all log.
+        parts = list(validation.rejected_gates) + list(validation.errors)
+        reason = "; ".join(parts) if parts else "no reason reported"
+        raise ValueError(f"Submission rejected: {reason}")
 
     # Version check — community benchmark requires the pinned DIA-NN version
     # because different versions produce non-comparable results
