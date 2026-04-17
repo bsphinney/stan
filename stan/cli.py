@@ -1806,9 +1806,11 @@ def submit_all(
     Use after stan backfill-metrics to ensure metrics are populated
     before submission.
     """
+    import json as _json
     import sqlite3
+    from datetime import datetime, timezone
 
-    from stan.config import load_community
+    from stan.config import get_user_config_dir, load_community, sync_to_hive_mirror
     from stan.db import get_db_path, init_db
 
     init_db()
@@ -1824,6 +1826,26 @@ def submit_all(
         console.print("[dim]Run stan setup to enable community submissions.[/dim]")
         return
 
+    # Set up a JSONL log at ~/.stan/logs/submit_all_{YYYYMMDD}.jsonl
+    # One record per run (submitted / skipped / failed). Synced to the
+    # Hive mirror at the end so Brett can read it from Quobyte without
+    # SSHing into the instrument PC.
+    log_dir = get_user_config_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"submit_all_{datetime.now().strftime('%Y%m%d')}.jsonl"
+    log_fh = open(log_path, "a", encoding="utf-8")
+
+    def _log(record: dict) -> None:
+        record["ts"] = datetime.now(timezone.utc).isoformat()
+        log_fh.write(_json.dumps(record) + "\n")
+        log_fh.flush()
+
+    _log({
+        "event": "start",
+        "stan_version": __version__,
+        "dry_run": dry_run,
+    })
+
     with sqlite3.connect(str(db_path)) as con:
         con.row_factory = sqlite3.Row
         candidates = con.execute(
@@ -1833,6 +1855,7 @@ def submit_all(
         ).fetchall()
 
     console.print(f"[bold]{len(candidates)} un-submitted runs found[/bold]")
+    _log({"event": "candidates", "count": len(candidates)})
 
     from stan.community.submit import submit_to_benchmark
     from stan.watcher.qc_filter import compile_qc_pattern, is_qc_file
@@ -1846,16 +1869,19 @@ def submit_all(
     for row in candidates:
         run = dict(row)
         name = run.get("run_name", "")
+        run_id = run.get("id")
 
         # Skip non-QC files
         if not is_qc_file(Path(name), qc_pat):
             skipped += 1
+            _log({"event": "skip", "run_id": run_id, "run_name": name, "reason": "non_qc"})
             continue
 
         # Skip blanks/washes
         import re
         if re.search(r"(?i)(wash|blank|blnk|blk|DELETE)", name):
             skipped += 1
+            _log({"event": "skip", "run_id": run_id, "run_name": name, "reason": "blank_or_wash"})
             continue
 
         # Skip runs with zero IDs
@@ -1863,12 +1889,14 @@ def submit_all(
         n_psms = run.get("n_psms") or 0
         if n_prec == 0 and n_psms == 0:
             skipped += 1
+            _log({"event": "skip", "run_id": run_id, "run_name": name, "reason": "zero_ids"})
             continue
 
         if dry_run:
             if submitted < 10:
                 console.print(f"  [dim]Would submit: {name[:60]}[/dim]")
             submitted += 1
+            _log({"event": "would_submit", "run_id": run_id, "run_name": name})
             continue
 
         try:
@@ -1888,6 +1916,15 @@ def submit_all(
                     (sid, run["id"]),
                 )
             submitted += 1
+            _log({
+                "event": "submitted",
+                "run_id": run_id,
+                "run_name": name,
+                "submission_id": sid,
+                "cohort_id": result.get("cohort_id", ""),
+                "is_flagged": result.get("is_flagged", False),
+                "flags": result.get("flags", []),
+            })
             if submitted % 10 == 0:
                 console.print(
                     f"  [dim]{submitted} submitted, {skipped} skipped, "
@@ -1898,10 +1935,24 @@ def submit_all(
             if failed < 5:
                 console.print(f"  [yellow]{name[:45]}: {e}[/yellow]")
             failed += 1
+            _log({
+                "event": "rejected",
+                "run_id": run_id,
+                "run_name": name,
+                "error": str(e),
+                "error_type": "ValueError",
+            })
         except Exception as e:
             if failed < 5:
                 console.print(f"  [red]{name[:45]}: {e}[/red]")
             failed += 1
+            _log({
+                "event": "failed",
+                "run_id": run_id,
+                "run_name": name,
+                "error": str(e),
+                "error_type": type(e).__name__,
+            })
 
     action = "Would submit" if dry_run else "Submitted"
     console.print()
@@ -1910,6 +1961,21 @@ def submit_all(
         f"(skipped {skipped} non-QC/blank/empty, "
         f"failed {failed} validation)"
     )
+
+    _log({
+        "event": "end",
+        "submitted": submitted,
+        "skipped": skipped,
+        "failed": failed,
+    })
+    log_fh.close()
+
+    # Mirror the log to Hive so it's readable from /Volumes/proteomics-grp/STAN
+    try:
+        sync_to_hive_mirror(include_reports=False)
+    except Exception:
+        pass
+    console.print(f"[dim]Log: {log_path}[/dim]")
 
 
 @app.command()

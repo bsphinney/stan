@@ -458,6 +458,7 @@ def compute_cohort_id(
     spd: int | None = None,
     gradient_min: int | None = None,
     column_model: str = "",
+    sample_type: str = "hela",
 ) -> str:
     """Build a column-specific cohort ID for benchmark grouping.
 
@@ -467,13 +468,19 @@ def compute_cohort_id(
 
     Args:
         instrument_family: e.g. "timsTOF", "Astral", "Exploris".
-        amount_ng: HeLa injection amount in nanograms.
+        amount_ng: Injection amount in nanograms.
         spd: Samples per day (primary throughput measure).
         gradient_min: Gradient length in minutes (fallback if spd not set).
         column_model: LC column model string (e.g. "Aurora Ultimate 25cm x 75um").
+        sample_type: QC standard — "hela", "k562", "yeast", "ecoli", etc.
+            Accepted for forward-compatibility but NOT yet included in the
+            cohort_id string (doing so would invalidate every existing
+            cohort_id in the benchmark dataset). A later migration will
+            append `_{sample_type}` only when it differs from "hela".
     """
     tb = throughput_bucket(spd=spd, gradient_min=gradient_min)
     ab = amount_bucket(amount_ng)
+    _ = sample_type  # reserved — see docstring
     base = f"{instrument_family}_{tb}_{ab}"
 
     if column_model:

@@ -112,9 +112,14 @@ def submit_to_benchmark(
 
     column_model = run.get("column_model", "")
     sample_type = run.get("sample_type") or _detect_sample_type(run.get("run_name", ""))
+    # NOTE: sample_type is sent to the relay as its own payload field (see
+    # below) but is intentionally NOT passed to compute_cohort_id() — the
+    # installed scoring.py on in-field instrument PCs may be stale (v<=0.2.109
+    # signature, no sample_type kwarg). Hotfix: keep the call compatible with
+    # both old and new bytecode. Re-enable once all PCs have updated.
     cohort_id = compute_cohort_id(
         instrument_family, amount_ng, spd=spd, gradient_min=gradient_length_min,
-        column_model=column_model, sample_type=sample_type,
+        column_model=column_model,
     )
 
     # Compute fingerprint for dedup — same (lab, instrument, run_name, amount, spd)

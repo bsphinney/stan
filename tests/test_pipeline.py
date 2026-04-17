@@ -64,6 +64,7 @@ RELAY_EXPECTED_FIELDS = {
     "ips_score",
     "missed_cleavage_rate",
     "cohort_id",
+    "sample_type",
     "fingerprint",
     "diann_version",
     "column_vendor",
@@ -99,7 +100,8 @@ def _build_test_payload() -> dict:
         "median_fragments_per_precursor": 6.0,
         "ips_score": 75,
         "missed_cleavage_rate": 0.10,
-        "cohort_id": "timsTOF_50ng_104spd",
+        "cohort_id": "timsTOF_100spd_low",
+        "sample_type": "hela",
         "fingerprint": "test_fingerprint_abc123",
         "diann_version": "2.3.0",
         "column_vendor": "PepSep",
@@ -158,7 +160,7 @@ def test_submit_no_token_required():
     # Mock the network call so we don't actually hit the relay
     mock_response = json.dumps({
         "submission_id": "test-uuid-1234",
-        "cohort_id": "timsTOF_50ng_104spd",
+        "cohort_id": "timsTOF_100spd_low",
         "status": "accepted",
     }).encode()
 

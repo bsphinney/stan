@@ -55,6 +55,27 @@ def sync_to_hive_mirror(include_reports: bool = True) -> bool:
             except Exception as e:
                 logger.debug("Could not sync %s to Hive: %s", fname, e)
 
+    # Mirror ~/.stan/logs/ so submit-all and other CLI logs are visible
+    # on the shared drive without SSHing into the instrument PC.
+    logs_src = user_dir / "logs"
+    if logs_src.exists() and logs_src.is_dir():
+        logs_dest = hive_dir / "logs"
+        logs_dest.mkdir(parents=True, exist_ok=True)
+        log_count = 0
+        for log_file in logs_src.iterdir():
+            if not log_file.is_file():
+                continue
+            try:
+                dest_file = logs_dest / log_file.name
+                if (not dest_file.exists()
+                        or log_file.stat().st_mtime > dest_file.stat().st_mtime):
+                    shutil.copy2(str(log_file), str(dest_file))
+                    log_count += 1
+            except Exception:
+                pass
+        if log_count > 0:
+            synced.append(f"{log_count} logs")
+
     # Mirror baseline_output — small per-run files (not mzML etc.)
     if include_reports:
         baseline_src = user_dir / "baseline_output"

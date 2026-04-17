@@ -223,6 +223,10 @@ def test_cohort_id():
     cid3 = compute_cohort_id("Astral", 50.0, spd=60, column_model="Aurora Ultimate 25cm")
     assert cid3 == "Astral_60spd_low_aurora ultimate 25cm"
 
+    # sample_type kwarg accepted for forward-compat but not yet in the string
+    cid4 = compute_cohort_id("timsTOF", 50.0, spd=100, sample_type="k562")
+    assert cid4 == "timsTOF_100spd_low"
+
 
 def test_broad_cohort_id():
     from stan.metrics.scoring import compute_broad_cohort_id
