@@ -1801,6 +1801,157 @@ def backfill_metrics(
         console.print(f"  Pushed {pushed} to community relay")
 
 
+@app.command("backfill-cirt")
+def backfill_cirt(
+    verbose: bool = typer.Option(
+        False, "--verbose", help="Log per-run extraction details.",
+    ),
+) -> None:
+    """Extract cIRT anchor retention times for every run with a report.parquet.
+
+    Reads the panel seeded in stan/metrics/cirt.py keyed on (instrument_family,
+    spd), finds each run's report.parquet under ~/.stan/baseline_output/<run_name>/,
+    extracts the observed RT for each anchor peptide, and writes rows to the
+    `irt_anchor_rts` table. Runs are skipped when: there's no panel for their
+    (family, spd), their report.parquet is missing, or they're non-DIA (only
+    DIA reports have DIA-NN RT columns).
+
+    Safe to re-run; INSERT OR REPLACE on the composite PK overwrites existing
+    rows for the same (run_id, peptide).
+    """
+    import sqlite3
+
+    from stan.config import get_user_config_dir
+    from stan.db import get_db_path, init_db, insert_irt_anchor_rts
+    from stan.metrics.cirt import extract_anchor_rts, get_panel
+    from stan.community.submit import _instrument_family
+
+    init_db()
+    db_path = get_db_path()
+    output_base = get_user_config_dir() / "baseline_output"
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT id, run_name, instrument, mode, spd FROM runs"
+        ).fetchall()
+
+    console.print(f"[bold]{len(rows)} runs in DB[/bold]")
+
+    processed = 0
+    no_panel = 0
+    no_report = 0
+    non_dia = 0
+    no_anchors = 0
+    total_anchors = 0
+
+    for row in rows:
+        run = dict(row)
+        if (run.get("mode") or "").lower() != "dia":
+            non_dia += 1
+            continue
+        family = _instrument_family(run.get("instrument") or "")
+        spd = run.get("spd")
+        panel = get_panel(family, spd)
+        if not panel:
+            no_panel += 1
+            if verbose:
+                console.print(f"  [dim]no panel for {family}/{spd}: {run['run_name']}[/dim]")
+            continue
+        # Report dir name drops the .d / .raw extension
+        stem = Path(run["run_name"]).stem
+        report = output_base / stem / "report.parquet"
+        if not report.exists():
+            no_report += 1
+            if verbose:
+                console.print(f"  [dim]no report: {run['run_name']}[/dim]")
+            continue
+        observed = extract_anchor_rts(report, panel)
+        if not observed:
+            no_anchors += 1
+            if verbose:
+                console.print(f"  [yellow]no anchors detected: {run['run_name']}[/yellow]")
+            continue
+        n = insert_irt_anchor_rts(run["id"], observed, panel, db_path=db_path)
+        total_anchors += n
+        processed += 1
+        if verbose:
+            console.print(f"  [green]{run['run_name']}: {n}/{len(panel)} anchors[/green]")
+
+    console.print()
+    console.print(f"[bold]Extracted cIRT anchors from {processed} runs[/bold] "
+                  f"({total_anchors} anchor-RT rows written)")
+    console.print(f"  Skipped: {non_dia} non-DIA, {no_panel} no-panel, "
+                  f"{no_report} no-report, {no_anchors} no-anchors-detected")
+
+
+@app.command("derive-cirt-panel")
+def derive_cirt_panel(
+    instrument_family: str = typer.Option(
+        ..., "--family", help="timsTOF | Astral | Exploris | Lumos | Eclipse | Orbitrap",
+    ),
+    spd: int = typer.Option(..., "--spd", help="Samples per day."),
+    min_precursors: int = typer.Option(
+        10000, "--min-precursors",
+        help="Minimum n_precursors to consider a run 'good'.",
+    ),
+    n_anchors: int = typer.Option(
+        10, "--n-anchors", help="Target panel size.",
+    ),
+) -> None:
+    """Print an empirical cIRT panel for an (instrument_family, spd) cohort.
+
+    Scans every run in the local DB matching the filters, loads each
+    report.parquet from ~/.stan/baseline_output, and runs the empirical
+    selection algorithm. Output is pasteable into
+    stan/metrics/cirt.py::EMPIRICAL_CIRT_PANELS.
+    """
+    import sqlite3
+
+    from stan.config import get_user_config_dir
+    from stan.db import get_db_path, init_db
+    from stan.metrics.cirt import derive_panel_from_cohort
+    from stan.community.submit import _instrument_family
+
+    init_db()
+    db_path = get_db_path()
+    output_base = get_user_config_dir() / "baseline_output"
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT run_name, instrument, spd, n_precursors FROM runs "
+            "WHERE spd = ? AND n_precursors > ? AND mode = 'DIA'",
+            (spd, min_precursors),
+        ).fetchall()
+
+    cohort_reports: list[Path] = []
+    for row in rows:
+        if _instrument_family(row["instrument"] or "") != instrument_family:
+            continue
+        stem = Path(row["run_name"]).stem
+        report = output_base / stem / "report.parquet"
+        if report.exists():
+            cohort_reports.append(report)
+
+    console.print(f"[bold]Cohort: {len(cohort_reports)} reports[/bold] "
+                  f"({instrument_family}, SPD={spd}, >{min_precursors} precursors)")
+    if len(cohort_reports) < 5:
+        console.print("[yellow]Not enough runs — need at least 5.[/yellow]")
+        return
+
+    panel = derive_panel_from_cohort(cohort_reports, n_anchors=n_anchors)
+    if not panel:
+        console.print("[yellow]No stable anchors found with current thresholds.[/yellow]")
+        return
+
+    console.print()
+    console.print(f'    ("{instrument_family}", {spd}): [')
+    for seq, rt in panel:
+        console.print(f'        ({seq!r:<22}, {rt:>6.2f}),')
+    console.print('    ],')
+
+
 @app.command("submit-all")
 def submit_all(
     dry_run: bool = typer.Option(

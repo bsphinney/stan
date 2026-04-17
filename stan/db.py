@@ -135,6 +135,21 @@ CREATE TABLE IF NOT EXISTS scan_cache (
     metadata    TEXT NOT NULL,     -- JSON blob of _extract_file_metadata output
     cached_at   TEXT NOT NULL      -- ISO 8601
 );
+
+-- cIRT anchor observed retention times, one row per (run, anchor peptide).
+-- Populated from report.parquet by stan/metrics/cirt.py:extract_anchor_rts.
+-- The reference_rt_min is the panel's reference, duplicated here so the
+-- dashboard can compute deviation without joining against the (in-code)
+-- panel constants.
+CREATE TABLE IF NOT EXISTS irt_anchor_rts (
+    run_id              TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    peptide             TEXT NOT NULL,
+    observed_rt_min     REAL NOT NULL,
+    reference_rt_min    REAL,
+    PRIMARY KEY (run_id, peptide)
+);
+
+CREATE INDEX IF NOT EXISTS idx_irt_anchor_peptide ON irt_anchor_rts(peptide);
 """
 
 
@@ -299,6 +314,50 @@ def insert_run(
 
     logger.info("Inserted run %s: %s (%s)", run_id[:8], run_name, gate_result)
     return run_id
+
+
+def insert_irt_anchor_rts(
+    run_id: str,
+    observed: dict[str, float],
+    panel: list[tuple[str, float]],
+    db_path: Path | None = None,
+) -> int:
+    """Persist a run's cIRT anchor observed RTs.
+
+    Replaces any existing rows for the run_id (INSERT OR REPLACE on
+    the composite PK). Peptides that weren't detected at FDR are
+    simply omitted — the caller should pass only detected anchors.
+
+    Args:
+        run_id: The run UUID from the `runs` table.
+        observed: {peptide -> observed_rt_min} from
+            `cirt.extract_anchor_rts()`.
+        panel: The cIRT panel used for this run, as
+            [(peptide, reference_rt), ...]. Reference RTs are stored
+            alongside observed so the dashboard can compute deltas
+            without re-loading the in-code panel.
+        db_path: Optional override.
+
+    Returns:
+        Number of anchor rows written.
+    """
+    if not observed:
+        return 0
+    if db_path is None:
+        db_path = get_db_path()
+    ref_map = {seq: ref for seq, ref in panel}
+    rows = [
+        (run_id, seq, float(rt), ref_map.get(seq))
+        for seq, rt in observed.items()
+    ]
+    with sqlite3.connect(str(db_path)) as con:
+        con.executemany(
+            "INSERT OR REPLACE INTO irt_anchor_rts "
+            "(run_id, peptide, observed_rt_min, reference_rt_min) "
+            "VALUES (?, ?, ?, ?)",
+            rows,
+        )
+    return len(rows)
 
 
 def insert_sample_health(
