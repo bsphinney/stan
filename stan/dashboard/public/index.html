@@ -1244,6 +1244,19 @@
               color="#eab308"
             />
           </div>
+          <div className="card">
+            <h3>Points Across Peak over time</h3>
+            <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0 0 0.5rem 0'}}>
+              Rising trend = peaks broadening = column degradation. Drop after maintenance = separation restored.
+            </p>
+            <Sparkline
+              values={sorted.map(r => r.median_points_across_peak || 0)}
+              maintEvents={events}
+              runs={sorted}
+              label="Datapoints per peak"
+              color="#f97316"
+            />
+          </div>
           <div style={{fontSize:'0.75rem', color:'var(--muted)', padding:'0.5rem'}}>
             Dashed vertical lines = maintenance events. Hover for details.
           </div>
