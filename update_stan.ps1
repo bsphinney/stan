@@ -420,3 +420,4 @@ Write-Host "  ============================================================" -For
 Write-Host ""
 Write-Host "  Starting dashboard..." -ForegroundColor Cyan
 & $stanExe dashboard
+
