@@ -133,14 +133,14 @@ $t = [DateTime]::Now.Ticks
 
 # Kill any running stan.exe (watcher, dashboard, etc) so pip can
 # overwrite the executable. Without this, pip hits WinError 32 and
-# leaves the venv half-installed → ModuleNotFoundError on next launch.
+# leaves the venv half-installed -> ModuleNotFoundError on next launch.
 # This is the root cause of the 16:22 and 16:28 update failures today.
 Write-Host "  Stopping running stan.exe processes..." -ForegroundColor Gray
 Get-Process stan -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 
 # Nuke any half-broken stan install artifacts. Past failed updates
-# leave a stan-0.2.XX.dist-info\ dir WITHOUT a RECORD manifest — pip
+# leave a stan-0.2.XX.dist-info\ dir WITHOUT a RECORD manifest -- pip
 # then can't determine what to uninstall under --force-reinstall,
 # reports 'error: uninstall-no-record-file', and exits 1. Removing
 # the package dir + dist-info before install skips the uninstall
@@ -155,7 +155,7 @@ if (Test-Path $sitePackages) {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Real failures we should actually block on. Deliberately narrow — pip
+# Real failures we should actually block on. Deliberately narrow -- pip
 # prints plenty of noise that looks scary but isn't. "uninstall-no-
 # record-file" in particular is just "I can't remove the prior install
 # because its RECORD manifest is gone; moving on" and always resolves
@@ -170,7 +170,7 @@ $pipFatalError = $false
         Write-Host "  $line" -ForegroundColor Red
         $script:pipFatalError = $true
     } elseif ($line -match "^error|^ERROR") {
-        # Warnings like 'error: uninstall-no-record-file' — yellow, not red.
+        # Warnings like 'error: uninstall-no-record-file' -- yellow, not red.
         Write-Host "  $line" -ForegroundColor DarkYellow
     }
 }
@@ -185,7 +185,7 @@ if (-not (Test-Path $stanExe)) {
     exit 1
 }
 
-# Confirm the new install actually imports — catches the broken-venv
+# Confirm the new install actually imports -- catches the broken-venv
 # case where files land but the package is incomplete.
 & $venvPython -c "import stan; print('  STAN v' + stan.__version__)" 2>&1 | ForEach-Object {
     $line = $_.ToString()
@@ -200,7 +200,7 @@ if (-not (Test-Path $stanExe)) {
 Write-Host "  STAN updated." -ForegroundColor Green
 
 # Install fisher_py for fast Thermo .raw TIC extraction + Sample Health
-# monitor. Depends on pythonnet + .NET — optional, STAN falls back to
+# monitor. Depends on pythonnet + .NET -- optional, STAN falls back to
 # ThermoRawFileParser if this fails. Don't block the update on failure.
 Write-Host "  Installing fisher_py (Thermo fast-path)..." -ForegroundColor Gray
 & $venvPython -m pip install --quiet @pipTrust fisher_py 2>&1 | ForEach-Object {
@@ -215,7 +215,7 @@ $fisherOk = & $venvPython -c "import fisher_py; print('ok')" 2>&1
 if ($fisherOk -match "ok") {
     Write-Host "  fisher_py available." -ForegroundColor Green
 } else {
-    Write-Host "  fisher_py not available (Thermo TIC falls back to TRFP — slower but works)." -ForegroundColor Yellow
+    Write-Host "  fisher_py not available (Thermo TIC falls back to TRFP - slower but works)." -ForegroundColor Yellow
 }
 
 # If both venvs exist, clean up the old .stan location
@@ -304,7 +304,7 @@ if ($needsDiannInstall) {
     $ErrorActionPreference = "Continue"
     try {
         $rel = Invoke-RestMethod "https://api.github.com/repos/vdemichev/DiaNN/releases/latest" -TimeoutSec 15
-        # The "latest" release contains multiple versions — pick the highest
+        # The "latest" release contains multiple versions -- pick the highest
         $asset = Select-LatestDiannMsi $rel.assets
         if ($asset) {
             $installer = "$env:TEMP\$($asset.name)"
