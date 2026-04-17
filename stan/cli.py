@@ -1790,6 +1790,128 @@ def backfill_metrics(
         console.print(f"  Pushed {pushed} to community relay")
 
 
+@app.command("submit-all")
+def submit_all(
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show what would be submitted without actually POSTing.",
+    ),
+) -> None:
+    """Submit all un-submitted QC runs to the community benchmark.
+
+    Walks the local runs table, finds rows where submitted_to_benchmark=0
+    and the run looks like a valid QC file, and calls submit_to_benchmark()
+    for each. Skips blanks, test files, and runs that fail validation.
+
+    Use after stan backfill-metrics to ensure metrics are populated
+    before submission.
+    """
+    import sqlite3
+
+    from stan.config import load_community
+    from stan.db import get_db_path, init_db
+
+    init_db()
+    db_path = get_db_path()
+
+    try:
+        comm = load_community()
+    except Exception:
+        comm = {}
+
+    if not comm.get("community_submit"):
+        console.print("[yellow]community_submit is not enabled in community.yml[/yellow]")
+        console.print("[dim]Run stan setup to enable community submissions.[/dim]")
+        return
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        candidates = con.execute(
+            "SELECT * FROM runs WHERE submitted_to_benchmark = 0 "
+            "OR submitted_to_benchmark IS NULL "
+            "ORDER BY run_date ASC"
+        ).fetchall()
+
+    console.print(f"[bold]{len(candidates)} un-submitted runs found[/bold]")
+
+    from stan.community.submit import submit_to_benchmark
+    from stan.watcher.qc_filter import compile_qc_pattern, is_qc_file
+    from pathlib import Path
+
+    qc_pat = compile_qc_pattern()
+    submitted = 0
+    skipped = 0
+    failed = 0
+
+    for row in candidates:
+        run = dict(row)
+        name = run.get("run_name", "")
+
+        # Skip non-QC files
+        if not is_qc_file(Path(name), qc_pat):
+            skipped += 1
+            continue
+
+        # Skip blanks/washes
+        import re
+        if re.search(r"(?i)(wash|blank|blnk|blk|DELETE)", name):
+            skipped += 1
+            continue
+
+        # Skip runs with zero IDs
+        n_prec = run.get("n_precursors") or 0
+        n_psms = run.get("n_psms") or 0
+        if n_prec == 0 and n_psms == 0:
+            skipped += 1
+            continue
+
+        if dry_run:
+            if submitted < 10:
+                console.print(f"  [dim]Would submit: {name[:60]}[/dim]")
+            submitted += 1
+            continue
+
+        try:
+            result = submit_to_benchmark(
+                run,
+                spd=run.get("spd"),
+                gradient_length_min=run.get("gradient_length_min"),
+                amount_ng=run.get("amount_ng") or 50.0,
+                diann_version=run.get("diann_version"),
+            )
+            sid = result.get("submission_id", "")
+            # Mark as submitted in local DB
+            with sqlite3.connect(str(db_path)) as con:
+                con.execute(
+                    "UPDATE runs SET submitted_to_benchmark = 1, "
+                    "submission_id = ? WHERE id = ?",
+                    (sid, run["id"]),
+                )
+            submitted += 1
+            if submitted % 10 == 0:
+                console.print(
+                    f"  [dim]{submitted} submitted, {skipped} skipped, "
+                    f"{failed} failed[/dim]"
+                )
+        except ValueError as e:
+            # Validation rejection (version mismatch, hard gates, etc.)
+            if failed < 5:
+                console.print(f"  [yellow]{name[:45]}: {e}[/yellow]")
+            failed += 1
+        except Exception as e:
+            if failed < 5:
+                console.print(f"  [red]{name[:45]}: {e}[/red]")
+            failed += 1
+
+    action = "Would submit" if dry_run else "Submitted"
+    console.print()
+    console.print(
+        f"[bold]{action} {submitted} runs[/bold] "
+        f"(skipped {skipped} non-QC/blank/empty, "
+        f"failed {failed} validation)"
+    )
+
+
 @app.command()
 def status() -> None:
     """Show current STAN configuration and database status."""
