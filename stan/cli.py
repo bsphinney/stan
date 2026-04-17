@@ -735,7 +735,7 @@ def _backfill_tic_impl(
         return (0, 0, 0)
 
     n_need_tic = len([r for r in missing if r["id"] not in have_tic])
-    n_need_pep = len([r for r in missing if (not r.get("n_peptides") or r["n_peptides"] == 0) and r.get("n_precursors", 0) > 0])
+    n_need_pep = len([r for r in missing if (not r.get("n_peptides") or r["n_peptides"] == 0) and (r.get("n_precursors") or 0) > 0])
     if verbose:
         parts = []
         if n_need_tic:
@@ -822,7 +822,7 @@ def _backfill_tic_impl(
         # the report.parquet. This fixes the Lumos bug where older STAN
         # versions populated precursors but not peptides/proteins.
         pep_patch: dict = {}
-        if (not run.get("n_peptides") or run["n_peptides"] == 0) and run.get("n_precursors", 0) > 0:
+        if (not run.get("n_peptides") or run["n_peptides"] == 0) and (run.get("n_precursors") or 0) > 0:
             report_path = None
             for stem_variant in (Path(run_name).stem, run_name, Path(raw_path_str).stem if raw_path_str else ""):
                 if not stem_variant:
