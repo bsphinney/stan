@@ -1591,6 +1591,205 @@ def email_report(
         console.print("  [cyan]stan email-report --send[/cyan]")
 
 
+@app.command("backfill-metrics")
+def backfill_metrics(
+    push: bool = typer.Option(
+        False, "--push",
+        help="Push updated metrics to the community relay via /api/update.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show what would be updated without writing to DB or relay.",
+    ),
+) -> None:
+    """Re-extract metrics from existing report.parquet files and fill gaps.
+
+    Walks baseline_output/*/report.parquet for each configured instrument,
+    re-runs the metric extractor (v0.2.105+ with correct pts/peak), and
+    updates local DB rows where fields are NULL/zero. Recalculates IPS.
+
+    With ``--push``, also POSTs updated fields to the community relay for
+    runs that have a submission_id.
+
+    This is the one command that fills every data gap: dynamic_range,
+    ms1_signal, ms2_signal, mass_accuracy, pts/peak, peak_width, IPS.
+    """
+    import json
+    import sqlite3
+    import urllib.error
+    import urllib.request
+    from pathlib import Path
+
+    from stan.config import get_user_config_dir, load_instruments
+    from stan.db import get_db_path, init_db
+    from stan.metrics.chromatography import compute_ips_dia, compute_ips_dda
+    from stan.metrics.extractor import extract_dia_metrics, extract_dda_metrics
+
+    init_db()
+    db_path = get_db_path()
+    output_base = get_user_config_dir() / "baseline_output"
+
+    if not output_base.exists():
+        console.print("[yellow]No baseline_output directory found.[/yellow]")
+        return
+
+    # Load instrument config for vendor info
+    try:
+        _, inst_list = load_instruments()
+    except Exception:
+        inst_list = []
+
+    # Build vendor lookup from config
+    vendor_map: dict[str, str] = {}
+    for inst in inst_list:
+        vendor_map[inst.get("name", "")] = inst.get("vendor", "")
+
+    # Fields we want to fill
+    METRIC_FIELDS = [
+        "dynamic_range_log10", "ms1_signal", "ms2_signal",
+        "median_mass_acc_ms1_ppm", "median_mass_acc_ms2_ppm",
+        "median_peak_width_sec", "median_points_across_peak",
+        "fwhm_rt_min", "peak_capacity", "ips_score",
+    ]
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        all_runs = con.execute(
+            "SELECT * FROM runs ORDER BY run_date DESC"
+        ).fetchall()
+
+    console.print(f"[bold]{len(all_runs)} runs in DB[/bold]")
+
+    updated = 0
+    pushed = 0
+    skipped = 0
+    errors = 0
+
+    for i, row in enumerate(all_runs):
+        run_name = row["run_name"]
+        run_id = row["id"]
+        mode = row["mode"] or ""
+        instrument = row["instrument"] or ""
+        submission_id = row["submission_id"]
+
+        # Find report.parquet
+        stem = run_name
+        for ext in (".d", ".raw"):
+            if stem.endswith(ext):
+                stem = stem[: -len(ext)]
+                break
+        report_path = output_base / stem / "report.parquet"
+        if not report_path.exists():
+            report_path = output_base / run_name / "report.parquet"
+        if not report_path.exists():
+            skipped += 1
+            continue
+
+        # Check which fields are missing
+        missing = [f for f in METRIC_FIELDS
+                   if row[f] is None or row[f] == 0]
+        if not missing:
+            skipped += 1
+            continue
+
+        # Find raw path for pts/peak on Bruker
+        vendor = vendor_map.get(instrument, "")
+        raw_path = None
+        if vendor == "bruker":
+            # Check common locations for the .d
+            for search_dir in [get_user_config_dir().parent, Path("D:/Data"), Path("E:/Data")]:
+                # The raw_path column might have the original path
+                if row["raw_path"]:
+                    candidate = Path(row["raw_path"])
+                    if candidate.exists():
+                        raw_path = candidate
+                        break
+
+        # Re-extract metrics
+        try:
+            is_dia = "dia" in mode.lower() if mode else True
+            if is_dia:
+                metrics = extract_dia_metrics(
+                    str(report_path),
+                    raw_path=raw_path,
+                    vendor=vendor or None,
+                )
+                metrics["instrument_family"] = instrument
+                metrics["spd"] = row["spd"]
+                new_ips = compute_ips_dia(metrics)
+            else:
+                metrics = extract_dda_metrics(str(report_path))
+                metrics["instrument_family"] = instrument
+                new_ips = compute_ips_dda(metrics)
+            metrics["ips_score"] = new_ips
+        except Exception as e:
+            if errors < 3:
+                console.print(f"  [red]Extract error: {run_name}: {e}[/red]")
+            errors += 1
+            continue
+
+        # Build UPDATE set — only fill NULLs, don't overwrite existing good data
+        updates: dict = {}
+        for field in METRIC_FIELDS:
+            old_val = row[field]
+            new_val = metrics.get(field)
+            if (old_val is None or old_val == 0) and new_val is not None and new_val != 0:
+                updates[field] = new_val
+
+        if not updates:
+            skipped += 1
+            continue
+
+        if dry_run:
+            if updated < 10:
+                console.print(
+                    f"  [dim]{run_name[:50]}[/dim] → "
+                    f"{', '.join(f'{k}={v}' for k, v in list(updates.items())[:4])}"
+                )
+            updated += 1
+            continue
+
+        # Write to local DB
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        vals = list(updates.values()) + [run_id]
+        with sqlite3.connect(str(db_path)) as con:
+            con.execute(f"UPDATE runs SET {set_clause} WHERE id = ?", vals)
+
+        updated += 1
+
+        # Push to relay
+        if push and submission_id:
+            try:
+                from stan.community.submit import RELAY_URL
+                body = json.dumps(updates).encode()
+                req = urllib.request.Request(
+                    f"{RELAY_URL}/api/update/{submission_id}",
+                    data=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": f"STAN/{__version__}",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    pushed += 1
+            except Exception:
+                pass  # non-fatal
+
+        if (i + 1) % 25 == 0:
+            console.print(
+                f"  [dim]{i + 1}/{len(all_runs)} — "
+                f"updated={updated} pushed={pushed} skipped={skipped}[/dim]"
+            )
+
+    action = "Would update" if dry_run else "Updated"
+    console.print()
+    console.print(f"[bold]{action} {updated} runs[/bold] "
+                  f"(skipped {skipped}, errors {errors})")
+    if push and not dry_run:
+        console.print(f"  Pushed {pushed} to community relay")
+
+
 @app.command()
 def status() -> None:
     """Show current STAN configuration and database status."""
