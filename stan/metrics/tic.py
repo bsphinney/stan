@@ -235,7 +235,20 @@ def _extract_tic_thermo_trfp(raw_path: Path) -> TICTrace | None:
         out_dir = Path(tempfile.mkdtemp(prefix="stan_tic_"))
         cmd += [f"-i={raw_path}", f"-o={out_dir}/", "-f=1"]  # mzML output
 
-        subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=True)
+        # Don't use check=True — we want to log stderr on failure instead of
+        # swallowing it inside CalledProcessError's string representation.
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if proc.returncode != 0:
+            logger.debug(
+                "ThermoRawFileParser exited %s for %s\n"
+                "  cmd: %s\n"
+                "  stdout: %s\n"
+                "  stderr: %s",
+                proc.returncode, raw_path.name, " ".join(str(c) for c in cmd),
+                (proc.stdout or "").strip()[:2000],
+                (proc.stderr or "").strip()[:2000],
+            )
+            return None
 
         mzml_path = out_dir / f"{raw_path.stem}.mzML"
         if not mzml_path.exists():
