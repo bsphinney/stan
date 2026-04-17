@@ -250,8 +250,19 @@ def _clear_progress() -> None:
 
 # ── Duplicate detection ────────────────────────────────────────────
 
-def _get_existing_run_names(instrument: str) -> set[str]:
-    """Get all run names already in the database for this instrument."""
+def _get_existing_run_names(
+    instrument: str,
+    skip_stale_diann: bool = False,
+    current_diann_version: str | None = None,
+) -> set[str]:
+    """Get all run names already in the database for this instrument.
+
+    When `skip_stale_diann=True`, rows whose `diann_version` column is
+    NULL or differs from `current_diann_version` are excluded from the
+    returned set. Those runs will then NOT be skipped by the duplicate
+    check in `_process_files`, so they'll be re-searched with the
+    currently-installed DIA-NN and the stale row replaced.
+    """
     from stan.db import get_db_path
     db_path = get_db_path()
     if not db_path.exists():
@@ -259,12 +270,50 @@ def _get_existing_run_names(instrument: str) -> set[str]:
     try:
         with sqlite3.connect(str(db_path)) as con:
             rows = con.execute(
-                "SELECT run_name FROM runs WHERE instrument = ?",
+                "SELECT run_name, diann_version, mode FROM runs WHERE instrument = ?",
                 (instrument,),
             ).fetchall()
-        return {r[0] for r in rows}
+        if not skip_stale_diann:
+            return {r[0] for r in rows}
+        # Keep DDA rows regardless (Sage, not DIA-NN). Filter DIA rows by version.
+        keep: set[str] = set()
+        for run_name, diann_version, mode in rows:
+            if (mode or "").lower() == "dda":
+                keep.add(run_name)
+                continue
+            if diann_version and diann_version == current_diann_version:
+                keep.add(run_name)
+        return keep
     except sqlite3.Error:
         return set()
+
+
+def _delete_stale_run(instrument: str, run_name: str) -> None:
+    """Delete an existing row (and its TIC trace) for this instrument/run_name.
+
+    Used by the --redo-stale-diann path: before re-inserting the re-searched
+    run we must remove the old row, otherwise we end up with two rows for the
+    same file (different UUIDs) and the dashboard will double-count.
+    """
+    from stan.db import get_db_path
+    db_path = get_db_path()
+    if not db_path.exists():
+        return
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            # Get the old run_id(s) so we can delete dependent rows
+            old_ids = [r[0] for r in con.execute(
+                "SELECT id FROM runs WHERE instrument = ? AND run_name = ?",
+                (instrument, run_name),
+            ).fetchall()]
+            for old_id in old_ids:
+                con.execute("DELETE FROM tic_traces WHERE run_id = ?", (old_id,))
+            con.execute(
+                "DELETE FROM runs WHERE instrument = ? AND run_name = ?",
+                (instrument, run_name),
+            )
+    except sqlite3.Error:
+        logger.debug("Could not delete stale run %s/%s", instrument, run_name, exc_info=True)
 
 
 # ── Scheduling ──────────────────────────────────────────────────────
@@ -373,8 +422,16 @@ def _estimate_search_time(n_files: int, vendor: str) -> str:
 
 # ── Main entry point ───────────────────────────────────────────────
 
-def run_baseline() -> None:
-    """Interactive baseline builder — process existing HeLa QC directories."""
+def run_baseline(redo_stale_diann: bool = False) -> None:
+    """Interactive baseline builder — process existing HeLa QC directories.
+
+    Args:
+        redo_stale_diann: If True, DIA runs whose recorded `diann_version`
+            doesn't match the currently-installed DIA-NN binary are
+            re-searched and the stale DB rows replaced. Use after
+            upgrading DIA-NN to bring historical runs onto the community
+            benchmark's pinned version. DDA rows are untouched.
+    """
     # Set up file logging so baseline output is captured for debugging
     log_path = get_user_config_dir() / "baseline.log"
     file_handler = logging.FileHandler(str(log_path), mode="w", encoding="utf-8")
@@ -928,6 +985,7 @@ def run_baseline() -> None:
         directory=str(raw_path),
         start_index=0,
         lib_path=lib_path,
+        redo_stale_diann=redo_stale_diann,
     )
 
 
@@ -1011,6 +1069,7 @@ def _resume_baseline(progress_data: dict) -> None:
         diann_exe=progress_data.get("diann_exe"),
         sage_exe=progress_data.get("sage_exe"),
         community_submit=progress_data.get("community_submit", False),
+        redo_stale_diann=progress_data.get("redo_stale_diann", False),
         directory=str(directory),
         start_index=start_index,
         lib_path=progress_data.get("lib_path"),
@@ -1033,8 +1092,15 @@ def _process_files(
     directory: str,
     start_index: int,
     lib_path: str | None = None,
+    redo_stale_diann: bool = False,
 ) -> None:
-    """Process a list of raw files, extracting metrics and storing results."""
+    """Process a list of raw files, extracting metrics and storing results.
+
+    When `redo_stale_diann=True`, DIA rows whose recorded `diann_version`
+    differs from the currently-installed DIA-NN binary are *not* skipped;
+    they'll be re-searched with the current binary and the old rows
+    replaced. DDA rows (Sage) are always skipped regardless.
+    """
     from stan.db import init_db, insert_run, insert_tic_trace
     from stan.gating.evaluator import evaluate_gates
     from stan.metrics.chromatography import compute_ips_dda, compute_ips_dia
@@ -1048,8 +1114,22 @@ def _process_files(
     output_base = get_user_config_dir() / "baseline_output"
     output_base.mkdir(parents=True, exist_ok=True)
 
-    # Check which files are already in the DB
-    existing_names = _get_existing_run_names(instrument_name)
+    # Check which files are already in the DB. In redo-stale-diann mode
+    # we exclude DIA rows whose version doesn't match the current binary,
+    # so they'll fall through the skip check and get re-searched.
+    current_diann_version = None
+    if redo_stale_diann:
+        from stan.search.version_detect import detect_diann_version
+        current_diann_version = detect_diann_version() or "unknown"
+        console.print(
+            f"[yellow]redo-stale-diann mode: re-searching DIA runs whose "
+            f"diann_version != {current_diann_version}[/yellow]"
+        )
+    existing_names = _get_existing_run_names(
+        instrument_name,
+        skip_stale_diann=redo_stale_diann,
+        current_diann_version=current_diann_version,
+    )
 
     total = len(files)
     processed = 0
@@ -1077,6 +1157,7 @@ def _process_files(
         "diann_exe": diann_exe,
         "sage_exe": sage_exe,
         "community_submit": community_submit,
+        "redo_stale_diann": redo_stale_diann,
     }
     _save_progress(progress_state)
 
@@ -1310,6 +1391,18 @@ def _process_files(
                         gradient_min=grad_min or 60,
                     )
 
+                # Record search-engine provenance at search time. submit.py
+                # reads these back instead of sniffing the currently-installed
+                # binary — a run searched today with DIA-NN 1.8.1 must not
+                # later pretend it was 2.3.0 because someone upgraded the PC.
+                if is_dia(mode_obj):
+                    from stan.search.version_detect import detect_diann_version
+                    metrics["search_engine"] = "diann"
+                    metrics["diann_version"] = detect_diann_version() or "unknown"
+                else:
+                    metrics["search_engine"] = "sage"
+                    metrics["diann_version"] = None
+
                 # Resolve the authoritative per-file SPD BEFORE IPS scoring
                 # or DB insert. Previously the cohort default (`spd`) was
                 # used for every file, which mis-bucketed runs whose
@@ -1400,6 +1493,13 @@ def _process_files(
                         ).isoformat()
                     except Exception:
                         run_date = None
+
+                # In redo-stale-diann mode, delete the old row for this
+                # run_name BEFORE inserting the re-searched one. Otherwise
+                # we'd end up with two rows (different UUIDs) for the same
+                # file and the dashboard would double-count.
+                if redo_stale_diann:
+                    _delete_stale_run(instrument_name, raw_file.name)
 
                 # Store in database (use per-file SPD, not cohort default)
                 run_id = insert_run(

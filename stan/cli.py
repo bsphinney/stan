@@ -246,7 +246,18 @@ def import_cmd(
 
 
 @app.command()
-def baseline() -> None:
+def baseline(
+    redo_stale_diann: bool = typer.Option(
+        False,
+        "--redo-stale-diann",
+        help=(
+            "Re-search DIA runs whose recorded diann_version differs from "
+            "the currently-installed DIA-NN binary. Use after upgrading "
+            "DIA-NN to bring historical runs onto the community "
+            "benchmark's pinned version. DDA runs are left alone."
+        ),
+    ),
+) -> None:
     """Build baseline QC data from existing HeLa standard directories.
 
     Point STAN at a directory of existing .d or .raw files to process them
@@ -254,7 +265,7 @@ def baseline() -> None:
     """
     from stan.baseline import run_baseline
 
-    run_baseline()
+    run_baseline(redo_stale_diann=redo_stale_diann)
 
 
 @app.command("build-library")

@@ -66,7 +66,13 @@ CREATE TABLE IF NOT EXISTS runs (
 
     -- Community
     submitted_to_benchmark INTEGER DEFAULT 0,
-    submission_id    TEXT
+    submission_id    TEXT,
+
+    -- Search-engine provenance (recorded at search time, not at submit time).
+    -- Required so submit.py can honestly report the version that produced
+    -- the metrics instead of sniffing the currently-installed binary.
+    diann_version    TEXT,
+    search_engine    TEXT  -- "diann" | "sage"
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_instrument ON runs(instrument);
@@ -173,6 +179,9 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("dynamic_range_log10", "ALTER TABLE runs ADD COLUMN dynamic_range_log10 REAL"),
         # LC system identification — 'evosep' | 'custom' | '' (added 2026-04-10)
         ("lc_system", "ALTER TABLE runs ADD COLUMN lc_system TEXT DEFAULT ''"),
+        # Search-engine provenance (added 2026-04-17, v0.2.114)
+        ("diann_version", "ALTER TABLE runs ADD COLUMN diann_version TEXT"),
+        ("search_engine", "ALTER TABLE runs ADD COLUMN search_engine TEXT"),
     ]
 
     for col, ddl in migrations:
@@ -266,6 +275,12 @@ def insert_run(
         "dynamic_range_log10": metrics.get("dynamic_range_log10"),
         # LC system (from detect_lc_system on the raw file)
         "lc_system": metrics.get("lc_system") or "",
+        # Search-engine provenance — recorded at search time.
+        # The metrics dict should include these from the search-engine
+        # wrapper (diann.py / sage.py). submit.py reads them later
+        # instead of sniffing the currently-installed binary.
+        "diann_version": metrics.get("diann_version"),
+        "search_engine": metrics.get("search_engine"),
         # Run metadata
         "amount_ng": amount_ng,
         "spd": spd,

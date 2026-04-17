@@ -616,6 +616,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 
 ## TODO
 
+- [ ] Local dashboard trends tab: (1) add `n_proteins` over time as a selectable trend metric alongside precursors/peptides/PSMs; (2) overlay two horizontal dashed reference lines on every trend chart — this-instrument median (local stan.db) and community-median for the matching instrument_family/cohort (from benchmark snapshot); (3) split the trend line by `spd` so each gradient cohort has its own series (right now a 60-SPD drop-off is drowned out by the 100-SPD mean)
 - [x] Ship default config YAML templates in `config/` so `stan init` works out of the box
 - [x] Setup wizard (`stan setup`) — 6-question interactive config with deduplication and baseline offer
 - [x] Windows installer (`install-stan.bat`) — auto-installs Python, DIA-NN (.msi), Sage, handles SSL/proxy
