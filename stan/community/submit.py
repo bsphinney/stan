@@ -107,11 +107,16 @@ def submit_to_benchmark(
         raise ValueError(f"Submission rejected: {msg}")
 
     # Build submission
-    instrument = run.get("instrument", "")
+    # Coerce None → "" for every string field the relay expects. SQLite
+    # NULLs come back as None, and `.get(key, default)` only returns the
+    # default when the key is absent, not when the value is None. Without
+    # this, runs with a NULL column_vendor/column_model (pre-parser runs)
+    # are rejected by the relay Pydantic validator with 422 errors.
+    instrument = run.get("instrument") or ""
     instrument_family = _instrument_family(instrument)
 
-    column_model = run.get("column_model", "")
-    sample_type = run.get("sample_type") or _detect_sample_type(run.get("run_name", ""))
+    column_model = run.get("column_model") or ""
+    sample_type = run.get("sample_type") or _detect_sample_type(run.get("run_name") or "")
     # NOTE: sample_type is sent to the relay as its own payload field (see
     # below) but is intentionally NOT passed to compute_cohort_id() — the
     # installed scoring.py on in-field instrument PCs may be stale (v<=0.2.109
@@ -139,7 +144,7 @@ def submit_to_benchmark(
         "display_name": display_name,
         "instrument_family": instrument_family,
         "instrument_model": instrument,
-        "acquisition_mode": run.get("mode", ""),
+        "acquisition_mode": run.get("mode") or "",
         "spd": spd or 0,
         "gradient_length_min": gradient_length_min or 0,
         "amount_ng": amount_ng,
@@ -155,12 +160,12 @@ def submit_to_benchmark(
         "sample_type": sample_type,
         "fingerprint": fingerprint,
         "diann_version": diann_version or "",
-        "column_vendor": run.get("column_vendor", ""),
+        "column_vendor": run.get("column_vendor") or "",
         "column_model": column_model,
-        "lc_system": run.get("lc_system", ""),
+        "lc_system": run.get("lc_system") or "",
         # Original acquisition date (not submission date)
-        "run_name": run.get("run_name", ""),
-        "run_date": run.get("run_date", ""),
+        "run_name": run.get("run_name") or "",
+        "run_date": run.get("run_date") or "",
         # Stats from DIA-NN report.stats.tsv
         "ms1_signal": run.get("ms1_signal"),
         "ms2_signal": run.get("ms2_signal"),
