@@ -327,7 +327,9 @@
                   background: rowColor, borderRadius:'0.5rem',
                 }}>
                   <div style={{display:'flex', alignItems:'center', gap:'0.5rem', flexWrap:'wrap'}}>
-                    <GateBadge result={r.gate_result} />
+                    {/* Gate badge removed 2026-04-20 — gating wasn't
+                        functional (always PASS on threshold gaps);
+                        IpsBadge carries the health signal instead. */}
                     <span title={r.run_name} style={{fontSize:'0.85rem', fontWeight:500, flex:'1 1 auto', wordBreak:'break-all'}}>
                       {r.run_name}
                     </span>
@@ -656,7 +658,7 @@
                 <ColumnLifeBadge instrument={name} />
                 <div className="metric"><span className="metric-label">Last run</span><span className="metric-value" title={run.run_name} style={{maxWidth:'60%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{run.run_name}</span></div>
                 <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
-                <div className="metric"><span className="metric-label">Gate</span><GateBadge result={run.gate_result} /></div>
+                {/* Gate metric removed 2026-04-20 — gating wasn't functional */}
                 <div className="metric"><span className="metric-label">IPS</span><span className="badge badge-grs">IPS {run.ips_score || '—'}</span></div>
                 {run.mode === 'DIA' && <div className="metric"><span className="metric-label">Precursors</span><span className="metric-value">{run.n_precursors?.toLocaleString()}</span></div>}
                 {run.mode === 'DDA' && <div className="metric"><span className="metric-label">PSMs</span><span className="metric-value">{run.n_psms?.toLocaleString()}</span></div>}
@@ -800,7 +802,6 @@
                 <SortHeader col="run_name" label="Run" />
                 <SortHeader col="instrument" label="Instrument" />
                 <SortHeader col="mode" label="Mode" />
-                <SortHeader col="gate_result" label="Gate" />
                 <SortHeader col="ips_score" label="IPS" />
                 <SortHeader col="primary_ids" label="Precursors / PSMs" />
                 <SortHeader col="n_peptides" label="Peptides" />
@@ -819,7 +820,6 @@
                       <td title={r.run_name + ' (click for TIC viewer)'} style={{maxWidth:'280px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{r.run_name}</td>
                       <td>{r.instrument}</td>
                       <td>{r.mode}</td>
-                      <td><GateBadge result={r.gate_result} /></td>
                       <td><IpsBadge run={r} /></td>
                       <td title={`${idsLabel}: ${ids != null ? ids.toLocaleString() : EM_DASH}`}>
                         {fmtNum(ids)} <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>{ids > 0 ? idsLabel : ''}</span>
@@ -1533,12 +1533,11 @@
             <td>{s.stan_version || '—'}</td>
             <td style={{ textAlign: 'right' }}>{s.n_runs ?? '—'}</td>
             <td>{last.run_name || '—'}</td>
-            <td>{last.gate_result || '—'}</td>
             <td>{s.disk_free_gb ? `${s.disk_free_gb} GB` : '—'}</td>
           </tr>
           {expanded && (
             <tr>
-              <td colSpan={7} style={{ background: '#fafafa', padding: '0.75rem 1rem' }}>
+              <td colSpan={6} style={{ background: '#fafafa', padding: '0.75rem 1rem' }}>
                 <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
                   <button onClick={() => onCommand(host.name, 'ping')}>Ping</button>
                   <button onClick={() => onCommand(host.name, 'status')}>Refresh status</button>
@@ -1638,7 +1637,6 @@
                 <th>Version</th>
                 <th style={{ textAlign: 'right' }}>Runs</th>
                 <th>Last run</th>
-                <th>Gate</th>
                 <th>Disk free</th>
               </tr>
             </thead>
@@ -1665,7 +1663,7 @@
 
     /* ── Sample Health tab ─────────────────────────────────────────
        Shows non-QC files the rawmeat monitor flagged. Separate from
-       Run History so QC and non-QC don't share the same table. */
+       QC History so QC and non-QC don't share the same table. */
     function SampleHealthPanel() {
       const [verdictFilter, setVerdictFilter] = useState('');
       const url = '/api/sample-health' + (verdictFilter ? `?verdict=${verdictFilter}` : '');
@@ -1760,7 +1758,7 @@
             <span className="version">{ver ? `v${ver.version}` : ''}</span>
           </header>
           <div className="tabs">
-            {[['live', "Today's Runs"], ['history', 'Run History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
+            {[['live', "Today's Runs"], ['history', 'QC History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
               <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
             )}
           </div>

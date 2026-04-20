@@ -85,9 +85,17 @@ async def api_runs(
     instrument: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    qc_only: bool = True,
 ) -> list[dict]:
-    """Fetch recent QC runs, optionally filtered by instrument."""
-    return get_runs(instrument=instrument, limit=limit, offset=offset)
+    """Fetch recent QC runs, optionally filtered by instrument.
+
+    qc_only defaults to True so legacy non-QC rows (historical
+    baseline on mixed dirs) don't appear in the dashboard. Pass
+    qc_only=false on the query string for debugging/cleanup.
+    """
+    return get_runs(
+        instrument=instrument, limit=limit, offset=offset, qc_only=qc_only,
+    )
 
 
 @app.get("/api/runs/{run_id}")

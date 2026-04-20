@@ -675,6 +675,7 @@ def get_runs(
     limit: int = 50,
     offset: int = 0,
     db_path: Path | None = None,
+    qc_only: bool = True,
 ) -> list[dict]:
     """Fetch recent runs from the database.
 
@@ -683,6 +684,13 @@ def get_runs(
         limit: Maximum rows to return.
         offset: Pagination offset.
         db_path: Optional override for database path.
+        qc_only: If True (default), post-filter to rows whose run_name
+            matches the QC regex (hel[a5] | qc | std_he). Older rows
+            written by `stan baseline` on mixed directories polluted
+            the runs table with non-QC entries; the watcher v0.2.102+
+            routes non-QC to sample_health, but historical rows remain.
+            Pass False only when you specifically need those legacy
+            rows (e.g. for a cleanup CLI).
 
     Returns:
         List of run dicts ordered by run_date descending.
@@ -702,8 +710,18 @@ def get_runs(
         query += " WHERE instrument = ?"
         params.append(instrument)
 
-    query += " ORDER BY run_date DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+    query += " ORDER BY run_date DESC"
+    # When qc-filtering we need to fetch more than `limit` rows and then
+    # discard non-QC, otherwise pagination lands on a much smaller page.
+    # Factor of 3 is empirically enough on real UC Davis DBs where ~2/3
+    # of legacy baseline rows are QC; rare edge cases where this under-
+    # shoots just return a shorter page, not an error.
+    if qc_only:
+        query += " LIMIT ? OFFSET ?"
+        params.extend([limit * 3, offset])
+    else:
+        query += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
 
     try:
         with sqlite3.connect(str(db_path)) as con:
@@ -713,7 +731,15 @@ def get_runs(
         logger.warning("get_runs: %s (db=%s)", e, db_path)
         return []
 
-    return [dict(row) for row in rows]
+    result = [dict(row) for row in rows]
+    if qc_only:
+        from stan.watcher.qc_filter import compile_qc_pattern
+        pat = compile_qc_pattern()
+        result = [
+            r for r in result
+            if r.get("run_name") and pat.search(Path(r["run_name"]).stem)
+        ][:limit]
+    return result
 
 
 def get_run(run_id: str, db_path: Path | None = None) -> dict | None:
@@ -739,10 +765,15 @@ def get_trends(
     instrument: str,
     limit: int = 100,
     db_path: Path | None = None,
+    qc_only: bool = True,
 ) -> list[dict]:
     """Fetch time-series metrics for trend plots.
 
-    Returns runs ordered by date ascending for charting.
+    Returns runs ordered by date ascending for charting. When
+    `qc_only=True` (default), non-QC rows are filtered out so trend
+    lines reflect only HeLa standard runs — mixing customer samples
+    into the trend distorts the line. See `get_runs` for the same
+    filter and rationale.
     """
     if db_path is None:
         db_path = get_db_path()
@@ -750,18 +781,27 @@ def get_trends(
     if not db_path.exists():
         return []
 
+    fetch_limit = limit * 3 if qc_only else limit
     try:
         with sqlite3.connect(str(db_path)) as con:
             con.row_factory = sqlite3.Row
             rows = con.execute(
                 "SELECT * FROM runs WHERE instrument = ? ORDER BY run_date ASC LIMIT ?",
-                (instrument, limit),
+                (instrument, fetch_limit),
             ).fetchall()
     except sqlite3.OperationalError as e:
         logger.warning("get_trends: %s", e)
         return []
 
-    return [dict(row) for row in rows]
+    result = [dict(row) for row in rows]
+    if qc_only:
+        from stan.watcher.qc_filter import compile_qc_pattern
+        pat = compile_qc_pattern()
+        result = [
+            r for r in result
+            if r.get("run_name") and pat.search(Path(r["run_name"]).stem)
+        ][:limit]
+    return result
 
 
 def mark_submitted(run_id: str, submission_id: str, db_path: Path | None = None) -> None:
