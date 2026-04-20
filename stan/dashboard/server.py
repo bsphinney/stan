@@ -345,11 +345,41 @@ async def api_today_tic_overview(
 
         runs.append(d)
 
+    # Attach the current column per instrument that appears today so
+    # the overlay can annotate "Aurora 25cm, installed 12d ago" in
+    # its header. The maintenance_events table is the source of
+    # truth; get_last_event returns the most recent column_change.
+    from stan.db import get_last_event
+    from datetime import datetime as _dt
+
+    instruments_today = sorted({r["instrument"] for r in runs if r.get("instrument")})
+    columns: dict[str, dict] = {}
+    for inst in instruments_today:
+        ev = get_last_event(inst, "column_change")
+        if not ev:
+            continue
+        installed_at = ev.get("event_date") or ""
+        days_ago = None
+        try:
+            ts = _dt.fromisoformat(installed_at.replace("Z", "+00:00"))
+            days_ago = (_dt.now(ts.tzinfo) - ts).days
+        except Exception:
+            pass
+        columns[inst] = {
+            "vendor": ev.get("column_vendor") or "",
+            "model": ev.get("column_model") or "",
+            "serial": ev.get("column_serial") or "",
+            "installed_at": installed_at,
+            "days_ago": days_ago,
+            "notes": ev.get("notes") or "",
+        }
+
     return {
         "date": date,
         "runs": runs,
         "n_runs": len(runs),
         "n_with_tic": n_with_tic,
+        "columns": columns,
     }
 
 

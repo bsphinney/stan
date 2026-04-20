@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -1799,6 +1800,67 @@ def backfill_metrics(
                   f"(skipped {skipped}, errors {errors})")
     if push and not dry_run:
         console.print(f"  Pushed {pushed} to community relay")
+
+
+@app.command("column-install")
+def column_install(
+    instrument: str = typer.Option(..., "--instrument", help="Instrument name (must match instruments.yml)."),
+    vendor: str = typer.Option("", "--vendor", help='e.g. "Waters", "IonOpticks", "Aurora".'),
+    model: str = typer.Option("", "--model", help='e.g. "HSS T3", "25cm 75um C18".'),
+    serial: str = typer.Option("", "--serial", help="Column serial/lot number (optional)."),
+    length_mm: Optional[int] = typer.Option(None, "--length-mm", help="Column length in mm."),
+    id_um: Optional[int] = typer.Option(None, "--id-um", help="Inner diameter in µm."),
+    particle_size_um: Optional[float] = typer.Option(None, "--particle-size-um", help="Particle size in µm."),
+    operator: str = typer.Option("", "--operator", help='Who installed it. Default "".'),
+    notes: str = typer.Option("", "--notes", help="Free-text notes."),
+    date: Optional[str] = typer.Option(None, "--date", help="ISO date/datetime; default = now."),
+) -> None:
+    """Record a column install as a maintenance_events row.
+
+    Convenience wrapper around `stan log <instrument> column-change`
+    that accepts all the column-specific fields as explicit options
+    and builds a structured notes string for the ones the table
+    doesn't have columns for (length, id, particle size).
+
+    Example:
+      stan column-install --instrument timsTOF-Ultra-2 \\
+        --vendor IonOpticks --model Aurora \\
+        --length-mm 250 --id-um 75 --particle-size-um 1.7
+    """
+    from stan.db import init_db, log_event
+
+    init_db()
+
+    # Pack the dimension fields into the notes string so they survive
+    # even though the table schema doesn't have dedicated columns for
+    # them. Keep it parseable: "len=250mm id=75um ps=1.7um <user notes>"
+    parts: list[str] = []
+    if length_mm is not None:
+        parts.append(f"len={length_mm}mm")
+    if id_um is not None:
+        parts.append(f"id={id_um}um")
+    if particle_size_um is not None:
+        parts.append(f"ps={particle_size_um}um")
+    combined_notes = " ".join(parts)
+    if notes:
+        combined_notes = f"{combined_notes} {notes}".strip() if combined_notes else notes
+
+    event_id = log_event(
+        instrument=instrument,
+        event_type="column_change",
+        notes=combined_notes,
+        operator=operator,
+        event_date=date,
+        column_vendor=vendor or None,
+        column_model=model or None,
+        column_serial=serial or None,
+    )
+    console.print(f"[green]Logged column install[/green] for [bold]{instrument}[/bold]")
+    console.print(f"  event_id: {event_id}")
+    if vendor or model:
+        console.print(f"  column: {vendor} {model}".strip())
+    if combined_notes:
+        console.print(f"  notes: {combined_notes}")
 
 
 @app.command("backfill-cirt")

@@ -719,6 +719,28 @@
         );
       }
 
+      // Build a "Instrument: Column (installed Xd ago)" subtitle from
+      // the /api/today endpoint's columns payload so the operator can
+      // see at a glance which column is producing today's traces.
+      const colEntries = Object.entries(data.columns || {})
+        .filter(([, c]) => c && (c.vendor || c.model));
+      const columnSubtitle = colEntries.length === 0 ? null : (
+        <div style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0 0 0.25rem 0'}}>
+          {colEntries.map(([inst, c], i) => {
+            const label = [c.vendor, c.model].filter(Boolean).join(' ');
+            const ageStr = c.days_ago == null ? ''
+              : c.days_ago === 0 ? ' (installed today)'
+              : ` (installed ${c.days_ago}d ago)`;
+            return (
+              <span key={`col-${inst}`}>
+                {i > 0 && <span style={{margin:'0 0.5rem'}}>·</span>}
+                <strong>{inst}:</strong> {label || 'unnamed column'}{ageStr}
+              </span>
+            );
+          })}
+        </div>
+      );
+
       return (
         <div className="card" style={{marginTop:'1rem'}}>
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'0.5rem'}}>
@@ -731,6 +753,7 @@
               Normalize (0–1 per trace)
             </label>
           </div>
+          {columnSubtitle}
           <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0.25rem 0 0.5rem 0'}}>
             Each line = one QC run's TIC. Color: light blue = earliest run of the
             day, dark blue = most recent. Divergence = LC or spray issue appearing
