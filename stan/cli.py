@@ -2140,6 +2140,209 @@ def submit_all(
     console.print(f"[dim]Log: {log_path}[/dim]")
 
 
+@app.command("watch-status")
+def watch_status(
+    days: int = typer.Option(
+        14, "--days", help="Look at files acquired in the last N days.",
+    ),
+    to_log: bool = typer.Option(
+        True, "--to-log/--no-log",
+        help="Also write the report to ~/.stan/logs/ so it syncs to the "
+             "Hive mirror. Useful when diagnosing remotely.",
+    ),
+) -> None:
+    """Diagnose why recent acquisitions aren't showing up in STAN.
+
+    For each instrument in instruments.yml, list raw files in its
+    watch_dir acquired in the last N days and show for each file:
+    (a) whether the QC filter matched it,
+    (b) whether it's in the `runs` table,
+    (c) whether it's in `sample_health`,
+    (d) the file's mtime.
+
+    When a file is physically on disk but not in either table, the
+    watcher missed it. When it matched the QC pattern but isn't in
+    `runs`, the search failed or never triggered. Everything you
+    need to tell the difference between "operator saved the QC to
+    the wrong folder" and "the daemon is broken".
+    """
+    import sqlite3
+    import re
+    from datetime import datetime, timedelta, timezone
+
+    from stan.config import get_user_config_dir, load_instruments, sync_to_hive_mirror
+    from stan.db import get_db_path, init_db
+    from stan.watcher.qc_filter import compile_qc_pattern
+
+    init_db()
+    db_path = get_db_path()
+
+    try:
+        _hive, instruments = load_instruments()
+    except FileNotFoundError:
+        console.print("[red]instruments.yml not found — run 'stan init'.[/red]")
+        raise typer.Exit(1)
+
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=days)
+    cutoff_ts = cutoff_dt.timestamp()
+
+    # Read DB tables once — avoid per-file SQL.
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        runs_by_name = {
+            r["run_name"]: r["gate_result"]
+            for r in con.execute("SELECT run_name, gate_result FROM runs").fetchall()
+        }
+        try:
+            sh_by_name = {
+                r["run_name"]: r["verdict"]
+                for r in con.execute(
+                    "SELECT run_name, verdict FROM sample_health"
+                ).fetchall()
+            }
+        except sqlite3.OperationalError:
+            sh_by_name = {}
+
+    # Build a plain-text report alongside the console output so we can
+    # persist it to ~/.stan/logs/.
+    lines: list[str] = []
+
+    def log_line(s: str = "") -> None:
+        lines.append(s)
+
+    log_line(f"stan watch-status  ·  last {days} days  ·  "
+             f"cutoff {cutoff_dt.isoformat(timespec='seconds')}")
+    log_line(f"DB: {db_path}")
+    log_line(f"runs rows: {len(runs_by_name)}   sample_health rows: {len(sh_by_name)}")
+    log_line("")
+
+    console.print(f"[bold]stan watch-status[/bold]  ·  last {days} days")
+    console.print(f"[dim]DB {db_path}[/dim]")
+    console.print()
+
+    for inst in instruments:
+        if not inst.get("enabled", True):
+            continue
+        name = inst.get("name", "<unnamed>")
+        watch_dir = Path(inst.get("watch_dir", ""))
+        exts = {e.lower() for e in inst.get("extensions", [".d", ".raw"])}
+        pattern = compile_qc_pattern(inst.get("qc_pattern"))
+        exclude_raw = inst.get("exclude_pattern")
+        exclude = re.compile(exclude_raw) if exclude_raw else None
+
+        header = f"[bold cyan]{name}[/bold cyan]  {watch_dir}  (exts={','.join(sorted(exts))})"
+        console.print(header)
+        log_line(f"== {name}  watch_dir={watch_dir}  exts={sorted(exts)} ==")
+
+        if not watch_dir.exists():
+            msg = f"  [red]watch_dir does not exist[/red]"
+            console.print(msg)
+            log_line(f"  WATCH_DIR MISSING: {watch_dir}")
+            continue
+
+        # Gather recent raw files (non-recursive — STAN only watches the
+        # top level, consistent with daemon behavior).
+        recent: list[tuple[Path, float]] = []
+        try:
+            for entry in watch_dir.iterdir():
+                ext = entry.suffix.lower()
+                if ext not in exts:
+                    continue
+                try:
+                    mtime = entry.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime >= cutoff_ts:
+                    recent.append((entry, mtime))
+        except PermissionError:
+            console.print(f"  [red]permission denied reading {watch_dir}[/red]")
+            log_line(f"  PERMISSION DENIED: {watch_dir}")
+            continue
+
+        if not recent:
+            console.print(f"  [dim]no {sorted(exts)} files in last {days} days[/dim]")
+            log_line(f"  empty ({days}d window)")
+            log_line("")
+            continue
+
+        recent.sort(key=lambda t: t[1], reverse=True)
+
+        # Tally
+        n_qc_match = 0
+        n_excluded = 0
+        n_in_runs = 0
+        n_in_sh = 0
+        n_orphan = 0  # on disk, not in either table
+
+        console.print(f"  [dim]{len(recent)} files in last {days} days[/dim]")
+        log_line(f"  {len(recent)} files in window:")
+
+        # Table header
+        hdr = f"    {'mtime':<19}  {'QC':<3}  {'runs':<4}  {'SH':<3}  file"
+        console.print(f"[dim]{hdr}[/dim]")
+        log_line(hdr)
+
+        for path, mtime in recent:
+            name_only = path.name
+            stem = path.stem
+            qc_hit = bool(pattern.search(stem))
+            if qc_hit:
+                n_qc_match += 1
+            if exclude and exclude.search(stem):
+                n_excluded += 1
+            in_runs = name_only in runs_by_name
+            in_sh = name_only in sh_by_name
+            if in_runs:
+                n_in_runs += 1
+            if in_sh:
+                n_in_sh += 1
+            if not in_runs and not in_sh:
+                n_orphan += 1
+            mt_str = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            qc_mark = "y" if qc_hit else "-"
+            runs_mark = runs_by_name.get(name_only, "-")[:4] if in_runs else "-"
+            sh_mark = sh_by_name.get(name_only, "-")[:3] if in_sh else "-"
+            row = f"    {mt_str}  {qc_mark:<3}  {runs_mark:<4}  {sh_mark:<3}  {name_only}"
+            # Color orphans red for immediate visibility
+            if not in_runs and not in_sh:
+                console.print(f"[red]{row}[/red]")
+            else:
+                console.print(row)
+            log_line(row)
+
+        summary = (
+            f"  summary: qc_match={n_qc_match}  excluded_by_pattern={n_excluded}  "
+            f"in_runs={n_in_runs}  in_sample_health={n_in_sh}  orphans={n_orphan}"
+        )
+        console.print()
+        console.print(f"[bold]{summary}[/bold]")
+        log_line(summary)
+        if n_orphan:
+            diag = (
+                f"  [yellow]{n_orphan} file(s) on disk but in neither table — "
+                f"watcher missed them[/yellow]"
+            )
+            console.print(diag)
+            log_line(f"  DIAG: {n_orphan} orphans (watcher missed)")
+        log_line("")
+        console.print()
+
+    if to_log:
+        try:
+            log_dir = get_user_config_dir() / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_path = log_dir / f"watch_status_{ts}.log"
+            log_path.write_text("\n".join(lines), encoding="utf-8")
+            console.print(f"[dim]Report: {log_path}[/dim]")
+            try:
+                sync_to_hive_mirror(include_reports=False)
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Could not write watch-status log")
+
+
 @app.command()
 def status() -> None:
     """Show current STAN configuration and database status."""
