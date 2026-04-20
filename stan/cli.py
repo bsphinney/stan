@@ -2240,20 +2240,29 @@ def watch_status(
             log_line(f"  WATCH_DIR MISSING: {watch_dir}")
             continue
 
-        # Gather recent raw files (non-recursive — STAN only watches the
-        # top level, consistent with daemon behavior).
+        # Gather recent raw files. The daemon watches recursively
+        # (daemon.py:266 uses recursive=True), so we must recurse here
+        # too or we'll miss every file in a subdirectory and falsely
+        # report "empty". Skip descending INTO Bruker .d directories —
+        # they're raw files themselves, not folders of raw files.
         recent: list[tuple[Path, float]] = []
         try:
-            for entry in watch_dir.iterdir():
-                ext = entry.suffix.lower()
-                if ext not in exts:
+            for p in watch_dir.rglob("*"):
+                # Skip anything inside a .d (its own contents: analysis.tdf, etc.)
+                if any(parent.suffix == ".d" for parent in p.parents):
+                    continue
+                is_d_dir = p.is_dir() and p.suffix == ".d"
+                is_file = p.is_file() and p.suffix.lower() in exts and p.suffix.lower() != ".d"
+                if not (is_d_dir or is_file):
+                    continue
+                if p.suffix.lower() not in exts:
                     continue
                 try:
-                    mtime = entry.stat().st_mtime
+                    mtime = p.stat().st_mtime
                 except OSError:
                     continue
                 if mtime >= cutoff_ts:
-                    recent.append((entry, mtime))
+                    recent.append((p, mtime))
         except PermissionError:
             console.print(f"  [red]permission denied reading {watch_dir}[/red]")
             log_line(f"  PERMISSION DENIED: {watch_dir}")
@@ -2285,6 +2294,12 @@ def watch_status(
         for path, mtime in recent:
             name_only = path.name
             stem = path.stem
+            # Relative path so the operator can see which subdir the
+            # file lives in. If it's top-level, rel_path == name_only.
+            try:
+                rel_path = str(path.relative_to(watch_dir))
+            except ValueError:
+                rel_path = str(path)
             qc_hit = bool(pattern.search(stem))
             if qc_hit:
                 n_qc_match += 1
@@ -2302,7 +2317,7 @@ def watch_status(
             qc_mark = "y" if qc_hit else "-"
             runs_mark = runs_by_name.get(name_only, "-")[:4] if in_runs else "-"
             sh_mark = sh_by_name.get(name_only, "-")[:3] if in_sh else "-"
-            row = f"    {mt_str}  {qc_mark:<3}  {runs_mark:<4}  {sh_mark:<3}  {name_only}"
+            row = f"    {mt_str}  {qc_mark:<3}  {runs_mark:<4}  {sh_mark:<3}  {rel_path}"
             # Color orphans red for immediate visibility
             if not in_runs and not in_sh:
                 console.print(f"[red]{row}[/red]")
