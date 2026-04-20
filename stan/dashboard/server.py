@@ -86,16 +86,42 @@ async def api_runs(
     limit: int = 50,
     offset: int = 0,
     qc_only: bool = True,
+    include_hidden: bool = False,
 ) -> list[dict]:
     """Fetch recent QC runs, optionally filtered by instrument.
 
     qc_only defaults to True so legacy non-QC rows (historical
     baseline on mixed dirs) don't appear in the dashboard. Pass
     qc_only=false on the query string for debugging/cleanup.
+
+    include_hidden defaults to False so rows the operator soft-
+    deleted (hidden=1) are omitted. Pass include_hidden=true when
+    reviewing or restoring hidden runs.
     """
     return get_runs(
-        instrument=instrument, limit=limit, offset=offset, qc_only=qc_only,
+        instrument=instrument, limit=limit, offset=offset,
+        qc_only=qc_only, include_hidden=include_hidden,
     )
+
+
+class RunHideBody(BaseModel):
+    hidden: bool = True
+    reason: str = ""
+
+
+@app.post("/api/runs/{run_id}/hide")
+async def api_run_hide(run_id: str, body: RunHideBody) -> dict:
+    """Soft-delete (or restore) a QC run row.
+
+    POST with {"hidden": true, "reason": "..."} to hide; {"hidden": false}
+    to restore. Hidden rows stay in the DB but are filtered out of the
+    default /api/runs response. Returns 404 if the run_id doesn't exist.
+    """
+    from stan.db import set_run_hidden
+    ok = set_run_hidden(run_id, body.hidden, reason=body.reason)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return {"run_id": run_id, "hidden": body.hidden, "reason": body.reason}
 
 
 @app.get("/api/runs/{run_id}")

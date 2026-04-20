@@ -72,7 +72,16 @@ CREATE TABLE IF NOT EXISTS runs (
     -- Required so submit.py can honestly report the version that produced
     -- the metrics instead of sniffing the currently-installed binary.
     diann_version    TEXT,
-    search_engine    TEXT  -- "diann" | "sage"
+    search_engine    TEXT,  -- "diann" | "sage"
+
+    -- Soft-delete flag: rows where the operator has hidden a run
+    -- from the QC history (wrong sample, contaminated injection,
+    -- test file, etc.). Filtered out of /api/runs by default so
+    -- the UI shows a clean history, but the row stays in the DB
+    -- so submit-all / backfill jobs can still reason about it.
+    hidden           INTEGER DEFAULT 0,
+    hidden_reason    TEXT,
+    hidden_at        TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_instrument ON runs(instrument);
@@ -197,6 +206,10 @@ def _migrate(con: sqlite3.Connection) -> None:
         # Search-engine provenance (added 2026-04-17, v0.2.114)
         ("diann_version", "ALTER TABLE runs ADD COLUMN diann_version TEXT"),
         ("search_engine", "ALTER TABLE runs ADD COLUMN search_engine TEXT"),
+        # Soft-delete support (added 2026-04-20, v0.2.124)
+        ("hidden", "ALTER TABLE runs ADD COLUMN hidden INTEGER DEFAULT 0"),
+        ("hidden_reason", "ALTER TABLE runs ADD COLUMN hidden_reason TEXT"),
+        ("hidden_at", "ALTER TABLE runs ADD COLUMN hidden_at TEXT"),
     ]
 
     for col, ddl in migrations:
@@ -676,6 +689,7 @@ def get_runs(
     offset: int = 0,
     db_path: Path | None = None,
     qc_only: bool = False,
+    include_hidden: bool = False,
 ) -> list[dict]:
     """Fetch recent runs from the database.
 
@@ -690,6 +704,9 @@ def get_runs(
             The /api/runs endpoint flips this to True so the dashboard
             never shows legacy non-QC rows that older baseline runs
             polluted the table with.
+        include_hidden: When False (default), rows soft-deleted by
+            the operator (hidden=1) are excluded. Pass True to see
+            every row, e.g. for a "show hidden" admin view.
 
     Returns:
         List of run dicts ordered by run_date descending.
@@ -704,10 +721,16 @@ def get_runs(
 
     query = "SELECT * FROM runs"
     params: list = []
+    where: list[str] = []
 
     if instrument:
-        query += " WHERE instrument = ?"
+        where.append("instrument = ?")
         params.append(instrument)
+    if not include_hidden:
+        # Tolerate older DBs where the column may not be populated.
+        where.append("(hidden IS NULL OR hidden = 0)")
+    if where:
+        query += " WHERE " + " AND ".join(where)
 
     query += " ORDER BY run_date DESC"
     # When qc-filtering we need to fetch more than `limit` rows and then
@@ -765,6 +788,7 @@ def get_trends(
     limit: int = 100,
     db_path: Path | None = None,
     qc_only: bool = False,
+    include_hidden: bool = False,
 ) -> list[dict]:
     """Fetch time-series metrics for trend plots.
 
@@ -780,13 +804,16 @@ def get_trends(
         return []
 
     fetch_limit = limit * 3 if qc_only else limit
+    sql = "SELECT * FROM runs WHERE instrument = ?"
+    params: list = [instrument]
+    if not include_hidden:
+        sql += " AND (hidden IS NULL OR hidden = 0)"
+    sql += " ORDER BY run_date ASC LIMIT ?"
+    params.append(fetch_limit)
     try:
         with sqlite3.connect(str(db_path)) as con:
             con.row_factory = sqlite3.Row
-            rows = con.execute(
-                "SELECT * FROM runs WHERE instrument = ? ORDER BY run_date ASC LIMIT ?",
-                (instrument, fetch_limit),
-            ).fetchall()
+            rows = con.execute(sql, params).fetchall()
     except sqlite3.OperationalError as e:
         logger.warning("get_trends: %s", e)
         return []
@@ -800,6 +827,33 @@ def get_trends(
             if r.get("run_name") and pat.search(Path(r["run_name"]).stem)
         ][:limit]
     return result
+
+
+def set_run_hidden(
+    run_id: str,
+    hidden: bool,
+    reason: str = "",
+    db_path: Path | None = None,
+) -> bool:
+    """Soft-delete or restore a run in the QC history.
+
+    Returns True if the row was updated, False if no such run_id
+    existed. The underlying SQL is INSERT-safe (UPDATE only — never
+    creates rows) and is idempotent: calling hide on an already-hidden
+    row just refreshes hidden_at and hidden_reason.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return False
+    now = datetime.now(timezone.utc).isoformat() if hidden else None
+    with sqlite3.connect(str(db_path)) as con:
+        cur = con.execute(
+            "UPDATE runs SET hidden = ?, hidden_reason = ?, hidden_at = ? "
+            "WHERE id = ?",
+            (1 if hidden else 0, reason or None, now, run_id),
+        )
+        return cur.rowcount > 0
 
 
 def mark_submitted(run_id: str, submission_id: str, db_path: Path | None = None) -> None:

@@ -673,18 +673,74 @@
       );
     }
 
+    // Classify a run as "failed" — near-zero results indicate a broken
+    // injection, empty file, or failed search rather than just a weak
+    // sample. Mirrors the stan.community.validate.HARD_GATES thresholds
+    // so the dashboard and the community-submission gate agree on what
+    // counts as a failed run (n_precursors<5000 for DIA, n_psms<5000
+    // for DDA). Used for the "hide failed" filter toggle and the red
+    // failure badge on rows that escape the filter (e.g. when toggle is off).
+    function isFailedRun(r) {
+      if (!r) return false;
+      const mode = (r.mode || '').toUpperCase();
+      if (mode === 'DDA') {
+        return (r.n_psms || 0) < 5000;
+      }
+      // Default to DIA rules for anything non-DDA (diaPASEF, DIA, etc.)
+      return (r.n_precursors || 0) < 5000;
+    }
+
     function RunHistory() {
-      const { data: runs, loading } = useFetch('/api/runs?limit=1000');
+      // Fetch with include_hidden=true so we can show/hide client-side
+      // via a toggle without refetching. Hidden rows are filtered out
+      // by default; the "Show hidden" toggle restores them with dim
+      // styling so the operator can review or unhide.
+      const { data: runs, loading, reload } = useFetch(
+        '/api/runs?limit=1000&include_hidden=true'
+      );
       const [sortKey, setSortKey] = useState('run_date');
       const [sortDir, setSortDir] = useState('desc');
       const [dateFilter, setDateFilter] = useState('all');
       const [searchTerm, setSearchTerm] = useState('');
       const [selectedRun, setSelectedRun] = useState(null);
+      // Default: hide failed runs (near-zero results — see isFailedRun)
+      // AND hide soft-deleted rows (hidden=1). Operator toggles them
+      // back on with the controls at the top of the table.
+      const [hideFailed, setHideFailed] = useState(true);
+      const [showHidden, setShowHidden] = useState(false);
 
       if (loading) return <div className="empty">Loading...</div>;
       // Defensive: treat any non-array response as "no runs".
       if (!Array.isArray(runs) || runs.length === 0) {
         return <div className="empty">No runs recorded yet.</div>;
+      }
+
+      async function hideRun(run_id, current, runName) {
+        const nowHidden = !current;
+        let reason = '';
+        if (nowHidden) {
+          reason = window.prompt(
+            `Hide "${runName}" from QC history?\n\n` +
+            `Optional reason (saved with the row for later review):`,
+            ''
+          );
+          if (reason === null) return;  // cancel
+        }
+        try {
+          const res = await fetch(API + `/api/runs/${encodeURIComponent(run_id)}/hide`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hidden: nowHidden, reason: reason || '' }),
+          });
+          if (!res.ok) {
+            const text = await res.text();
+            alert(`Hide failed: ${res.status} ${text}`);
+            return;
+          }
+          reload();
+        } catch (e) {
+          alert(`Hide failed: ${e}`);
+        }
       }
 
       // Filter by date range
@@ -713,6 +769,14 @@
 
       // Filter + sort
       let filtered = runs.filter(r => filterDate(r.run_date));
+      // Hidden-row filter (hidden=1 means operator soft-deleted it)
+      if (!showHidden) {
+        filtered = filtered.filter(r => !r.hidden);
+      }
+      // Failed-run filter (near-zero precursors/PSMs)
+      if (hideFailed) {
+        filtered = filtered.filter(r => !isFailedRun(r));
+      }
       if (searchTerm) {
         const term = searchTerm.toLowerCase();
         filtered = filtered.filter(r =>
@@ -792,6 +856,16 @@
               <option value="year">This year</option>
               <option value="past">Past years</option>
             </select>
+            <label style={{display:'inline-flex', alignItems:'center', gap:'0.3rem', fontSize:'0.8rem', color:'var(--muted)'}}>
+              <input type="checkbox" checked={hideFailed}
+                     onChange={e => setHideFailed(e.target.checked)} />
+              Hide failed
+            </label>
+            <label style={{display:'inline-flex', alignItems:'center', gap:'0.3rem', fontSize:'0.8rem', color:'var(--muted)'}}>
+              <input type="checkbox" checked={showHidden}
+                     onChange={e => setShowHidden(e.target.checked)} />
+              Show hidden
+            </label>
             <span style={{color:'var(--muted)', fontSize:'0.85rem'}}>
               {filtered.length} / {runs.length} runs
             </span>
@@ -810,14 +884,34 @@
                 <SortHeader col="fwhm_rt_min" label="FWHM (s)" />
                 <SortHeader col="median_mass_acc_ms1_ppm" label="Mass Acc ppm" />
                 <SortHeader col="run_date" label="Date" />
+                <th>Hide</th>
               </tr></thead>
               <tbody>
                 {filtered.map(r => {
                   const ids = primaryIds(r);
                   const idsLabel = r.mode === 'DDA' ? 'PSMs' : 'Prec';
+                  const failed = isFailedRun(r);
+                  const isHidden = !!r.hidden;
+                  // Dim hidden rows (visible only when "Show hidden"
+                  // toggle is on) and subtly red-tint failed rows.
+                  const rowStyle = {
+                    cursor: 'pointer',
+                    opacity: isHidden ? 0.5 : 1,
+                    textDecoration: isHidden ? 'line-through' : 'none',
+                    background: failed && !isHidden ? 'rgba(239,68,68,0.07)' : undefined,
+                  };
                   return (
-                    <tr key={r.id} onClick={() => setSelectedRun(r)} style={{cursor:'pointer'}}>
-                      <td title={r.run_name + ' (click for TIC viewer)'} style={{maxWidth:'280px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{r.run_name}</td>
+                    <tr key={r.id} onClick={() => setSelectedRun(r)} style={rowStyle}
+                        title={isHidden ? `Hidden: ${r.hidden_reason || '(no reason given)'}` : (failed ? 'Near-zero result — flagged as failed run' : undefined)}>
+                      <td style={{maxWidth:'280px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                        {failed && !isHidden && (
+                          <span title="Failed run (below community-gate threshold)"
+                                style={{display:'inline-block', width:'0.5rem', height:'0.5rem',
+                                        background:'#ef4444', borderRadius:'50%',
+                                        marginRight:'0.4rem', verticalAlign:'middle'}} />
+                        )}
+                        {r.run_name}
+                      </td>
                       <td>{r.instrument}</td>
                       <td>{r.mode}</td>
                       <td><IpsBadge run={r} /></td>
@@ -830,6 +924,19 @@
                       <td>{fmtFwhmSec(r.fwhm_rt_min)}</td>
                       <td>{fmtSigned(r.median_mass_acc_ms1_ppm, 2)}</td>
                       <td>{new Date(r.run_date).toLocaleString([], {year:'2-digit', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}</td>
+                      <td>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); hideRun(r.id, isHidden, r.run_name); }}
+                          title={isHidden ? 'Restore this run to the QC history' : 'Hide this run from the QC history (reversible)'}
+                          style={{
+                            padding:'0.15rem 0.45rem', fontSize:'0.7rem',
+                            background:'var(--bg)', color:'var(--text)',
+                            border:'1px solid var(--border)', borderRadius:'0.25rem',
+                            cursor:'pointer',
+                          }}>
+                          {isHidden ? '↺ Restore' : '× Hide'}
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
