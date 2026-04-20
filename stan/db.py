@@ -675,7 +675,7 @@ def get_runs(
     limit: int = 50,
     offset: int = 0,
     db_path: Path | None = None,
-    qc_only: bool = True,
+    qc_only: bool = False,
 ) -> list[dict]:
     """Fetch recent runs from the database.
 
@@ -684,13 +684,12 @@ def get_runs(
         limit: Maximum rows to return.
         offset: Pagination offset.
         db_path: Optional override for database path.
-        qc_only: If True (default), post-filter to rows whose run_name
-            matches the QC regex (hel[a5] | qc | std_he). Older rows
-            written by `stan baseline` on mixed directories polluted
-            the runs table with non-QC entries; the watcher v0.2.102+
-            routes non-QC to sample_health, but historical rows remain.
-            Pass False only when you specifically need those legacy
-            rows (e.g. for a cleanup CLI).
+        qc_only: Post-filter to rows whose run_name matches the QC
+            regex (hel[a5] | qc | std_he). Default False so the DB
+            helper stays unsurprising for callers that want raw rows.
+            The /api/runs endpoint flips this to True so the dashboard
+            never shows legacy non-QC rows that older baseline runs
+            polluted the table with.
 
     Returns:
         List of run dicts ordered by run_date descending.
@@ -765,15 +764,14 @@ def get_trends(
     instrument: str,
     limit: int = 100,
     db_path: Path | None = None,
-    qc_only: bool = True,
+    qc_only: bool = False,
 ) -> list[dict]:
     """Fetch time-series metrics for trend plots.
 
-    Returns runs ordered by date ascending for charting. When
-    `qc_only=True` (default), non-QC rows are filtered out so trend
-    lines reflect only HeLa standard runs — mixing customer samples
-    into the trend distorts the line. See `get_runs` for the same
-    filter and rationale.
+    Returns runs ordered by date ascending for charting. The
+    /api/trends endpoint passes qc_only=True so trend lines reflect
+    only HeLa standard runs — mixing customer samples distorts the
+    line. Default False here so the DB helper is unsurprising.
     """
     if db_path is None:
         db_path = get_db_path()
