@@ -1113,6 +1113,9 @@
       const [events, setEvents] = useState([]);
       const [timeFilter, setTimeFilter] = useState('all');
       const [eventsVersion, setEventsVersion] = useState(0);
+      // Community cohort percentiles — fetched once, filtered client-side
+      // to the cohorts relevant to the selected instrument.
+      const { data: community } = useFetch('/api/community/cohort');
 
       const names = useMemo(() => {
         if (!allRuns) return [];
@@ -1194,149 +1197,317 @@
           </div>
           {!filteredTrends || filteredTrends.length === 0
             ? <div className="empty">No trend data for {selected || 'this instrument'}.</div>
-            : <TrendGraphs runs={filteredTrends} events={events} />
+            : <TrendGraphs runs={filteredTrends} events={events} community={community} selected={selected} />
           }
         </div>
       );
     }
 
-    // Simple SVG sparkline trend component
-    function Sparkline({ values, maintEvents, runs, label, color='#60a5fa', height=120 }) {
-      if (!values || values.length < 2) {
+    // Color palette for per-SPD series. Stable order so the same
+    // SPD always gets the same color across all trend cards.
+    const SPD_PALETTE = ['#60a5fa', '#f97316', '#a78bfa', '#22c55e', '#eab308', '#f472b6', '#14b8a6'];
+    function spdColor(spd, idx) {
+      return SPD_PALETTE[idx % SPD_PALETTE.length];
+    }
+
+    // Map an instrument_model string to the community cohort family
+    // name. Mirror of stan.community.submit._instrument_family so the
+    // client-side community-median lookup matches what submit.py
+    // writes into cohort_id.
+    function instrumentFamily(model) {
+      if (!model) return '';
+      const m = String(model).toLowerCase();
+      if (m.includes('timstof') || m.includes('tims tof')) return 'timsTOF';
+      if (m.includes('astral')) return 'Astral';
+      if (m.includes('exploris')) return 'Exploris';
+      if (m.includes('lumos') || m.includes('fusion')) return 'Lumos';
+      if (m.includes('eclipse')) return 'Eclipse';
+      if (m.includes('orbitrap')) return 'Orbitrap';
+      return model;
+    }
+
+    // Given sorted percentile array from the community cohort API,
+    // return the median (p50) or null if the array is empty/missing.
+    function cohortMedian(percentiles) {
+      if (!Array.isArray(percentiles) || percentiles.length === 0) return null;
+      return percentiles[Math.floor(percentiles.length / 2)];
+    }
+
+    // Look up the community median for a (family, spd, amount_ng, metric)
+    // across all matching cohorts in the fetched /api/community/cohort
+    // payload. We match on the broad cohort prefix (family_spd_amount)
+    // and ignore the column suffix so reference lines aren't fragmented
+    // across column variants.
+    function communityMedian(community, family, spd, amount_ng, metric) {
+      if (!community?.cohorts || !family || !spd) return null;
+      // Broad cohort prefix: family_{spd}spd_{amount_bucket}
+      // amount_bucket: see stan/metrics/scoring.py::amount_bucket
+      const ab = amount_ng >= 1000 ? 'very-high'
+        : amount_ng >= 500 ? 'high'
+        : amount_ng >= 200 ? 'standard'
+        : amount_ng >= 100 ? 'mid'
+        : amount_ng >= 50 ? 'low'
+        : 'ultra-low';
+      const prefix = `${family}_${spd}spd_${ab}`;
+      const matches = Object.keys(community.cohorts).filter(
+        k => k === prefix || k.startsWith(prefix + '_')
+      );
+      if (!matches.length) return null;
+      // Merge values across all matching cohorts, then median.
+      const all = [];
+      for (const cid of matches) {
+        const arr = community.cohorts[cid]?.[metric];
+        if (Array.isArray(arr)) all.push(...arr);
+      }
+      if (!all.length) return null;
+      all.sort((a, b) => a - b);
+      return all[Math.floor(all.length / 2)];
+    }
+
+    // SVG sparkline trend component with per-SPD series, this-instrument
+    // median + community median reference lines, and hover tooltips.
+    function Sparkline({ runs, metric, maintEvents, label,
+                        community, instrumentModel, amount_ng=50,
+                        height=160 }) {
+      if (!runs || runs.length < 2) {
         return <div style={{color:'var(--muted)', fontSize:'0.8rem'}}>Not enough data</div>;
       }
-      const validValues = values.map(v => v == null || isNaN(v) ? 0 : v);
-      const min = Math.min(...validValues);
-      const max = Math.max(...validValues);
-      const range = max - min || 1;
+
+      // 1. Extract values; runs are already sorted by date (ascending)
+      //    by TrendGraphs. Compute date-based x position so each dot
+      //    sits at its actual calendar position instead of being
+      //    evenly spaced — otherwise per-SPD lines would lie.
+      const dates = runs.map(r => new Date(r.run_date).getTime());
+      const tMin = Math.min(...dates);
+      const tMax = Math.max(...dates);
+      const tRange = (tMax - tMin) || 1;
+
+      const vals = runs.map(r => {
+        const v = r[metric];
+        return (v == null || isNaN(v)) ? null : Number(v);
+      });
+      const validVals = vals.filter(v => v != null && v !== 0);
+      if (validVals.length === 0) {
+        return <div style={{color:'var(--muted)', fontSize:'0.8rem'}}>No {metric} values</div>;
+      }
+      const vMin = Math.min(...validVals);
+      const vMax = Math.max(...validVals);
+      const vRange = (vMax - vMin) || Math.abs(vMax) || 1;
+
       const width = 800;
-      const padding = 10;
+      const padding = 14;
       const w = width - padding * 2;
       const h = height - padding * 2;
-      const points = validValues.map((v, i) => {
-        const x = padding + (validValues.length === 1 ? w/2 : (i / (validValues.length - 1)) * w);
-        const y = padding + h - ((v - min) / range) * h;
-        return [x, y];
+
+      // 2. Group runs by SPD bucket. null/0 → "unk" so they still plot.
+      const groups = new Map();  // spd -> [{idx, x, y, run}]
+      runs.forEach((r, i) => {
+        if (vals[i] == null) return;
+        const spd = r.spd || null;
+        const key = spd || 'unk';
+        const x = padding + ((dates[i] - tMin) / tRange) * w;
+        const y = padding + h - ((vals[i] - vMin) / vRange) * h;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push({ idx: i, x, y, run: r, value: vals[i] });
       });
-      const pathD = points.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+      const groupKeys = [...groups.keys()].sort((a, b) => {
+        if (a === 'unk') return 1;
+        if (b === 'unk') return -1;
+        return Number(b) - Number(a);  // 100 first, 30 last
+      });
 
-      // Compute mean for the reference line
-      const mean = validValues.reduce((a, b) => a + b, 0) / validValues.length;
-      const meanY = padding + h - ((mean - min) / range) * h;
+      // 3. This-instrument median (across all SPDs).
+      const sortedVals = [...validVals].sort((a, b) => a - b);
+      const instMedian = sortedVals[Math.floor(sortedVals.length / 2)];
+      const instMedianY = padding + h - ((instMedian - vMin) / vRange) * h;
 
-      // Find maintenance event positions
-      const eventMarks = [];
-      if (maintEvents && runs) {
-        for (const ev of maintEvents) {
-          const evDate = new Date(ev.event_date).getTime();
-          // Find the run closest to this event
-          let closestIdx = -1;
-          let minDist = Infinity;
-          runs.forEach((r, i) => {
-            const rd = new Date(r.run_date).getTime();
-            const dist = Math.abs(rd - evDate);
-            if (dist < minDist) { minDist = dist; closestIdx = i; }
-          });
-          if (closestIdx >= 0 && runs.length > 1) {
-            const x = padding + (closestIdx / (runs.length - 1)) * w;
-            eventMarks.push({ x, event: ev });
+      // 4. Community median — per SPD when the cohort API has it.
+      const family = instrumentFamily(instrumentModel);
+      const communityMediansBySpd = new Map();
+      if (community) {
+        for (const key of groupKeys) {
+          if (key === 'unk') continue;
+          const cm = communityMedian(community, family, key, amount_ng, metric);
+          if (cm != null) {
+            communityMediansBySpd.set(key, {
+              value: cm,
+              y: padding + h - ((cm - vMin) / vRange) * h,
+            });
           }
         }
       }
 
+      // 5. Maintenance event vertical lines (time-axis based).
+      const eventMarks = [];
+      if (maintEvents) {
+        for (const ev of maintEvents) {
+          const t = new Date(ev.event_date).getTime();
+          if (t < tMin || t > tMax) continue;
+          const x = padding + ((t - tMin) / tRange) * w;
+          eventMarks.push({ x, event: ev });
+        }
+      }
+
+      const eventColors = {
+        column_change:'#60a5fa', source_clean:'#22c55e',
+        calibration:'#eab308', pm:'#a78bfa',
+        lc_service:'#f472b6', other:'#94a3b8',
+      };
+
       return (
-        <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:`${height}px`}}>
-          {/* Mean reference line */}
-          <line x1={padding} y1={meanY} x2={width-padding} y2={meanY} stroke="var(--muted)" strokeDasharray="4,4" strokeWidth="1" opacity="0.4" />
-          {/* Event markers */}
-          {eventMarks.map((em, i) => {
-            const colors = {column_change:'#60a5fa', source_clean:'#22c55e', calibration:'#eab308', pm:'#a78bfa', lc_service:'#f472b6', other:'#94a3b8'};
-            const c = colors[em.event.event_type] || '#94a3b8';
-            return (
-              <g key={i}>
-                <line x1={em.x} y1={padding} x2={em.x} y2={height-padding} stroke={c} strokeDasharray="3,3" strokeWidth="2" opacity="0.7">
+        <div>
+          <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:`${height}px`}}>
+            {/* This-instrument median — muted gray dashes */}
+            <line x1={padding} y1={instMedianY} x2={width-padding} y2={instMedianY}
+                  stroke="var(--muted)" strokeDasharray="4,4" strokeWidth="1" opacity="0.55">
+              <title>This instrument median: {instMedian.toLocaleString()}</title>
+            </line>
+            {/* Community median — one faint dashed line per SPD, colored to match */}
+            {[...communityMediansBySpd.entries()].map(([spd, cm], i) => {
+              const idx = groupKeys.indexOf(spd);
+              const c = spdColor(spd, idx);
+              return (
+                <line key={`cm-${spd}`} x1={padding} y1={cm.y} x2={width-padding} y2={cm.y}
+                      stroke={c} strokeDasharray="2,5" strokeWidth="1.2" opacity="0.45">
+                  <title>Community median @ {spd} SPD: {cm.value.toLocaleString()}</title>
+                </line>
+              );
+            })}
+            {/* Maintenance events */}
+            {eventMarks.map((em, i) => {
+              const c = eventColors[em.event.event_type] || '#94a3b8';
+              return (
+                <line key={`ev-${i}`} x1={em.x} y1={padding} x2={em.x} y2={height-padding}
+                      stroke={c} strokeDasharray="3,3" strokeWidth="2" opacity="0.7">
                   <title>{em.event.event_type}: {em.event.notes || em.event.event_date}</title>
                 </line>
-              </g>
-            );
-          })}
-          {/* Trend line */}
-          <path d={pathD} fill="none" stroke={color} strokeWidth="2" />
-          {/* Points */}
-          {points.map(([x, y], i) => (
-            <circle key={i} cx={x} cy={y} r="3" fill={color}>
-              <title>{runs?.[i]?.run_name}: {validValues[i].toLocaleString()}</title>
-            </circle>
-          ))}
-          {/* Label */}
-          <text x={padding} y={padding+4} fill="var(--muted)" fontSize="11">{label}</text>
-          <text x={width-padding} y={padding+4} fill="var(--muted)" fontSize="11" textAnchor="end">
-            min: {min.toLocaleString()} · max: {max.toLocaleString()}
-          </text>
-        </svg>
+              );
+            })}
+            {/* Per-SPD trend lines */}
+            {groupKeys.map((spd, gi) => {
+              const pts = groups.get(spd);
+              if (pts.length < 2) return null;
+              const c = spdColor(spd, gi);
+              const d = pts.map((p, i) =>
+                `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`
+              ).join(' ');
+              return <path key={`line-${spd}`} d={d} fill="none" stroke={c} strokeWidth="2" opacity="0.9" />;
+            })}
+            {/* Per-SPD dots with hover tooltips */}
+            {groupKeys.map((spd, gi) => {
+              const pts = groups.get(spd);
+              const c = spdColor(spd, gi);
+              return pts.map(p => {
+                const dt = new Date(p.run.run_date);
+                const dateStr = dt.toLocaleString([], {
+                  year:'numeric', month:'short', day:'numeric',
+                  hour:'2-digit', minute:'2-digit',
+                });
+                const spdLabel = spd === 'unk' ? 'SPD unknown' : `${spd} SPD`;
+                const tip =
+                  `${p.run.run_name}\n` +
+                  `${metric}: ${p.value.toLocaleString()}\n` +
+                  `${spdLabel}\n` +
+                  `${dateStr}`;
+                return (
+                  <circle key={`dot-${spd}-${p.idx}`}
+                          cx={p.x} cy={p.y} r="3.5" fill={c}
+                          stroke="#fff" strokeWidth="0.5">
+                    <title>{tip}</title>
+                  </circle>
+                );
+              });
+            })}
+            <text x={padding} y={padding-3} fill="var(--muted)" fontSize="11">{label}</text>
+            <text x={width-padding} y={padding-3} fill="var(--muted)" fontSize="11" textAnchor="end">
+              min: {vMin.toLocaleString()} · max: {vMax.toLocaleString()}
+            </text>
+          </svg>
+          {/* Legend: SPD colors + reference line markers */}
+          <div style={{display:'flex', gap:'1rem', flexWrap:'wrap', fontSize:'0.72rem',
+                       color:'var(--muted)', marginTop:'0.3rem', paddingLeft:'1rem'}}>
+            {groupKeys.map((spd, gi) => (
+              <span key={`leg-${spd}`} style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+                <span style={{width:'1.1rem', height:'2px', background:spdColor(spd, gi),
+                             display:'inline-block'}}></span>
+                {spd === 'unk' ? 'SPD ?' : `${spd} SPD`} ({groups.get(spd).length})
+              </span>
+            ))}
+            <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'1.1rem', borderTop:'1px dashed var(--muted)',
+                            display:'inline-block'}}></span>
+              this instrument median
+            </span>
+            {communityMediansBySpd.size > 0 && (
+              <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+                <span style={{width:'1.1rem', borderTop:'1.2px dashed #888',
+                             display:'inline-block', opacity:0.5}}></span>
+                community median (per SPD)
+              </span>
+            )}
+          </div>
+        </div>
       );
     }
 
-    function TrendGraphs({ runs, events }) {
+    function TrendGraphs({ runs, events, community, selected }) {
       // Sort runs by date ascending for trend plotting
-      const sorted = [...runs].sort((a, b) => new Date(a.run_date) - new Date(b.run_date));
+      const sorted = useMemo(
+        () => [...runs].sort((a, b) => new Date(a.run_date) - new Date(b.run_date)),
+        [runs],
+      );
+      // Use the instrument model from the first run. All runs in a
+      // trends call are from the same instrument but `selected` is the
+      // instrument *name* — model is what drives community lookups.
+      const instrumentModel = sorted[0]?.instrument || selected;
+      // Default amount for community lookup. 50 ng is the lab default;
+      // when we add per-cohort UI we'll let the user pick.
+      const amount_ng = sorted[0]?.amount_ng || 50;
+
+      const common = {
+        runs: sorted, maintEvents: events,
+        community, instrumentModel, amount_ng,
+      };
+
       return (
         <div className="grid" style={{gridTemplateColumns:'1fr'}}>
           <div className="card">
             <h3>Precursors / PSMs over time</h3>
-            <Sparkline
-              values={sorted.map(r => r.n_precursors || r.n_psms || 0)}
-              maintEvents={events}
-              runs={sorted}
-              label="Identifications"
-              color="#60a5fa"
-            />
+            {/* Prefer precursors; DDA-only cohorts will show 0 here — n_psms
+                card below covers them. */}
+            <Sparkline {...common} metric="n_precursors" label="Precursors" />
+          </div>
+          <div className="card">
+            <h3>Peptides over time</h3>
+            <Sparkline {...common} metric="n_peptides" label="Peptides" />
+          </div>
+          <div className="card">
+            <h3>Proteins over time</h3>
+            <Sparkline {...common} metric="n_proteins" label="Proteins" />
           </div>
           <div className="card">
             <h3>IPS Score over time</h3>
-            <Sparkline
-              values={sorted.map(r => r.ips_score || 0)}
-              maintEvents={events}
-              runs={sorted}
-              label="IPS (0-100)"
-              color="#22c55e"
-            />
+            <Sparkline {...common} metric="ips_score" label="IPS (0-100)" />
           </div>
           <div className="card">
             <h3>MS1 Signal over time</h3>
-            <Sparkline
-              values={sorted.map(r => r.ms1_signal || 0)}
-              maintEvents={events}
-              runs={sorted}
-              label="Total MS1 ion current"
-              color="#a78bfa"
-            />
+            <Sparkline {...common} metric="ms1_signal" label="Total MS1 ion current" />
           </div>
           <div className="card">
             <h3>Peak Width (FWHM) over time</h3>
-            <Sparkline
-              values={sorted.map(r => r.fwhm_rt_min || 0)}
-              maintEvents={events}
-              runs={sorted}
-              label="FWHM in minutes"
-              color="#eab308"
-            />
+            <Sparkline {...common} metric="fwhm_rt_min" label="FWHM (min)" />
           </div>
           <div className="card">
             <h3>Points Across Peak over time</h3>
             <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0 0 0.5rem 0'}}>
               Rising trend = peaks broadening = column degradation. Drop after maintenance = separation restored.
             </p>
-            <Sparkline
-              values={sorted.map(r => r.median_points_across_peak || 0)}
-              maintEvents={events}
-              runs={sorted}
-              label="Datapoints per peak"
-              color="#f97316"
-            />
+            <Sparkline {...common} metric="median_points_across_peak" label="Datapoints per peak" />
           </div>
           <div style={{fontSize:'0.75rem', color:'var(--muted)', padding:'0.5rem'}}>
-            Dashed vertical lines = maintenance events. Hover for details.
+            Lines split by SPD · solid = local runs · dashed gray = this-instrument median
+            · dashed color = community median · dashed vertical = maintenance event.
+            Hover any dot for the exact value, run name, SPD, and date.
           </div>
         </div>
       );

@@ -108,9 +108,21 @@ def _compute_cohort_percentiles(df: pl.DataFrame) -> dict:
 
         if n >= COHORT_MINIMUM:
             for metric in [
-                "n_precursors", "n_peptides", "n_psms", "n_peptides_dda",
-                "median_cv_precursor", "ips_score", "pct_delta_mass_lt5ppm",
-                "ms2_scan_rate",
+                # Primary IDs
+                "n_precursors", "n_peptides", "n_proteins",
+                "n_psms", "n_peptides_dda",
+                # Scoring inputs
+                "median_cv_precursor", "ips_score",
+                "pct_delta_mass_lt5ppm", "ms2_scan_rate",
+                # Chromatography / signal — used as reference lines
+                # on the local dashboard's Trends tab. Adding here so
+                # the Sparkline component can overlay a community
+                # median on MS1 Signal / FWHM / Points-Across-Peak
+                # cards once the next consolidation run completes.
+                "ms1_signal", "ms2_signal", "fwhm_rt_min",
+                "median_points_across_peak", "peak_capacity",
+                "dynamic_range_log10",
+                "median_mass_acc_ms1_ppm", "median_mass_acc_ms2_ppm",
             ]:
                 if metric in cohort_df.columns:
                     values = cohort_df[metric].drop_nulls().sort().to_list()
