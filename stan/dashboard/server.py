@@ -170,7 +170,60 @@ async def api_delete_instrument(index: int) -> dict:
 @app.get("/api/trends/{instrument}")
 async def api_trends(instrument: str, limit: int = 100) -> list[dict]:
     """Fetch time-series metrics for trend charts."""
-    return get_trends(instrument=instrument, limit=limit)
+    return get_trends(instrument=instrument, limit=limit, qc_only=True)
+
+
+@app.get("/api/cirt/{instrument}")
+async def api_cirt(instrument: str, limit: int = 500) -> dict:
+    """Fetch cIRT anchor retention-time history for an instrument.
+
+    Joins the irt_anchor_rts table to runs so the dashboard can chart
+    each peptide's observed RT over time with the run metadata it needs
+    (run_date, spd, run_name). Grouped per peptide on the server side
+    for convenience — the UI just picks an SPD bucket and iterates.
+    """
+    import sqlite3
+    from stan.db import get_db_path
+
+    db_path = get_db_path()
+    if not db_path.exists():
+        return {"peptides": {}, "n_runs": 0}
+
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                """
+                SELECT r.id AS run_id, r.run_name, r.run_date, r.spd,
+                       a.peptide, a.observed_rt_min, a.reference_rt_min
+                FROM runs r
+                JOIN irt_anchor_rts a ON a.run_id = r.id
+                WHERE r.instrument = ?
+                ORDER BY r.run_date ASC
+                LIMIT ?
+                """,
+                (instrument, limit * 30),  # x30 because each run has up to 10 anchors
+            ).fetchall()
+    except sqlite3.OperationalError:
+        # Table may not exist yet if user never ran `stan backfill-cirt`
+        return {"peptides": {}, "n_runs": 0}
+
+    peptides: dict[str, dict] = {}
+    run_ids: set[str] = set()
+    for r in rows:
+        run_ids.add(r["run_id"])
+        p = peptides.setdefault(r["peptide"], {
+            "reference_rt_min": r["reference_rt_min"],
+            "observations": [],
+        })
+        p["observations"].append({
+            "run_id": r["run_id"],
+            "run_name": r["run_name"],
+            "run_date": r["run_date"],
+            "spd": r["spd"],
+            "observed_rt_min": r["observed_rt_min"],
+        })
+    return {"peptides": peptides, "n_runs": len(run_ids)}
 
 
 @app.get("/api/thresholds")

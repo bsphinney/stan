@@ -1504,10 +1504,251 @@
             </p>
             <Sparkline {...common} metric="median_points_across_peak" label="Datapoints per peak" />
           </div>
+          <CIRTCard instrument={selected} />
           <div style={{fontSize:'0.75rem', color:'var(--muted)', padding:'0.5rem'}}>
             Lines split by SPD · solid = local runs · dashed gray = this-instrument median
             · dashed color = community median · dashed vertical = maintenance event.
             Hover any dot for the exact value, run name, SPD, and date.
+          </div>
+        </div>
+      );
+    }
+
+    // cIRT anchor retention-time chart.
+    //
+    // Shows observed RT over time for the endogenous-HeLa anchor
+    // peptide panel seeded in stan/metrics/cirt.py (one line per
+    // peptide). Must split by SPD because the same peptide elutes
+    // at very different absolute RTs on different gradients — a
+    // 30-SPD peptide at 25 min would dominate the y-axis and
+    // flatten out a 100-SPD peptide at 7 min.
+    //
+    // Empty state: show instructions when no irt_anchor_rts rows
+    // exist for the selected instrument (user hasn't run
+    // `stan backfill-cirt` yet, or their instrument doesn't have
+    // a seeded panel for any SPD).
+    function CIRTCard({ instrument }) {
+      const [data, setData] = useState(null);
+      const [selectedSpd, setSelectedSpd] = useState(null);
+
+      useEffect(() => {
+        if (!instrument) return;
+        setData(null);
+        fetch(API + `/api/cirt/${encodeURIComponent(instrument)}?limit=500`)
+          .then(r => r.json())
+          .then(setData)
+          .catch(() => setData({ peptides: {}, n_runs: 0 }));
+      }, [instrument]);
+
+      // Every SPD that appears in at least one observation across
+      // all peptides. Defaulting to the SPD with the most data.
+      const availableSpds = useMemo(() => {
+        if (!data?.peptides) return [];
+        const counts = new Map();
+        for (const p of Object.values(data.peptides)) {
+          for (const o of p.observations) {
+            const k = o.spd || null;
+            counts.set(k, (counts.get(k) || 0) + 1);
+          }
+        }
+        return [...counts.entries()]
+          .sort((a, b) => (b[1] - a[1]))
+          .map(([k]) => k);
+      }, [data]);
+
+      useEffect(() => {
+        if (availableSpds.length && selectedSpd == null) {
+          setSelectedSpd(availableSpds[0]);
+        }
+      }, [availableSpds, selectedSpd]);
+
+      if (!data) {
+        return (
+          <div className="card">
+            <h3>cIRT anchor RT drift</h3>
+            <div style={{color:'var(--muted)', fontSize:'0.85rem'}}>Loading…</div>
+          </div>
+        );
+      }
+      if (!data.peptides || Object.keys(data.peptides).length === 0) {
+        return (
+          <div className="card">
+            <h3>cIRT anchor RT drift</h3>
+            <div style={{color:'var(--muted)', fontSize:'0.85rem'}}>
+              No cIRT anchors extracted for {instrument}. Run{' '}
+              <code>stan backfill-cirt</code> to populate this chart from
+              existing report.parquet files. Requires a seeded panel
+              for the instrument family — see{' '}
+              <code>stan/metrics/cirt.py::EMPIRICAL_CIRT_PANELS</code>.
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="card">
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'0.5rem'}}>
+            <h3 style={{margin:0}}>cIRT anchor RT drift</h3>
+            <div style={{display:'flex', gap:'0.4rem', alignItems:'center', fontSize:'0.8rem'}}>
+              <span style={{color:'var(--muted)'}}>SPD:</span>
+              {availableSpds.map(spd => (
+                <button key={`cirt-spd-${spd}`}
+                  onClick={() => setSelectedSpd(spd)}
+                  style={{
+                    padding:'0.2rem 0.55rem',
+                    background: selectedSpd === spd ? 'var(--accent)' : 'var(--bg)',
+                    color: selectedSpd === spd ? '#000' : 'var(--text)',
+                    border:'1px solid var(--border)',
+                    borderRadius:'0.25rem', cursor:'pointer',
+                    fontSize:'0.75rem',
+                  }}>
+                  {spd == null ? '?' : spd}
+                </button>
+              ))}
+            </div>
+          </div>
+          <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0.25rem 0 0.5rem 0'}}>
+            Each line = one anchor peptide's observed RT across runs at this
+            SPD. Flat lines = LC behaving normally; upward or downward drift =
+            column/gradient change. Horizontal dashes = the panel's reference RT.
+          </p>
+          <CIRTSparkline peptides={data.peptides} spd={selectedSpd} />
+        </div>
+      );
+    }
+
+    function CIRTSparkline({ peptides, spd, height=200 }) {
+      // Filter each peptide's observations down to the chosen SPD.
+      const series = useMemo(() => {
+        const out = [];
+        for (const [seq, p] of Object.entries(peptides)) {
+          const obs = p.observations.filter(o =>
+            (o.spd || null) === (spd || null)
+          );
+          if (obs.length < 1) continue;
+          out.push({ peptide: seq, reference_rt_min: p.reference_rt_min, obs });
+        }
+        // Sort by reference RT so legend order matches RT order.
+        out.sort((a, b) => (a.reference_rt_min || 0) - (b.reference_rt_min || 0));
+        return out;
+      }, [peptides, spd]);
+
+      if (series.length === 0) {
+        return (
+          <div style={{color:'var(--muted)', fontSize:'0.8rem'}}>
+            No anchor observations at this SPD.
+          </div>
+        );
+      }
+
+      // Shared x-axis = full date range across every peptide at this SPD.
+      // Shared y-axis = full RT range observed across every peptide
+      // (lets you see absolute RT differences at a glance — a flat line
+      // at y=10 visually sits above one at y=5).
+      const allDates = [];
+      const allRts = [];
+      for (const s of series) {
+        for (const o of s.obs) {
+          allDates.push(new Date(o.run_date).getTime());
+          allRts.push(o.observed_rt_min);
+        }
+      }
+      const tMin = Math.min(...allDates);
+      const tMax = Math.max(...allDates);
+      const tRange = (tMax - tMin) || 1;
+      // Include reference RTs in the Y range so the dashed line is visible
+      series.forEach(s => {
+        if (s.reference_rt_min != null) allRts.push(s.reference_rt_min);
+      });
+      const rtMin = Math.min(...allRts);
+      const rtMax = Math.max(...allRts);
+      const rtRange = (rtMax - rtMin) || 1;
+
+      const width = 800;
+      const padding = 14;
+      const w = width - padding * 2;
+      const h = height - padding * 2;
+
+      // Assign each peptide a stable color from the SPD palette
+      const colorFor = (i) => SPD_PALETTE[i % SPD_PALETTE.length];
+
+      return (
+        <div>
+          <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:`${height}px`}}>
+            {/* Reference-RT dashed line per peptide */}
+            {series.map((s, si) => {
+              if (s.reference_rt_min == null) return null;
+              const y = padding + h - ((s.reference_rt_min - rtMin) / rtRange) * h;
+              const c = colorFor(si);
+              return (
+                <line key={`ref-${s.peptide}`}
+                      x1={padding} y1={y} x2={width-padding} y2={y}
+                      stroke={c} strokeDasharray="2,6" strokeWidth="1" opacity="0.35">
+                  <title>{s.peptide} reference: {s.reference_rt_min} min</title>
+                </line>
+              );
+            })}
+            {/* Observed-RT lines per peptide */}
+            {series.map((s, si) => {
+              const pts = s.obs
+                .map(o => {
+                  const t = new Date(o.run_date).getTime();
+                  return {
+                    x: padding + ((t - tMin) / tRange) * w,
+                    y: padding + h - ((o.observed_rt_min - rtMin) / rtRange) * h,
+                    obs: o,
+                  };
+                })
+                .sort((a, b) => a.x - b.x);
+              const c = colorFor(si);
+              const d = pts.map((p, i) =>
+                `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`
+              ).join(' ');
+              return (
+                <g key={`line-${s.peptide}`}>
+                  {pts.length > 1 && <path d={d} fill="none" stroke={c} strokeWidth="1.8" opacity="0.9" />}
+                  {pts.map((p, pi) => {
+                    const dt = new Date(p.obs.run_date);
+                    const dateStr = dt.toLocaleString([], {
+                      year:'numeric', month:'short', day:'numeric',
+                      hour:'2-digit', minute:'2-digit',
+                    });
+                    const delta = s.reference_rt_min != null
+                      ? (p.obs.observed_rt_min - s.reference_rt_min).toFixed(2)
+                      : 'n/a';
+                    const tip =
+                      `${s.peptide}\n` +
+                      `${p.obs.run_name}\n` +
+                      `RT: ${p.obs.observed_rt_min.toFixed(2)} min (Δref ${delta})\n` +
+                      `${dateStr}`;
+                    return (
+                      <circle key={`dot-${s.peptide}-${pi}`}
+                              cx={p.x} cy={p.y} r="2.5" fill={c}
+                              stroke="#fff" strokeWidth="0.4">
+                        <title>{tip}</title>
+                      </circle>
+                    );
+                  })}
+                </g>
+              );
+            })}
+            <text x={padding} y={padding-3} fill="var(--muted)" fontSize="11">RT (min)</text>
+            <text x={width-padding} y={padding-3} fill="var(--muted)" fontSize="11" textAnchor="end">
+              {rtMin.toFixed(1)} – {rtMax.toFixed(1)} min
+            </text>
+          </svg>
+          <div style={{display:'flex', gap:'0.8rem', flexWrap:'wrap', fontSize:'0.7rem',
+                       color:'var(--muted)', marginTop:'0.3rem', paddingLeft:'1rem'}}>
+            {series.map((s, si) => (
+              <span key={`cirt-leg-${s.peptide}`} style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+                <span style={{width:'1rem', height:'2px', background:colorFor(si),
+                              display:'inline-block'}}></span>
+                {s.peptide}
+                <span style={{color:'var(--muted)', opacity:0.7}}>
+                  ({s.reference_rt_min != null ? `ref ${s.reference_rt_min.toFixed(1)}m` : 'no ref'}, n={s.obs.length})
+                </span>
+              </span>
+            ))}
           </div>
         </div>
       );
