@@ -669,6 +669,196 @@
               </div>
             ))}
           </div>
+          <TodayTicOverlay />
+        </div>
+      );
+    }
+
+    // Today's QC TIC overlay — every QC run from today overlaid on one
+    // chart, colored light→dark by time of day so the operator can see
+    // the day's gradient shape at a glance. When an LC issue starts
+    // mid-day it shows up as divergence in the later (darker) traces.
+    //
+    // Scope note: QC-only for now. Spec's Sample/Blank facets require
+    // joining sample_health to a future tic-for-health-rows table.
+    // That's Ship B follow-up work; the MVP is the QC overlay because
+    // it uses data we already extract in baseline.py.
+    function TodayTicOverlay() {
+      const [data, setData] = useState(null);
+      const [normalize, setNormalize] = useState(true);
+
+      useEffect(() => {
+        fetch(API + '/api/today/tic-overview')
+          .then(r => r.json())
+          .then(setData)
+          .catch(() => setData({ runs: [], n_runs: 0, n_with_tic: 0 }));
+      }, []);
+
+      if (!data) {
+        return (
+          <div className="card" style={{marginTop:'1rem'}}>
+            <h3>Today's TIC overlay</h3>
+            <div style={{color:'var(--muted)'}}>Loading…</div>
+          </div>
+        );
+      }
+      if (!data.runs || data.runs.length === 0) {
+        return null;  // Don't render an empty card — QuickStatus already says "no runs today"
+      }
+      const withTic = data.runs.filter(r => r.has_tic);
+      if (withTic.length === 0) {
+        return (
+          <div className="card" style={{marginTop:'1rem'}}>
+            <h3>Today's TIC overlay</h3>
+            <div style={{color:'var(--muted)', fontSize:'0.85rem'}}>
+              {data.n_runs} QC run{data.n_runs === 1 ? '' : 's'} today but none have
+              a TIC trace in the DB. Run <code>stan backfill-tic</code> to populate
+              traces for existing runs, or wait for the next baseline.
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="card" style={{marginTop:'1rem'}}>
+          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'0.5rem'}}>
+            <h3 style={{margin:0}}>
+              Today's TIC overlay ({withTic.length} trace{withTic.length === 1 ? '' : 's'})
+            </h3>
+            <label style={{display:'inline-flex', alignItems:'center', gap:'0.3rem', fontSize:'0.8rem', color:'var(--muted)'}}>
+              <input type="checkbox" checked={normalize}
+                     onChange={e => setNormalize(e.target.checked)} />
+              Normalize (0–1 per trace)
+            </label>
+          </div>
+          <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0.25rem 0 0.5rem 0'}}>
+            Each line = one QC run's TIC. Color: light blue = earliest run of the
+            day, dark blue = most recent. Divergence = LC or spray issue appearing
+            mid-day.
+          </p>
+          <TicOverlaySvg runs={withTic} normalize={normalize} />
+        </div>
+      );
+    }
+
+    // Blend two RGB triples by t∈[0,1]. Used for a light→dark time-of-day ramp.
+    function _blend(c0, c1, t) {
+      return [
+        Math.round(c0[0] + (c1[0] - c0[0]) * t),
+        Math.round(c0[1] + (c1[1] - c0[1]) * t),
+        Math.round(c0[2] + (c1[2] - c0[2]) * t),
+      ];
+    }
+    function timeOfDayColor(i, n) {
+      // Pale blue (#cfe7ff) → deep blue (#1e40af), interpolated linearly.
+      // Pale-to-deep keeps the early runs visible without washing them out
+      // and pushes the most recent runs forward — that's what the operator
+      // cares about.
+      const t = n > 1 ? i / (n - 1) : 1;
+      const rgb = _blend([207, 231, 255], [30, 64, 175], t);
+      return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    }
+
+    function TicOverlaySvg({ runs, normalize, height=260 }) {
+      // Convert each run's rt_min[] + intensity[] into (x, y) path points.
+      // Shared x-axis = max RT across all runs. Shared y-axis = either
+      // normalized per-trace (0-1, useful for shape comparison) or raw
+      // absolute intensity (useful for signal comparison).
+      const width = 900;
+      const padding = 30;
+      const w = width - padding * 2;
+      const h = height - padding * 2;
+
+      const series = useMemo(() => runs.map(r => {
+        const rt = r.tic?.rt_min || [];
+        const intensity = r.tic?.intensity || [];
+        if (rt.length < 2 || rt.length !== intensity.length) return null;
+        let yvals = intensity.slice();
+        if (normalize) {
+          const mx = Math.max(...yvals);
+          if (mx > 0) yvals = yvals.map(v => v / mx);
+        }
+        return { run: r, rt, y: yvals };
+      }).filter(Boolean), [runs, normalize]);
+
+      if (series.length === 0) {
+        return <div style={{color:'var(--muted)'}}>No renderable traces.</div>;
+      }
+
+      const rtMax = Math.max(...series.map(s => Math.max(...s.rt)));
+      const rtMin = Math.min(...series.map(s => Math.min(...s.rt)));
+      const rtRange = (rtMax - rtMin) || 1;
+
+      const yMax = normalize ? 1 : Math.max(...series.flatMap(s => s.y));
+      const yMin = normalize ? 0 : Math.min(0, ...series.flatMap(s => s.y));
+      const yRange = (yMax - yMin) || 1;
+
+      return (
+        <div>
+          <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:`${height}px`}}>
+            {/* RT axis tick marks */}
+            {Array.from({length: 6}, (_, i) => {
+              const rt = rtMin + (i / 5) * rtRange;
+              const x = padding + (i / 5) * w;
+              return (
+                <g key={`xt-${i}`}>
+                  <line x1={x} y1={height-padding} x2={x} y2={height-padding+4}
+                        stroke="var(--muted)" strokeWidth="0.5" />
+                  <text x={x} y={height-padding+15} fill="var(--muted)"
+                        fontSize="10" textAnchor="middle">
+                    {rt.toFixed(1)}
+                  </text>
+                </g>
+              );
+            })}
+            <text x={width/2} y={height-2} fill="var(--muted)" fontSize="10"
+                  textAnchor="middle">RT (min)</text>
+            <text x={padding-22} y={padding+4} fill="var(--muted)" fontSize="10"
+                  textAnchor="start">
+              {normalize ? 'Intensity (normalized)' : 'Intensity (raw)'}
+            </text>
+
+            {/* TIC lines — reverse-iterate so earliest runs draw first and
+                recent (darker, higher-contrast) runs draw on top */}
+            {series.map((s, si) => {
+              const c = timeOfDayColor(si, series.length);
+              const pts = s.rt.map((t, i) => {
+                const x = padding + ((t - rtMin) / rtRange) * w;
+                const y = padding + h - ((s.y[i] - yMin) / yRange) * h;
+                return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+              }).join(' ');
+              const dt = new Date(s.run.run_date);
+              const timeStr = dt.toLocaleString([], {hour:'2-digit', minute:'2-digit'});
+              const ids = s.run.mode === 'DDA' ? s.run.n_psms : s.run.n_precursors;
+              const idsLabel = s.run.mode === 'DDA' ? 'PSMs' : 'precursors';
+              const tip = `${s.run.run_name}\n${timeStr} · ${s.run.instrument}\n` +
+                          `IPS ${s.run.ips_score || '—'} · ${ids ? ids.toLocaleString() : '—'} ${idsLabel}`;
+              return (
+                <path key={`tic-${s.run.run_id}`} d={pts} fill="none"
+                      stroke={c} strokeWidth="1.5" opacity="0.85">
+                  <title>{tip}</title>
+                </path>
+              );
+            })}
+          </svg>
+          <div style={{display:'flex', gap:'0.8rem', flexWrap:'wrap',
+                       fontSize:'0.7rem', color:'var(--muted)',
+                       marginTop:'0.3rem', paddingLeft:'1rem'}}>
+            {series.map((s, si) => {
+              const c = timeOfDayColor(si, series.length);
+              const dt = new Date(s.run.run_date);
+              const timeStr = dt.toLocaleString([], {hour:'2-digit', minute:'2-digit'});
+              return (
+                <span key={`leg-${s.run.run_id}`}
+                      style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+                  <span style={{width:'1rem', height:'2px', background:c,
+                                display:'inline-block'}} />
+                  {timeStr}
+                  <span style={{opacity:0.7}}>{s.run.instrument}</span>
+                </span>
+              );
+            })}
+          </div>
         </div>
       );
     }

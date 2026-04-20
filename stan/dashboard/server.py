@@ -199,6 +199,107 @@ async def api_trends(instrument: str, limit: int = 100) -> list[dict]:
     return get_trends(instrument=instrument, limit=limit, qc_only=True)
 
 
+@app.get("/api/today/tic-overview")
+async def api_today_tic_overview(
+    date: str | None = None,
+    instrument: str | None = None,
+) -> dict:
+    """Return today's QC runs + their TIC traces in one call.
+
+    Powers the Today's Runs tab's TIC overlay. The QC-only scope is
+    intentional: non-QC files live in the `sample_health` table and
+    don't have tic_traces rows yet (Ship B MVP). Sample/Blank facets
+    are a follow-up.
+
+    Args:
+        date: ISO date YYYY-MM-DD. Defaults to today (local time).
+        instrument: Optional name filter.
+
+    Returns:
+        {
+          "date": "2026-04-20",
+          "runs": [
+            {
+              "run_id", "run_name", "instrument", "mode", "run_date",
+              "ips_score", "gate_result", "spd", "gradient_length_min",
+              "n_precursors", "n_psms",
+              "time_of_day_rank": int,  # 0 = earliest, for color
+              "has_tic": bool,
+              "tic": {"rt_min": [...], "intensity": [...]} or null
+            }, ...
+          ],
+          "n_runs": int,
+          "n_with_tic": int
+        }
+    """
+    import json as _json
+    import sqlite3
+    from datetime import datetime, timezone
+    from stan.db import get_db_path
+
+    db_path = get_db_path()
+    if not db_path.exists():
+        return {"date": date, "runs": [], "n_runs": 0, "n_with_tic": 0}
+
+    # Default to local "today" — the dashboard runs on the instrument
+    # PC, so the operator thinks in local time.
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    # SQLite comparison: run_date is ISO with 'T' separator. Match by
+    # date prefix (10-char) so timezone suffixes don't trip us up.
+    where = ["substr(r.run_date, 1, 10) = ?",
+             "(r.hidden IS NULL OR r.hidden = 0)"]
+    params: list = [date]
+    if instrument:
+        where.append("r.instrument = ?")
+        params.append(instrument)
+    sql = (
+        "SELECT r.id AS run_id, r.run_name, r.instrument, r.mode, "
+        "       r.run_date, r.ips_score, r.gate_result, r.spd, "
+        "       r.gradient_length_min, r.n_precursors, r.n_psms, "
+        "       r.diagnosis, r.amount_ng, "
+        "       t.rt_min AS tic_rt, t.intensity AS tic_intensity "
+        "FROM runs r "
+        "LEFT JOIN tic_traces t ON t.run_id = r.id "
+        "WHERE " + " AND ".join(where) +
+        " ORDER BY r.run_date ASC"
+    )
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(sql, params).fetchall()
+
+    runs: list[dict] = []
+    n_with_tic = 0
+    for rank, r in enumerate(rows):
+        d = dict(r)
+        tic_rt = d.pop("tic_rt", None)
+        tic_int = d.pop("tic_intensity", None)
+        has_tic = tic_rt is not None and tic_int is not None
+        tic_payload = None
+        if has_tic:
+            try:
+                tic_payload = {
+                    "rt_min": _json.loads(tic_rt),
+                    "intensity": _json.loads(tic_int),
+                }
+                n_with_tic += 1
+            except Exception:
+                has_tic = False
+        d["has_tic"] = has_tic
+        d["tic"] = tic_payload
+        d["time_of_day_rank"] = rank
+        runs.append(d)
+
+    return {
+        "date": date,
+        "runs": runs,
+        "n_runs": len(runs),
+        "n_with_tic": n_with_tic,
+    }
+
+
 @app.get("/api/cirt/{instrument}")
 async def api_cirt(instrument: str, limit: int = 500) -> dict:
     """Fetch cIRT anchor retention-time history for an instrument.
