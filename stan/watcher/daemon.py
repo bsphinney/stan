@@ -288,23 +288,35 @@ class InstrumentWatcher:
         )
 
         # Catch acquisitions that were already in flight when the
-        # daemon started up. watchdog's on_created only fires for
-        # newly-appearing paths, so without this scan an in-progress
-        # .d existing at startup time would never be tracked —
-        # meaning any restart (update, reboot, recover_stan) during
-        # an acquisition would silently lose that run. v0.2.101+.
+        # daemon started up AND any completed files that arrived while
+        # the daemon was down (power cycle, installer restart, crash).
+        # watchdog's on_created only fires for newly-appearing paths,
+        # so without this scan a .d file saved 2 days ago while STAN
+        # was offline would stay invisible forever. The v0.2.101 scan
+        # only looked back 30 minutes — this version (v0.2.119) looks
+        # back `startup_catchup_days` (default 7) days and checks both
+        # the `runs` and `sample_health` tables so already-processed
+        # files don't get re-queued.
         try:
             self._scan_for_in_flight()
         except Exception:
             logger.debug("in-flight scan failed", exc_info=True)
 
-    def _scan_for_in_flight(self, max_age_min: int = 30) -> None:
-        """Register StabilityTrackers for any recently-modified raw
-        files/dirs in the watch_dir that aren't already in the DB.
+    def _scan_for_in_flight(self) -> None:
+        """Register StabilityTrackers for raw files the watcher hasn't
+        processed yet.
 
-        Runs once on watcher start. Relies on StabilityTracker's
-        v0.2.100 size+growth checks to avoid firing the pipeline on
-        genuinely abandoned partial acquisitions."""
+        Two reasons a file might need catching up:
+        1. **In-flight**: an acquisition was running when the daemon
+           started (restart mid-run). StabilityTracker's v0.2.100
+           size/growth checks decide when it's actually finished.
+        2. **Offline gap**: the file was written while the daemon was
+           down. `startup_catchup_days` (instruments.yml, default 7)
+           controls how far back to look. Setting 0 disables it.
+
+        Skips files already in `runs` (search-pipeline completed) or
+        `sample_health` (monitor-only pipeline completed) for this
+        instrument, so re-running the scan is idempotent."""
         import time
         from stan.db import get_db_path
 
@@ -313,7 +325,15 @@ class InstrumentWatcher:
         if not watch.exists() or not exts:
             return
 
-        # Pull existing DB run_names so we don't re-track processed files
+        catchup_days = float(self._config.get("startup_catchup_days", 7))
+        if catchup_days <= 0:
+            # User disabled catch-up. Nothing to do.
+            return
+        cutoff = time.time() - (catchup_days * 86400)
+
+        # Pull existing entries from BOTH tables so already-processed
+        # files don't get re-queued. The runs table covers the full
+        # search pipeline; sample_health covers monitor_all_files.
         existing: set[str] = set()
         try:
             import sqlite3
@@ -325,15 +345,28 @@ class InstrumentWatcher:
                         (self._name,),
                     ):
                         existing.add(row[0])
+                    try:
+                        for row in con.execute(
+                            "SELECT run_name FROM sample_health "
+                            "WHERE instrument = ?",
+                            (self._name,),
+                        ):
+                            existing.add(row[0])
+                    except sqlite3.OperationalError:
+                        # sample_health table may not exist on older DBs
+                        pass
         except Exception:
             logger.debug("startup-scan DB lookup failed", exc_info=True)
 
-        cutoff = time.time() - (max_age_min * 60)
         n_registered = 0
+        n_skipped_known = 0
         try:
             for p in watch.rglob("*"):
+                # Skip anything inside a .d directory — its nested
+                # files (analysis.tdf etc.) aren't raw files to track.
+                if any(parent.suffix == ".d" for parent in p.parents):
+                    continue
                 # Bruker .d is a directory; Thermo .raw is a file.
-                # Skip nested files inside .d.
                 is_d_dir = p.is_dir() and p.suffix == ".d"
                 is_raw = p.is_file() and p.suffix in exts and p.suffix != ".d"
                 if not (is_d_dir or is_raw):
@@ -341,6 +374,7 @@ class InstrumentWatcher:
                 if p.suffix not in exts:
                     continue
                 if p.name in existing:
+                    n_skipped_known += 1
                     continue
                 try:
                     mt = p.stat().st_mtime
@@ -356,11 +390,11 @@ class InstrumentWatcher:
         except Exception:
             logger.debug("startup-scan walk failed", exc_info=True)
 
-        if n_registered:
+        if n_registered or n_skipped_known:
             logger.info(
-                "watcher: startup scan registered %d in-flight "
-                "acquisition(s) on %s",
-                n_registered, self._name,
+                "watcher: startup scan on %s → registered %d new, "
+                "skipped %d already-known (lookback=%sd)",
+                self._name, n_registered, n_skipped_known, catchup_days,
             )
             self._record_event(
                 "startup_scan_registered", watch,
