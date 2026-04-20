@@ -270,6 +270,29 @@ async def api_today_tic_overview(
         con.row_factory = sqlite3.Row
         rows = con.execute(sql, params).fetchall()
 
+        # Pull cIRT observations for just these runs in a second query,
+        # keyed by run_id. Joining this into the main SELECT would
+        # multiply rows; a separate {run_id: [...]} lookup is cleaner.
+        run_ids = [r["run_id"] for r in rows]
+        cirt_by_run: dict[str, list[dict]] = {}
+        if run_ids:
+            placeholders = ",".join(["?"] * len(run_ids))
+            try:
+                for a in con.execute(
+                    f"SELECT run_id, peptide, observed_rt_min, reference_rt_min "
+                    f"FROM irt_anchor_rts WHERE run_id IN ({placeholders})",
+                    run_ids,
+                ).fetchall():
+                    cirt_by_run.setdefault(a["run_id"], []).append({
+                        "peptide": a["peptide"],
+                        "observed_rt_min": a["observed_rt_min"],
+                        "reference_rt_min": a["reference_rt_min"],
+                    })
+            except sqlite3.OperationalError:
+                # Older DB without irt_anchor_rts — no cIRT markers,
+                # UI falls back to TIC-only rendering.
+                pass
+
     runs: list[dict] = []
     n_with_tic = 0
     for rank, r in enumerate(rows):
@@ -290,6 +313,36 @@ async def api_today_tic_overview(
         d["has_tic"] = has_tic
         d["tic"] = tic_payload
         d["time_of_day_rank"] = rank
+
+        # cIRT markers per peptide, with deviation classified.
+        # Thresholds mirror stan/community/validate.py: < 0.5 min = green,
+        # < 1.5 min = yellow, >= 1.5 min = red. Reference may be null on
+        # older rows backfilled before v0.2.116; UI skips those.
+        markers = []
+        for a in cirt_by_run.get(d["run_id"], []):
+            obs = a["observed_rt_min"]
+            ref = a["reference_rt_min"]
+            if obs is None or ref is None:
+                dev_class = "unknown"
+                dev = None
+            else:
+                dev = obs - ref
+                adev = abs(dev)
+                if adev < 0.5:
+                    dev_class = "green"
+                elif adev < 1.5:
+                    dev_class = "yellow"
+                else:
+                    dev_class = "red"
+            markers.append({
+                "peptide": a["peptide"],
+                "observed_rt_min": obs,
+                "reference_rt_min": ref,
+                "deviation_min": dev,
+                "deviation_class": dev_class,
+            })
+        d["cirt_markers"] = markers
+
         runs.append(d)
 
     return {

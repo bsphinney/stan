@@ -734,7 +734,8 @@
           <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0.25rem 0 0.5rem 0'}}>
             Each line = one QC run's TIC. Color: light blue = earliest run of the
             day, dark blue = most recent. Divergence = LC or spray issue appearing
-            mid-day.
+            mid-day. Triangles at the bottom = cIRT anchor peptide RTs for the
+            most recent run (green = &lt;0.5 min drift, yellow = &lt;1.5 min, red = ≥1.5 min).
           </p>
           <TicOverlaySvg runs={withTic} normalize={normalize} />
         </div>
@@ -840,6 +841,59 @@
                 </path>
               );
             })}
+
+            {/* cIRT anchor markers for the MOST RECENT run only — drawn
+                as small downward triangles at the bottom of the chart.
+                Showing every run's markers (10 peptides × 5 runs = 50
+                triangles) would be unreadable; the latest run is what
+                the operator cares about. Trend across the day is in
+                the dedicated Trends → cIRT card. */}
+            {(() => {
+              const latest = series[series.length - 1];
+              const markers = latest?.run?.cirt_markers || [];
+              if (!markers.length) return null;
+              const MARKER_COLORS = {
+                green:   '#16a34a',
+                yellow:  '#eab308',
+                red:     '#dc2626',
+                unknown: '#94a3b8',
+              };
+              const yBase = height - padding;  // bottom of chart area
+              return markers.map((m, mi) => {
+                if (m.observed_rt_min == null) return null;
+                const x = padding + ((m.observed_rt_min - rtMin) / rtRange) * w;
+                if (x < padding || x > width - padding) return null;
+                const c = MARKER_COLORS[m.deviation_class] || MARKER_COLORS.unknown;
+                const devStr = m.deviation_min != null
+                  ? (m.deviation_min >= 0 ? '+' : '') + m.deviation_min.toFixed(3) + ' min'
+                  : 'n/a';
+                const refStr = m.reference_rt_min != null
+                  ? m.reference_rt_min.toFixed(2) + ' min'
+                  : 'n/a';
+                const tip =
+                  `${m.peptide}\n` +
+                  `Observed: ${m.observed_rt_min.toFixed(3)} min\n` +
+                  `Reference: ${refStr}\n` +
+                  `Δ: ${devStr}  (${m.deviation_class})`;
+                // Downward-pointing triangle, apex at x, base above yBase
+                const tri = `${x.toFixed(1)},${yBase.toFixed(1)} ` +
+                            `${(x-4).toFixed(1)},${(yBase-7).toFixed(1)} ` +
+                            `${(x+4).toFixed(1)},${(yBase-7).toFixed(1)}`;
+                // Thin dotted vertical guide from the triangle up into
+                // the chart so the operator can eyeball which part of
+                // the TIC the peptide anchors to.
+                return (
+                  <g key={`cirt-${mi}`}>
+                    <line x1={x} y1={padding} x2={x} y2={yBase-7}
+                          stroke={c} strokeDasharray="2,3"
+                          strokeWidth="0.6" opacity="0.35" />
+                    <polygon points={tri} fill={c} stroke="#fff" strokeWidth="0.5">
+                      <title>{tip}</title>
+                    </polygon>
+                  </g>
+                );
+              });
+            })()}
           </svg>
           <div style={{display:'flex', gap:'0.8rem', flexWrap:'wrap',
                        fontSize:'0.7rem', color:'var(--muted)',
