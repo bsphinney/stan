@@ -252,7 +252,35 @@ def run_diann_local(
     staging_dir = output_dir.parent / "_stan_diann_staging"
     raw_for_diann = _sanitize_path_for_diann(raw_path, staging_dir)
 
-    cmd = [diann_exe, "--f", str(raw_for_diann), "--out", str(report_path)]
+    # Same bug applies to the --out path: a run named e.g.
+    # "18ian24_HeL50ng3hrTip--DIA-BPS_..." produces an output_dir with
+    # "--" in its name, which DIA-NN's parser fragments. DIA-NN then
+    # writes to a truncated location (e.g. baseline_output/18ian24_HeL50ng3hrTip.parquet)
+    # instead of output_dir/report.parquet, and STAN can't find the
+    # result so it reports the run as failed even though the search
+    # succeeded. Fix: if the output dir name contains "--", route
+    # DIA-NN at a hash-named staging output dir, then move its
+    # contents back to the real output dir once it completes.
+    output_dir_for_diann = output_dir
+    out_rename_back = False
+    if "--" in output_dir.name:
+        import hashlib
+        digest = hashlib.md5(str(output_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+        output_dir_for_diann = output_dir.parent / f"_stan_out_{digest}"
+        # Clean up any stale staging dir from a prior failed run
+        if output_dir_for_diann.exists():
+            import shutil
+            shutil.rmtree(str(output_dir_for_diann), ignore_errors=True)
+        output_dir_for_diann.mkdir(parents=True, exist_ok=True)
+        out_rename_back = True
+        logger.info(
+            "DIA-NN output path contains '--'; routing to staging dir "
+            "%s and renaming back after completion",
+            output_dir_for_diann.name,
+        )
+    report_path_for_diann = output_dir_for_diann / "report.parquet"
+
+    cmd = [diann_exe, "--f", str(raw_for_diann), "--out", str(report_path_for_diann)]
 
     for key, val in params.items():
         if val == "":
@@ -269,7 +297,10 @@ def run_diann_local(
     logger.info("Running DIA-NN locally: %s", raw_path.name)
     logger.info("Command: %s", " ".join(cmd))
 
-    # Write DIA-NN output to log file so we can diagnose issues
+    # Write DIA-NN output to log file so we can diagnose issues.
+    # Keep the log in the real output_dir so operators find it in the
+    # expected place even when we routed DIA-NN itself at a staging dir.
+    output_dir.mkdir(parents=True, exist_ok=True)
     log_file = output_dir / "diann.log"
     try:
         with open(log_file, "w") as lf:
@@ -282,6 +313,26 @@ def run_diann_local(
                 timeout=timeout_sec,
             )
         logger.info("DIA-NN complete: %s", raw_path.name)
+        # If we routed DIA-NN's output to a staging dir (because the
+        # real output_dir had "--" in its name), move the artifacts back
+        # now that DIA-NN is done reading/writing them.
+        if out_rename_back:
+            import shutil
+            try:
+                for item in output_dir_for_diann.iterdir():
+                    dest = output_dir / item.name
+                    if dest.exists():
+                        if dest.is_dir():
+                            shutil.rmtree(str(dest), ignore_errors=True)
+                        else:
+                            dest.unlink()
+                    shutil.move(str(item), str(dest))
+                output_dir_for_diann.rmdir()
+            except Exception:
+                logger.exception(
+                    "Could not rename DIA-NN staging output %s -> %s",
+                    output_dir_for_diann, output_dir,
+                )
     except FileNotFoundError as e:
         logger.error(
             "DIA-NN executable not found: %s. "
