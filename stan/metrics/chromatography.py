@@ -264,9 +264,27 @@ def compute_ips_dda(metrics: dict) -> int:
     return int(round(_clamp(ips, 0, 100)))
 
 
-# ── iRT deviation (kept from previous version) ─────────────────────
+# ── iRT deviation ──────────────────────────────────────────────────
+#
+# v1 of this module used the Biognosys iRT kit peptides below with
+# absolute RT values as the reference panel. That made the metric
+# always return 0 on UC Davis data because nobody spikes Biognosys.
+# v0.2.125 replaces the default reference with the empirical
+# `EMPIRICAL_CIRT_PANELS` in stan.metrics.cirt, which is keyed by
+# (instrument_family, spd) and derived from each lab's own history.
+#
+# The Biognosys table is kept here for use ONLY when a lab spikes
+# iRT standards — pass it explicitly as `reference_rts` to
+# compute_irt_deviation. It is no longer used as a default.
 
 DEFAULT_IRT_LIBRARY: dict[str, float] = {
+    # Biognosys iRT kit (Escher et al. 2012, J. Proteome Res.,
+    # doi:10.1021/pr300542g). Values are iRT units (0–100), not minutes —
+    # a caller that wants to use this has to linear-regress the
+    # observed absolute RTs of the found peptides against these
+    # reference iRT values to build a conversion, then compute
+    # deviations in iRT units. Deprecated as a default because most
+    # UC Davis labs don't spike this kit.
     "LGGNEQVTR": 0.0,
     "GAGSSEPVTGLDAK": 26.1,
     "VEATFGVDESNAK": 33.4,
@@ -283,38 +301,66 @@ DEFAULT_IRT_LIBRARY: dict[str, float] = {
 
 def compute_irt_deviation(
     report_path: Path,
-    irt_library: dict[str, float] | None = None,
+    instrument_family: str | None = None,
+    spd: int | None = None,
+    reference_rts: dict[str, float] | None = None,
+    min_peptides: int = 3,
 ) -> dict:
-    """Cross-reference identified precursors against known iRT peptide RTs."""
-    if irt_library is None:
-        irt_library = DEFAULT_IRT_LIBRARY
+    """RT deviation of the cIRT anchor panel for this run.
 
-    try:
-        df = pl.read_parquet(report_path, columns=["Stripped.Sequence", "RT"])
-    except Exception:
-        logger.exception("Failed to read report for iRT: %s", report_path)
-        return {"max_deviation_min": 0.0, "median_deviation_min": 0.0, "n_irt_found": 0}
+    Default behavior (recommended): pass `instrument_family` + `spd`,
+    look up the empirical panel seeded per (family, spd) in
+    stan.metrics.cirt.EMPIRICAL_CIRT_PANELS, compute each anchor's
+    observed-minus-reference deviation in minutes, return the max
+    and median.
 
-    irt_seqs = set(irt_library.keys())
-    irt_df = df.filter(pl.col("Stripped.Sequence").is_in(irt_seqs))
+    Override: pass `reference_rts` explicitly (e.g. Biognosys) when
+    the lab spikes a known iRT standard.
 
-    if irt_df.height == 0:
-        return {"max_deviation_min": 0.0, "median_deviation_min": 0.0, "n_irt_found": 0}
+    Returns:
+        {"max_deviation_min", "median_deviation_min", "n_irt_found"}
 
-    observed_rts = (
-        irt_df.group_by("Stripped.Sequence")
-        .agg(pl.col("RT").median().alias("observed_rt"))
-    )
+    When fewer than `min_peptides` anchors are detected at 1% FDR,
+    max/median return None (distinct from "zero deviation") so GRS
+    scoring can skip the metric cleanly. The n_irt_found field still
+    reports the actual count so operators can see why the metric
+    was skipped.
+    """
+    null_result = {
+        "max_deviation_min": None,
+        "median_deviation_min": None,
+        "n_irt_found": 0,
+    }
 
-    deviations: list[float] = []
-    for row in observed_rts.iter_rows(named=True):
-        seq = row["Stripped.Sequence"]
-        observed = row["observed_rt"]
-        expected = irt_library.get(seq, 0.0)
-        deviations.append(abs(observed - expected))
+    # Build the reference panel. Explicit override wins; otherwise
+    # look up the empirical panel for (family, spd).
+    panel: list[tuple[str, float]] = []
+    if reference_rts is not None:
+        panel = list(reference_rts.items())
+    else:
+        from stan.metrics.cirt import get_panel
+        panel = get_panel(instrument_family or "", spd)
 
+    if not panel:
+        return null_result
+
+    # Delegate the report-read + per-peptide median RT to cirt.py so
+    # there's one code path for "read anchor RTs from a report".
+    from stan.metrics.cirt import extract_anchor_rts
+    observed = extract_anchor_rts(report_path, panel)
+    if len(observed) < min_peptides:
+        null_result["n_irt_found"] = len(observed)
+        return null_result
+
+    ref_map = {seq: ref for seq, ref in panel}
+    deviations = [
+        abs(rt - ref_map[seq])
+        for seq, rt in observed.items()
+        if seq in ref_map
+    ]
     if not deviations:
-        return {"max_deviation_min": 0.0, "median_deviation_min": 0.0, "n_irt_found": 0}
+        null_result["n_irt_found"] = len(observed)
+        return null_result
 
     deviations.sort()
     return {

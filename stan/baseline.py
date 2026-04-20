@@ -1452,6 +1452,30 @@ def _process_files(
                 metrics["sample_type"] = sample_type
                 if lc_system_detected:
                     metrics["lc_system"] = lc_system_detected
+
+                # iRT deviation — runs the empirical cIRT panel lookup
+                # (see EMPIRICAL_CIRT_PANELS in stan.metrics.cirt) and
+                # records the max + median Δ-from-reference across
+                # detected anchor peptides. Returns None when fewer
+                # than 3 anchors match, so the DB stores NULL rather
+                # than a fake zero. Pre-v0.2.125 this metric was
+                # hardcoded to the Biognosys iRT kit and always
+                # returned 0 on UC Davis data.
+                if is_dia(mode_obj):
+                    from stan.metrics.chromatography import compute_irt_deviation
+                    try:
+                        irt_stats = compute_irt_deviation(
+                            result_path,
+                            instrument_family=metrics["instrument_family"],
+                            spd=file_spd,
+                        )
+                        metrics["irt_max_deviation_min"] = irt_stats["max_deviation_min"]
+                        metrics["irt_median_deviation_min"] = irt_stats["median_deviation_min"]
+                        metrics["n_irt_found"] = irt_stats["n_irt_found"]
+                    except Exception:
+                        logger.debug("compute_irt_deviation failed for %s",
+                                     raw_file.name, exc_info=True)
+
                 if is_dia(mode_obj):
                     ips = compute_ips_dia(metrics)
                 else:
