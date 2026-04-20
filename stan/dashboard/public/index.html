@@ -1771,6 +1771,15 @@
             {groupKeys.map((spd, gi) => {
               const pts = groups.get(spd);
               const c = spdColor(spd, gi);
+              const cm = communityMediansBySpd.get(spd);
+              const fmt = (v) => {
+                if (v == null) return '—';
+                // Integer-ish metrics print as localized ints; anything
+                // with a fractional part prints with 2 decimals.
+                return (Math.abs(v - Math.round(v)) < 1e-6)
+                  ? Math.round(v).toLocaleString()
+                  : v.toFixed(2);
+              };
               return pts.map(p => {
                 const dt = new Date(p.run.run_date);
                 const dateStr = dt.toLocaleString([], {
@@ -1778,9 +1787,14 @@
                   hour:'2-digit', minute:'2-digit',
                 });
                 const spdLabel = spd === 'unk' ? 'SPD unknown' : `${spd} SPD`;
+                // Tooltip now shows both medians alongside the point's
+                // own value so the operator can see context without
+                // eyeballing the reference lines.
                 const tip =
                   `${p.run.run_name}\n` +
-                  `${metric}: ${p.value.toLocaleString()}\n` +
+                  `${metric}: ${fmt(p.value)}\n` +
+                  `this instrument median: ${fmt(instMedian)}\n` +
+                  `community median (${spdLabel}): ${fmt(cm ? cm.value : null)}\n` +
                   `${spdLabel}\n` +
                   `${dateStr}`;
                 return (

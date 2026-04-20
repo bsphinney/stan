@@ -298,10 +298,24 @@ def _compute_pts_peak_bruker(
             half = iso_width / 2.0
             wg_windows.setdefault(wg, []).append((iso_mz - half, iso_mz + half))
 
-        # 2. Read DIA frame times with window groups
+        # 2. Read DIA frame times with window groups.
+        # DiaFrameMsMsInfo on some acquisitions has multiple rows per
+        # Frame.Id (one per sub-window), and the naive JOIN then
+        # returns Time repeated N times for that frame. The
+        # points-across-peak counter below would then count one
+        # precursor's matching frame up to N times, inflating the
+        # metric by a factor of the window count per cycle — the
+        # ~100x too-high values we saw on timsTOF Ultra 2 data
+        # (median of 99k where normal is ~15).
+        #
+        # Safeguard: include Frame.Id and dedupe in Python. One
+        # (frame_id, wg) pair per row; the counter iterates that
+        # set directly, so a frame with multiple WGs contributes at
+        # most one "hit" per precursor (the inner-loop `break`
+        # handles that).
         try:
-            frames = con.execute(
-                "SELECT f.Time, i.WindowGroup "
+            rows_raw = con.execute(
+                "SELECT f.Id, f.Time, i.WindowGroup "
                 "FROM Frames f "
                 "JOIN DiaFrameMsMsInfo i ON f.Id = i.Frame "
                 "WHERE f.MsMsType = 9"
@@ -313,14 +327,29 @@ def _compute_pts_peak_bruker(
 
         con.close()
 
-        if not frames:
+        if not rows_raw:
             logger.debug("No diaPASEF frames found in %s", tdf_path)
             return None
 
-        # Sort frames by time for efficient slicing
+        # Dedupe by (frame_id, window_group) — if the JOIN surfaced
+        # duplicates for any reason, collapse them. Then group by
+        # frame_id so each frame contributes EXACTLY ONE entry per
+        # (time, {wg_set}) pair. The inner mz-match loop iterates
+        # the wg_set and stops at the first hit (break), so a frame
+        # that fires multiple WGs which all cover the precursor's
+        # m/z still only contributes 1 to the count.
+        by_frame: dict[int, tuple[float, set[int]]] = {}
+        for fid, t, wg in rows_raw:
+            entry = by_frame.get(fid)
+            if entry is None:
+                by_frame[fid] = (t, {wg})
+            else:
+                entry[1].add(wg)
+
+        frames = [(t, wgs) for (t, wgs) in by_frame.values()]
         frames.sort(key=lambda x: x[0])
         frame_times = [f[0] for f in frames]
-        frame_wgs = [f[1] for f in frames]
+        frame_wg_sets = [f[1] for f in frames]
 
         # 3. For each precursor, count DIA frames covering its m/z within its RT window
         # Subsample for performance
@@ -350,14 +379,22 @@ def _compute_pts_peak_bruker(
 
             count = 0
             for i in range(i_lo, min(i_hi, n_frames)):
-                wg = frame_wgs[i]
-                # Check if any window in this group covers the precursor m/z
-                mz_ranges = wg_windows.get(wg)
-                if mz_ranges:
+                # A frame is counted as "covering" the precursor if ANY
+                # of its window groups has a window whose m/z range
+                # includes the precursor m/z. We stop at the first hit.
+                frame_matches = False
+                for wg in frame_wg_sets[i]:
+                    mz_ranges = wg_windows.get(wg)
+                    if not mz_ranges:
+                        continue
                     for mz_lo, mz_hi in mz_ranges:
                         if mz_lo <= mz <= mz_hi:
-                            count += 1
+                            frame_matches = True
                             break
+                    if frame_matches:
+                        break
+                if frame_matches:
+                    count += 1
             counts.append(count)
 
         if not counts:

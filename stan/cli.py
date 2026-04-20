@@ -1909,7 +1909,10 @@ def backfill_cirt(
 
     for row in rows:
         run = dict(row)
-        if (run.get("mode") or "").lower() != "dia":
+        # Match any DIA flavor: "DIA" (Thermo), "diaPASEF" (Bruker),
+        # "dia_foo" (hypothetical). The original exact-equality check
+        # skipped every Bruker run because "diaPASEF" != "dia".
+        if not (run.get("mode") or "").lower().startswith("dia"):
             non_dia += 1
             continue
         family = _instrument_family(run.get("instrument") or "")
