@@ -218,10 +218,17 @@ if ($fisherOk -match "ok") {
     Write-Host "  fisher_py not available (Thermo TIC falls back to TRFP - slower but works)." -ForegroundColor Yellow
 }
 
-# If both venvs exist, clean up the old .stan location
+# If both venvs exist, retire the old .stan location.
+# Pre-v0.2.137 also re-installed STAN into the old .stan venv on
+# every update. That added 60-120 sec to each update because it
+# was a full --force-reinstall pulling the whole repo. The user
+# already migrated to STAN\venv earlier in this script, and PATH
+# now points only at the new venv, so re-installing into the old
+# one is wasted work. We keep the PATH cleanup (fast, useful) and
+# drop the re-install. Operator can manually `rmdir /s .stan`
+# whenever they want to free the disk space; nothing relies on it.
 $newStanExe = Join-Path $env:USERPROFILE "STAN\venv\Scripts\stan.exe"
 if ((Test-Path $newStanExe) -and (Test-Path $oldVenvPython)) {
-    Write-Host "  Cleaning up old .stan location..." -ForegroundColor Yellow
     $oldScripts = Join-Path $oldVenv "Scripts"
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     if ($userPath -and $userPath -like "*$oldScripts*") {
@@ -233,10 +240,7 @@ if ((Test-Path $newStanExe) -and (Test-Path $oldVenvPython)) {
         $env:Path = "$([Environment]::GetEnvironmentVariable('Path','Machine'));$cleanPath"
         Write-Host "  Removed old .stan\venv from PATH." -ForegroundColor Gray
     }
-    $ticks = [DateTime]::Now.Ticks
-    $zipUrl = "https://github.com/bsphinney/stan/archive/refs/heads/main.zip?t=$ticks"
-    & $oldVenvPython -m pip install --no-cache-dir --force-reinstall --quiet @pipTrust $zipUrl 2>&1 | Out-Null
-    Write-Host "  Old .stan venv also updated." -ForegroundColor Gray
+    Write-Host "  Old .stan venv left in place (no longer on PATH). Delete manually to free disk space." -ForegroundColor Gray
 }
 
 # -- Check DIA-NN (2.3+ required for community benchmark) --
