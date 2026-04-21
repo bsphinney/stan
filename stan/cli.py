@@ -1613,6 +1613,24 @@ def backfill_metrics(
         False, "--dry-run",
         help="Show what would be updated without writing to DB or relay.",
     ),
+    force: bool = typer.Option(
+        False, "--force",
+        help=(
+            "Overwrite existing metric values, not just NULL/zero gaps. "
+            "Use this after the extractor code is fixed (e.g. the v0.2.105 "
+            "Bruker pts/peak correction) to replace stale values written "
+            "by the previous version."
+        ),
+    ),
+    only: str = typer.Option(
+        "", "--only",
+        help=(
+            "Comma-separated list of specific metric fields to backfill. "
+            "Default (empty) re-extracts every supported field. Useful "
+            "when you only want to refresh one column, e.g. "
+            "--only median_points_across_peak,ips_score."
+        ),
+    ),
 ) -> None:
     """Re-extract metrics from existing report.parquet files and fill gaps.
 
@@ -1622,6 +1640,15 @@ def backfill_metrics(
 
     With ``--push``, also POSTs updated fields to the community relay for
     runs that have a submission_id.
+
+    With ``--force``, also overwrites fields that already have a non-null,
+    non-zero value. Needed when an old extractor wrote stale numbers that
+    the gap-filling logic would otherwise leave alone.
+
+    With ``--only field1,field2``, only re-extract those fields (and
+    ips_score, which recomputes from the others). Example:
+    ``--only median_points_across_peak`` to fix the pts/peak regression
+    without touching anything else.
 
     This is the one command that fills every data gap: dynamic_range,
     ms1_signal, ms2_signal, mass_accuracy, pts/peak, peak_width, IPS.
@@ -1657,12 +1684,29 @@ def backfill_metrics(
         vendor_map[inst.get("name", "")] = inst.get("vendor", "")
 
     # Fields we want to fill
-    METRIC_FIELDS = [
+    ALL_METRIC_FIELDS = [
         "dynamic_range_log10", "ms1_signal", "ms2_signal",
         "median_mass_acc_ms1_ppm", "median_mass_acc_ms2_ppm",
         "median_peak_width_sec", "median_points_across_peak",
         "fwhm_rt_min", "peak_capacity", "ips_score",
     ]
+    if only:
+        requested = {f.strip() for f in only.split(",") if f.strip()}
+        unknown = requested - set(ALL_METRIC_FIELDS)
+        if unknown:
+            console.print(
+                f"[red]Unknown field(s) in --only: {sorted(unknown)}. "
+                f"Valid: {ALL_METRIC_FIELDS}[/red]"
+            )
+            raise typer.Exit(2)
+        # Always keep ips_score so the recompute stays in sync when a
+        # scoring input changed.
+        METRIC_FIELDS = [f for f in ALL_METRIC_FIELDS if f in requested or f == "ips_score"]
+        console.print(f"[dim]--only: updating {METRIC_FIELDS}[/dim]")
+    else:
+        METRIC_FIELDS = list(ALL_METRIC_FIELDS)
+    if force:
+        console.print("[yellow]--force: overwriting existing non-null values[/yellow]")
 
     with sqlite3.connect(str(db_path)) as con:
         con.row_factory = sqlite3.Row
@@ -1697,9 +1741,15 @@ def backfill_metrics(
             skipped += 1
             continue
 
-        # Check which fields are missing
-        missing = [f for f in METRIC_FIELDS
-                   if row[f] is None or row[f] == 0]
+        # Which fields to (re-)populate. With --force we consider every
+        # METRIC_FIELD fair game; without it we only touch NULL/zero
+        # cells so correct values the operator has already accepted
+        # don't get clobbered by a new extractor version.
+        if force:
+            missing = list(METRIC_FIELDS)
+        else:
+            missing = [f for f in METRIC_FIELDS
+                       if row[f] is None or row[f] == 0]
         if not missing:
             skipped += 1
             continue
@@ -1740,12 +1790,20 @@ def backfill_metrics(
             errors += 1
             continue
 
-        # Build UPDATE set — only fill NULLs, don't overwrite existing good data
+        # Build UPDATE set.
+        # - Gap-fill mode (default): only write when old is NULL/zero
+        #   AND new has a real value. Preserves operator-reviewed data.
+        # - Force mode: write whenever new has a real value, even if
+        #   old was already populated. Lets a new extractor replace
+        #   stale values from a prior version.
         updates: dict = {}
         for field in METRIC_FIELDS:
             old_val = row[field]
             new_val = metrics.get(field)
-            if (old_val is None or old_val == 0) and new_val is not None and new_val != 0:
+            if new_val is None or new_val == 0:
+                continue
+            gap = (old_val is None or old_val == 0)
+            if force or gap:
                 updates[field] = new_val
 
         if not updates:
