@@ -1997,6 +1997,53 @@ def column_install(
         console.print(f"  notes: {combined_notes}")
 
 
+@app.command("install-peg-deps")
+def install_peg_deps() -> None:
+    """Install alphatims (Bruker PEG reader) into the current venv.
+
+    Workaround for the case where update_stan.ps1's alphatims step
+    didn't run — usually because the GitHub raw CDN served a stale
+    PS1 to the instrument PC. Just pip-installs alphatims directly
+    from Python, no PowerShell in the loop.
+
+    Safe to run multiple times (pip is idempotent). After this
+    completes, `stan backfill-peg` will have its Bruker reader.
+    """
+    import subprocess
+    import sys
+
+    # Check if already installed — avoid a slow pip call when not needed
+    try:
+        import alphatims  # noqa: F401
+        console.print("[green]alphatims already installed.[/green]")
+        return
+    except ImportError:
+        pass
+
+    console.print("Installing alphatims (~150 MB of deps on first run)...")
+    cmd = [sys.executable, "-m", "pip", "install", "--quiet", "alphatims"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        console.print("[red]pip install timed out after 10 min.[/red]")
+        raise typer.Exit(1)
+
+    if result.returncode != 0:
+        console.print(f"[red]pip install failed (exit {result.returncode}):[/red]")
+        console.print(result.stderr[-2000:] if result.stderr else "(no stderr)")
+        raise typer.Exit(1)
+
+    # Confirm the import works now
+    try:
+        import importlib
+        importlib.import_module("alphatims")
+        console.print("[green]alphatims installed and importable.[/green]")
+        console.print("Run: [bold]stan backfill-peg[/bold]")
+    except ImportError as e:
+        console.print(f"[red]alphatims installed but import still fails: {e}[/red]")
+        raise typer.Exit(1)
+
+
 @app.command("backfill-peg")
 def backfill_peg(
     force: bool = typer.Option(
