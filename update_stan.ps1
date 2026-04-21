@@ -224,20 +224,37 @@ if ($fisherOk -match "ok") {
 # small, h5py/pyzstd/tqdm are the new ones). Same don't-block-on-failure
 # pattern as fisher_py -- PEG detection is optional; STAN proper works
 # without it.
-Write-Host "  Installing alphatims (Bruker PEG reader)..." -ForegroundColor Gray
-& $venvPython -m pip install --quiet @pipTrust alphatims 2>&1 | ForEach-Object {
-    $line = $_.ToString()
-    if ($line -match "Successfully installed") {
-        Write-Host "  $line" -ForegroundColor Green
-    } elseif ($line -match "error|ERROR") {
-        Write-Host "  alphatims: $line" -ForegroundColor DarkYellow
+#
+# ONLY installed when instruments.yml declares at least one Bruker
+# instrument. Orbitrap-only hosts (Exploris / Astral / Lumos) don't
+# need the Bruker reader and skipping it saves ~150 MB + ~60 sec on
+# every update.
+$hasBruker = $false
+$instYml = Join-Path $env:USERPROFILE "STAN\instruments.yml"
+if (Test-Path $instYml) {
+    $instContent = Get-Content $instYml -Raw
+    if ($instContent -match "(?im)^\s*vendor\s*:\s*['""]?bruker['""]?\s*$") {
+        $hasBruker = $true
     }
 }
-$alphatimsOk = & $venvPython -c "import alphatims; print('ok')" 2>&1
-if ($alphatimsOk -match "ok") {
-    Write-Host "  alphatims available." -ForegroundColor Green
+if ($hasBruker) {
+    Write-Host "  Installing alphatims (Bruker PEG reader)..." -ForegroundColor Gray
+    & $venvPython -m pip install --quiet @pipTrust alphatims 2>&1 | ForEach-Object {
+        $line = $_.ToString()
+        if ($line -match "Successfully installed") {
+            Write-Host "  $line" -ForegroundColor Green
+        } elseif ($line -match "error|ERROR") {
+            Write-Host "  alphatims: $line" -ForegroundColor DarkYellow
+        }
+    }
+    $alphatimsOk = & $venvPython -c "import alphatims; print('ok')" 2>&1
+    if ($alphatimsOk -match "ok") {
+        Write-Host "  alphatims available." -ForegroundColor Green
+    } else {
+        Write-Host "  alphatims not available (PEG detection disabled). Rerun update to retry." -ForegroundColor Yellow
+    }
 } else {
-    Write-Host "  alphatims not available (PEG detection disabled). Rerun update to retry." -ForegroundColor Yellow
+    Write-Host "  Skipping alphatims (no Bruker instrument in instruments.yml)." -ForegroundColor Gray
 }
 
 # If both venvs exist, retire the old .stan location.
