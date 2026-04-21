@@ -1672,6 +1672,20 @@ def backfill_metrics(
         console.print("[yellow]No baseline_output directory found.[/yellow]")
         return
 
+    # Persist a backfill diagnostic log so it syncs to the Hive mirror
+    # via sync_to_hive_mirror's logs/ rule. Lets the operator ship the
+    # complete reason-for-skip list back to whoever's debugging without
+    # having to copy/paste from a terminal that already scrolled away.
+    from datetime import datetime as _dt
+    log_dir = get_user_config_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    diag_log_path = log_dir / f"backfill_metrics_{_dt.now().strftime('%Y%m%d_%H%M%S')}.log"
+    diag_lines: list[str] = [
+        f"backfill-metrics  push={push}  dry_run={dry_run}  force={force}  only={only or '(all)'}",
+        f"db: {db_path}",
+        "",
+    ]
+
     # Load instrument config for vendor info
     try:
         _, inst_list = load_instruments()
@@ -1819,14 +1833,16 @@ def backfill_metrics(
             if force or gap:
                 updates[field] = new_val
 
-        if force and skipped_fields and (errors + updated) < 8:
-            # Cap the diag noise to the first ~8 rows so a 200-row
-            # backfill doesn't flood. Enough to see the pattern.
+        if force and skipped_fields:
             reason_summary = ", ".join(f"{f}={r}" for f, r in skipped_fields)
             extra = f" [{raw_path_diag}]" if raw_path_diag else ""
-            console.print(
-                f"  [dim]{run_name[:55]} → no-op for: {reason_summary}{extra}[/dim]"
-            )
+            line = f"{run_name} -> no-op: {reason_summary}{extra}"
+            # Always write to the log so we have the complete picture.
+            diag_lines.append(line)
+            # Echo the first ~8 to console so the operator sees the
+            # pattern without scrolling 200 rows.
+            if (errors + updated) < 8:
+                console.print(f"  [dim]{run_name[:55]} → no-op for: {reason_summary}{extra}[/dim]")
 
         if not updates:
             skipped += 1
@@ -1880,6 +1896,24 @@ def backfill_metrics(
                   f"(skipped {skipped}, errors {errors})")
     if push and not dry_run:
         console.print(f"  Pushed {pushed} to community relay")
+
+    # Persist the diag log + sync to Hive mirror so a remote debugger
+    # can see every "no-op for:" reason without copy/paste from the
+    # operator's terminal.
+    diag_lines.append("")
+    diag_lines.append(
+        f"summary: {action} {updated} runs (skipped {skipped}, errors {errors})"
+    )
+    try:
+        diag_log_path.write_text("\n".join(diag_lines), encoding="utf-8")
+        from stan.config import sync_to_hive_mirror
+        try:
+            sync_to_hive_mirror(include_reports=False)
+        except Exception:
+            pass
+        console.print(f"[dim]Diag log: {diag_log_path}[/dim]")
+    except Exception:
+        logger.debug("could not write backfill diag log", exc_info=True)
 
 
 @app.command("column-install")
