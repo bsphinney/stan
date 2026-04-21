@@ -1768,24 +1768,45 @@ def backfill_metrics(
             skipped += 1
             continue
 
-        # Find raw path for pts/peak on Bruker. Without a real .d
-        # accessible on disk, _compute_pts_peak_bruker silently returns
-        # None and the median_points_across_peak update is skipped —
-        # which is exactly what was happening on the timsTOF after
-        # files moved. Track the reason so we can surface it below.
-        vendor = vendor_map.get(instrument, "")
+        # Find raw path so the Bruker accurate pts/peak path can fire
+        # in extract_dia_metrics. PRE-v0.2.136 BUG: this used to gate
+        # on `vendor_map.get(instrument)` returning "bruker". But the
+        # DB stores the instrument *model* ("timsTOF HT") while
+        # instruments.yml is keyed by the watcher *name* ("data_bruker"),
+        # so the lookup always missed. Result: raw_path stayed None,
+        # extract_dia_metrics got is_bruker=False, the broken fallback
+        # ran, pts/peak landed at ~108 instead of the correct ~9.
+        #
+        # Fix: always honor the stored raw_path. extract_dia_metrics
+        # itself derives is_bruker from the .d suffix when vendor isn't
+        # passed, so we don't actually need vendor_map at all here.
+        # Vendor inference is left to extract_dia_metrics.
         raw_path = None
         raw_path_diag = ""
-        if vendor == "bruker":
-            stored = row["raw_path"]
-            if not stored:
-                raw_path_diag = "no raw_path stored on this row"
+        stored = row["raw_path"]
+        if stored:
+            candidate = Path(stored)
+            if candidate.exists():
+                raw_path = candidate
             else:
-                candidate = Path(stored)
-                if candidate.exists():
-                    raw_path = candidate
-                else:
-                    raw_path_diag = f"raw_path not on disk: {stored}"
+                raw_path_diag = f"raw_path not on disk: {stored}"
+        else:
+            raw_path_diag = "no raw_path stored on this row"
+        # vendor still passed when we have it (helps for the Thermo
+        # branch that doesn't have a .d directory to disambiguate).
+        # Try BOTH name and instrument-model keys against vendor_map
+        # so a config-vs-DB key mismatch doesn't silently downgrade
+        # us to vendor=None.
+        vendor = (
+            vendor_map.get(instrument, "")
+            or vendor_map.get(row.get("instrument", ""), "")
+        )
+        # Final fallback: derive vendor from filename extension
+        if not vendor:
+            if (run_name or "").lower().endswith(".d"):
+                vendor = "bruker"
+            elif (run_name or "").lower().endswith(".raw"):
+                vendor = "thermo"
 
         # Re-extract metrics
         try:
