@@ -702,18 +702,28 @@
           </div>
         );
       }
-      if (!data.runs || data.runs.length === 0) {
-        return null;  // Don't render an empty card — QuickStatus already says "no runs today"
+      // v0.2.132+ returns three faceted buckets. Older API responses
+      // only had data.runs (QC) — fall back to that shape so a stale
+      // backend doesn't break the UI.
+      const facets = data.facets || { qc: data.runs || [], sample: [], blank: [] };
+      const totalRuns = (facets.qc?.length || 0)
+                      + (facets.sample?.length || 0)
+                      + (facets.blank?.length || 0);
+      if (totalRuns === 0) {
+        return null;  // QuickStatus already says "no runs today"
       }
-      const withTic = data.runs.filter(r => r.has_tic);
-      if (withTic.length === 0) {
+      const totalWithTic =
+        (facets.qc?.filter(r => r.has_tic).length || 0)
+        + (facets.sample?.filter(r => r.has_tic).length || 0)
+        + (facets.blank?.filter(r => r.has_tic).length || 0);
+      if (totalWithTic === 0) {
         return (
           <div className="card" style={{marginTop:'1rem'}}>
             <h3>Today's TIC overlay</h3>
             <div style={{color:'var(--muted)', fontSize:'0.85rem'}}>
-              {data.n_runs} QC run{data.n_runs === 1 ? '' : 's'} today but none have
-              a TIC trace in the DB. Run <code>stan backfill-tic</code> to populate
-              traces for existing runs, or wait for the next baseline.
+              {totalRuns} run{totalRuns === 1 ? '' : 's'} today but none have
+              a TIC trace in the DB. Run <code>stan backfill-tic</code> to
+              populate traces for existing runs, or wait for the next baseline.
             </div>
           </div>
         );
@@ -741,11 +751,20 @@
         </div>
       );
 
+      // Per-facet color ramps so the operator can tell QC apart from
+      // Sample apart from Blank at a glance even when overlaid in
+      // adjacent panels.
+      const FACET_RAMPS = {
+        qc:     { from: [207, 231, 255], to: [30, 64, 175] },   // light → deep blue
+        sample: { from: [233, 213, 255], to: [88, 28, 135] },   // light → deep purple
+        blank:  { from: [229, 231, 235], to: [55, 65, 81] },    // light → deep gray
+      };
+
       return (
         <div className="card" style={{marginTop:'1rem'}}>
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'0.5rem'}}>
             <h3 style={{margin:0}}>
-              Today's TIC overlay ({withTic.length} trace{withTic.length === 1 ? '' : 's'})
+              Today's TIC overlay ({totalWithTic} trace{totalWithTic === 1 ? '' : 's'})
             </h3>
             <label style={{display:'inline-flex', alignItems:'center', gap:'0.3rem', fontSize:'0.8rem', color:'var(--muted)'}}>
               <input type="checkbox" checked={normalize}
@@ -755,12 +774,51 @@
           </div>
           {columnSubtitle}
           <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0.25rem 0 0.5rem 0'}}>
-            Each line = one QC run's TIC. Color: light blue = earliest run of the
-            day, dark blue = most recent. Divergence = LC or spray issue appearing
-            mid-day. Triangles at the bottom = cIRT anchor peptide RTs for the
-            most recent run (green = &lt;0.5 min drift, yellow = &lt;1.5 min, red = ≥1.5 min).
+            Three panels: QC (blue), Sample (purple), Blank (gray). Light = earliest
+            run of the day, dark = most recent. Divergence = LC or spray issue
+            appearing mid-day. Triangles at the bottom of QC = cIRT anchor peptide
+            RTs for the most recent QC run (green &lt;0.5 min drift, yellow &lt;1.5,
+            red ≥1.5).
           </p>
-          <TicOverlaySvg runs={withTic} normalize={normalize} />
+          {['qc', 'sample', 'blank'].map(cls => {
+            const items = facets[cls] || [];
+            const withTic = items.filter(r => r.has_tic);
+            const label = cls === 'qc' ? 'QC' : cls === 'sample' ? 'Sample' : 'Blank';
+            return (
+              <FacetPanel key={cls}
+                          label={label} items={items} withTic={withTic}
+                          ramp={FACET_RAMPS[cls]} normalize={normalize}
+                          showCirtMarkers={cls === 'qc'} />
+            );
+          })}
+        </div>
+      );
+    }
+
+    // One panel within the 3-facet TIC overlay. Renders a TicOverlaySvg
+    // (when there are TIC traces) or a one-line stub (when items
+    // exist but none have a stored TIC).
+    function FacetPanel({ label, items, withTic, ramp, normalize, showCirtMarkers }) {
+      if (items.length === 0) return null;
+      return (
+        <div style={{marginTop:'0.5rem', paddingTop:'0.5rem', borderTop:'1px solid var(--border)'}}>
+          <div style={{display:'flex', alignItems:'baseline', gap:'0.5rem',
+                       fontSize:'0.85rem', fontWeight:500}}>
+            <span>{label}</span>
+            <span style={{color:'var(--muted)', fontSize:'0.7rem', fontWeight:'normal'}}>
+              {items.length} run{items.length === 1 ? '' : 's'} ·
+              {' '}{withTic.length} with TIC
+            </span>
+          </div>
+          {withTic.length > 0
+            ? <TicOverlaySvg runs={withTic} normalize={normalize}
+                             ramp={ramp} showCirtMarkers={showCirtMarkers} />
+            : <div style={{color:'var(--muted)', fontSize:'0.75rem', padding:'0.4rem 0'}}>
+                No TIC traces yet for these runs.
+                {label !== 'QC' && (
+                  <> Sample/Blank traces start populating after v0.2.132 —
+                     older sample_health rows have no TIC in the DB.</>)}
+              </div>}
         </div>
       );
     }
@@ -773,17 +831,20 @@
         Math.round(c0[2] + (c1[2] - c0[2]) * t),
       ];
     }
-    function timeOfDayColor(i, n) {
-      // Pale blue (#cfe7ff) → deep blue (#1e40af), interpolated linearly.
-      // Pale-to-deep keeps the early runs visible without washing them out
-      // and pushes the most recent runs forward — that's what the operator
-      // cares about.
+    function timeOfDayColor(i, n, ramp) {
+      // Light → deep ramp interpolated linearly. Default = the original
+      // pale-to-deep blue from Ship B; per-facet ramps override it so
+      // QC stays blue, Sample is purple, Blank is gray. Keeps early
+      // runs visible without washing them out and pushes the most
+      // recent runs forward, which is what the operator cares about.
+      const r = ramp || { from: [207, 231, 255], to: [30, 64, 175] };
       const t = n > 1 ? i / (n - 1) : 1;
-      const rgb = _blend([207, 231, 255], [30, 64, 175], t);
+      const rgb = _blend(r.from, r.to, t);
       return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
     }
 
-    function TicOverlaySvg({ runs, normalize, height=260 }) {
+    function TicOverlaySvg({ runs, normalize, height=260, ramp,
+                              showCirtMarkers=true }) {
       // Convert each run's rt_min[] + intensity[] into (x, y) path points.
       // Shared x-axis = max RT across all runs. Shared y-axis = either
       // normalized per-trace (0-1, useful for shape comparison) or raw
@@ -845,7 +906,7 @@
             {/* TIC lines — reverse-iterate so earliest runs draw first and
                 recent (darker, higher-contrast) runs draw on top */}
             {series.map((s, si) => {
-              const c = timeOfDayColor(si, series.length);
+              const c = timeOfDayColor(si, series.length, ramp);
               const pts = s.rt.map((t, i) => {
                 const x = padding + ((t - rtMin) / rtRange) * w;
                 const y = padding + h - ((s.y[i] - yMin) / yRange) * h;
@@ -870,8 +931,9 @@
                 Showing every run's markers (10 peptides × 5 runs = 50
                 triangles) would be unreadable; the latest run is what
                 the operator cares about. Trend across the day is in
-                the dedicated Trends → cIRT card. */}
-            {(() => {
+                the dedicated Trends → cIRT card. Only QC panels render
+                these — Sample/Blank don't go through DIA-NN. */}
+            {showCirtMarkers && (() => {
               const latest = series[series.length - 1];
               const markers = latest?.run?.cirt_markers || [];
               if (!markers.length) return null;
@@ -922,7 +984,7 @@
                        fontSize:'0.7rem', color:'var(--muted)',
                        marginTop:'0.3rem', paddingLeft:'1rem'}}>
             {series.map((s, si) => {
-              const c = timeOfDayColor(si, series.length);
+              const c = timeOfDayColor(si, series.length, ramp);
               const dt = new Date(s.run.run_date);
               const timeStr = dt.toLocaleString([], {hour:'2-digit', minute:'2-digit'});
               return (

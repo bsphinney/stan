@@ -514,7 +514,7 @@ class InstrumentWatcher:
         if not run_date:
             run_date = datetime.now(timezone.utc).isoformat()
 
-        insert_sample_health(
+        health_id = insert_sample_health(
             instrument=self._name,
             run_name=path.name,
             run_date=run_date,
@@ -523,6 +523,23 @@ class InstrumentWatcher:
             reasons=verdict["reasons"],
             rawmeat_summary=rawmeat.get("summary", {}),
         )
+
+        # Best-effort TIC extraction so the dashboard's Sample / Blank
+        # facets in Today's TIC overlay can render the trace alongside
+        # the QC TICs. Wrapped in try/except — TIC is dashboard-only,
+        # any failure must NOT propagate and break the monitor pipeline.
+        try:
+            from stan.db import insert_health_tic_trace
+            from stan.metrics.tic import (
+                downsample_trace, extract_tic_bruker, extract_tic_thermo,
+            )
+            tic = (extract_tic_bruker(path) if vendor == "bruker"
+                   else extract_tic_thermo(path))
+            if tic is not None and health_id:
+                tic = downsample_trace(tic, n_bins=128)
+                insert_health_tic_trace(health_id, tic.rt_min, tic.intensity)
+        except Exception:
+            logger.debug("monitor TIC extraction failed for %s", path.name, exc_info=True)
 
         logger.info(
             "monitor: %s → %s (%s)",

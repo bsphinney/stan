@@ -199,17 +199,39 @@ async def api_trends(instrument: str, limit: int = 100) -> list[dict]:
     return get_trends(instrument=instrument, limit=limit, qc_only=True)
 
 
+_BLANK_PATTERN = None  # lazy-compiled below
+def _classify_run_class(run_name: str) -> str:
+    """Classify a row by filename: qc | blank | sample.
+
+    Mirrors the watcher's pattern surfaces but applied at API time so
+    we don't need a runs.run_class column. QC = matches stan's QC
+    regex (hel[a5] | qc | std_he). Blank = matches the watcher
+    exclude pattern (wash | blank | blnk | blk). Everything else =
+    sample.
+    """
+    import re as _re
+    global _BLANK_PATTERN
+    if _BLANK_PATTERN is None:
+        _BLANK_PATTERN = _re.compile(r"(?i)(wash|blank|blnk|blk)")
+    from stan.watcher.qc_filter import compile_qc_pattern
+    name = (run_name or "").rsplit(".", 1)[0]
+    if compile_qc_pattern().search(name):
+        return "qc"
+    if _BLANK_PATTERN.search(name):
+        return "blank"
+    return "sample"
+
+
 @app.get("/api/today/tic-overview")
 async def api_today_tic_overview(
     date: str | None = None,
     instrument: str | None = None,
 ) -> dict:
-    """Return today's QC runs + their TIC traces in one call.
+    """Return today's runs + their TIC traces in three faceted buckets.
 
-    Powers the Today's Runs tab's TIC overlay. The QC-only scope is
-    intentional: non-QC files live in the `sample_health` table and
-    don't have tic_traces rows yet (Ship B MVP). Sample/Blank facets
-    are a follow-up.
+    Buckets: qc (from `runs` joined to `tic_traces`), sample and blank
+    (from `sample_health` joined to `health_tic_traces`, classified by
+    filename). Powers the Today's Runs tab's three-panel TIC overlay.
 
     Args:
         date: ISO date YYYY-MM-DD. Defaults to today (local time).
@@ -218,19 +240,20 @@ async def api_today_tic_overview(
     Returns:
         {
           "date": "2026-04-20",
-          "runs": [
-            {
-              "run_id", "run_name", "instrument", "mode", "run_date",
-              "ips_score", "gate_result", "spd", "gradient_length_min",
-              "n_precursors", "n_psms",
-              "time_of_day_rank": int,  # 0 = earliest, for color
-              "has_tic": bool,
-              "tic": {"rt_min": [...], "intensity": [...]} or null
-            }, ...
-          ],
+          "runs": [...],          # legacy flat list (QC only) for compat
+          "facets": {              # new faceted shape — preferred
+            "qc": [run, ...],
+            "sample": [run, ...],
+            "blank": [run, ...]
+          },
           "n_runs": int,
-          "n_with_tic": int
+          "n_with_tic": int,
+          "columns": {instrument: {vendor, model, ...}}
         }
+        Each run object has run_id / run_name / instrument / mode /
+        run_date / ips_score / gate_result / spd / n_precursors /
+        n_psms / time_of_day_rank / has_tic / tic / cirt_markers /
+        run_class / source ("runs" or "sample_health").
     """
     import json as _json
     import sqlite3
@@ -269,6 +292,33 @@ async def api_today_tic_overview(
     with sqlite3.connect(str(db_path)) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(sql, params).fetchall()
+
+        # Same join, against sample_health for non-QC files. The
+        # rawmeat monitor pipeline writes here; v0.2.132 added the
+        # health_tic_traces sibling table populated by the watcher.
+        # Older sample_health rows have no TIC — they still appear
+        # in the facet but render with no line, just metadata.
+        sh_where = ["substr(s.run_date, 1, 10) = ?"]
+        sh_params: list = [date]
+        if instrument:
+            sh_where.append("s.instrument = ?")
+            sh_params.append(instrument)
+        sh_sql = (
+            "SELECT s.id AS run_id, s.run_name, s.instrument, "
+            "       s.run_date, s.verdict AS gate_result, "
+            "       s.dynamic_range_log10, s.ms1_total_tic, "
+            "       t.rt_min AS tic_rt, t.intensity AS tic_intensity "
+            "FROM sample_health s "
+            "LEFT JOIN health_tic_traces t ON t.health_id = s.id "
+            "WHERE " + " AND ".join(sh_where) +
+            " ORDER BY s.run_date ASC"
+        )
+        try:
+            sh_rows = con.execute(sh_sql, sh_params).fetchall()
+        except sqlite3.OperationalError:
+            # health_tic_traces may not exist on older DBs that haven't
+            # migrated yet — gracefully degrade to no Sample/Blank facets.
+            sh_rows = []
 
         # Pull cIRT observations for just these runs in a second query,
         # keyed by run_id. Joining this into the main SELECT would
@@ -342,8 +392,43 @@ async def api_today_tic_overview(
                 "deviation_class": dev_class,
             })
         d["cirt_markers"] = markers
+        d["source"] = "runs"
+        d["run_class"] = _classify_run_class(d.get("run_name", ""))
 
         runs.append(d)
+
+    # Process sample_health rows the same way (no cIRT markers — those
+    # only exist for QC runs that went through DIA-NN).
+    sh_runs: list[dict] = []
+    sh_with_tic = 0
+    for r in sh_rows:
+        d = dict(r)
+        tic_rt = d.pop("tic_rt", None)
+        tic_int = d.pop("tic_intensity", None)
+        has_tic = tic_rt is not None and tic_int is not None
+        tic_payload = None
+        if has_tic:
+            try:
+                tic_payload = {
+                    "rt_min": _json.loads(tic_rt),
+                    "intensity": _json.loads(tic_int),
+                }
+                sh_with_tic += 1
+            except Exception:
+                has_tic = False
+        d["has_tic"] = has_tic
+        d["tic"] = tic_payload
+        # Stub fields the QC schema has so the UI's Sparkline component
+        # doesn't choke on missing keys.
+        d.setdefault("mode", None)
+        d.setdefault("ips_score", None)
+        d.setdefault("spd", None)
+        d.setdefault("n_precursors", None)
+        d.setdefault("n_psms", None)
+        d["cirt_markers"] = []
+        d["source"] = "sample_health"
+        d["run_class"] = _classify_run_class(d.get("run_name", ""))
+        sh_runs.append(d)
 
     # Attach the current column per instrument that appears today so
     # the overlay can annotate "Aurora 25cm, installed 12d ago" in
@@ -374,11 +459,31 @@ async def api_today_tic_overview(
             "notes": ev.get("notes") or "",
         }
 
+    # Bucket every row (QC + sample_health) into qc / sample / blank
+    # by run_class. time_of_day_rank is recomputed PER FACET so each
+    # panel's color ramp goes light → dark within its own runs (a
+    # single global rank would make a panel with one early run get
+    # the lightest color regardless of its actual time-of-day).
+    facets: dict[str, list[dict]] = {"qc": [], "sample": [], "blank": []}
+    for d in runs + sh_runs:
+        cls = d.get("run_class") or "sample"
+        if cls not in facets:
+            cls = "sample"
+        facets[cls].append(d)
+    # Sort each facet by run_date and assign per-facet rank for color
+    for cls, items in facets.items():
+        items.sort(key=lambda x: x.get("run_date") or "")
+        for i, item in enumerate(items):
+            item["time_of_day_rank"] = i
+
     return {
         "date": date,
-        "runs": runs,
-        "n_runs": len(runs),
-        "n_with_tic": n_with_tic,
+        # Legacy: flat QC list, kept so old UI code keeps working until
+        # the next dashboard reload picks up the new `facets` shape.
+        "runs": [r for r in facets["qc"]],
+        "facets": facets,
+        "n_runs": len(runs) + len(sh_runs),
+        "n_with_tic": n_with_tic + sh_with_tic,
         "columns": columns,
     }
 

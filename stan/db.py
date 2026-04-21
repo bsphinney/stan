@@ -111,6 +111,20 @@ CREATE TABLE IF NOT EXISTS tic_traces (
     UNIQUE(run_id)
 );
 
+-- Sibling of tic_traces for non-QC files. The QC search-and-store
+-- pipeline writes to runs+tic_traces; the rawmeat monitor pipeline
+-- writes to sample_health+health_tic_traces. Same JSON-array shape so
+-- the dashboard can render both with the same component. Kept as a
+-- separate table because sample_health.id and runs.id share no
+-- namespace and a single PK can't FK to both.
+CREATE TABLE IF NOT EXISTS health_tic_traces (
+    health_id   TEXT PRIMARY KEY REFERENCES sample_health(id),
+    rt_min      TEXT NOT NULL,
+    intensity   TEXT NOT NULL,
+    n_frames    INTEGER,
+    UNIQUE(health_id)
+);
+
 CREATE TABLE IF NOT EXISTS sample_health (
     id                      TEXT PRIMARY KEY,
     instrument              TEXT NOT NULL,
@@ -620,6 +634,40 @@ def insert_tic_trace(
             "VALUES (?, ?, ?, ?)",
             (
                 run_id,
+                json.dumps([round(r, 3) for r in rt_min]),
+                json.dumps([round(v, 0) for v in intensity]),
+                n,
+            ),
+        )
+
+
+def insert_health_tic_trace(
+    health_id: str,
+    rt_min: list[float],
+    intensity: list[float],
+    db_path: Path | None = None,
+) -> None:
+    """Store a TIC trace for a sample_health row.
+
+    Mirrors `insert_tic_trace` but writes to `health_tic_traces` instead.
+    Same downsampling cap (~500 points) so the API + frontend can treat
+    QC and non-QC traces interchangeably.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+
+    n = len(rt_min)
+    if n > 500:
+        step = n // 500
+        rt_min = rt_min[::step]
+        intensity = intensity[::step]
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO health_tic_traces "
+            "(health_id, rt_min, intensity, n_frames) VALUES (?, ?, ?, ?)",
+            (
+                health_id,
                 json.dumps([round(r, 3) for r in rt_min]),
                 json.dumps([round(v, 0) for v in intensity]),
                 n,
