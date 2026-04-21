@@ -1754,18 +1754,24 @@ def backfill_metrics(
             skipped += 1
             continue
 
-        # Find raw path for pts/peak on Bruker
+        # Find raw path for pts/peak on Bruker. Without a real .d
+        # accessible on disk, _compute_pts_peak_bruker silently returns
+        # None and the median_points_across_peak update is skipped —
+        # which is exactly what was happening on the timsTOF after
+        # files moved. Track the reason so we can surface it below.
         vendor = vendor_map.get(instrument, "")
         raw_path = None
+        raw_path_diag = ""
         if vendor == "bruker":
-            # Check common locations for the .d
-            for search_dir in [get_user_config_dir().parent, Path("D:/Data"), Path("E:/Data")]:
-                # The raw_path column might have the original path
-                if row["raw_path"]:
-                    candidate = Path(row["raw_path"])
-                    if candidate.exists():
-                        raw_path = candidate
-                        break
+            stored = row["raw_path"]
+            if not stored:
+                raw_path_diag = "no raw_path stored on this row"
+            else:
+                candidate = Path(stored)
+                if candidate.exists():
+                    raw_path = candidate
+                else:
+                    raw_path_diag = f"raw_path not on disk: {stored}"
 
         # Re-extract metrics
         try:
@@ -1797,14 +1803,30 @@ def backfill_metrics(
         #   old was already populated. Lets a new extractor replace
         #   stale values from a prior version.
         updates: dict = {}
+        skipped_fields: list[tuple[str, str]] = []  # (field, reason) for diag
         for field in METRIC_FIELDS:
             old_val = row[field]
             new_val = metrics.get(field)
             if new_val is None or new_val == 0:
+                # Diagnostic: when --force was requested but the new
+                # extractor returned no value, the operator was probably
+                # expecting an update and got nothing. Surface the
+                # reason instead of silently moving on.
+                if force and old_val is not None and old_val != 0:
+                    skipped_fields.append((field, "extractor returned null"))
                 continue
             gap = (old_val is None or old_val == 0)
             if force or gap:
                 updates[field] = new_val
+
+        if force and skipped_fields and (errors + updated) < 8:
+            # Cap the diag noise to the first ~8 rows so a 200-row
+            # backfill doesn't flood. Enough to see the pattern.
+            reason_summary = ", ".join(f"{f}={r}" for f, r in skipped_fields)
+            extra = f" [{raw_path_diag}]" if raw_path_diag else ""
+            console.print(
+                f"  [dim]{run_name[:55]} → no-op for: {reason_summary}{extra}[/dim]"
+            )
 
         if not updates:
             skipped += 1
