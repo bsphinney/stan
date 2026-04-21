@@ -218,6 +218,28 @@ if ($fisherOk -match "ok") {
     Write-Host "  fisher_py not available (Thermo TIC falls back to TRFP - slower but works)." -ForegroundColor Yellow
 }
 
+# Install alphatims for Bruker MS1 spectrum access (PEG contamination
+# detection, `stan backfill-peg`). First install downloads ~150 MB of
+# deps (numpy/pandas are usually already present; alphatims itself is
+# small, h5py/pyzstd/tqdm are the new ones). Same don't-block-on-failure
+# pattern as fisher_py -- PEG detection is optional; STAN proper works
+# without it.
+Write-Host "  Installing alphatims (Bruker PEG reader)..." -ForegroundColor Gray
+& $venvPython -m pip install --quiet @pipTrust alphatims 2>&1 | ForEach-Object {
+    $line = $_.ToString()
+    if ($line -match "Successfully installed") {
+        Write-Host "  $line" -ForegroundColor Green
+    } elseif ($line -match "error|ERROR") {
+        Write-Host "  alphatims: $line" -ForegroundColor DarkYellow
+    }
+}
+$alphatimsOk = & $venvPython -c "import alphatims; print('ok')" 2>&1
+if ($alphatimsOk -match "ok") {
+    Write-Host "  alphatims available." -ForegroundColor Green
+} else {
+    Write-Host "  alphatims not available (PEG detection disabled). Rerun update to retry." -ForegroundColor Yellow
+}
+
 # If both venvs exist, retire the old .stan location.
 # Pre-v0.2.137 also re-installed STAN into the old .stan venv on
 # every update. That added 60-120 sec to each update because it
