@@ -1794,18 +1794,17 @@ def backfill_metrics(
             raw_path_diag = "no raw_path stored on this row"
         # vendor still passed when we have it (helps for the Thermo
         # branch that doesn't have a .d directory to disambiguate).
-        # Try BOTH name and instrument-model keys against vendor_map
-        # so a config-vs-DB key mismatch doesn't silently downgrade
-        # us to vendor=None.
-        vendor = (
-            vendor_map.get(instrument, "")
-            or vendor_map.get(row.get("instrument", ""), "")
-        )
-        # Final fallback: derive vendor from filename extension
+        # vendor_map is keyed by instruments.yml `name` ("data_bruker")
+        # while the DB stores the instrument *model* ("timsTOF HT") —
+        # so the lookup almost always misses, which is exactly the
+        # silent failure mode the v0.2.136 fix targets. Filename suffix
+        # is the most reliable fallback.
+        vendor = vendor_map.get(instrument, "")
         if not vendor:
-            if (run_name or "").lower().endswith(".d"):
+            lname = (run_name or "").lower()
+            if lname.endswith(".d"):
                 vendor = "bruker"
-            elif (run_name or "").lower().endswith(".raw"):
+            elif lname.endswith(".raw"):
                 vendor = "thermo"
 
         # Re-extract metrics
