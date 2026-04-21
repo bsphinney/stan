@@ -629,9 +629,12 @@
         return <div className="empty">No QC runs yet. Start the watcher to begin monitoring.</div>;
       }
 
-      // Filter to runs from today only
-      const today = new Date().toDateString();
-      const runs = allRuns.filter(r => new Date(r.run_date).toDateString() === today);
+      // Filter to runs from the last 7 days. Was "today only" pre-v0.2.143
+      // but a lab that runs QC a few times a week saw an empty tab on most
+      // days; week-window keeps the panel useful without drowning it in
+      // history (QC History tab is for deeper review).
+      const weekAgo = new Date(Date.now() - 7 * 86400000);
+      const runs = allRuns.filter(r => new Date(r.run_date) >= weekAgo);
 
       // Show most recent per instrument (always, even if not today)
       const byInstrument = {};
@@ -645,7 +648,7 @@
             <QuickStatus runs={runs} />
           ) : (
             <div className="card" style={{marginBottom:'1.5rem'}}>
-              <div style={{color:'var(--muted)'}}>No runs today yet. Showing most recent per instrument below.</div>
+              <div style={{color:'var(--muted)'}}>No QC runs in the last 7 days. Showing most recent per instrument below.</div>
             </div>
           )}
           <div className="grid">
@@ -2620,7 +2623,7 @@
             <span className="version">{ver ? `v${ver.version}` : ''}</span>
           </header>
           <div className="tabs">
-            {[['live', "Today's Runs"], ['history', 'QC History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
+            {[['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
               <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
             )}
           </div>

@@ -1997,6 +1997,156 @@ def column_install(
         console.print(f"  notes: {combined_notes}")
 
 
+@app.command("backfill-window-drift")
+def backfill_window_drift(
+    force: bool = typer.Option(
+        False, "--force",
+        help="Recompute drift even for rows that already have drift_class set.",
+    ),
+    instrument: str = typer.Option(
+        "", "--instrument",
+        help="Only backfill runs from this instrument (DB instrument string).",
+    ),
+    limit: int = typer.Option(
+        0, "--limit",
+        help="Stop after processing this many runs (0 = all).",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", help="Log per-run details.",
+    ),
+) -> None:
+    """Scan each run's .d for DIA window drift and populate drift_* columns.
+
+    Bruker-only (Thermo .raw doesn't have the same "isolation windows
+    with defined 1/K0 ranges" concept). Requires alphatims —
+    `stan install-peg-deps` if not installed.
+
+    Writes drift_coverage / drift_median_im / drift_p90_abs_im /
+    drift_class to the runs table. Verdict semantics in
+    stan.metrics.window_drift: ok / warn / drifted / unknown.
+    """
+    import json as _json
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from stan.config import get_user_config_dir, sync_to_hive_mirror
+    from stan.db import get_db_path, init_db, update_drift_result
+    from stan.metrics.window_drift import detect_window_drift
+
+    init_db()
+    db_path = get_db_path()
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        where = ["mode LIKE '%dia%'"]
+        params: list = []
+        if instrument:
+            where.append("instrument = ?")
+            params.append(instrument)
+        if not force:
+            where.append("(drift_class IS NULL OR drift_class = '')")
+        sql = (
+            "SELECT id, run_name, instrument, raw_path FROM runs "
+            "WHERE " + " AND ".join(where) + " ORDER BY run_date DESC"
+        )
+        if limit > 0:
+            sql += f" LIMIT {limit}"
+        rows = con.execute(sql, params).fetchall()
+
+    console.print(f"[bold]{len(rows)} runs queued for drift backfill[/bold]")
+
+    log_dir = get_user_config_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"backfill_drift_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    log_fh = open(log_path, "a", encoding="utf-8")
+
+    def _log(record: dict) -> None:
+        record["ts"] = datetime.now(timezone.utc).isoformat()
+        log_fh.write(_json.dumps(record) + "\n")
+        log_fh.flush()
+
+    _log({"event": "start", "n_queued": len(rows), "force": force})
+
+    n_updated = 0
+    n_skip_no_path = 0
+    n_skip_unknown = 0
+    n_errors = 0
+
+    for row in rows:
+        run = dict(row)
+        raw = run.get("raw_path") or ""
+        if not raw:
+            n_skip_no_path += 1
+            _log({"event": "skip", "run_id": run["id"], "reason": "no raw_path"})
+            continue
+        raw_path = Path(raw)
+        if not raw_path.exists():
+            n_skip_no_path += 1
+            _log({"event": "skip", "run_id": run["id"],
+                  "reason": "raw_path missing on disk", "raw_path": raw})
+            continue
+
+        try:
+            drift = detect_window_drift(raw_path)
+        except Exception as e:
+            n_errors += 1
+            _log({"event": "error", "run_id": run["id"], "run_name": run["run_name"],
+                  "error": str(e), "error_type": type(e).__name__})
+            if n_errors <= 3:
+                console.print(f"  [red]{run['run_name'][:50]}: {e}[/red]")
+            continue
+
+        if drift.drift_class == "unknown":
+            n_skip_unknown += 1
+            _log({"event": "skip_unknown", "run_id": run["id"],
+                  "run_name": run["run_name"]})
+            continue
+
+        update_drift_result(
+            run_id=run["id"],
+            drift_coverage=drift.global_coverage,
+            drift_median_im=drift.median_drift_im,
+            drift_p90_abs_im=drift.p90_abs_drift_im,
+            drift_class=drift.drift_class,
+        )
+        n_updated += 1
+        _log({
+            "event": "updated",
+            "run_id": run["id"], "run_name": run["run_name"],
+            "coverage": drift.global_coverage,
+            "median_drift_im": drift.median_drift_im,
+            "p90_abs_drift_im": drift.p90_abs_drift_im,
+            "drift_class": drift.drift_class,
+            "n_windows": drift.n_windows,
+        })
+        tag = {"ok": "dim", "warn": "yellow bold",
+               "drifted": "red bold"}.get(drift.drift_class, "")
+        if verbose or drift.drift_class in ("warn", "drifted"):
+            console.print(
+                f"  [{tag}]{run['run_name'][:50]:<50} "
+                f"cov={drift.global_coverage:.1%} "
+                f"drift={drift.median_drift_im:+.3f} "
+                f"p90={drift.p90_abs_drift_im:.3f} "
+                f"class={drift.drift_class}[/{tag}]"
+            )
+
+    console.print()
+    console.print(
+        f"[bold]Drift backfill complete[/bold] — "
+        f"updated={n_updated} no_path={n_skip_no_path} "
+        f"unknown={n_skip_unknown} errors={n_errors}"
+    )
+    _log({"event": "end", "updated": n_updated,
+          "skipped_no_path": n_skip_no_path, "skipped_unknown": n_skip_unknown,
+          "errors": n_errors})
+    log_fh.close()
+    try:
+        sync_to_hive_mirror(include_reports=False)
+    except Exception:
+        pass
+    console.print(f"[dim]Log: {log_path}[/dim]")
+
+
 @app.command("install-peg-deps")
 def install_peg_deps() -> None:
     """Install alphatims (Bruker PEG reader) into the current venv.

@@ -90,7 +90,15 @@ CREATE TABLE IF NOT EXISTS runs (
     peg_score              REAL,
     peg_n_ions_detected    INTEGER,
     peg_intensity_pct      REAL,
-    peg_class              TEXT
+    peg_class              TEXT,
+
+    -- DIA window drift detection (added v0.2.143). Populated by
+    -- stan backfill-window-drift. Bruker-only; Thermo gets NULL.
+    -- drift_class ∈ {ok, warn, drifted, unknown}.
+    drift_coverage         REAL,   -- 0..1, fraction of ion intensity inside any window
+    drift_median_im        REAL,   -- median per-window mode drift in 1/K0
+    drift_p90_abs_im       REAL,   -- 90th percentile |drift| across windows
+    drift_class            TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_instrument ON runs(instrument);
@@ -153,7 +161,19 @@ CREATE TABLE IF NOT EXISTS sample_health (
     dropout_rate_per_100_ms1 REAL,
     pressure_mean_mbar      REAL,
     pressure_range_mbar     REAL,
-    median_ms1_acc_ms       REAL
+    median_ms1_acc_ms       REAL,
+
+    -- PEG contamination + DIA window drift for sample (non-QC) runs
+    -- (added v0.2.143). Same semantics as the runs table columns so
+    -- dashboard code can treat sample_health rows interchangeably.
+    peg_score               REAL,
+    peg_class               TEXT,
+    peg_n_ions_detected     INTEGER,
+    peg_intensity_pct       REAL,
+    drift_coverage          REAL,
+    drift_median_im         REAL,
+    drift_p90_abs_im        REAL,
+    drift_class             TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_health_instrument ON sample_health(instrument);
@@ -238,7 +258,39 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("peg_n_ions_detected", "ALTER TABLE runs ADD COLUMN peg_n_ions_detected INTEGER"),
         ("peg_intensity_pct", "ALTER TABLE runs ADD COLUMN peg_intensity_pct REAL"),
         ("peg_class", "ALTER TABLE runs ADD COLUMN peg_class TEXT"),
+        # DIA window drift detection (added 2026-04-21, v0.2.143)
+        ("drift_coverage", "ALTER TABLE runs ADD COLUMN drift_coverage REAL"),
+        ("drift_median_im", "ALTER TABLE runs ADD COLUMN drift_median_im REAL"),
+        ("drift_p90_abs_im", "ALTER TABLE runs ADD COLUMN drift_p90_abs_im REAL"),
+        ("drift_class", "ALTER TABLE runs ADD COLUMN drift_class TEXT"),
     ]
+
+    # sample_health migrations — independent from runs so new columns
+    # added over time for non-QC monitor files pick up cleanly on old DBs.
+    sh_existing: set[str] = set()
+    try:
+        sh_existing = {row[1] for row in con.execute("PRAGMA table_info(sample_health)").fetchall()}
+    except sqlite3.OperationalError:
+        pass
+    sh_migrations: list[tuple[str, str]] = [
+        # PEG + drift on sample_health (added v0.2.143) — same semantics
+        # as the runs columns so dashboard code reuses rendering.
+        ("peg_score", "ALTER TABLE sample_health ADD COLUMN peg_score REAL"),
+        ("peg_class", "ALTER TABLE sample_health ADD COLUMN peg_class TEXT"),
+        ("peg_n_ions_detected", "ALTER TABLE sample_health ADD COLUMN peg_n_ions_detected INTEGER"),
+        ("peg_intensity_pct", "ALTER TABLE sample_health ADD COLUMN peg_intensity_pct REAL"),
+        ("drift_coverage", "ALTER TABLE sample_health ADD COLUMN drift_coverage REAL"),
+        ("drift_median_im", "ALTER TABLE sample_health ADD COLUMN drift_median_im REAL"),
+        ("drift_p90_abs_im", "ALTER TABLE sample_health ADD COLUMN drift_p90_abs_im REAL"),
+        ("drift_class", "ALTER TABLE sample_health ADD COLUMN drift_class TEXT"),
+    ]
+    for col, ddl in sh_migrations:
+        if sh_existing and col not in sh_existing:
+            try:
+                con.execute(ddl)
+                logger.info("Migration: added column '%s' to sample_health table", col)
+            except sqlite3.OperationalError as e:
+                logger.debug("sample_health migration %s failed: %s", col, e)
 
     for col, ddl in migrations:
         if col not in existing:
@@ -662,20 +714,54 @@ def update_peg_result(
     peg_intensity_pct: float,
     peg_class: str,
     db_path: Path | None = None,
+    table: str = "runs",
 ) -> bool:
-    """Write a PEG detection result onto an existing run row.
+    """Write a PEG detection result onto an existing row.
 
-    Returns True if the row was updated, False if no such run_id exists.
-    Designed for `stan backfill-peg` — writes all four PEG columns at once
-    so partial states don't leak onto the dashboard.
+    Args:
+        table: "runs" or "sample_health" — both tables have the
+            same peg_* columns, so one helper covers both write paths.
+
+    Returns True if the row was updated, False if no such id exists.
     """
     if db_path is None:
         db_path = get_db_path()
+    if table not in ("runs", "sample_health"):
+        raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
     with sqlite3.connect(str(db_path)) as con:
         cur = con.execute(
-            "UPDATE runs SET peg_score = ?, peg_n_ions_detected = ?, "
-            "peg_intensity_pct = ?, peg_class = ? WHERE id = ?",
+            f"UPDATE {table} SET peg_score = ?, peg_n_ions_detected = ?, "
+            f"peg_intensity_pct = ?, peg_class = ? WHERE id = ?",
             (peg_score, peg_n_ions_detected, peg_intensity_pct, peg_class, run_id),
+        )
+        return cur.rowcount > 0
+
+
+def update_drift_result(
+    run_id: str,
+    drift_coverage: float,
+    drift_median_im: float,
+    drift_p90_abs_im: float,
+    drift_class: str,
+    db_path: Path | None = None,
+    table: str = "runs",
+) -> bool:
+    """Write a DIA window drift detection result.
+
+    Args:
+        table: "runs" or "sample_health" — shared column schema.
+
+    Returns True if the row was updated, False if no such id exists.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if table not in ("runs", "sample_health"):
+        raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
+    with sqlite3.connect(str(db_path)) as con:
+        cur = con.execute(
+            f"UPDATE {table} SET drift_coverage = ?, drift_median_im = ?, "
+            f"drift_p90_abs_im = ?, drift_class = ? WHERE id = ?",
+            (drift_coverage, drift_median_im, drift_p90_abs_im, drift_class, run_id),
         )
         return cur.rowcount > 0
 

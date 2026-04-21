@@ -541,6 +541,13 @@ class InstrumentWatcher:
         except Exception:
             logger.debug("monitor TIC extraction failed for %s", path.name, exc_info=True)
 
+        # PEG + window drift on every Bruker sample_health row (Brett
+        # asked for "every sample" coverage, not just QC). Best-effort,
+        # same try/except pattern — if alphatims isn't installed the
+        # pipeline keeps running and columns stay NULL.
+        if health_id and vendor == "bruker":
+            self._run_peg_and_drift(path, health_id, table="sample_health")
+
         logger.info(
             "monitor: %s → %s (%s)",
             path.name, verdict["verdict"],
@@ -628,6 +635,79 @@ class InstrumentWatcher:
                 "acquisition_mode": mode.value if mode != AcquisitionMode.UNKNOWN else None,
             })
 
+    def _run_peg_and_drift(self, d_path: Path, row_id: str, table: str) -> None:
+        """Compute PEG score + DIA window drift for a Bruker .d and
+        write both to the given row's table.
+
+        Shared between the QC (runs) and sample_health (monitor) paths
+        so every acquisition gets contamination + drift coverage,
+        regardless of whether DIA-NN ran on it. Takes ~60–120s on a
+        typical timsTOF .d (two passes over MS1 frames via alphatims);
+        alphatims HDF-caches the parse between calls so the second
+        analysis is cheaper.
+
+        Fully best-effort. Any failure at any stage is logged at DEBUG
+        and the pipeline continues — columns stay NULL, operator sees
+        a badge-less row rather than a crashed watcher.
+        """
+        try:
+            from stan.metrics.peg import detect_peg_in_spectra
+            from stan.metrics.peg_io import read_ms1_bruker, PegReaderUnavailable
+            from stan.metrics.window_drift import detect_window_drift
+            from stan.db import update_peg_result, update_drift_result
+        except Exception:
+            logger.debug(
+                "PEG/drift imports failed; skipping for %s", d_path.name,
+                exc_info=True,
+            )
+            return
+
+        # PEG — reuses the backfill pipeline
+        try:
+            spectra = list(read_ms1_bruker(d_path))
+            peg = detect_peg_in_spectra(spectra)
+            update_peg_result(
+                run_id=row_id,
+                peg_score=peg.peg_score,
+                peg_n_ions_detected=peg.n_ions_detected,
+                peg_intensity_pct=peg.intensity_pct,
+                peg_class=peg.peg_class,
+                table=table,
+            )
+            if peg.peg_class in ("moderate", "heavy"):
+                logger.info(
+                    "watcher: PEG %s on %s (score %.1f, %d ions)",
+                    peg.peg_class, d_path.name, peg.peg_score,
+                    peg.n_ions_detected,
+                )
+        except PegReaderUnavailable:
+            logger.debug("alphatims missing — PEG skipped for %s", d_path.name)
+            return  # drift also needs alphatims, bail out early
+        except Exception:
+            logger.debug("PEG detection failed for %s", d_path.name, exc_info=True)
+
+        # DIA window drift
+        try:
+            drift = detect_window_drift(d_path)
+            if drift.drift_class != "unknown":
+                update_drift_result(
+                    run_id=row_id,
+                    drift_coverage=drift.global_coverage,
+                    drift_median_im=drift.median_drift_im,
+                    drift_p90_abs_im=drift.p90_abs_drift_im,
+                    drift_class=drift.drift_class,
+                    table=table,
+                )
+                if drift.drift_class in ("warn", "drifted"):
+                    logger.info(
+                        "watcher: window drift %s on %s "
+                        "(coverage %.1f%%, median drift %+.3f /K0)",
+                        drift.drift_class, d_path.name,
+                        100 * drift.global_coverage, drift.median_drift_im,
+                    )
+        except Exception:
+            logger.debug("drift detection failed for %s", d_path.name, exc_info=True)
+
     def _store_run(
         self, raw_path: Path, mode: AcquisitionMode, result_path: Path
     ) -> None:
@@ -678,7 +758,7 @@ class InstrumentWatcher:
                 except Exception:
                     raw_mtime = None
 
-            insert_run(
+            run_id = insert_run(
                 instrument=self._config.get("name", "unknown"),
                 run_name=raw_path.name,
                 raw_path=str(raw_path),
@@ -692,6 +772,14 @@ class InstrumentWatcher:
                 gradient_length_min=self._config.get("gradient_length_min"),
                 run_date=raw_mtime,
             )
+
+            # PEG + DIA window drift on every QC run (Bruker only —
+            # Thermo support follows in a later ship). Same best-effort
+            # pattern as the monitor path; never propagates exceptions
+            # because the QC row is already saved with full metrics
+            # and failure here just means empty peg/drift columns.
+            if run_id and (self._config.get("vendor") or "").lower() == "bruker":
+                self._run_peg_and_drift(raw_path, run_id, table="runs")
 
             if decision.result.value == "fail":
                 from stan.gating.queue import write_hold_flag
