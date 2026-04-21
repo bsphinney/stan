@@ -217,6 +217,72 @@
       return <span className={`badge ${cls}`}>{result.toUpperCase()}</span>;
     }
 
+    // PEG contamination badge. class ∈ {clean, trace, moderate, heavy}.
+    // Green/gray/yellow/red coloring; hover shows score + ion count +
+    // intensity percentage. Renders compact (2-3 letters) because the
+    // QC History row is already wide.
+    function PegBadge({ run }) {
+      const cls = run?.peg_class;
+      if (!cls) return <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>—</span>;
+      const label = { clean: 'CLN', trace: 'TRC', moderate: 'MOD', heavy: 'PEG' }[cls] || '—';
+      const color = {
+        clean:    '#6b7280',    // gray — uninteresting, don't draw the eye
+        trace:    '#a8a29e',    // warm gray — background contamination
+        moderate: '#eab308',    // yellow — fix sample prep
+        heavy:    '#dc2626',    // red — hold from community
+      }[cls] || '#6b7280';
+      const title =
+        `PEG ${cls}\n` +
+        `score: ${run.peg_score != null ? run.peg_score.toFixed(1) : '—'}\n` +
+        `ions detected: ${run.peg_n_ions_detected ?? '—'}\n` +
+        `% of MS1 TIC: ${run.peg_intensity_pct != null ? run.peg_intensity_pct.toFixed(2) + '%' : '—'}`;
+      return (
+        <span title={title}
+              style={{display:'inline-block', padding:'0.05rem 0.3rem',
+                      fontSize:'0.65rem', fontWeight:700,
+                      color:'#fff', background:color,
+                      borderRadius:'0.2rem', cursor:'help'}}>
+          {label}
+        </span>
+      );
+    }
+
+    // DIA window drift badge. class ∈ {ok, warn, drifted, unknown}.
+    // Hover shows coverage % + median and p90 drift in 1/K0 units.
+    function DriftBadge({ run }) {
+      const cls = run?.drift_class;
+      if (!cls || cls === 'unknown') {
+        return <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>—</span>;
+      }
+      const label = { ok: 'OK', warn: 'WARN', drifted: 'DRFT' }[cls] || '?';
+      const color = {
+        ok:      '#16a34a',
+        warn:    '#eab308',
+        drifted: '#dc2626',
+      }[cls] || '#6b7280';
+      const cov = run.drift_coverage != null
+        ? (run.drift_coverage * 100).toFixed(1) + '%'
+        : '—';
+      const md = run.drift_median_im != null
+        ? (run.drift_median_im >= 0 ? '+' : '') + run.drift_median_im.toFixed(3)
+        : '—';
+      const p90 = run.drift_p90_abs_im != null ? run.drift_p90_abs_im.toFixed(3) : '—';
+      const title =
+        `DIA window drift: ${cls}\n` +
+        `coverage: ${cov}\n` +
+        `median drift: ${md} /K0\n` +
+        `p90 |drift|: ${p90} /K0`;
+      return (
+        <span title={title}
+              style={{display:'inline-block', padding:'0.05rem 0.3rem',
+                      fontSize:'0.65rem', fontWeight:700,
+                      color:'#fff', background:color,
+                      borderRadius:'0.2rem', cursor:'help'}}>
+          {label}
+        </span>
+      );
+    }
+
     /* ── Gas Gauge: 3-second instrument health at a glance ──────── */
 
     function GasGauge({ value, min, max, mean, sd, label }) {
@@ -663,6 +729,12 @@
                 <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
                 {/* Gate metric removed 2026-04-20 — gating wasn't functional */}
                 <div className="metric"><span className="metric-label">IPS</span><span className="badge badge-grs">IPS {run.ips_score || '—'}</span></div>
+                <div className="metric">
+                  <span className="metric-label">PEG / Drift</span>
+                  <span style={{display:'inline-flex', gap:'0.3rem'}}>
+                    <PegBadge run={run} /><DriftBadge run={run} />
+                  </span>
+                </div>
                 {run.mode === 'DIA' && <div className="metric"><span className="metric-label">Precursors</span><span className="metric-value">{run.n_precursors?.toLocaleString()}</span></div>}
                 {run.mode === 'DDA' && <div className="metric"><span className="metric-label">PSMs</span><span className="metric-value">{run.n_psms?.toLocaleString()}</span></div>}
                 <div className="metric"><span className="metric-label">Time</span><span className="metric-value" title={new Date(run.run_date).toLocaleString()}>{new Date(run.run_date).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}</span></div>
@@ -1209,6 +1281,8 @@
                 <SortHeader col="instrument" label="Instrument" />
                 <SortHeader col="mode" label="Mode" />
                 <SortHeader col="ips_score" label="IPS" />
+                <SortHeader col="peg_class" label="PEG" />
+                <SortHeader col="drift_class" label="Drift" />
                 <SortHeader col="primary_ids" label="Precursors / PSMs" />
                 <SortHeader col="n_peptides" label="Peptides" />
                 <SortHeader col="n_proteins" label="Proteins" />
@@ -1247,6 +1321,8 @@
                       <td>{r.instrument}</td>
                       <td>{r.mode}</td>
                       <td><IpsBadge run={r} /></td>
+                      <td><PegBadge run={r} /></td>
+                      <td><DriftBadge run={r} /></td>
                       <td title={`${idsLabel}: ${ids != null ? ids.toLocaleString() : EM_DASH}`}>
                         {fmtNum(ids)} <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>{ids > 0 ? idsLabel : ''}</span>
                       </td>
@@ -2582,6 +2658,8 @@
                   <th>Run</th>
                   <th>Date</th>
                   <th>Verdict</th>
+                  <th>PEG</th>
+                  <th>Drift</th>
                   <th style={{ textAlign: 'right' }}>MS1 max</th>
                   <th style={{ textAlign: 'right' }}>Dropouts/100</th>
                   <th style={{ textAlign: 'right' }}>Dur (min)</th>
@@ -2596,6 +2674,8 @@
                     <td style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>{r.run_name}</td>
                     <td>{(r.run_date || '').substring(0, 19).replace('T', ' ')}</td>
                     <td style={{ color: verdictColor(r.verdict), fontWeight: 'bold' }}>{r.verdict}</td>
+                    <td><PegBadge run={r} /></td>
+                    <td><DriftBadge run={r} /></td>
                     <td style={{ textAlign: 'right' }}>{r.ms1_max_intensity ? r.ms1_max_intensity.toExponential(2) : '—'}</td>
                     <td style={{ textAlign: 'right' }}>{r.dropout_rate_per_100_ms1 ?? '—'}</td>
                     <td style={{ textAlign: 'right' }}>{r.rt_duration_min ?? '—'}</td>
