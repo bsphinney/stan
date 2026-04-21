@@ -1997,6 +1997,196 @@ def column_install(
         console.print(f"  notes: {combined_notes}")
 
 
+@app.command("backfill-peg")
+def backfill_peg(
+    force: bool = typer.Option(
+        False, "--force",
+        help="Recompute PEG score even for rows that already have one.",
+    ),
+    instrument: str = typer.Option(
+        "", "--instrument",
+        help="Only backfill runs from this instrument (DB instrument string).",
+    ),
+    limit: int = typer.Option(
+        0, "--limit",
+        help="Stop after processing this many runs (0 = all).",
+    ),
+    n_scans: int = typer.Option(
+        80, "--n-scans",
+        help="MS1 scans to sample per file. Fewer = faster, less sensitive.",
+    ),
+    verbose: bool = typer.Option(
+        False, "--verbose", help="Log per-run details.",
+    ),
+) -> None:
+    """Scan each run's raw file for PEG ions and populate peg_* columns.
+
+    Iterates runs in the local DB, reads MS1 spectra from the raw file
+    at `raw_path`, scans for the full PEG ion reference list at 5 ppm
+    tolerance, and writes peg_score / peg_n_ions_detected /
+    peg_intensity_pct / peg_class back to the row. Skips rows whose
+    raw_path is missing from disk.
+
+    Bruker (.d) files are supported in v0.2.139 via alphatims. Thermo
+    (.raw) support lands separately. Runs with missing extras (e.g.
+    alphatims not installed) are gracefully skipped with a clear
+    message; the command never crashes the DB.
+
+    A JSONL log is written to ~/.stan/logs/backfill_peg_<ts>.jsonl and
+    synced to the Hive mirror so remote debuggers can see the full
+    per-run breakdown.
+    """
+    import json as _json
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from stan.config import get_user_config_dir, sync_to_hive_mirror
+    from stan.db import get_db_path, init_db, update_peg_result
+
+    init_db()
+    db_path = get_db_path()
+
+    # Import the algorithm first (pure Python, always available) so we
+    # fail fast on import errors before even trying the IO layer.
+    from stan.metrics.peg import (
+        classify_peg_score,
+        detect_peg_in_spectra,
+    )
+    # IO layer — may fail for vendors where the optional extra isn't
+    # installed. We import here so the CLI still loads for --help even
+    # without alphatims.
+    from stan.metrics.peg_io import (
+        PegReaderUnavailable,
+        read_ms1_any,
+        N_SCANS_DEFAULT,
+    )
+
+    _ = N_SCANS_DEFAULT  # imported for the help text reference
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        where = []
+        params: list = []
+        if instrument:
+            where.append("instrument = ?")
+            params.append(instrument)
+        if not force:
+            where.append("peg_score IS NULL")
+        sql = "SELECT id, run_name, instrument, raw_path, mode, peg_score FROM runs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY run_date DESC"
+        if limit > 0:
+            sql += f" LIMIT {limit}"
+        rows = con.execute(sql, params).fetchall()
+
+    console.print(f"[bold]{len(rows)} runs queued for PEG backfill[/bold]")
+    if force:
+        console.print("[yellow]--force: recomputing even rows that already have a score[/yellow]")
+
+    # Diag log mirrors stan backfill-metrics for consistency.
+    log_dir = get_user_config_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"backfill_peg_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    log_fh = open(log_path, "a", encoding="utf-8")
+
+    def _log(record: dict) -> None:
+        record["ts"] = datetime.now(timezone.utc).isoformat()
+        log_fh.write(_json.dumps(record) + "\n")
+        log_fh.flush()
+
+    _log({"event": "start", "n_queued": len(rows), "n_scans": n_scans, "force": force})
+
+    n_updated = 0
+    n_skipped_no_path = 0
+    n_skipped_reader = 0
+    n_errors = 0
+
+    for i, row in enumerate(rows, 1):
+        run = dict(row)
+        raw_path_str = run.get("raw_path") or ""
+        if not raw_path_str:
+            n_skipped_no_path += 1
+            _log({"event": "skip", "run_id": run["id"], "run_name": run["run_name"],
+                  "reason": "no raw_path"})
+            continue
+        raw_path = Path(raw_path_str)
+        if not raw_path.exists():
+            n_skipped_no_path += 1
+            _log({"event": "skip", "run_id": run["id"], "run_name": run["run_name"],
+                  "reason": "raw_path not on disk", "raw_path": raw_path_str})
+            continue
+
+        t0 = datetime.now()
+        try:
+            spectra = list(read_ms1_any(raw_path, n_scans=n_scans))
+            result = detect_peg_in_spectra(spectra)
+        except PegReaderUnavailable as e:
+            n_skipped_reader += 1
+            _log({"event": "skip", "run_id": run["id"], "run_name": run["run_name"],
+                  "reason": "reader unavailable", "detail": str(e)})
+            if n_skipped_reader <= 3:
+                console.print(f"  [yellow]{run['run_name'][:50]}: {e}[/yellow]")
+            continue
+        except Exception as e:
+            n_errors += 1
+            _log({"event": "error", "run_id": run["id"], "run_name": run["run_name"],
+                  "error": str(e), "error_type": type(e).__name__})
+            if n_errors <= 3:
+                console.print(f"  [red]{run['run_name'][:50]}: {e}[/red]")
+            continue
+
+        elapsed = (datetime.now() - t0).total_seconds()
+        update_peg_result(
+            run_id=run["id"],
+            peg_score=result.peg_score,
+            peg_n_ions_detected=result.n_ions_detected,
+            peg_intensity_pct=result.intensity_pct,
+            peg_class=result.peg_class,
+        )
+        n_updated += 1
+        _log({
+            "event": "updated",
+            "run_id": run["id"], "run_name": run["run_name"],
+            "peg_score": round(result.peg_score, 2),
+            "peg_class": result.peg_class,
+            "n_ions": result.n_ions_detected,
+            "intensity_pct": round(result.intensity_pct, 3),
+            "elapsed_sec": round(elapsed, 1),
+        })
+
+        tag = {"clean": "dim", "trace": "yellow", "moderate": "yellow bold",
+               "heavy": "red bold"}.get(result.peg_class, "")
+        msg = (f"  [{tag}]{run['run_name'][:45]:<45} "
+               f"score={result.peg_score:>5.1f} {result.peg_class:<8} "
+               f"n_ions={result.n_ions_detected:>3} "
+               f"int_pct={result.intensity_pct:>5.2f} ({elapsed:.0f}s)[/{tag}]")
+        if verbose or result.peg_class in ("moderate", "heavy"):
+            console.print(msg)
+        if i % 10 == 0 and not verbose:
+            console.print(f"  [dim]{i}/{len(rows)} — updated={n_updated} "
+                          f"skipped={n_skipped_no_path + n_skipped_reader} "
+                          f"errors={n_errors}[/dim]")
+
+    console.print()
+    console.print(
+        f"[bold]PEG backfill complete[/bold] — "
+        f"updated={n_updated} skipped_no_path={n_skipped_no_path} "
+        f"skipped_reader={n_skipped_reader} errors={n_errors}"
+    )
+
+    _log({"event": "end", "n_updated": n_updated,
+          "n_skipped_no_path": n_skipped_no_path,
+          "n_skipped_reader": n_skipped_reader, "n_errors": n_errors})
+    log_fh.close()
+
+    try:
+        sync_to_hive_mirror(include_reports=False)
+    except Exception:
+        pass
+    console.print(f"[dim]Log: {log_path}[/dim]")
+
+
 @app.command("backfill-cirt")
 def backfill_cirt(
     verbose: bool = typer.Option(

@@ -81,7 +81,16 @@ CREATE TABLE IF NOT EXISTS runs (
     -- so submit-all / backfill jobs can still reason about it.
     hidden           INTEGER DEFAULT 0,
     hidden_reason    TEXT,
-    hidden_at        TEXT
+    hidden_at        TEXT,
+
+    -- PEG contamination detection (added v0.2.139). Populated by
+    -- stan backfill-peg (and later by the real-time pipeline).
+    -- peg_class ∈ {clean, trace, moderate, heavy}; thresholds in
+    -- stan.metrics.peg.classify_peg_score. peg_score is 0..100.
+    peg_score              REAL,
+    peg_n_ions_detected    INTEGER,
+    peg_intensity_pct      REAL,
+    peg_class              TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_instrument ON runs(instrument);
@@ -224,6 +233,11 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("hidden", "ALTER TABLE runs ADD COLUMN hidden INTEGER DEFAULT 0"),
         ("hidden_reason", "ALTER TABLE runs ADD COLUMN hidden_reason TEXT"),
         ("hidden_at", "ALTER TABLE runs ADD COLUMN hidden_at TEXT"),
+        # PEG contamination detection (added 2026-04-21, v0.2.139)
+        ("peg_score", "ALTER TABLE runs ADD COLUMN peg_score REAL"),
+        ("peg_n_ions_detected", "ALTER TABLE runs ADD COLUMN peg_n_ions_detected INTEGER"),
+        ("peg_intensity_pct", "ALTER TABLE runs ADD COLUMN peg_intensity_pct REAL"),
+        ("peg_class", "ALTER TABLE runs ADD COLUMN peg_class TEXT"),
     ]
 
     for col, ddl in migrations:
@@ -639,6 +653,31 @@ def insert_tic_trace(
                 n,
             ),
         )
+
+
+def update_peg_result(
+    run_id: str,
+    peg_score: float,
+    peg_n_ions_detected: int,
+    peg_intensity_pct: float,
+    peg_class: str,
+    db_path: Path | None = None,
+) -> bool:
+    """Write a PEG detection result onto an existing run row.
+
+    Returns True if the row was updated, False if no such run_id exists.
+    Designed for `stan backfill-peg` — writes all four PEG columns at once
+    so partial states don't leak onto the dashboard.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    with sqlite3.connect(str(db_path)) as con:
+        cur = con.execute(
+            "UPDATE runs SET peg_score = ?, peg_n_ions_detected = ?, "
+            "peg_intensity_pct = ?, peg_class = ? WHERE id = ?",
+            (peg_score, peg_n_ions_detected, peg_intensity_pct, peg_class, run_id),
+        )
+        return cur.rowcount > 0
 
 
 def insert_health_tic_trace(
