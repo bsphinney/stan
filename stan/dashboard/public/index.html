@@ -219,9 +219,10 @@
 
     // PEG contamination badge. class ∈ {clean, trace, moderate, heavy}.
     // Green/gray/yellow/red coloring; hover shows score + ion count +
-    // intensity percentage. Renders compact (2-3 letters) because the
-    // QC History row is already wide.
-    function PegBadge({ run }) {
+    // intensity percentage. v0.2.147: click opens the breakdown modal
+    // with a lollipop chart of the detected PEG ions. Badges fall back
+    // to hover-only (no click) when the run has no peg data.
+    function PegBadge({ run, source="runs" }) {
       const cls = run?.peg_class;
       if (!cls) return <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>—</span>;
       const label = { clean: 'CLN', trace: 'TRC', moderate: 'MOD', heavy: 'PEG' }[cls] || '—';
@@ -232,16 +233,25 @@
         heavy:    '#dc2626',    // red — hold from community
       }[cls] || '#6b7280';
       const title =
-        `PEG ${cls}\n` +
+        `PEG ${cls} — click for ion breakdown\n` +
         `score: ${run.peg_score != null ? run.peg_score.toFixed(1) : '—'}\n` +
         `ions detected: ${run.peg_n_ions_detected ?? '—'}\n` +
         `% of MS1 TIC: ${run.peg_intensity_pct != null ? run.peg_intensity_pct.toFixed(2) + '%' : '—'}`;
+      const onClick = () => {
+        const rid = run?.id || run?.run_id;
+        if (!rid) return;
+        window.dispatchEvent(new CustomEvent('stan:openBreakdown', {
+          detail: { kind: 'peg', runId: rid, source },
+        }));
+      };
       return (
         <span title={title}
+              onClick={onClick}
               style={{display:'inline-block', padding:'0.05rem 0.3rem',
                       fontSize:'0.65rem', fontWeight:700,
                       color:'#fff', background:color,
-                      borderRadius:'0.2rem', cursor:'help'}}>
+                      borderRadius:'0.2rem', cursor:'pointer',
+                      userSelect:'none'}}>
           {label}
         </span>
       );
@@ -249,7 +259,8 @@
 
     // DIA window drift badge. class ∈ {ok, warn, drifted, unknown}.
     // Hover shows coverage % + median and p90 drift in 1/K0 units.
-    function DriftBadge({ run }) {
+    // v0.2.147: click opens the per-window scatter chart.
+    function DriftBadge({ run, source="runs" }) {
       const cls = run?.drift_class;
       if (!cls || cls === 'unknown') {
         return <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>—</span>;
@@ -268,28 +279,434 @@
         : '—';
       const p90 = run.drift_p90_abs_im != null ? run.drift_p90_abs_im.toFixed(3) : '—';
       const title =
-        `DIA window drift: ${cls}\n` +
+        `DIA window drift: ${cls} — click for per-window chart\n` +
         `coverage: ${cov}\n` +
         `median drift: ${md} /K0\n` +
         `p90 |drift|: ${p90} /K0`;
+      const onClick = () => {
+        const rid = run?.id || run?.run_id;
+        if (!rid) return;
+        window.dispatchEvent(new CustomEvent('stan:openBreakdown', {
+          detail: { kind: 'drift', runId: rid, source },
+        }));
+      };
       return (
         <span title={title}
+              onClick={onClick}
               style={{display:'inline-block', padding:'0.05rem 0.3rem',
                       fontSize:'0.65rem', fontWeight:700,
                       color:'#fff', background:color,
-                      borderRadius:'0.2rem', cursor:'help'}}>
+                      borderRadius:'0.2rem', cursor:'pointer',
+                      userSelect:'none'}}>
           {label}
         </span>
+      );
+    }
+
+    /* ── PEG / Drift breakdown modal (v0.2.147) ──────────────────
+       Listens for window 'stan:openBreakdown' events (dispatched by
+       PegBadge / DriftBadge onClick) and opens a centered modal with
+       the appropriate chart. Lives at the App root so any badge
+       anywhere in the tree can trigger it without prop-drilling. */
+
+    function BreakdownModal() {
+      const [open, setOpen] = useState(false);
+      const [target, setTarget] = useState(null);  // { kind, runId, source }
+      const [data, setData] = useState(null);
+      const [error, setError] = useState(null);
+
+      useEffect(() => {
+        function onOpen(e) {
+          setTarget(e.detail);
+          setData(null);
+          setError(null);
+          setOpen(true);
+        }
+        function onKey(e) {
+          if (e.key === 'Escape') setOpen(false);
+        }
+        window.addEventListener('stan:openBreakdown', onOpen);
+        window.addEventListener('keydown', onKey);
+        return () => {
+          window.removeEventListener('stan:openBreakdown', onOpen);
+          window.removeEventListener('keydown', onKey);
+        };
+      }, []);
+
+      useEffect(() => {
+        if (!open || !target) return;
+        const { kind, runId, source } = target;
+        const url = API + `/api/runs/${encodeURIComponent(runId)}/${kind}` +
+                    `?source=${encodeURIComponent(source || 'runs')}`;
+        fetch(url)
+          .then(r => r.ok ? r.json() : Promise.reject(r.status))
+          .then(setData)
+          .catch(err => setError(`Failed to load: ${err}`));
+      }, [open, target]);
+
+      if (!open) return null;
+
+      return (
+        <div onClick={() => setOpen(false)}
+             style={{
+               position:'fixed', inset:0, background:'rgba(0,0,0,0.7)',
+               zIndex:1000, display:'flex', alignItems:'center',
+               justifyContent:'center', padding:'2rem',
+             }}>
+          <div onClick={e => e.stopPropagation()}
+               style={{
+                 background:'var(--card)', border:'1px solid var(--border)',
+                 borderRadius:'0.5rem', padding:'1.25rem',
+                 maxWidth:'1000px', width:'100%', maxHeight:'90vh',
+                 overflowY:'auto',
+               }}>
+            <div style={{display:'flex', justifyContent:'space-between',
+                         alignItems:'center', marginBottom:'0.75rem'}}>
+              <h3 style={{margin:0}}>
+                {target?.kind === 'peg' ? 'PEG ion breakdown' : 'DIA window drift breakdown'}
+              </h3>
+              <button onClick={() => setOpen(false)} style={{
+                background:'transparent', border:'1px solid var(--border)',
+                color:'var(--text)', cursor:'pointer',
+                borderRadius:'0.25rem', padding:'0.25rem 0.6rem',
+                fontSize:'0.85rem',
+              }}>Close (Esc)</button>
+            </div>
+            {error && <div style={{color:'var(--fail)'}}>{error}</div>}
+            {!error && !data &&
+              <div style={{color:'var(--muted)'}}>Loading…</div>}
+            {data && target?.kind === 'peg' && <PegChart payload={data} />}
+            {data && target?.kind === 'drift' && <DriftChart payload={data} />}
+          </div>
+        </div>
+      );
+    }
+
+    // PEG ion lollipop chart. x = m/z, y = intensity (log), marker
+    // colored by adduct, faint polyline connects runs of the same
+    // adduct so the 44 Da repeat spacing is visible.
+    function PegChart({ payload }) {
+      const summary = payload?.summary || {};
+      const hits = payload?.hits || [];
+
+      if (hits.length === 0) {
+        return (
+          <div>
+            <div style={{color:'var(--muted)', fontSize:'0.85rem', marginBottom:'0.6rem'}}>
+              Run: <strong>{summary.run_name || payload.run_id}</strong>
+            </div>
+            <div style={{color:'var(--muted)'}}>
+              No per-ion breakdown stored for this run. Re-run{' '}
+              <code>stan backfill-peg --force</code> (v0.2.147+) to populate.
+            </div>
+          </div>
+        );
+      }
+
+      const ADDUCT_COLORS = {
+        '+H':   '#60a5fa',   // blue
+        '+Na':  '#fbbf24',   // amber
+        '+NH4': '#c084fc',   // purple
+        '+K':   '#22d3ee',   // teal
+      };
+
+      const width = 920, height = 380;
+      const padding = { l: 64, r: 20, t: 20, b: 46 };
+      const w = width - padding.l - padding.r;
+      const h = height - padding.t - padding.b;
+
+      const mzs = hits.map(x => x.mz);
+      const mzMin = Math.min(...mzs);
+      const mzMax = Math.max(...mzs);
+      const mzRange = (mzMax - mzMin) || 1;
+
+      // Log scale on intensity so a single giant hit doesn't flatten
+      // the small ones.
+      const ints = hits.map(x => Math.max(1, x.observed_intensity));
+      const lmin = Math.log10(Math.min(...ints));
+      const lmax = Math.log10(Math.max(...ints));
+      const lrange = (lmax - lmin) || 1;
+
+      const xFor = mz => padding.l + ((mz - mzMin) / mzRange) * w;
+      const yFor = inten => padding.t + h -
+        ((Math.log10(Math.max(1, inten)) - lmin) / lrange) * h;
+
+      // Group by adduct for connecting polylines (sorted by mz so the
+      // line traces the 44 Da spacing cleanly). Avoid shadowing the
+      // outer `h` (chart height) with the loop variable.
+      const byAdduct = {};
+      for (const ion of hits) {
+        (byAdduct[ion.adduct] = byAdduct[ion.adduct] || []).push(ion);
+      }
+      for (const k in byAdduct) byAdduct[k].sort((a, b) => a.mz - b.mz);
+
+      const adductsPresent = Object.keys(byAdduct);
+
+      return (
+        <div>
+          <div style={{fontSize:'0.8rem', color:'var(--muted)', marginBottom:'0.4rem'}}>
+            Run: <strong style={{color:'var(--text)'}}>{summary.run_name || payload.run_id}</strong>
+            {' · '}class <strong style={{color:'var(--text)'}}>{summary.peg_class || '—'}</strong>
+            {' · '}score <strong style={{color:'var(--text)'}}>
+              {summary.peg_score != null ? summary.peg_score.toFixed(1) : '—'}
+            </strong>
+            {' · '}{hits.length} ions detected
+            {summary.peg_intensity_pct != null && (
+              <>{' · '}<strong style={{color:'var(--text)'}}>
+                {summary.peg_intensity_pct.toFixed(2)}%</strong> of MS1 TIC
+              </>
+            )}
+          </div>
+          <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:'auto'}}>
+            {/* y-axis log-scale ticks */}
+            {[lmin, lmin + lrange * 0.25, lmin + lrange * 0.5, lmin + lrange * 0.75, lmax].map((lv, i) => {
+              const y = padding.t + h - ((lv - lmin) / lrange) * h;
+              return (
+                <g key={`yt-${i}`}>
+                  <line x1={padding.l} y1={y} x2={width - padding.r} y2={y}
+                        stroke="var(--border)" strokeDasharray="2,3" strokeWidth="0.5" />
+                  <text x={padding.l - 6} y={y + 3} fill="var(--muted)"
+                        fontSize="10" textAnchor="end">
+                    {`10^${lv.toFixed(1)}`}
+                  </text>
+                </g>
+              );
+            })}
+            {/* x-axis m/z ticks */}
+            {Array.from({length: 6}, (_, i) => {
+              const mz = mzMin + (i / 5) * mzRange;
+              const x = padding.l + (i / 5) * w;
+              return (
+                <g key={`xt-${i}`}>
+                  <line x1={x} y1={padding.t + h} x2={x} y2={padding.t + h + 4}
+                        stroke="var(--muted)" strokeWidth="0.5" />
+                  <text x={x} y={padding.t + h + 16} fill="var(--muted)"
+                        fontSize="10" textAnchor="middle">
+                    {mz.toFixed(0)}
+                  </text>
+                </g>
+              );
+            })}
+            <text x={width / 2} y={height - 6} fill="var(--muted)"
+                  fontSize="11" textAnchor="middle">m/z</text>
+            <text x={12} y={padding.t + h / 2} fill="var(--muted)"
+                  fontSize="11" transform={`rotate(-90 12 ${padding.t + h / 2})`}
+                  textAnchor="middle">intensity (log)</text>
+
+            {/* Per-adduct connecting polyline (faint) */}
+            {adductsPresent.map(ad => {
+              const c = ADDUCT_COLORS[ad] || '#94a3b8';
+              const pts = byAdduct[ad].map(ion =>
+                `${xFor(ion.mz).toFixed(1)},${yFor(ion.observed_intensity).toFixed(1)}`
+              ).join(' ');
+              return (
+                <polyline key={`line-${ad}`} points={pts} fill="none"
+                          stroke={c} strokeWidth="0.8" opacity="0.45" />
+              );
+            })}
+
+            {/* Lollipop lines + dots per ion */}
+            {hits.map((ion, i) => {
+              const x = xFor(ion.mz);
+              const y = yFor(ion.observed_intensity);
+              const yFloor = padding.t + h;
+              const c = ADDUCT_COLORS[ion.adduct] || '#94a3b8';
+              const tip = `m/z ${ion.mz.toFixed(4)} [${ion.adduct}]` +
+                          (ion.charge > 1 ? `^${ion.charge}+` : '') +
+                          `\nrepeat n=${ion.repeat_n}\n` +
+                          `intensity ${Number(ion.observed_intensity).toExponential(2)}` +
+                          (ion.ppm_error != null ? `\nΔ ${ion.ppm_error.toFixed(2)} ppm` : '');
+              return (
+                <g key={`ion-${i}`}>
+                  <line x1={x} y1={yFloor} x2={x} y2={y}
+                        stroke={c} strokeWidth="1.1" opacity="0.85" />
+                  <circle cx={x} cy={y} r="3.2" fill={c}
+                          stroke="#000" strokeWidth="0.5">
+                    <title>{tip}</title>
+                  </circle>
+                </g>
+              );
+            })}
+          </svg>
+          {/* Adduct legend */}
+          <div style={{display:'flex', gap:'1rem', flexWrap:'wrap',
+                       fontSize:'0.75rem', color:'var(--muted)',
+                       marginTop:'0.4rem', paddingLeft:'1rem'}}>
+            {adductsPresent.map(ad => (
+              <span key={`leg-${ad}`}
+                    style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+                <span style={{width:'0.8rem', height:'0.8rem',
+                              background: ADDUCT_COLORS[ad] || '#94a3b8',
+                              borderRadius:'50%', display:'inline-block'}} />
+                [M{ad}]⁺ ({byAdduct[ad].length})
+              </span>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    // DIA window drift scatter. x = window index, y = observed 1/K0 mode
+    // minus window-center (so "drift from expected" is directly readable).
+    // Band around 0 shows the expected range; dots colored by coverage.
+    function DriftChart({ payload }) {
+      const summary = payload?.summary || {};
+      const windows = payload?.windows || [];
+
+      if (windows.length === 0) {
+        return (
+          <div>
+            <div style={{color:'var(--muted)', fontSize:'0.85rem', marginBottom:'0.6rem'}}>
+              Run: <strong>{summary.run_name || payload.run_id}</strong>
+            </div>
+            <div style={{color:'var(--muted)'}}>
+              No per-window breakdown stored for this run. Re-run{' '}
+              <code>stan backfill-window-drift --force</code> (v0.2.147+) to populate.
+            </div>
+          </div>
+        );
+      }
+
+      const width = 920, height = 360;
+      const padding = { l: 64, r: 20, t: 24, b: 46 };
+      const w = width - padding.l - padding.r;
+      const h = height - padding.t - padding.b;
+
+      const drifts = windows.map(x => x.drift_im);
+      const absMax = Math.max(0.05, ...drifts.map(Math.abs));
+      // Symmetric y-axis centered on 0 so no drift = middle of chart.
+      const yRange = absMax * 1.15 * 2;
+      const yMid = padding.t + h / 2;
+      const yFor = v => yMid - (v / yRange) * h;
+
+      const n = windows.length;
+      const xFor = i => padding.l + ((n > 1 ? i / (n - 1) : 0.5)) * w;
+
+      // Coverage → color ramp (red below 0.5, amber 0.5–0.75, green above).
+      const covColor = c => c >= 0.75 ? '#22c55e'
+                          : c >= 0.5  ? '#eab308'
+                          : '#ef4444';
+
+      // Expected band: ±0.03 /K0 is a rough "drift-free noise" envelope
+      // for timsTOF diaPASEF, calibrated against clean Astral HeLa runs.
+      const bandHi = yFor(0.03);
+      const bandLo = yFor(-0.03);
+
+      return (
+        <div>
+          <div style={{fontSize:'0.8rem', color:'var(--muted)', marginBottom:'0.4rem'}}>
+            Run: <strong style={{color:'var(--text)'}}>{summary.run_name || payload.run_id}</strong>
+            {' · '}class <strong style={{color:'var(--text)'}}>{summary.drift_class || '—'}</strong>
+            {' · '}coverage <strong style={{color:'var(--text)'}}>
+              {summary.drift_coverage != null ? (summary.drift_coverage * 100).toFixed(1) + '%' : '—'}
+            </strong>
+            {' · '}median drift <strong style={{color:'var(--text)'}}>
+              {summary.drift_median_im != null
+                ? (summary.drift_median_im >= 0 ? '+' : '') + summary.drift_median_im.toFixed(3)
+                : '—'} /K0
+            </strong>
+            {' · '}{n} windows
+          </div>
+          <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:'auto'}}>
+            {/* Expected-band (drift-free envelope) */}
+            <rect x={padding.l} y={bandHi} width={w} height={bandLo - bandHi}
+                  fill="#22c55e" opacity="0.10" />
+            {/* Zero line */}
+            <line x1={padding.l} y1={yMid} x2={padding.l + w} y2={yMid}
+                  stroke="var(--muted)" strokeDasharray="3,3" strokeWidth="0.8" />
+            {/* y-axis ticks */}
+            {[-absMax, -absMax * 0.5, 0, absMax * 0.5, absMax].map((v, i) => {
+              const y = yFor(v);
+              return (
+                <g key={`yt-${i}`}>
+                  <line x1={padding.l} y1={y} x2={width - padding.r} y2={y}
+                        stroke="var(--border)" strokeDasharray="2,3" strokeWidth="0.4" />
+                  <text x={padding.l - 6} y={y + 3} fill="var(--muted)"
+                        fontSize="10" textAnchor="end">
+                    {v >= 0 ? '+' : ''}{v.toFixed(3)}
+                  </text>
+                </g>
+              );
+            })}
+            {/* x-axis ticks (window index) */}
+            {Array.from({length: Math.min(6, n)}, (_, i) => {
+              const idx = Math.round((i / Math.max(1, Math.min(5, n - 1))) * (n - 1));
+              const x = xFor(idx);
+              return (
+                <g key={`xt-${i}`}>
+                  <line x1={x} y1={padding.t + h} x2={x} y2={padding.t + h + 4}
+                        stroke="var(--muted)" strokeWidth="0.5" />
+                  <text x={x} y={padding.t + h + 16} fill="var(--muted)"
+                        fontSize="10" textAnchor="middle">
+                    {windows[idx]?.window_idx ?? idx}
+                  </text>
+                </g>
+              );
+            })}
+            <text x={width / 2} y={height - 6} fill="var(--muted)"
+                  fontSize="11" textAnchor="middle">DIA window index</text>
+            <text x={12} y={yMid} fill="var(--muted)" fontSize="11"
+                  transform={`rotate(-90 12 ${yMid})`}
+                  textAnchor="middle">drift from expected (1/K0)</text>
+
+            {/* Window dots */}
+            {windows.map((w_, i) => {
+              const x = xFor(i);
+              const y = yFor(w_.drift_im);
+              const c = covColor(w_.coverage);
+              const tip =
+                `Window ${w_.window_idx}\n` +
+                `m/z ${w_.mz_low.toFixed(1)}–${w_.mz_high.toFixed(1)}\n` +
+                `expected 1/K0: ${w_.im_center.toFixed(3)}\n` +
+                `observed mode: ${w_.im_mode.toFixed(3)}\n` +
+                `drift: ${(w_.drift_im >= 0 ? '+' : '') + w_.drift_im.toFixed(3)}\n` +
+                `coverage: ${(w_.coverage * 100).toFixed(1)}%`;
+              return (
+                <circle key={`w-${i}`} cx={x} cy={y} r="3.2" fill={c}
+                        stroke="#000" strokeWidth="0.5" opacity="0.9">
+                  <title>{tip}</title>
+                </circle>
+              );
+            })}
+          </svg>
+          <div style={{display:'flex', gap:'1rem', flexWrap:'wrap',
+                       fontSize:'0.75rem', color:'var(--muted)',
+                       marginTop:'0.4rem', paddingLeft:'1rem'}}>
+            <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'0.8rem', height:'0.8rem', background:'#22c55e',
+                            borderRadius:'50%', display:'inline-block'}} />
+              coverage ≥75%
+            </span>
+            <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'0.8rem', height:'0.8rem', background:'#eab308',
+                            borderRadius:'50%', display:'inline-block'}} />
+              50–75%
+            </span>
+            <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'0.8rem', height:'0.8rem', background:'#ef4444',
+                            borderRadius:'50%', display:'inline-block'}} />
+              &lt;50%
+            </span>
+            <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'1rem', height:'0.6rem', background:'#22c55e',
+                            opacity:0.25, display:'inline-block'}} />
+              expected band (±0.03 /K0)
+            </span>
+          </div>
+        </div>
       );
     }
 
     /* ── Gas Gauge: 3-second instrument health at a glance ──────── */
 
     function GasGauge({ value, min, max, mean, sd, label }) {
-      // SVG inline gauge: 200 x 28. Shows a bar from min→max with zone
-      // coloring (green near mean, amber ±2σ, red beyond) and a white
-      // triangle pointer at `value`.
-      const W = 200, H = 28, BAR_Y = 8, BAR_H = 12;
+      // SVG inline gauge: 200 x 36. Shows a bar from min→max with zone
+      // coloring (green near mean, amber ±2σ, red beyond) and a large
+      // triangle pointer at `value`. v0.2.146 bumped H from 28 → 36,
+      // triangle size from 5px → 9px, and added a black stroke so the
+      // pointer doesn't vanish against dark bar colors — Brett reported
+      // the old triangles were hard to see on This Week's QCs gauges.
+      const W = 200, H = 36, BAR_Y = 12, BAR_H = 12;
       const range = max - min || 1;
       const pct = v => Math.max(0, Math.min(1, (v - min) / range));
 
@@ -323,10 +740,12 @@
             {/* Green zone (within 1σ) */}
             <rect x={4 + lo1*(W-8)} y={BAR_Y} width={(hi1-lo1)*(W-8)} height={BAR_H} fill="rgba(34,197,94,0.2)" />
             {/* Mean dashed line */}
-            <line x1={mx} x2={mx} y1={BAR_Y-1} y2={BAR_Y+BAR_H+1} stroke="var(--muted)" strokeWidth={1} strokeDasharray="2,2" />
-            {/* Value triangle pointer */}
-            <polygon points={`${tx-5},${BAR_Y-1} ${tx+5},${BAR_Y-1} ${tx},${BAR_Y+4}`} fill={statusColor} />
-            <polygon points={`${tx-5},${BAR_Y+BAR_H+1} ${tx+5},${BAR_Y+BAR_H+1} ${tx},${BAR_Y+BAR_H-4}`} fill={statusColor} />
+            <line x1={mx} x2={mx} y1={BAR_Y-2} y2={BAR_Y+BAR_H+2} stroke="var(--muted)" strokeWidth={1} strokeDasharray="2,2" />
+            {/* Value triangle pointer — large, outlined for visibility against dark bars */}
+            <polygon points={`${tx-9},${BAR_Y-10} ${tx+9},${BAR_Y-10} ${tx},${BAR_Y-1}`}
+                     fill={statusColor} stroke="#000" strokeWidth={1} strokeLinejoin="round" />
+            <polygon points={`${tx-9},${BAR_Y+BAR_H+10} ${tx+9},${BAR_Y+BAR_H+10} ${tx},${BAR_Y+BAR_H+1}`}
+                     fill={statusColor} stroke="#000" strokeWidth={1} strokeLinejoin="round" />
           </svg>
           <span style={{color:statusColor, fontSize:'0.75rem', fontWeight:700, width:'50px', fontVariantNumeric:'tabular-nums'}}>
             {value >= 1e6 ? (value/1e6).toFixed(1)+'M' : value >= 1000 ? (value/1000).toFixed(1)+'k' : value?.toFixed?.(0) || '—'}
@@ -761,6 +1180,11 @@
     function TodayTicOverlay() {
       const [data, setData] = useState(null);
       const [normalize, setNormalize] = useState(true);
+      // Which facets to render. 'all' keeps the original 3-panel view,
+      // 'qc' / 'sample' / 'blank' drill into a single category so the
+      // operator can focus. Brett 2026-04-21: default 3-up panels are
+      // hard to read when only one category matters.
+      const [filter, setFilter] = useState('all');
 
       useEffect(() => {
         fetch(API + '/api/today/tic-overview')
@@ -826,13 +1250,16 @@
         </div>
       );
 
-      // Per-facet color ramps so the operator can tell QC apart from
-      // Sample apart from Blank at a glance even when overlaid in
-      // adjacent panels.
-      const FACET_RAMPS = {
-        qc:     { from: [207, 231, 255], to: [30, 64, 175] },   // light → deep blue
-        sample: { from: [233, 213, 255], to: [88, 28, 135] },   // light → deep purple
-        blank:  { from: [229, 231, 235], to: [55, 65, 81] },    // light → deep gray
+      // Per-facet high-contrast palettes. v0.2.146: replaced the
+      // light→dark ramp that washed out on the dark dashboard bg
+      // (Brett saw near-invisible light-gray sample traces on 4/21).
+      // These are mid-tone saturated colors distinct from each other
+      // within a facet AND from other facets' palettes. Recency is
+      // encoded via line-width in TicOverlaySvg instead of brightness.
+      const FACET_PALETTES = {
+        qc:     ['#60a5fa', '#22d3ee', '#38bdf8', '#818cf8', '#a78bfa', '#34d399'],  // blues/teals
+        sample: ['#f472b6', '#c084fc', '#e879f9', '#fb7185', '#fbbf24', '#facc15'],  // purples/pinks/ambers
+        blank:  ['#cbd5e1', '#a3a3a3', '#9ca3af', '#d4d4d8', '#94a3b8', '#71717a'],  // light neutrals on dark
       };
 
       return (
@@ -841,28 +1268,47 @@
             <h3 style={{margin:0}}>
               Today's TIC overlay ({totalWithTic} trace{totalWithTic === 1 ? '' : 's'})
             </h3>
-            <label style={{display:'inline-flex', alignItems:'center', gap:'0.3rem', fontSize:'0.8rem', color:'var(--muted)'}}>
-              <input type="checkbox" checked={normalize}
-                     onChange={e => setNormalize(e.target.checked)} />
-              Normalize (0–1 per trace)
-            </label>
+            <div style={{display:'flex', alignItems:'center', gap:'0.6rem', flexWrap:'wrap'}}>
+              {/* Facet filter: All / QC / Sample / Blank */}
+              <div style={{display:'inline-flex', gap:'0.2rem'}}>
+                {[
+                  ['all', 'All'],
+                  ['qc', `QC (${facets.qc?.length || 0})`],
+                  ['sample', `Sample (${facets.sample?.length || 0})`],
+                  ['blank', `Blank (${facets.blank?.length || 0})`],
+                ].map(([k, lab]) => (
+                  <button key={k} onClick={() => setFilter(k)} style={{
+                    padding:'0.2rem 0.55rem', fontSize:'0.75rem',
+                    background: filter === k ? 'var(--accent)' : 'var(--bg)',
+                    color: filter === k ? '#000' : 'var(--text)',
+                    border:'1px solid var(--border)', borderRadius:'0.25rem',
+                    cursor:'pointer',
+                  }}>{lab}</button>
+                ))}
+              </div>
+              <label style={{display:'inline-flex', alignItems:'center', gap:'0.3rem', fontSize:'0.8rem', color:'var(--muted)'}}>
+                <input type="checkbox" checked={normalize}
+                       onChange={e => setNormalize(e.target.checked)} />
+                Normalize (0–1 per trace)
+              </label>
+            </div>
           </div>
           {columnSubtitle}
           <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0.25rem 0 0.5rem 0'}}>
-            Three panels: QC (blue), Sample (purple), Blank (gray). Light = earliest
-            run of the day, dark = most recent. Divergence = LC or spray issue
-            appearing mid-day. Triangles at the bottom of QC = cIRT anchor peptide
-            RTs for the most recent QC run (green &lt;0.5 min drift, yellow &lt;1.5,
-            red ≥1.5).
+            Distinct color per trace within each facet · thicker line = more recent run.
+            Divergence between traces = LC or spray issue appearing mid-day.
+            Triangles at the bottom of QC = cIRT anchor peptide RTs for the most
+            recent QC run (green &lt;0.5 min drift, yellow &lt;1.5, red ≥1.5).
           </p>
           {['qc', 'sample', 'blank'].map(cls => {
+            if (filter !== 'all' && filter !== cls) return null;
             const items = facets[cls] || [];
             const withTic = items.filter(r => r.has_tic);
             const label = cls === 'qc' ? 'QC' : cls === 'sample' ? 'Sample' : 'Blank';
             return (
               <FacetPanel key={cls}
                           label={label} items={items} withTic={withTic}
-                          ramp={FACET_RAMPS[cls]} normalize={normalize}
+                          palette={FACET_PALETTES[cls]} normalize={normalize}
                           showCirtMarkers={cls === 'qc'} />
             );
           })}
@@ -873,7 +1319,7 @@
     // One panel within the 3-facet TIC overlay. Renders a TicOverlaySvg
     // (when there are TIC traces) or a one-line stub (when items
     // exist but none have a stored TIC).
-    function FacetPanel({ label, items, withTic, ramp, normalize, showCirtMarkers }) {
+    function FacetPanel({ label, items, withTic, palette, normalize, showCirtMarkers }) {
       if (items.length === 0) return null;
       return (
         <div style={{marginTop:'0.5rem', paddingTop:'0.5rem', borderTop:'1px solid var(--border)'}}>
@@ -887,7 +1333,7 @@
           </div>
           {withTic.length > 0
             ? <TicOverlaySvg runs={withTic} normalize={normalize}
-                             ramp={ramp} showCirtMarkers={showCirtMarkers} />
+                             palette={palette} showCirtMarkers={showCirtMarkers} />
             : <div style={{color:'var(--muted)', fontSize:'0.75rem', padding:'0.4rem 0'}}>
                 No TIC traces yet for these runs.
                 {label !== 'QC' && (
@@ -898,27 +1344,22 @@
       );
     }
 
-    // Blend two RGB triples by t∈[0,1]. Used for a light→dark time-of-day ramp.
-    function _blend(c0, c1, t) {
-      return [
-        Math.round(c0[0] + (c1[0] - c0[0]) * t),
-        Math.round(c0[1] + (c1[1] - c0[1]) * t),
-        Math.round(c0[2] + (c1[2] - c0[2]) * t),
-      ];
+    // v0.2.146: per-trace distinct-color palette replaces the old
+    // light→dark ramp. Brett: light-end of the ramp disappeared on
+    // the dark dashboard. Palette cycles if n > palette.length.
+    function traceColor(i, palette) {
+      const p = palette || ['#60a5fa', '#22d3ee', '#38bdf8', '#818cf8', '#a78bfa', '#34d399'];
+      return p[i % p.length];
     }
-    function timeOfDayColor(i, n, ramp) {
-      // Light → deep ramp interpolated linearly. Default = the original
-      // pale-to-deep blue from Ship B; per-facet ramps override it so
-      // QC stays blue, Sample is purple, Blank is gray. Keeps early
-      // runs visible without washing them out and pushes the most
-      // recent runs forward, which is what the operator cares about.
-      const r = ramp || { from: [207, 231, 255], to: [30, 64, 175] };
-      const t = n > 1 ? i / (n - 1) : 1;
-      const rgb = _blend(r.from, r.to, t);
-      return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    // Line width encodes recency — newest trace is thickest so the
+    // operator's eye goes to the current run first.
+    function traceWidth(i, n) {
+      if (n <= 1) return 2.2;
+      const t = i / (n - 1);  // 0 = oldest, 1 = newest
+      return 1.2 + t * 1.6;   // 1.2 → 2.8 px
     }
 
-    function TicOverlaySvg({ runs, normalize, height=260, ramp,
+    function TicOverlaySvg({ runs, normalize, height=260, palette,
                               showCirtMarkers=true }) {
       // Convert each run's rt_min[] + intensity[] into (x, y) path points.
       // Shared x-axis = max RT across all runs. Shared y-axis = either
@@ -978,10 +1419,10 @@
               {normalize ? 'Intensity (normalized)' : 'Intensity (raw)'}
             </text>
 
-            {/* TIC lines — reverse-iterate so earliest runs draw first and
-                recent (darker, higher-contrast) runs draw on top */}
+            {/* TIC lines — oldest first so newest (thicker) paints on top */}
             {series.map((s, si) => {
-              const c = timeOfDayColor(si, series.length, ramp);
+              const c = traceColor(si, palette);
+              const lw = traceWidth(si, series.length);
               const pts = s.rt.map((t, i) => {
                 const x = padding + ((t - rtMin) / rtRange) * w;
                 const y = padding + h - ((s.y[i] - yMin) / yRange) * h;
@@ -995,7 +1436,7 @@
                           `IPS ${s.run.ips_score || '—'} · ${ids ? ids.toLocaleString() : '—'} ${idsLabel}`;
               return (
                 <path key={`tic-${s.run.run_id}`} d={pts} fill="none"
-                      stroke={c} strokeWidth="1.5" opacity="0.85">
+                      stroke={c} strokeWidth={lw} opacity="0.95">
                   <title>{tip}</title>
                 </path>
               );
@@ -1035,19 +1476,21 @@
                   `Observed: ${m.observed_rt_min.toFixed(3)} min\n` +
                   `Reference: ${refStr}\n` +
                   `Δ: ${devStr}  (${m.deviation_class})`;
-                // Downward-pointing triangle, apex at x, base above yBase
+                // v0.2.146: triangles enlarged 4px→8px wide, 7px→13px tall
+                // with a black stroke so they read cleanly on any background.
+                const TRI_W = 8, TRI_H = 13;
                 const tri = `${x.toFixed(1)},${yBase.toFixed(1)} ` +
-                            `${(x-4).toFixed(1)},${(yBase-7).toFixed(1)} ` +
-                            `${(x+4).toFixed(1)},${(yBase-7).toFixed(1)}`;
-                // Thin dotted vertical guide from the triangle up into
-                // the chart so the operator can eyeball which part of
-                // the TIC the peptide anchors to.
+                            `${(x-TRI_W).toFixed(1)},${(yBase-TRI_H).toFixed(1)} ` +
+                            `${(x+TRI_W).toFixed(1)},${(yBase-TRI_H).toFixed(1)}`;
+                // Dotted vertical guide from the triangle up into the
+                // chart so the operator can eyeball which part of the
+                // TIC the peptide anchors to.
                 return (
                   <g key={`cirt-${mi}`}>
-                    <line x1={x} y1={padding} x2={x} y2={yBase-7}
+                    <line x1={x} y1={padding} x2={x} y2={yBase-TRI_H}
                           stroke={c} strokeDasharray="2,3"
-                          strokeWidth="0.6" opacity="0.35" />
-                    <polygon points={tri} fill={c} stroke="#fff" strokeWidth="0.5">
+                          strokeWidth="0.9" opacity="0.5" />
+                    <polygon points={tri} fill={c} stroke="#000" strokeWidth="1" strokeLinejoin="round">
                       <title>{tip}</title>
                     </polygon>
                   </g>
@@ -1055,20 +1498,40 @@
               });
             })()}
           </svg>
-          <div style={{display:'flex', gap:'0.8rem', flexWrap:'wrap',
-                       fontSize:'0.7rem', color:'var(--muted)',
-                       marginTop:'0.3rem', paddingLeft:'1rem'}}>
+          {/* Legend: one entry per trace with time + full run name.
+              v0.2.146: legend now shows run_name (truncated, with full
+              name on hover) — Brett pointed out the old legend only
+              showed the instrument key which was useless for telling
+              traces apart. Swatch width matches the line's thickness
+              (recency). */}
+          <div style={{display:'flex', flexDirection:'column', gap:'0.2rem',
+                       fontSize:'0.72rem', color:'var(--text)',
+                       marginTop:'0.4rem', paddingLeft:'1rem'}}>
             {series.map((s, si) => {
-              const c = timeOfDayColor(si, series.length, ramp);
+              const c = traceColor(si, palette);
+              const lw = traceWidth(si, series.length);
               const dt = new Date(s.run.run_date);
               const timeStr = dt.toLocaleString([], {hour:'2-digit', minute:'2-digit'});
+              const fullName = s.run.run_name || '—';
+              const shortName = fullName.length > 48
+                ? fullName.slice(0, 45) + '…'
+                : fullName;
               return (
                 <span key={`leg-${s.run.run_id}`}
-                      style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
-                  <span style={{width:'1rem', height:'2px', background:c,
-                                display:'inline-block'}} />
-                  {timeStr}
-                  <span style={{opacity:0.7}}>{s.run.instrument}</span>
+                      title={fullName}
+                      style={{display:'inline-flex', alignItems:'center',
+                              gap:'0.45rem', fontVariantNumeric:'tabular-nums'}}>
+                  <span style={{width:'1.1rem', height:`${lw}px`, background:c,
+                                display:'inline-block', borderRadius:'1px',
+                                flexShrink:0}} />
+                  <span style={{color:'var(--muted)', width:'3.2rem', flexShrink:0}}>
+                    {timeStr}
+                  </span>
+                  <span style={{fontFamily:'ui-monospace, Menlo, monospace',
+                                whiteSpace:'nowrap', overflow:'hidden',
+                                textOverflow:'ellipsis'}}>
+                    {shortName}
+                  </span>
                 </span>
               );
             })}
@@ -1712,7 +2175,7 @@
           </div>
           {!filteredTrends || filteredTrends.length === 0
             ? <div className="empty">No trend data for {selected || 'this instrument'}.</div>
-            : <TrendGraphs runs={filteredTrends} events={events} community={community} selected={selected} />
+            : <TrendGraphs runs={filteredTrends} events={events} community={community} selected={selected} timeFilter={timeFilter} />
           }
         </div>
       );
@@ -1979,7 +2442,7 @@
       );
     }
 
-    function TrendGraphs({ runs, events, community, selected }) {
+    function TrendGraphs({ runs, events, community, selected, timeFilter }) {
       // Sort runs by date ascending for trend plotting
       const sorted = useMemo(
         () => [...runs].sort((a, b) => new Date(a.run_date) - new Date(b.run_date)),
@@ -2033,7 +2496,7 @@
             </p>
             <Sparkline {...common} metric="median_points_across_peak" label="Datapoints per peak" />
           </div>
-          <CIRTCard instrument={selected} />
+          <CIRTCard instrument={selected} timeFilter={timeFilter} />
           <div style={{fontSize:'0.75rem', color:'var(--muted)', padding:'0.5rem'}}>
             Lines split by SPD · solid = local runs · dashed gray = this-instrument median
             · dashed color = community median · dashed vertical = maintenance event.
@@ -2056,7 +2519,7 @@
     // exist for the selected instrument (user hasn't run
     // `stan backfill-cirt` yet, or their instrument doesn't have
     // a seeded panel for any SPD).
-    function CIRTCard({ instrument }) {
+    function CIRTCard({ instrument, timeFilter }) {
       const [data, setData] = useState(null);
       const [selectedSpd, setSelectedSpd] = useState(null);
 
@@ -2069,12 +2532,30 @@
           .catch(() => setData({ peptides: {}, n_runs: 0 }));
       }, [instrument]);
 
+      // Apply the Trends-page time filter (Week / Month / etc.) to
+      // every peptide's observation list. Without this the chart
+      // always shows the full 500-run history regardless of the
+      // button the user picked at the top of the page.
+      const filteredData = useMemo(() => {
+        if (!data?.peptides) return data;
+        const cutoffs = { week: 7, month: 30, '3month': 90, '6month': 180, year: 365 };
+        const days = cutoffs[timeFilter];
+        if (!days) return data;
+        const cutoff = new Date(Date.now() - days * 86400000);
+        const out = {};
+        for (const [seq, p] of Object.entries(data.peptides)) {
+          const obs = p.observations.filter(o => new Date(o.run_date) >= cutoff);
+          if (obs.length) out[seq] = { ...p, observations: obs };
+        }
+        return { ...data, peptides: out };
+      }, [data, timeFilter]);
+
       // Every SPD that appears in at least one observation across
       // all peptides. Defaulting to the SPD with the most data.
       const availableSpds = useMemo(() => {
-        if (!data?.peptides) return [];
+        if (!filteredData?.peptides) return [];
         const counts = new Map();
-        for (const p of Object.values(data.peptides)) {
+        for (const p of Object.values(filteredData.peptides)) {
           for (const o of p.observations) {
             const k = o.spd || null;
             counts.set(k, (counts.get(k) || 0) + 1);
@@ -2083,7 +2564,7 @@
         return [...counts.entries()]
           .sort((a, b) => (b[1] - a[1]))
           .map(([k]) => k);
-      }, [data]);
+      }, [filteredData]);
 
       useEffect(() => {
         if (availableSpds.length && selectedSpd == null) {
@@ -2109,6 +2590,16 @@
               existing report.parquet files. Requires a seeded panel
               for the instrument family — see{' '}
               <code>stan/metrics/cirt.py::EMPIRICAL_CIRT_PANELS</code>.
+            </div>
+          </div>
+        );
+      }
+      if (!filteredData.peptides || Object.keys(filteredData.peptides).length === 0) {
+        return (
+          <div className="card">
+            <h3>cIRT anchor RT drift</h3>
+            <div style={{color:'var(--muted)', fontSize:'0.85rem'}}>
+              No cIRT anchors in the selected time range. Widen the Time range filter above.
             </div>
           </div>
         );
@@ -2141,7 +2632,7 @@
             SPD. Flat lines = LC behaving normally; upward or downward drift =
             column/gradient change. Horizontal dashes = the panel's reference RT.
           </p>
-          <CIRTSparkline peptides={data.peptides} spd={selectedSpd} />
+          <CIRTSparkline peptides={filteredData.peptides} spd={selectedSpd} />
         </div>
       );
     }
@@ -2716,6 +3207,9 @@
             {tab === 'config' && <ConfigEditor />}
             {tab === 'community' && <CommunityTab />}
           </ErrorBoundary>
+          {/* PEG/Drift breakdown modal. Event-driven so any badge,
+              in any tab, can open it without prop-drilling state. */}
+          <BreakdownModal />
         </div>
       );
     }

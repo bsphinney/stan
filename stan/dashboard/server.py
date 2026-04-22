@@ -541,6 +541,80 @@ async def api_cirt(instrument: str, limit: int = 500) -> dict:
     return {"peptides": peptides, "n_runs": len(run_ids)}
 
 
+@app.get("/api/runs/{run_id}/peg")
+async def api_run_peg(run_id: str, source: str = "runs") -> dict:
+    """Return the per-ion PEG breakdown for a run.
+
+    Powers the dashboard's PEG lollipop chart. Includes the summary
+    scalar fields alongside the per-ion hits so the frontend doesn't
+    need a second request for the badge metadata.
+
+    Args:
+        run_id: runs.id or sample_health.id depending on ``source``.
+        source: "runs" or "sample_health" — which parent table the
+            run_id belongs to. Defaults to "runs" (QC rows).
+    """
+    import sqlite3
+    from stan.db import get_db_path, get_peg_ion_hits
+
+    if source not in ("runs", "sample_health"):
+        raise HTTPException(status_code=400, detail="source must be 'runs' or 'sample_health'")
+
+    db_path = get_db_path()
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="database not found")
+
+    hits = get_peg_ion_hits(run_id=run_id, table=source)
+
+    # Pull the summary fields from the parent row so the UI can show
+    # "score 62 — 14 ions detected" alongside the chart.
+    summary: dict = {}
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            f"SELECT run_name, peg_score, peg_n_ions_detected, "
+            f"peg_intensity_pct, peg_class FROM {source} WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is not None:
+            summary = dict(row)
+
+    return {"run_id": run_id, "source": source, "summary": summary, "hits": hits}
+
+
+@app.get("/api/runs/{run_id}/drift")
+async def api_run_drift(run_id: str, source: str = "runs") -> dict:
+    """Return the per-window DIA drift breakdown for a run.
+
+    Powers the dashboard's drift scatter chart. See ``api_run_peg`` for
+    the ``source`` parameter semantics.
+    """
+    import sqlite3
+    from stan.db import get_db_path, get_drift_window_centroids
+
+    if source not in ("runs", "sample_health"):
+        raise HTTPException(status_code=400, detail="source must be 'runs' or 'sample_health'")
+
+    db_path = get_db_path()
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="database not found")
+
+    windows = get_drift_window_centroids(run_id=run_id, table=source)
+
+    summary: dict = {}
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            f"SELECT run_name, drift_coverage, drift_median_im, "
+            f"drift_p90_abs_im, drift_class FROM {source} WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is not None:
+            summary = dict(row)
+
+    return {"run_id": run_id, "source": source, "summary": summary, "windows": windows}
+
+
 @app.get("/api/thresholds")
 async def api_thresholds() -> dict:
     """Get current QC thresholds (hot-reloaded)."""

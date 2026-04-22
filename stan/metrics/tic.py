@@ -115,9 +115,19 @@ def downsample_trace(trace: TICTrace, n_bins: int = 128) -> TICTrace:
     Bruker ``extract_tic_bruker`` returns one point per MS1 frame, which
     can be 5–20k points for a 1 h run — too much for a community
     submission payload and too noisy for cross-lab overlay plots. This
-    bins the trace into ``n_bins`` equal-width RT bins by summing
-    intensities within each bin (NOT averaging — the total signal
-    matters more than the instantaneous value).
+    bins the trace into ``n_bins`` equal-width RT bins and stores the
+    MEAN intensity per bin.
+
+    v0.2.147: switched from sum-per-bin to mean-per-bin. The sum
+    approach produced a ~10% sawtooth artifact on Bruker timsTOF TICs:
+    with ~1,250 MS1 frames and 128 bins, most bins got 10 frames and
+    some got 9, so summing imposed a ~11% variation on the output that
+    tracked the bin-count quantization rather than any real signal.
+    Mean-per-bin is what the chart's "intensity at this RT" label
+    actually means, and it matches the smooth shape Bruker Compass
+    shows for the same data. Any downstream "total ion current" math
+    can recover the sum by multiplying by the constant frame rate
+    (frames per RT bin = n_total_frames / n_bins).
 
     The downsampled trace has the same shape as the output of
     ``extract_tic_from_report``, so both sources produce comparable
@@ -136,7 +146,8 @@ def downsample_trace(trace: TICTrace, n_bins: int = 128) -> TICTrace:
 
     bin_width = span / n_bins
     bin_centers = [rt_lo + (i + 0.5) * bin_width for i in range(n_bins)]
-    bin_intensity = [0.0] * n_bins
+    bin_sum = [0.0] * n_bins
+    bin_count = [0] * n_bins
 
     for rt, inten in zip(trace.rt_min, trace.intensity):
         idx = int((rt - rt_lo) / bin_width)
@@ -144,7 +155,15 @@ def downsample_trace(trace: TICTrace, n_bins: int = 128) -> TICTrace:
             idx = n_bins - 1
         if idx < 0:
             idx = 0
-        bin_intensity[idx] += float(inten)
+        bin_sum[idx] += float(inten)
+        bin_count[idx] += 1
+
+    # Mean per bin — removes the n-frames-per-bin quantization artifact.
+    # Empty bins (no frames landed here, e.g. at edges) keep 0.0.
+    bin_intensity = [
+        bin_sum[i] / bin_count[i] if bin_count[i] else 0.0
+        for i in range(n_bins)
+    ]
 
     return TICTrace(
         rt_min=bin_centers,

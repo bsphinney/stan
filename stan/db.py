@@ -202,6 +202,49 @@ CREATE TABLE IF NOT EXISTS irt_anchor_rts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_irt_anchor_peptide ON irt_anchor_rts(peptide);
+
+-- PEG ion hit breakdown (v0.2.147) — one row per detected PEG ion for
+-- each run. Enables the dashboard's PEG lollipop chart by exposing
+-- *which* m/z values fired and at what intensity, not just the summary
+-- score. The `source` column is "runs" or "sample_health" — same
+-- split-namespace pattern as tic_traces / health_tic_traces, but
+-- folded into one table because breakdown rows are small and the
+-- chart queries both sources with the same code path.
+CREATE TABLE IF NOT EXISTS peg_ion_hits (
+    run_id              TEXT NOT NULL,
+    source              TEXT NOT NULL,          -- 'runs' | 'sample_health'
+    mz                  REAL NOT NULL,          -- observed m/z (best match)
+    observed_intensity  REAL NOT NULL,
+    adduct              TEXT NOT NULL,          -- '+H' | '+Na' | '+NH4' | '+K'
+    repeat_n            INTEGER NOT NULL,       -- PEG degree of polymerization
+    charge              INTEGER NOT NULL DEFAULT 1,
+    ppm_error           REAL,
+    PRIMARY KEY (run_id, source, repeat_n, adduct, charge)
+);
+
+CREATE INDEX IF NOT EXISTS idx_peg_hits_run ON peg_ion_hits(run_id, source);
+
+-- DIA window drift breakdown (v0.2.147) — one row per (sub-)window
+-- for runs that went through detect_window_drift. Enables the
+-- dashboard's drift scatter by exposing per-window expected vs
+-- observed 1/K0, the quantity that visualizes "which windows
+-- actually drifted" instead of just the global summary.
+CREATE TABLE IF NOT EXISTS drift_window_centroids (
+    run_id              TEXT NOT NULL,
+    source              TEXT NOT NULL,          -- 'runs' | 'sample_health'
+    window_idx          INTEGER NOT NULL,
+    mz_low              REAL NOT NULL,
+    mz_high             REAL NOT NULL,
+    im_low              REAL NOT NULL,
+    im_high             REAL NOT NULL,
+    im_center           REAL NOT NULL,
+    im_mode             REAL NOT NULL,
+    drift_im            REAL NOT NULL,
+    coverage            REAL NOT NULL,
+    PRIMARY KEY (run_id, source, window_idx)
+);
+
+CREATE INDEX IF NOT EXISTS idx_drift_centroids_run ON drift_window_centroids(run_id, source);
 """
 
 
@@ -764,6 +807,168 @@ def update_drift_result(
             (drift_coverage, drift_median_im, drift_p90_abs_im, drift_class, run_id),
         )
         return cur.rowcount > 0
+
+
+def insert_peg_ion_hits(
+    run_id: str,
+    matches: "list",
+    table: str = "runs",
+    db_path: Path | None = None,
+) -> int:
+    """Store the per-ion PEG breakdown for a run.
+
+    ``matches`` is the PegResult.matches list from
+    stan.metrics.peg.detect_peg_in_spectra — one entry per (peak, scan)
+    match. We dedup to one row per (repeat_n, adduct, charge) using the
+    highest-intensity match per ion so the DB doesn't bloat with one
+    row per scan (a 30-ion detection across 80 scans would otherwise
+    write 2400 rows; dedup gives ~30).
+
+    Args:
+        run_id: id in ``runs`` or ``sample_health`` depending on ``table``.
+        matches: list of PegMatch dataclasses (duck-typed — anything
+            with ``.ion.n``, ``.ion.adduct``, ``.ion.charge``,
+            ``.observed_mz``, ``.intensity``, ``.ppm_error`` works).
+        table: "runs" or "sample_health" — passed through to the
+            ``source`` column so the API can join back to the parent row.
+
+    Returns number of rows written.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if table not in ("runs", "sample_health"):
+        raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
+
+    # Dedup by ion identity, keeping the highest-intensity observation.
+    best_per_ion: dict[tuple[int, str, int], tuple[float, float, float]] = {}
+    for m in matches or []:
+        try:
+            key = (int(m.ion.n), str(m.ion.adduct), int(m.ion.charge))
+        except AttributeError:
+            continue
+        intensity = float(m.intensity)
+        prev = best_per_ion.get(key)
+        if prev is None or intensity > prev[0]:
+            best_per_ion[key] = (intensity, float(m.observed_mz), float(m.ppm_error))
+
+    if not best_per_ion:
+        return 0
+
+    rows = [
+        (run_id, table, mz, intensity, adduct, n, charge, ppm)
+        for (n, adduct, charge), (intensity, mz, ppm) in best_per_ion.items()
+    ]
+    with sqlite3.connect(str(db_path)) as con:
+        # Clear any prior hits for this (run_id, source) so re-runs
+        # (e.g. backfill-peg --force) replace rather than accumulate.
+        con.execute(
+            "DELETE FROM peg_ion_hits WHERE run_id = ? AND source = ?",
+            (run_id, table),
+        )
+        con.executemany(
+            "INSERT OR REPLACE INTO peg_ion_hits "
+            "(run_id, source, mz, observed_intensity, adduct, repeat_n, charge, ppm_error) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        return len(rows)
+
+
+def get_peg_ion_hits(
+    run_id: str,
+    table: str = "runs",
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return all PEG ion hits for a run, sorted by m/z."""
+    if db_path is None:
+        db_path = get_db_path()
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        try:
+            return [
+                dict(r) for r in con.execute(
+                    "SELECT mz, observed_intensity, adduct, repeat_n, charge, ppm_error "
+                    "FROM peg_ion_hits WHERE run_id = ? AND source = ? ORDER BY mz ASC",
+                    (run_id, table),
+                ).fetchall()
+            ]
+        except sqlite3.OperationalError:
+            return []
+
+
+def insert_drift_window_centroids(
+    run_id: str,
+    per_window: "list",
+    table: str = "runs",
+    db_path: Path | None = None,
+) -> int:
+    """Store the per-window drift breakdown for a run.
+
+    ``per_window`` is the DriftResult.per_window list from
+    stan.metrics.window_drift.detect_window_drift — one entry per
+    sub-window. Idempotent: replaces any prior rows for this
+    (run_id, source) pair so --force backfills get a clean write.
+
+    Returns number of rows written.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if table not in ("runs", "sample_health"):
+        raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
+
+    rows = []
+    for idx, w in enumerate(per_window or []):
+        try:
+            mz_low, mz_high = float(w.mz_range[0]), float(w.mz_range[1])
+            im_low, im_high = float(w.im_range[0]), float(w.im_range[1])
+            rows.append((
+                run_id, table, idx, mz_low, mz_high, im_low, im_high,
+                float(w.im_center), float(w.im_mode),
+                float(w.drift_im), float(w.coverage),
+            ))
+        except (AttributeError, TypeError, ValueError):
+            continue
+
+    if not rows:
+        return 0
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.execute(
+            "DELETE FROM drift_window_centroids WHERE run_id = ? AND source = ?",
+            (run_id, table),
+        )
+        con.executemany(
+            "INSERT OR REPLACE INTO drift_window_centroids "
+            "(run_id, source, window_idx, mz_low, mz_high, im_low, im_high, "
+            "im_center, im_mode, drift_im, coverage) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        return len(rows)
+
+
+def get_drift_window_centroids(
+    run_id: str,
+    table: str = "runs",
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return all drift windows for a run, sorted by window index."""
+    if db_path is None:
+        db_path = get_db_path()
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        try:
+            return [
+                dict(r) for r in con.execute(
+                    "SELECT window_idx, mz_low, mz_high, im_low, im_high, "
+                    "im_center, im_mode, drift_im, coverage "
+                    "FROM drift_window_centroids WHERE run_id = ? AND source = ? "
+                    "ORDER BY window_idx ASC",
+                    (run_id, table),
+                ).fetchall()
+            ]
+        except sqlite3.OperationalError:
+            return []
 
 
 def insert_health_tic_trace(

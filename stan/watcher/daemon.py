@@ -654,7 +654,10 @@ class InstrumentWatcher:
             from stan.metrics.peg import detect_peg_in_spectra
             from stan.metrics.peg_io import read_ms1_bruker, PegReaderUnavailable
             from stan.metrics.window_drift import detect_window_drift
-            from stan.db import update_peg_result, update_drift_result
+            from stan.db import (
+                update_peg_result, update_drift_result,
+                insert_peg_ion_hits, insert_drift_window_centroids,
+            )
         except Exception:
             logger.debug(
                 "PEG/drift imports failed; skipping for %s", d_path.name,
@@ -674,6 +677,16 @@ class InstrumentWatcher:
                 peg_class=peg.peg_class,
                 table=table,
             )
+            # v0.2.147: also persist the per-ion breakdown so the
+            # dashboard can render a lollipop chart. Dedup'd to one
+            # row per (repeat_n, adduct, charge) by insert_peg_ion_hits.
+            try:
+                insert_peg_ion_hits(run_id=row_id, matches=peg.matches, table=table)
+            except Exception:
+                logger.debug(
+                    "PEG breakdown write failed for %s", d_path.name,
+                    exc_info=True,
+                )
             if peg.peg_class in ("moderate", "heavy"):
                 logger.info(
                     "watcher: PEG %s on %s (score %.1f, %d ions)",
@@ -698,6 +711,16 @@ class InstrumentWatcher:
                     drift_class=drift.drift_class,
                     table=table,
                 )
+                # v0.2.147: per-window breakdown for the drift scatter chart.
+                try:
+                    insert_drift_window_centroids(
+                        run_id=row_id, per_window=drift.per_window, table=table,
+                    )
+                except Exception:
+                    logger.debug(
+                        "drift breakdown write failed for %s", d_path.name,
+                        exc_info=True,
+                    )
                 if drift.drift_class in ("warn", "drifted"):
                     logger.info(
                         "watcher: window drift %s on %s "

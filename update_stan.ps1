@@ -461,6 +461,58 @@ Write-Host "  ============================================================" -For
 Write-Host "    STAN is up to date!" -ForegroundColor Green
 Write-Host "  ============================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  Starting dashboard..." -ForegroundColor Cyan
-& $stanExe dashboard
 
+# Auto-launch the watcher. v0.2.146: the updater kills stan.exe at the
+# start (line 139 above) so pip can overwrite it; before this change it
+# never re-launched, which meant operators often forgot to restart
+# watch after an update and newly-acquired files piled up as orphans
+# (saw 158 orphans on timsTOF HT on 2026-04-21). Prefer the supervised
+# start_stan_loop.bat wrapper (auto-restart on crash) if present; fall
+# back to a plain `stan watch` otherwise. Detached via Start-Process
+# so closing this updater window doesn't kill watch.
+$loopBat = Join-Path $scriptDir "start_stan_loop.bat"
+if (Test-Path $loopBat) {
+    Write-Host "  Launching watcher (supervised)..." -ForegroundColor Cyan
+    Start-Process -FilePath $loopBat -WindowStyle Normal
+} else {
+    Write-Host "  Launching watcher..." -ForegroundColor Cyan
+    Start-Process -FilePath $stanExe -ArgumentList "watch" -WindowStyle Normal
+}
+
+# Dashboard also gets its own detached window. Previously this was run
+# in the foreground (& $stanExe dashboard) which blocked the updater;
+# when the operator Ctrl+C'd the dashboard nothing else was running,
+# including watch. Detached means both stay up until manually closed.
+Write-Host "  Launching dashboard..." -ForegroundColor Cyan
+Start-Process -FilePath $stanExe -ArgumentList "dashboard" -WindowStyle Normal
+
+# Auto-backfill every metric gap. New metrics land in new releases
+# (v0.2.139 PEG, v0.2.143 drift, v0.2.116 cIRT, v0.2.147 PEG/drift
+# breakdown tables...) and existing DB rows from before the release
+# have NULL for those columns until backfill fills them in.
+# v0.2.147: chain ALL the backfills in one detached console so an
+# overnight update truly fills every gap (metrics + cIRT + TIC +
+# PEG + window drift). Sequential within the one window so they
+# don't thrash the disk by running in parallel on the same .d
+# files. The report-parquet-only commands (backfill-metrics,
+# backfill-cirt) run first — they're fast. Then the slow raw-
+# file-scanning commands (backfill-tic, backfill-peg, backfill-
+# window-drift). On a timsTOF with a few hundred runs this is
+# multiple hours of work — designed for overnight.
+Write-Host "  Launching overnight backfill sweep (metrics + cIRT + TIC + PEG + drift)..." -ForegroundColor Cyan
+$backfillCmd = "title STAN overnight backfill && " +
+               "echo === stan backfill-metrics === && stan backfill-metrics && " +
+               "echo === stan backfill-cirt    === && stan backfill-cirt && " +
+               "echo === stan backfill-tic --force --push  [v0.2.147: re-downsample with mean-per-bin, push to community] === && " +
+               "stan backfill-tic --force --push && " +
+               "echo === stan backfill-peg     === && stan backfill-peg && " +
+               "echo === stan backfill-window-drift === && stan backfill-window-drift && " +
+               "echo ALL BACKFILLS COMPLETE && pause"
+Start-Process -FilePath "cmd.exe" -ArgumentList "/k", $backfillCmd -WindowStyle Normal
+
+Write-Host ""
+Write-Host "  Three windows now running: watcher, dashboard, overnight backfill." -ForegroundColor Green
+Write-Host "  Closing this updater window will NOT stop them." -ForegroundColor Gray
+Write-Host "  The backfill window sweeps every metric gap in the DB and prints" -ForegroundColor Gray
+Write-Host "  'ALL BACKFILLS COMPLETE' when done. Safe to leave running overnight." -ForegroundColor Gray
+Write-Host ""

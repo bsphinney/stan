@@ -667,13 +667,19 @@ def sync() -> None:
 def _backfill_tic_impl(
     push: bool = False,
     verbose: bool = True,
+    force: bool = False,
 ) -> tuple[int, int, int]:
     """Core backfill logic shared by the CLI command and the baseline
     startup sweep.
 
-    Finds runs in the local DB that are missing TIC traces OR have
-    zero peptide/protein counts despite having a report.parquet in
-    baseline_output. Repairs both in one pass:
+    With ``force=True`` re-extracts the TIC for every run regardless of
+    whether one is already stored — needed after the v0.2.147
+    downsample_trace fix (mean-per-bin instead of sum-per-bin) so
+    previously-stored Bruker sawtooth-pattern TICs get corrected.
+
+    Without force, finds runs in the local DB that are missing TIC
+    traces OR have zero peptide/protein counts despite having a
+    report.parquet in baseline_output. Repairs both in one pass:
 
       TIC sources (in order):
         1. ``analysis.tdf`` inside the .d directory at ``raw_path``
@@ -724,8 +730,12 @@ def _backfill_tic_impl(
             ).fetchall()
         }
 
-    # Runs that need TIC or have zero peptides (or both)
-    missing_tic = [r for r in all_runs if r["id"] not in have_tic]
+    # Runs that need TIC or have zero peptides (or both).
+    # With force=True, re-extract every run's TIC regardless.
+    if force:
+        missing_tic = list(all_runs)
+    else:
+        missing_tic = [r for r in all_runs if r["id"] not in have_tic]
     missing_pep = [r for r in all_runs
                    if r["id"] in have_tic  # already has TIC
                    and (not r.get("n_peptides") or r["n_peptides"] == 0)
@@ -935,8 +945,15 @@ def backfill_tic(
         help="Also push extracted TIC traces to the community relay for "
              "runs that were already submitted.",
     ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Re-extract TIC for every run, not just ones missing one. "
+             "Use this after the v0.2.147 downsample fix to replace "
+             "previously-stored Bruker sawtooth-pattern TICs with clean "
+             "mean-per-bin traces.",
+    ),
 ) -> None:
-    """Re-extract TIC traces for runs that are missing one.
+    """Re-extract TIC traces for runs that are missing one (or all, with --force).
 
     Walks the local runs table and, for each run without a TIC, tries
     (in order) the raw Bruker analysis.tdf, the DIA-NN report.parquet,
@@ -946,8 +963,127 @@ def backfill_tic(
     With ``--push``, also uploads corrections to the community benchmark
     relay via /api/update/{submission_id} for runs that already have a
     submission_id.
+
+    With ``--force``, re-extracts every run's TIC regardless of whether
+    one is already stored. Combined with ``--push``, this replaces the
+    sawtooth-pattern community submissions made before v0.2.147.
     """
-    _backfill_tic_impl(push=push, verbose=True)
+    _backfill_tic_impl(push=push, verbose=True, force=force)
+
+
+@app.command("verify-community-tics")
+def verify_community_tics(
+    submitter: str = typer.Option(
+        "", "--submitter",
+        help="Filter to a specific submitter pseudonym. Default = all submissions "
+             "(use when you're the only lab, or want a fleet-wide check).",
+    ),
+    sign_flip_threshold: int = typer.Option(
+        45, "--threshold",
+        help="Minimum number of bin-to-bin sign flips (out of ~127 possible) "
+             "to flag a trace as sawtoothed. Smooth TICs score <20; the old "
+             "sum-per-bin Bruker artifact produces 55–75.",
+    ),
+) -> None:
+    """Scan community TIC submissions for the v0.2.147 sawtooth artifact.
+
+    Fetches ``brettsp/stan-benchmark/benchmark_latest.parquet``, counts
+    bin-to-bin sign flips in each submission's TIC, and prints
+    submission_ids whose TIC still looks like the pre-v0.2.147 sum-per-bin
+    output. After running ``stan backfill-tic --force --push`` overnight,
+    this should return zero flagged submissions — any that remain either
+    failed to push (offline during update, missing submission_id, relay
+    rejected) or come from a lab that hasn't updated yet.
+
+    Use this the morning after the overnight backfill to confirm the
+    community dataset is fully corrected.
+    """
+    import polars as pl
+
+    from stan.community.fetch import fetch_benchmark_latest
+
+    console.print("[dim]Downloading benchmark_latest.parquet from HF Dataset...[/dim]")
+    path = fetch_benchmark_latest()
+    if path is None:
+        console.print("[red]Could not download the community parquet.[/red]")
+        raise typer.Exit(code=1)
+
+    df = pl.read_parquet(path)
+    total = len(df)
+    console.print(f"Loaded [bold]{total}[/bold] submissions from community dataset.")
+
+    if submitter:
+        for col in ("submitter_pseudonym", "lab", "submitter"):
+            if col in df.columns:
+                df = df.filter(pl.col(col) == submitter)
+                console.print(f"Filtered to submitter={submitter!r} via {col}: {len(df)} rows")
+                break
+
+    if "tic_intensity" not in df.columns:
+        console.print("[red]No tic_intensity column in the parquet. "
+                      "Community schema may have changed.[/red]")
+        raise typer.Exit(code=1)
+
+    def sign_flips(seq) -> int:
+        """Count bin-to-bin sign-flip count in first-diff of a sequence.
+
+        Smooth TIC: 5–20 flips per 128 bins.
+        Sum-per-bin sawtooth artifact: 55–75 flips (alternating up-down
+        at the bin-count quantization frequency).
+        """
+        if seq is None or len(seq) < 4:
+            return 0
+        diffs = [float(seq[i+1]) - float(seq[i]) for i in range(len(seq) - 1)]
+        flips = 0
+        for i in range(len(diffs) - 1):
+            if diffs[i] * diffs[i+1] < 0:
+                flips += 1
+        return flips
+
+    flagged: list[tuple] = []
+    clean = 0
+    no_tic = 0
+    for row in df.iter_rows(named=True):
+        tic = row.get("tic_intensity")
+        if tic is None or len(tic) < 4:
+            no_tic += 1
+            continue
+        sf = sign_flips(tic)
+        if sf >= sign_flip_threshold:
+            flagged.append((
+                row.get("submission_id") or "—",
+                row.get("run_name") or "—",
+                row.get("instrument_model") or row.get("instrument_family") or "—",
+                row.get("spd"),
+                sf,
+            ))
+        else:
+            clean += 1
+
+    console.print()
+    console.print(f"[green]Clean:[/green]   {clean:>4} submissions  (sign-flips < {sign_flip_threshold})")
+    console.print(f"[yellow]No TIC:[/yellow]  {no_tic:>4} submissions")
+    console.print(f"[red]Flagged:[/red] {len(flagged):>4} submissions  (still sawtoothed)")
+
+    if not flagged:
+        console.print()
+        console.print("[bold green]All community TICs are clean.[/bold green]")
+        return
+
+    console.print()
+    console.print("[bold]Flagged submissions (sorted by worst):[/bold]")
+    flagged.sort(key=lambda x: -x[4])
+    for sid, run_name, instrument, spd, sf in flagged[:50]:
+        console.print(
+            f"  [red]{sf:>3} flips[/red]  spd={spd or '?':<4}  "
+            f"{instrument[:18]:<18}  {run_name[:50]:<50}  id={sid}"
+        )
+    if len(flagged) > 50:
+        console.print(f"  [dim]... and {len(flagged) - 50} more[/dim]")
+
+    console.print()
+    console.print("[dim]To re-push fixes for these runs, run:[/dim]")
+    console.print("[dim]  stan backfill-tic --force --push[/dim]")
 
 
 @app.command("fix-spds")
@@ -2030,7 +2166,10 @@ def backfill_window_drift(
     from datetime import datetime, timezone
 
     from stan.config import get_user_config_dir, sync_to_hive_mirror
-    from stan.db import get_db_path, init_db, update_drift_result
+    from stan.db import (
+        get_db_path, init_db, update_drift_result,
+        insert_drift_window_centroids,
+    )
     from stan.metrics.window_drift import detect_window_drift
 
     init_db()
@@ -2044,7 +2183,18 @@ def backfill_window_drift(
             where.append("instrument = ?")
             params.append(instrument)
         if not force:
-            where.append("(drift_class IS NULL OR drift_class = '')")
+            # Queue runs missing the summary OR missing the breakdown
+            # (v0.2.147+ added drift_window_centroids — rows from before
+            # the upgrade have drift_class populated but no breakdown,
+            # so we re-scan them on the first post-upgrade backfill so
+            # the dashboard chart has data).
+            where.append(
+                "("
+                " drift_class IS NULL OR drift_class = '' "
+                " OR id NOT IN (SELECT run_id FROM drift_window_centroids "
+                "               WHERE source = 'runs')"
+                ")"
+            )
         sql = (
             "SELECT id, run_name, instrument, raw_path FROM runs "
             "WHERE " + " AND ".join(where) + " ORDER BY run_date DESC"
@@ -2109,6 +2259,15 @@ def backfill_window_drift(
             drift_p90_abs_im=drift.p90_abs_drift_im,
             drift_class=drift.drift_class,
         )
+        # v0.2.147: also persist the per-window breakdown so the
+        # dashboard drift-scatter chart has data for historical runs.
+        try:
+            insert_drift_window_centroids(
+                run_id=run["id"], per_window=drift.per_window, table="runs",
+            )
+        except Exception as _e:
+            _log({"event": "breakdown_error", "run_id": run["id"],
+                  "error": str(_e), "error_type": type(_e).__name__})
         n_updated += 1
         _log({
             "event": "updated",
@@ -2238,7 +2397,10 @@ def backfill_peg(
     from datetime import datetime, timezone
 
     from stan.config import get_user_config_dir, sync_to_hive_mirror
-    from stan.db import get_db_path, init_db, update_peg_result
+    from stan.db import (
+        get_db_path, init_db, update_peg_result,
+        insert_peg_ion_hits,
+    )
 
     init_db()
     db_path = get_db_path()
@@ -2268,7 +2430,18 @@ def backfill_peg(
             where.append("instrument = ?")
             params.append(instrument)
         if not force:
-            where.append("peg_score IS NULL")
+            # Queue rows missing the summary score OR missing the per-ion
+            # breakdown (v0.2.147+ added peg_ion_hits — runs that were
+            # PEG-scanned before the upgrade have peg_score populated but
+            # no breakdown, so we re-scan them on the first post-upgrade
+            # sweep so the lollipop chart has data).
+            where.append(
+                "("
+                " peg_score IS NULL "
+                " OR id NOT IN (SELECT run_id FROM peg_ion_hits "
+                "               WHERE source = 'runs')"
+                ")"
+            )
         sql = "SELECT id, run_name, instrument, raw_path, mode, peg_score FROM runs"
         if where:
             sql += " WHERE " + " AND ".join(where)
@@ -2341,6 +2514,15 @@ def backfill_peg(
             peg_intensity_pct=result.intensity_pct,
             peg_class=result.peg_class,
         )
+        # v0.2.147: persist per-ion breakdown for the dashboard
+        # lollipop chart (dedup'd by insert_peg_ion_hits).
+        try:
+            insert_peg_ion_hits(
+                run_id=run["id"], matches=result.matches, table="runs",
+            )
+        except Exception as _e:
+            _log({"event": "breakdown_error", "run_id": run["id"],
+                  "error": str(_e), "error_type": type(_e).__name__})
         n_updated += 1
         _log({
             "event": "updated",
