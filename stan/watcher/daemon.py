@@ -375,6 +375,12 @@ class InstrumentWatcher:
         n_registered = 0
         n_skipped_known = 0
         n_skipped_old = 0
+        # v0.2.163: collect candidate paths first, then process
+        # newest-first so the operator sees recent acquisitions
+        # in the dashboard before the catchup chews through
+        # month-old files. Brett 2026-04-22: 434 trackers at start
+        # meant recent QCs were buried at the bottom of the queue.
+        candidates: list[tuple[float, Path, bool]] = []  # (mtime, path, is_d_dir)
         try:
             for p in watch.rglob("*"):
                 # Skip anything inside a .d directory — its nested
@@ -416,13 +422,19 @@ class InstrumentWatcher:
                 if mt < cutoff:
                     n_skipped_old += 1
                     continue
-                # Hand off to the same handler path a normal on_created
-                # event would take — honors qc_only, qc_pattern,
-                # exclude_pattern, monitor_all_files uniformly.
-                self._handler._register_tracker(p, ev_kind="startup_scan")
-                n_registered += 1
+                candidates.append((mt, p, bool(is_d_dir)))
         except Exception:
             logger.debug("startup-scan walk failed", exc_info=True)
+
+        # Register newest first so the dashboard fills in with recent
+        # data before the catchup grinds through last month.
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        for _mt, p, _is_d in candidates:
+            # Hand off to the same handler path a normal on_created
+            # event would take - honors qc_only, qc_pattern,
+            # exclude_pattern, monitor_all_files uniformly.
+            self._handler._register_tracker(p, ev_kind="startup_scan")
+            n_registered += 1
 
         if n_registered or n_skipped_known or n_skipped_old:
             logger.info(
@@ -599,11 +611,10 @@ class InstrumentWatcher:
         except Exception:
             logger.debug("monitor TIC extraction failed for %s", path.name, exc_info=True)
 
-        # PEG + window drift on every Bruker sample_health row (Brett
-        # asked for "every sample" coverage, not just QC). Best-effort,
-        # same try/except pattern — if alphatims isn't installed the
-        # pipeline keeps running and columns stay NULL.
-        if health_id and vendor == "bruker":
+        # v0.2.163: PEG now covers both vendors (via read_ms1_any).
+        # Drift is still Bruker-only and skipped internally for .raw.
+        # Brett asked for "every sample" coverage, not just QC.
+        if health_id:
             self._run_peg_and_drift(path, health_id, table="sample_health")
 
         logger.info(
@@ -710,7 +721,7 @@ class InstrumentWatcher:
         """
         try:
             from stan.metrics.peg import detect_peg_in_spectra
-            from stan.metrics.peg_io import read_ms1_bruker, PegReaderUnavailable
+            from stan.metrics.peg_io import read_ms1_any, PegReaderUnavailable
             from stan.metrics.window_drift import detect_window_drift
             from stan.db import (
                 update_peg_result, update_drift_result,
@@ -723,10 +734,16 @@ class InstrumentWatcher:
             )
             return
 
+        # v0.2.163: PEG works for both Bruker and Thermo via read_ms1_any
+        # (routes to read_ms1_bruker for .d, read_ms1_thermo for .raw).
+        # Drift is still Bruker-only (diaPASEF isolation windows don't
+        # exist on Orbitrap).
+        is_bruker = d_path.is_dir() and d_path.suffix == ".d"
+
         # PEG - reuses the backfill pipeline
         peg_reader_available = True
         try:
-            spectra = list(read_ms1_bruker(d_path))
+            spectra = list(read_ms1_any(d_path))
             peg = detect_peg_in_spectra(spectra)
             update_peg_result(
                 run_id=row_id,
@@ -787,6 +804,12 @@ class InstrumentWatcher:
         # exception in PEG shouldn't prevent drift from trying on
         # other files - and drift has its own try/except around init.
         if not peg_reader_available:
+            return
+
+        # v0.2.163: drift is Bruker-only (diaPASEF isolation windows
+        # don't exist on Orbitrap). Skip the drift pass entirely for
+        # Thermo .raw files.
+        if not is_bruker:
             return
 
         # DIA window drift
@@ -895,12 +918,12 @@ class InstrumentWatcher:
                 run_date=raw_mtime,
             )
 
-            # PEG + DIA window drift on every QC run (Bruker only —
-            # Thermo support follows in a later ship). Same best-effort
-            # pattern as the monitor path; never propagates exceptions
-            # because the QC row is already saved with full metrics
-            # and failure here just means empty peg/drift columns.
-            if run_id and (self._config.get("vendor") or "").lower() == "bruker":
+            # v0.2.163: PEG now covers both vendors via read_ms1_any.
+            # Drift is still Bruker-only and skipped internally for .raw.
+            # Best-effort - never propagates exceptions because the QC
+            # row is already saved with full metrics and failure here
+            # just means empty peg/drift columns.
+            if run_id:
                 self._run_peg_and_drift(raw_path, run_id, table="runs")
 
             if decision.result.value == "fail":

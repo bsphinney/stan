@@ -104,6 +104,33 @@ def test_thermo_mode_detection(hive_fixture_path):
 
 # ─────────── DDA file routing ───────────
 
+# ─────────── PEG on Thermo ───────────
+
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("fisher_py") is None,
+    reason="fisher_py not installed (Thermo MS1 reader)",
+)
+def test_peg_detection_thermo(hive_fixture_path):
+    """v0.2.163: PEG detection now works on Thermo .raw via
+    read_ms1_any -> read_ms1_thermo (fisher_py). Previously
+    the watcher gated PEG behind vendor == 'bruker' and the
+    detector path was never exercised on Orbitrap.
+    """
+    from stan.metrics.peg import detect_peg_in_spectra
+    from stan.metrics.peg_io import read_ms1_any, PegReaderUnavailable
+
+    raw = hive_fixture_path("thermo_lumos_dia")
+    try:
+        spectra = list(read_ms1_any(raw, n_scans=20))
+    except PegReaderUnavailable as e:
+        pytest.skip(f"Thermo MS1 reader unavailable: {e}")
+    assert len(spectra) > 0, "no MS1 scans read"
+
+    peg = detect_peg_in_spectra(spectra)
+    assert peg.peg_class in {"clean", "trace", "moderate", "heavy"}
+    assert peg.n_ions_reference > 0
+
+
 def test_exploris_dda_stability(hive_fixture_path):
     """Confirm the DDA .raw stabilizes the same way. Exploris DDA
     files are ~1 GB - copy cost is noticeable but one-time per
