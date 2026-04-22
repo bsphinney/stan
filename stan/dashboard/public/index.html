@@ -225,7 +225,14 @@
     function PegBadge({ run, source="runs" }) {
       const cls = run?.peg_class;
       if (!cls) return <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>—</span>;
-      const label = { clean: 'CLN', trace: 'TRC', moderate: 'MOD', heavy: 'PEG' }[cls] || '—';
+      // v0.2.168: show the numeric score (0-100) instead of the 4-class
+      // label. Brett 2026-04-22: score gives more nuance than "trace"
+      // vs "moderate" (both could be 45-60) and lets operators see
+      // small trends over time. Class still drives the color.
+      const score = run.peg_score;
+      const label = score != null
+        ? (score < 10 ? score.toFixed(1) : Math.round(score).toString())
+        : { clean: 'CLN', trace: 'TRC', moderate: 'MOD', heavy: 'PEG' }[cls] || '—';
       const color = {
         clean:    '#6b7280',    // gray — uninteresting, don't draw the eye
         trace:    '#a8a29e',    // warm gray — background contamination

@@ -151,11 +151,21 @@ class PegResult:
     """Per-run PEG detection summary."""
     n_ions_detected: int = 0
     n_ions_reference: int = 0
-    intensity_pct: float = 0.0           # matched intensity / total MS1 TIC × 100
+    intensity_pct: float = 0.0           # matched intensity / total MS1 TIC x 100
     peg_score: float = 0.0               # 0..100, see compute_peg_score
     peg_class: str = "clean"             # clean | trace | moderate | heavy
     matches: list[PegMatch] = field(default_factory=list)
     total_intensity: float = 0.0         # sum of all peak intensities scanned
+    # v0.2.168: ladder-coherence check inspired by HowDirty 2024
+    # (doi:10.1002/pmic.202300134). PEG oligomers on reverse-phase LC
+    # elute in monotonically increasing RT with size n, so if detected
+    # ions don't follow that order it's chemical noise coincidentally
+    # matching PEG m/z, not real contamination. Score 0..1, fraction
+    # of adjacent (n, n+k) oligomer pairs within each adduct where
+    # the higher-n ion peaks at a later scan index. 1.0 = perfect
+    # ladder; 0.5 = random; <0.5 = likely false positives.
+    ladder_coherence: float = 1.0
+    n_coherence_pairs: int = 0           # number of adjacent pairs checked
 
 
 def _match_peak_to_ion(
@@ -214,8 +224,13 @@ def detect_peg_in_spectra(
     matches: list[PegMatch] = []
     matched_intensity = 0.0
     total_intensity = 0.0
+    # v0.2.168: track peak scan index per ion for the ladder-coherence
+    # check. Caller must yield scans in RT (acquisition) order for this
+    # to be meaningful — peg_io v0.2.168+ does RT-stratified sampling.
+    # peak_scan[(n, adduct, charge)] = (scan_index, peak_intensity)
+    peak_scan: dict[tuple[int, str, int], tuple[int, float]] = {}
 
-    for scan in spectra:
+    for scan_idx, scan in enumerate(spectra):
         for mz, intensity in scan:
             if intensity < intensity_threshold:
                 continue
@@ -224,13 +239,42 @@ def detect_peg_in_spectra(
             if m is not None:
                 matches.append(m)
                 matched_intensity += intensity
-                seen_ions.add((m.ion.n, m.ion.adduct, m.ion.charge))
+                key = (m.ion.n, m.ion.adduct, m.ion.charge)
+                seen_ions.add(key)
+                # Track the scan where this ion had its maximum
+                # intensity — that's our "peak RT" proxy.
+                prev = peak_scan.get(key)
+                if prev is None or intensity > prev[1]:
+                    peak_scan[key] = (scan_idx, float(intensity))
 
     n_detected = len(seen_ions)
     intensity_pct = (
         100.0 * matched_intensity / total_intensity if total_intensity > 0 else 0.0
     )
-    score = compute_peg_score(n_detected, intensity_pct, n_reference=len(ref))
+
+    # Ladder coherence: within each adduct family, sort detected ions
+    # by oligomer size n, then check adjacent pairs peak in RT order.
+    # Requires >= 2 ions per family to contribute a pair.
+    n_correct_pairs = 0
+    n_total_pairs = 0
+    by_adduct: dict[tuple[str, int], list[tuple[int, int]]] = {}
+    for (n, adduct, charge), (scan_idx, _) in peak_scan.items():
+        by_adduct.setdefault((adduct, charge), []).append((n, scan_idx))
+    for pairs in by_adduct.values():
+        pairs.sort(key=lambda x: x[0])  # sort by n
+        for i in range(len(pairs) - 1):
+            n_total_pairs += 1
+            # Tie = not wrong (same scan could peak for both). Strict
+            # monotonic increase would be ideal but ties are noise-
+            # tolerant.
+            if pairs[i + 1][1] >= pairs[i][1]:
+                n_correct_pairs += 1
+    coherence = (n_correct_pairs / n_total_pairs) if n_total_pairs > 0 else 1.0
+
+    score = compute_peg_score(
+        n_detected, intensity_pct, n_reference=len(ref),
+        ladder_coherence=coherence, n_coherence_pairs=n_total_pairs,
+    )
     return PegResult(
         n_ions_detected=n_detected,
         n_ions_reference=len(ref),
@@ -239,25 +283,48 @@ def detect_peg_in_spectra(
         peg_class=classify_peg_score(score),
         matches=matches,
         total_intensity=total_intensity,
+        ladder_coherence=coherence,
+        n_coherence_pairs=n_total_pairs,
     )
 
 
 def compute_peg_score(
-    n_detected: int, intensity_pct: float, n_reference: int = 143
+    n_detected: int, intensity_pct: float, n_reference: int = 143,
+    ladder_coherence: float = 1.0, n_coherence_pairs: int = 0,
 ) -> float:
     """Composite PEG score 0..100.
 
-    Combines two signals:
-      - Breadth: how many reference ions were matched (saturates at 15 — once
-        you see 15 different PEG oligomers it's clearly a ladder, not noise)
-      - Magnitude: what fraction of total MS1 intensity is PEG (saturates at 10%)
+    Combines three signals:
+      - Breadth: how many reference ions were matched (saturates at 15
+        - once you see 15 different PEG oligomers it's clearly a ladder,
+        not noise)
+      - Magnitude: what fraction of total MS1 intensity is PEG
+        (saturates at 10%)
+      - Ladder coherence: v0.2.168+. PEG oligomers on reverse-phase LC
+        elute in monotonically increasing RT order. When detected ions
+        peak in the correct order, coherence=1.0 and the score is kept
+        at the breadth+magnitude value. When ions peak out of order
+        (chemical noise coincidentally matching PEG m/z), coherence
+        drops and the score is penalized. Only applied when we have
+        >= 4 coherence pairs - below that the signal isn't statistically
+        meaningful (could be 2 ions peaking randomly).
 
-    A run with 8 ions covering 6% of TIC scores ~50; a run with 20 ions
-    covering 20% of TIC scores ~100.
+    A run with 8 coherent ions covering 6% of TIC scores ~50; 20
+    coherent ions covering 20% of TIC scores ~100. A run with 8 ions
+    covering 20% of TIC but coherence=0.2 (signals at random RTs)
+    drops from ~100 to ~30.
     """
     breadth = min(n_detected / 15.0, 1.0)
     magnitude = min(intensity_pct / 10.0, 1.0)
-    return 40.0 * breadth + 60.0 * magnitude
+    base = 40.0 * breadth + 60.0 * magnitude
+    # Coherence penalty: only applied when we have enough pairs to be
+    # statistically meaningful (4+). Scale from 1.0 (no penalty) at
+    # coherence=1.0 down to 0.3 (70% discount) at coherence=0.
+    if n_coherence_pairs >= 4:
+        # Linear scale: coherence=1.0 -> 1.0, coherence=0.0 -> 0.3
+        multiplier = 0.3 + 0.7 * ladder_coherence
+        return base * multiplier
+    return base
 
 
 def classify_peg_score(score: float) -> str:

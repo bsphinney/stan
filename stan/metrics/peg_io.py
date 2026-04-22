@@ -60,9 +60,19 @@ def read_ms1_bruker(
         int(fid) for fid, msms in zip(data.frames.Id, data.frames.MsMsType)
         if msms == 0
     ]
-    rng = random.Random(RANDOM_SEED)
+    # v0.2.168: RT-stratified downsampling (every kth frame in acquisition
+    # order) instead of random.sample. detect_peg_in_spectra uses scan
+    # index as an RT proxy for the ladder-coherence check, which only
+    # works when scans are yielded in RT order. Sampling every-kth
+    # preserves order AND gives uniform coverage across the gradient.
     if len(ms1_frame_ids) > n_scans:
-        ms1_frame_ids = rng.sample(ms1_frame_ids, n_scans)
+        ms1_frame_ids.sort()  # ensure acquisition order
+        step = len(ms1_frame_ids) / n_scans
+        ms1_frame_ids = [
+            ms1_frame_ids[int(i * step)] for i in range(n_scans)
+        ]
+    else:
+        ms1_frame_ids.sort()
 
     for fid in ms1_frame_ids:
         frame_df = data[fid]
@@ -120,9 +130,12 @@ def read_ms1_thermo(
                     ms1_scans.append(n)
             except Exception:
                 continue
-        rng = random.Random(RANDOM_SEED)
+        # v0.2.168: RT-stratified sampling for ladder-coherence check
+        # (see read_ms1_bruker for rationale). ms1_scans is already in
+        # acquisition order from the scan-number iteration above.
         if len(ms1_scans) > n_scans:
-            ms1_scans = rng.sample(ms1_scans, n_scans)
+            step = len(ms1_scans) / n_scans
+            ms1_scans = [ms1_scans[int(i * step)] for i in range(n_scans)]
         for n in ms1_scans:
             try:
                 stats = raw.get_scan_stats_for_scan_number(n)

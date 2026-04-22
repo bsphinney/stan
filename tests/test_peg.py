@@ -147,18 +147,66 @@ def test_same_ion_in_multiple_scans_counts_once():
 
 
 def test_heavy_contamination_classifies_heavy():
-    """Many ions + high intensity_pct → score > 70 → heavy."""
-    # Use 20 oligomers across +H and +Na — all PEG, no other peaks
+    """Many ions + high intensity_pct -> score > 70 -> heavy."""
+    # Use oligomers across +H and +Na within the default reference
+    # range (n=1..20 per Rardin 2018). All PEG, no other peaks,
+    # yielded in increasing n order so ladder coherence = 1.0.
     spectra = [[
-        (_peg_ion(n, "+Na"), 1e5) for n in range(5, 25)
+        (_peg_ion(n, "+Na"), 1e5) for n in range(5, 20)
     ] + [
-        (_peg_ion(n, "+H"), 1e5) for n in range(5, 25)
+        (_peg_ion(n, "+H"), 1e5) for n in range(5, 20)
     ]]
     r = detect_peg_in_spectra(spectra)
     assert r.n_ions_detected >= 15  # well above the 15-ion saturation
     assert r.intensity_pct == 100.0
     assert r.peg_class == "heavy"
     assert r.peg_score >= 70
+
+
+def test_ladder_coherence_perfect_on_rt_ordered_synthetic():
+    """v0.2.168: PEG oligomers that peak in acquisition order get
+    ladder_coherence = 1.0 (no penalty)."""
+    # Each oligomer peaks in its own scan, in n-order (n=5 in scan 0,
+    # n=6 in scan 1, ...). Background PEG at 1e4 in every scan so ions
+    # are tracked across; PEAK at 1e5 only in the "correct" scan.
+    from stan.metrics.peg import detect_peg_in_spectra
+    ns = list(range(5, 15))
+    spectra = []
+    for peak_scan_i, peak_n in enumerate(ns):
+        scan = []
+        for n in ns:
+            mz = _peg_ion(n, "+Na")
+            intensity = 1e5 if n == peak_n else 1e4
+            scan.append((mz, intensity))
+        spectra.append(scan)
+    r = detect_peg_in_spectra(spectra)
+    assert r.ladder_coherence == 1.0, (
+        f"perfectly ordered PEG ladder should score 1.0, got {r.ladder_coherence}"
+    )
+    assert r.n_coherence_pairs == len(ns) - 1  # 9 adjacent pairs
+
+
+def test_ladder_coherence_drops_on_random_rt():
+    """v0.2.168: when PEG-m/z hits peak at random scan indices (chemical
+    noise), coherence drops below 1.0 and the final score is penalized."""
+    import random as _rnd
+    from stan.metrics.peg import detect_peg_in_spectra
+    ns = list(range(5, 15))
+    _rnd.seed(17)
+    shuffled = ns[:]
+    _rnd.shuffle(shuffled)
+    # Each oligomer peaks in a RANDOM scan (not the n-th scan).
+    spectra = []
+    for scan_i in range(len(ns)):
+        peak_n = shuffled[scan_i]
+        scan = [
+            (_peg_ion(n, "+Na"), 1e5 if n == peak_n else 1e4)
+            for n in ns
+        ]
+        spectra.append(scan)
+    r = detect_peg_in_spectra(spectra)
+    assert r.ladder_coherence < 1.0
+    assert r.n_coherence_pairs == len(ns) - 1
 
 
 def test_classify_thresholds():
