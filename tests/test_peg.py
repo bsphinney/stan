@@ -27,9 +27,19 @@ from stan.metrics.peg import (
 # ── Reference table sanity ─────────────────────────────────────────
 
 def test_reference_size_default():
-    # n=4..30 × 4 adducts × 1 charge = ~108 singly + ~36 doubly
-    # Exact count depends on which fall in the 200-1500 window.
-    assert 100 <= len(PEG_REFERENCE) <= 200
+    # v0.2.167: default reference aligned with Rardin 2018 Skyline panel:
+    # n=1..20 x {H+, Na+, NH4+} x charge 1 = exactly 60 ions.
+    assert len(PEG_REFERENCE) == 60
+
+
+def test_reference_size_extended():
+    """extended=True restores the research superset."""
+    from stan.metrics.peg import generate_peg_reference
+    ext = generate_peg_reference(extended=True)
+    assert 150 <= len(ext) <= 220
+    # Extended must include +K adduct and doubly-charged species.
+    assert any(i.adduct == "+K" for i in ext)
+    assert any(i.charge == 2 for i in ext)
 
 
 def test_known_peg_marker_ions_present():

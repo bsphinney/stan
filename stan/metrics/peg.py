@@ -19,8 +19,14 @@ responsible for reading MS1 peak lists from raw files via alphatims
 (Bruker) or fisher_py (Thermo).
 
 References:
-    Schlosser & Volkmer-Engert, J. Mass Spectrom. 2003 — PEG mass spectra
-    Zhou et al., J. Am. Soc. Mass Spectrom. 2018 — common contaminant table
+    Rardin 2018 (J Am Soc Mass Spectrom 29, 1327-1330,
+        doi:10.1007/s13361-018-1940-z) - the Skyline-based contamination
+        screening method. STAN's default PEG reference is aligned to this
+        paper: PEG1-20 x {H+, Na+, NH4+} x charge 1 (60 ions total).
+        Using generate_peg_reference(extended=True) restores the larger
+        n=4-30 x 4 adducts x 2 charges superset for research use.
+    Schlosser & Volkmer-Engert, J. Mass Spectrom. 2003 - PEG mass spectra
+    Zhou et al., J. Am. Soc. Mass Spectrom. 2018 - common contaminant table
 """
 from __future__ import annotations
 
@@ -36,20 +42,34 @@ SODIUM_MASS     = 22.9892214
 AMMONIUM_MASS   = 18.0338256
 POTASSIUM_MASS  = 38.9637585
 
-# Adduct table — name, mass, short label.
-ADDUCTS: list[tuple[str, float, str]] = [
+# Default adducts match the Rardin 2018 Skyline panel: H+, Na+, NH4+.
+# K+ is rare in proteomics buffers and mostly contributes false-positive
+# risk from coincidental m/z matches - include via extended=True only.
+ADDUCTS_DEFAULT: list[tuple[str, float, str]] = [
     ("[M+H]+",   PROTON_MASS,    "+H"),
     ("[M+Na]+",  SODIUM_MASS,    "+Na"),
     ("[M+NH4]+", AMMONIUM_MASS,  "+NH4"),
+]
+ADDUCTS_EXTENDED: list[tuple[str, float, str]] = ADDUCTS_DEFAULT + [
     ("[M+K]+",   POTASSIUM_MASS, "+K"),
 ]
+# Back-compat alias - old code that imported ADDUCTS expects all four.
+ADDUCTS = ADDUCTS_EXTENDED
 
-# Practical detection range. PEG with n<4 sits below 200 m/z (mostly
-# noise / tune-mix territory); n>30 is too dilute to detect routinely.
-N_MIN_DEFAULT = 4
-N_MAX_DEFAULT = 30
-MZ_MIN_DEFAULT = 200.0
+# Default range matches Rardin 2018 Skyline panel: PEG1 through PEG20.
+# On Bruker timsTOF the scan range typically starts >=200 m/z so PEG1-3
+# (m/z 63-173) aren't acquired and the panel effectively starts at PEG4.
+# Orbitrap scans usually go lower and capture the full n=1-20 range.
+N_MIN_DEFAULT = 1
+N_MAX_DEFAULT = 20
+MZ_MIN_DEFAULT = 50.0
 MZ_MAX_DEFAULT = 1500.0
+
+# Extended range for research use via generate_peg_reference(extended=True).
+N_MIN_EXTENDED = 4
+N_MAX_EXTENDED = 30
+MZ_MIN_EXTENDED = 200.0
+MZ_MAX_EXTENDED = 1500.0
 
 
 @dataclass(frozen=True)
@@ -62,29 +82,56 @@ class PegIon:
 
 
 def generate_peg_reference(
-    n_min: int = N_MIN_DEFAULT,
-    n_max: int = N_MAX_DEFAULT,
-    mz_min: float = MZ_MIN_DEFAULT,
-    mz_max: float = MZ_MAX_DEFAULT,
-    include_doubly_charged: bool = True,
+    n_min: int | None = None,
+    n_max: int | None = None,
+    mz_min: float | None = None,
+    mz_max: float | None = None,
+    include_doubly_charged: bool | None = None,
+    extended: bool = False,
 ) -> list[PegIon]:
-    """Build the reference PEG ion list for n in [n_min, n_max]."""
+    """Build the reference PEG ion list.
+
+    Args:
+        extended: When True (research mode), use the superset -
+            n=4-30, four adducts (+K included), both singly and doubly
+            charged species. 199 ions. When False (default, matches
+            Rardin 2018): n=1-20, three adducts, singly charged only.
+            60 ions.
+        n_min, n_max, mz_min, mz_max, include_doubly_charged:
+            Explicit overrides. When None, the extended flag decides.
+    """
+    if extended:
+        adducts = ADDUCTS_EXTENDED
+        _n_min = N_MIN_EXTENDED if n_min is None else n_min
+        _n_max = N_MAX_EXTENDED if n_max is None else n_max
+        _mz_min = MZ_MIN_EXTENDED if mz_min is None else mz_min
+        _mz_max = MZ_MAX_EXTENDED if mz_max is None else mz_max
+        _doubly = True if include_doubly_charged is None else include_doubly_charged
+    else:
+        adducts = ADDUCTS_DEFAULT
+        _n_min = N_MIN_DEFAULT if n_min is None else n_min
+        _n_max = N_MAX_DEFAULT if n_max is None else n_max
+        _mz_min = MZ_MIN_DEFAULT if mz_min is None else mz_min
+        _mz_max = MZ_MAX_DEFAULT if mz_max is None else mz_max
+        _doubly = False if include_doubly_charged is None else include_doubly_charged
+
     out: list[PegIon] = []
-    for n in range(n_min, n_max + 1):
+    for n in range(_n_min, _n_max + 1):
         m_neutral = n * PEG_REPEAT_MASS + END_GROUP_MASS
-        for _label, adduct_mass, short in ADDUCTS:
+        for _label, adduct_mass, short in adducts:
             mz1 = m_neutral + adduct_mass
-            if mz_min <= mz1 <= mz_max:
+            if _mz_min <= mz1 <= _mz_max:
                 out.append(PegIon(mz=mz1, n=n, adduct=short, charge=1))
-            if include_doubly_charged:
+            if _doubly:
                 # [M + 2*adduct]^2+ = (M + 2*adduct) / 2
                 mz2 = (m_neutral + 2 * adduct_mass) / 2
-                if mz_min <= mz2 <= mz_max:
+                if _mz_min <= mz2 <= _mz_max:
                     out.append(PegIon(mz=mz2, n=n, adduct=short, charge=2))
     return out
 
 
-# Computed once at import — callers re-derive if they need a custom range.
+# Computed once at import - the default Rardin-aligned panel.
+# Callers wanting the extended superset: generate_peg_reference(extended=True).
 PEG_REFERENCE: list[PegIon] = generate_peg_reference()
 
 
