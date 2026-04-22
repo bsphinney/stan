@@ -29,16 +29,31 @@ class StabilityTracker:
     hasn't started recording yet. v0.2.100 adds a min-size threshold
     + "must have seen growth" guard to prevent the pipeline firing
     on empty .d directories.
+
+    v0.2.159: ``assume_complete`` bypasses the "must have seen growth"
+    guard. Set this when creating a tracker for a file whose
+    acquisition is already known to be complete (startup catch-up,
+    manual baseline, etc.). Without it those trackers would never
+    stabilize because there's no growth to observe — Brett's
+    2026-04-22 timsTOF caught 434 catchup trackers this way and
+    none ever dispatched to DIA-NN.
     """
 
     path: Path
     vendor: str  # "bruker" | "thermo"
     stable_secs: int = 60
+    assume_complete: bool = False
     _size_history: list[tuple[float, int]] = field(default_factory=list)
     _last_check: float = 0.0
     last_size: int | None = None
     _saw_growth: bool = False
     _initial_size: int | None = None
+
+    def __post_init__(self) -> None:
+        # For known-complete acquisitions we pre-seed _saw_growth so
+        # the Bruker "didn't observe growth" check doesn't block.
+        if self.assume_complete:
+            self._saw_growth = True
 
     def check(self) -> bool:
         """Return True if file/directory is stable (acquisition complete)."""

@@ -116,11 +116,19 @@ class _AcquisitionHandler(FileSystemEventHandler):
                            f"extensions={sorted(self._extensions)}")
 
     def _register_tracker(self, path: Path, ev_kind: str = "") -> None:
-        # Hard exclude — wash/blank/etc. are skipped at both paths
+        # Hard exclude - wash/blank/etc. are skipped at both paths
         if self._exclude_pattern and self._exclude_pattern.search(path.stem):
             self._on_event("exclude_pattern_match", path,
                            f"pattern={self._exclude_pattern.pattern!r}")
             return
+
+        # v0.2.159: catchup-registered trackers (ev_kind="startup_scan")
+        # are for acquisitions that already completed before the watcher
+        # started, so we bypass the Bruker "saw growth" guard in
+        # StabilityTracker. Without this, catchup trackers never
+        # stabilize - Brett 2026-04-22 had 434 stuck trackers because
+        # of this.
+        assume_complete = ev_kind == "startup_scan"
 
         is_qc = is_qc_file(path, self._qc_pattern)
         if is_qc:
@@ -143,6 +151,7 @@ class _AcquisitionHandler(FileSystemEventHandler):
                     path=path,
                     vendor=self._vendor,
                     stable_secs=self._stable_secs,
+                    assume_complete=assume_complete,
                 )
                 self._tracker_modes[key] = mode
                 logger.info(
