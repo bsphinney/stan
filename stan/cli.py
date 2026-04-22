@@ -2378,10 +2378,22 @@ def backfill_window_drift(
 
     _log({"event": "start", "n_queued": len(rows), "force": force})
 
+    # v0.2.153: streaming telemetry — abort after 10 consecutive same-
+    # type errors and flush the log to Hive every 25 rows so remote
+    # debugging doesn't have to wait for the full 2.5-hour loop to end.
+    # This specifically targets the 2026-04-22 drift cascade where 220
+    # of 220 runs failed with the same alphatims/polars ValueError.
+    from stan.backfill_telemetry import (
+        AbortIfRepeating, AbortedForRepeatingErrors, PeriodicSync,
+    )
+    guard = AbortIfRepeating(run_label="backfill-window-drift")
+    sync = PeriodicSync()
+
     n_updated = 0
     n_skip_no_path = 0
     n_skip_unknown = 0
     n_errors = 0
+    aborted = False
 
     for row in rows:
         run = dict(row)
@@ -2405,12 +2417,32 @@ def backfill_window_drift(
                   "error": str(e), "error_type": type(e).__name__})
             if n_errors <= 3:
                 console.print(f"  [red]{run['run_name'][:50]}: {e}[/red]")
+            # Record the error for the guard — if we've hit 10 of the
+            # same error_type in a row, this raises AbortedForRepeatingErrors.
+            try:
+                guard.record_error(
+                    e, context={"run_id": run["id"], "run_name": run["run_name"]}
+                )
+            except AbortedForRepeatingErrors as abort_exc:
+                console.print(f"\n[red bold]{abort_exc}[/red bold]")
+                console.print(
+                    "[yellow]Aborted early — see ~/STAN/alerts/ for details. "
+                    "Fix the root cause and re-run.[/yellow]"
+                )
+                _log({"event": "aborted_for_repeating", "error_type": type(e).__name__,
+                      "consecutive": guard._consecutive})
+                aborted = True
+                break
+            sync.maybe_sync()
             continue
+
+        guard.record_success()
 
         if drift.drift_class == "unknown":
             n_skip_unknown += 1
             _log({"event": "skip_unknown", "run_id": run["id"],
                   "run_name": run["run_name"]})
+            sync.maybe_sync()
             continue
 
         update_drift_result(
@@ -2449,10 +2481,12 @@ def backfill_window_drift(
                 f"p90={drift.p90_abs_drift_im:.3f} "
                 f"class={drift.drift_class}[/{tag}]"
             )
+        sync.maybe_sync()
 
     console.print()
+    status = "ABORTED" if aborted else "complete"
     console.print(
-        f"[bold]Drift backfill complete[/bold] — "
+        f"[bold]Drift backfill {status}[/bold] — "
         f"updated={n_updated} no_path={n_skip_no_path} "
         f"unknown={n_skip_unknown} errors={n_errors}"
     )
@@ -2628,10 +2662,18 @@ def backfill_peg(
 
     _log({"event": "start", "n_queued": len(rows), "n_scans": n_scans, "force": force})
 
+    # v0.2.153: streaming telemetry for PEG backfill.
+    from stan.backfill_telemetry import (
+        AbortIfRepeating, AbortedForRepeatingErrors, PeriodicSync,
+    )
+    guard = AbortIfRepeating(run_label="backfill-peg")
+    sync = PeriodicSync()
+
     n_updated = 0
     n_skipped_no_path = 0
     n_skipped_reader = 0
     n_errors = 0
+    aborted = False
 
     for i, row in enumerate(rows, 1):
         run = dict(row)
@@ -2665,7 +2707,20 @@ def backfill_peg(
                   "error": str(e), "error_type": type(e).__name__})
             if n_errors <= 3:
                 console.print(f"  [red]{run['run_name'][:50]}: {e}[/red]")
+            try:
+                guard.record_error(
+                    e, context={"run_id": run["id"], "run_name": run["run_name"]}
+                )
+            except AbortedForRepeatingErrors as abort_exc:
+                console.print(f"\n[red bold]{abort_exc}[/red bold]")
+                _log({"event": "aborted_for_repeating",
+                      "error_type": type(e).__name__})
+                aborted = True
+                break
+            sync.maybe_sync()
             continue
+
+        guard.record_success()
 
         elapsed = (datetime.now() - t0).total_seconds()
         update_peg_result(
@@ -2704,13 +2759,15 @@ def backfill_peg(
         if verbose or result.peg_class in ("moderate", "heavy"):
             console.print(msg)
         if i % 10 == 0 and not verbose:
-            console.print(f"  [dim]{i}/{len(rows)} — updated={n_updated} "
+            console.print(f"  [dim]{i}/{len(rows)} - updated={n_updated} "
                           f"skipped={n_skipped_no_path + n_skipped_reader} "
                           f"errors={n_errors}[/dim]")
+        sync.maybe_sync()
 
     console.print()
+    status = "ABORTED" if aborted else "complete"
     console.print(
-        f"[bold]PEG backfill complete[/bold] — "
+        f"[bold]PEG backfill {status}[/bold] - "
         f"updated={n_updated} skipped_no_path={n_skipped_no_path} "
         f"skipped_reader={n_skipped_reader} errors={n_errors}"
     )

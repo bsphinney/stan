@@ -319,6 +319,66 @@ a core facility staff member quotes when telling a PI about run quality.
 - SQLite database lives on Hive scratch/project storage
 - Dashboard API can be SSH-tunneled to local machine
 
+---
+
+## Autonomous troubleshooting (CRITICAL)
+
+**When Brett reports a problem, DO NOT ask him to run diagnostic commands on the instrument PC. Read the Hive mirror first.** The instrument PCs sync their state to Hive continuously; treat the mirror as the authoritative source of truth for instrument-side state.
+
+### Hive mirror layout
+
+Root: `/Volumes/proteomics-grp/STAN/` (already mounted and writable on Brett's dev box).
+
+Each instrument has its own subdirectory keyed by hostname:
+- `TIMS-10878/` — timsTOF HT
+- `DESKTOP-FOT3DAA/` — Exploris 480
+- `lumosRox/` — Lumos
+
+Inside each:
+- `stan.db` — full SQLite mirror (copy locally with `cp` then query with `sqlite3`; direct query over the mount hits permission errors)
+- `instruments.yml`, `community.yml`, `config/` — current instrument config
+- `logs/` — every backfill + watch_status + submit log, sorted by timestamp:
+  - `watch_status_YYYYMMDD_HHMMSS.log` — disk-vs-DB diff (columns: mtime, qc_match y/-, in_runs, in_sample_health, filename). Every file on disk is listed with its routing decision.
+  - `backfill_metrics_YYYYMMDD_HHMMSS.log` — metrics backfill summary
+  - `backfill_tic_YYYYMMDD_HHMMSS.log` — TIC backfill summary + skip-reason histogram (v0.2.152+)
+  - `backfill_peg_YYYYMMDD_HHMMSS.jsonl` — per-file PEG results
+  - `backfill_drift_YYYYMMDD_HHMMSS.jsonl` — per-file drift results and errors
+  - `submit_all_YYYYMMDD.jsonl` — community submission log
+- `status.json`, `failures/` — recent daemon state, per-job search failure logs
+- `instrument_library.parquet` — per-instrument reference library
+
+### Diagnosis protocol
+
+When Brett reports an issue, in order:
+
+1. **Check the mirror for the most recent relevant log**
+   ```bash
+   ls -lat /Volumes/proteomics-grp/STAN/<INSTRUMENT>/logs/ | head -20
+   ```
+2. **Grep the log for the file/run/error keyword Brett mentioned**
+3. **For DB-state questions, copy stan.db locally first (permission quirk) then query**:
+   ```bash
+   cp /Volumes/proteomics-grp/STAN/<INSTRUMENT>/stan.db /tmp/claude/x.db
+   sqlite3 /tmp/claude/x.db "SELECT ..."
+   ```
+4. **For raw-file questions on the original `.d`/`.raw`, SSH to Hive** (`ssh hive`) — the raw files live under `/quobyte/proteomics-grp/hela_qcs/<instrument>/` or `/quobyte/proteomics-grp/brett/stan_debug/` (recent troubleshooting files).
+5. **Only escalate back to Brett** when the answer genuinely isn't in the mirror — e.g., "is the watcher process running right now", "what does the cmd console say". Don't ask him to relay data that's already synced.
+
+### Ensure new code writes syncable output
+
+Any new CLI command, backfill, or background job that could fail silently MUST:
+- Write a log file to `~/STAN/logs/<command>_<timestamp>.{log,jsonl}` with per-step status and a summary at the end
+- Call `sync_to_hive_mirror(include_reports=False)` after the log is written (not during — avoid syncing partial state)
+- Log errors at `logger.warning` or `logger.error` minimum — DEBUG is stripped from syncs
+
+**Past sync gaps that wasted cycles**:
+- v0.2.151 `backfill-tic` printed to console only — skip-reason histogram was unreachable from Hive until v0.2.152 added the log file
+- `stan watch` stderr isn't captured to a syncing file; watcher crashes are invisible to remote debugging. TODO: route watcher logs through `~/STAN/logs/watch_<ts>.log` so we can see cascade bugs or observer deaths without asking Brett to screenshot his cmd window.
+
+### When you cannot reach the mirror
+
+If `/Volumes/proteomics-grp/STAN/` isn't mounted (uncommon, but happens after reboot), use `ssh hive "cat /quobyte/proteomics-grp/STAN/<INSTRUMENT>/logs/<file>"` — the same files are accessible server-side.
+
 ### Config file locations
 
 - `~/.stan/instruments.yml` — instrument watch directories
