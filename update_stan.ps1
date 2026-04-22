@@ -18,6 +18,28 @@ public class TrustAllUpdate {
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# v0.2.148 — defuse the updater-cascade bug.
+#
+# start_stan_loop.bat checks %USERPROFILE%\STAN\update_pending.flag at
+# startup and if present calls update-stan.bat. The previous version of
+# this PS1 launched a new start_stan_loop.bat at the end of EVERY run,
+# and the flag wasn't deleted until the OUTER loop finished — so the
+# just-spawned inner start_stan_loop saw the flag, ran update-stan.bat
+# AGAIN, and each recursion doubled every window (watcher, dashboard,
+# backfill). Brett 2026-04-21 saw 6 parallel backfill windows after
+# one manual click.
+#
+# Fix: delete the flag at the VERY TOP of this script so any
+# start_stan_loop that starts during or after this run sees a clean
+# slate and skips its update branch.
+try {
+    $_flagPath = Join-Path $env:USERPROFILE "STAN\update_pending.flag"
+    if (Test-Path $_flagPath) {
+        Remove-Item -Force -ErrorAction SilentlyContinue $_flagPath
+        Write-Host "  Cleared stale update_pending.flag (cascade defused)." -ForegroundColor Gray
+    }
+} catch {}
+
 # Helper: pick the latest DIA-NN .msi asset from a release by parsing version from filename
 # The DIA-NN "latest" release contains multiple versions (2.0, 2.1, 2.2, 2.3.x) as assets
 function Select-LatestDiannMsi {
@@ -470,8 +492,30 @@ Write-Host ""
 # start_stan_loop.bat wrapper (auto-restart on crash) if present; fall
 # back to a plain `stan watch` otherwise. Detached via Start-Process
 # so closing this updater window doesn't kill watch.
+# v0.2.148 duplicate-process guard: check whether a stan.exe is
+# already running before spawning a new one. Prevents a second
+# click on update-stan.bat (or the supervised-watch update branch)
+# from creating parallel watchers / dashboards / backfill windows.
+# We distinguish watch vs dashboard by CommandLine because both
+# share the same image name. Get-CimInstance is available on
+# Windows PowerShell 5.1 which is the instrument-PC target.
+function Test-StanProcessRunning {
+    param([string]$subcommand)
+    try {
+        $procs = Get-CimInstance Win32_Process -Filter "Name='stan.exe'" -ErrorAction SilentlyContinue
+        foreach ($p in $procs) {
+            if ($p.CommandLine -and $p.CommandLine -match "\b$subcommand\b") {
+                return $true
+            }
+        }
+    } catch {}
+    return $false
+}
+
 $loopBat = Join-Path $scriptDir "start_stan_loop.bat"
-if (Test-Path $loopBat) {
+if (Test-StanProcessRunning "watch") {
+    Write-Host "  Watcher already running — skipping launch." -ForegroundColor Gray
+} elseif (Test-Path $loopBat) {
     Write-Host "  Launching watcher (supervised)..." -ForegroundColor Cyan
     Start-Process -FilePath $loopBat -WindowStyle Normal
 } else {
@@ -479,12 +523,13 @@ if (Test-Path $loopBat) {
     Start-Process -FilePath $stanExe -ArgumentList "watch" -WindowStyle Normal
 }
 
-# Dashboard also gets its own detached window. Previously this was run
-# in the foreground (& $stanExe dashboard) which blocked the updater;
-# when the operator Ctrl+C'd the dashboard nothing else was running,
-# including watch. Detached means both stay up until manually closed.
-Write-Host "  Launching dashboard..." -ForegroundColor Cyan
-Start-Process -FilePath $stanExe -ArgumentList "dashboard" -WindowStyle Normal
+# Dashboard also gets its own detached window — unless one is already up.
+if (Test-StanProcessRunning "dashboard") {
+    Write-Host "  Dashboard already running — skipping launch." -ForegroundColor Gray
+} else {
+    Write-Host "  Launching dashboard..." -ForegroundColor Cyan
+    Start-Process -FilePath $stanExe -ArgumentList "dashboard" -WindowStyle Normal
+}
 
 # Auto-backfill every metric gap. New metrics land in new releases
 # (v0.2.139 PEG, v0.2.143 drift, v0.2.116 cIRT, v0.2.147 PEG/drift
@@ -499,19 +544,36 @@ Start-Process -FilePath $stanExe -ArgumentList "dashboard" -WindowStyle Normal
 # file-scanning commands (backfill-tic, backfill-peg, backfill-
 # window-drift). On a timsTOF with a few hundred runs this is
 # multiple hours of work — designed for overnight.
-Write-Host "  Launching overnight backfill sweep (metrics + cIRT + TIC + PEG + drift)..." -ForegroundColor Cyan
-$backfillCmd = "title STAN overnight backfill && " +
-               "echo === stan backfill-metrics === && stan backfill-metrics && " +
-               "echo === stan backfill-cirt    === && stan backfill-cirt && " +
-               "echo === stan backfill-tic --force --push  [v0.2.147: re-downsample with mean-per-bin, push to community] === && " +
-               "stan backfill-tic --force --push && " +
-               "echo === stan backfill-peg     === && stan backfill-peg && " +
-               "echo === stan backfill-window-drift === && stan backfill-window-drift && " +
-               "echo ALL BACKFILLS COMPLETE && pause"
-Start-Process -FilePath "cmd.exe" -ArgumentList "/k", $backfillCmd -WindowStyle Normal
+# v0.2.148: skip backfill launch if a previous run's console is
+# still open (window title set to "STAN overnight backfill" below).
+# Avoids spawning parallel backfills when the operator clicks the
+# updater twice or start_stan_loop races the manual click.
+$backfillAlreadyRunning = $false
+try {
+    $existingBackfill = Get-CimInstance Win32_Process `
+        -Filter "Name='cmd.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -match "STAN overnight backfill" }
+    if ($existingBackfill) { $backfillAlreadyRunning = $true }
+} catch {}
+
+if ($backfillAlreadyRunning) {
+    Write-Host "  Overnight backfill already running — skipping launch." -ForegroundColor Gray
+    $backfillCmd = $null
+} else {
+    Write-Host "  Launching overnight backfill sweep (metrics + cIRT + TIC + PEG + drift)..." -ForegroundColor Cyan
+    $backfillCmd = "title STAN overnight backfill && " +
+        "echo === stan backfill-metrics === && stan backfill-metrics && " +
+        "echo === stan backfill-cirt    === && stan backfill-cirt && " +
+        "echo === stan backfill-tic --force --push === && " +
+        "stan backfill-tic --force --push && " +
+        "echo === stan backfill-peg     === && stan backfill-peg && " +
+        "echo === stan backfill-window-drift === && stan backfill-window-drift && " +
+        "echo ALL BACKFILLS COMPLETE && pause"
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/k", $backfillCmd -WindowStyle Normal
+}
 
 Write-Host ""
-Write-Host "  Three windows now running: watcher, dashboard, overnight backfill." -ForegroundColor Green
+Write-Host "  Launched (or skipped): watcher, dashboard, overnight backfill." -ForegroundColor Green
 Write-Host "  Closing this updater window will NOT stop them." -ForegroundColor Gray
 Write-Host "  The backfill window sweeps every metric gap in the DB and prints" -ForegroundColor Gray
 Write-Host "  'ALL BACKFILLS COMPLETE' when done. Safe to leave running overnight." -ForegroundColor Gray
