@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stan-proteomics"
-version = "0.2.156"
+version = "0.2.157"
 description = "STAN — Standardized proteomic Throughput ANalyzer"
 readme = "README.md"
 license = { text = "STAN Academic License" }
@@ -26,8 +26,8 @@ dependencies = [
 [project.optional-dependencies]
 hpc = ["paramiko>=3.0"]
 thermo = ["fisher_py>=2.0"]  # optional: enables full TIC trace for Thermo .raw (needs .NET)
-peg = ["alphatims>=1.0"]     # optional: Bruker MS1 spectrum reader for PEG contamination detection
-full = ["fisher_py>=2.0", "alphatims>=1.0"]   # convenience: all vendors + all features
+peg = ["alphatims>=1.0,<1.0.9"]     # optional: Bruker MS1 spectrum reader. Pin <1.0.9: alphatims 1.0.9's internal search_sorted calls break against polars 1.35+ (v0.2.157 fix).
+full = ["fisher_py>=2.0", "alphatims>=1.0,<1.0.9"]   # convenience: all vendors + all features
 dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
 
 [project.scripts]

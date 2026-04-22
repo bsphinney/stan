@@ -225,16 +225,25 @@ def _classify_run_class(run_name: str) -> str:
 @app.get("/api/today/tic-overview")
 async def api_today_tic_overview(
     date: str | None = None,
+    days: int = 7,
     instrument: str | None = None,
 ) -> dict:
-    """Return today's runs + their TIC traces in three faceted buckets.
+    """Return recent runs + their TIC traces in three faceted buckets.
 
     Buckets: qc (from `runs` joined to `tic_traces`), sample and blank
     (from `sample_health` joined to `health_tic_traces`, classified by
-    filename). Powers the Today's Runs tab's three-panel TIC overlay.
+    filename). Powers the This Week's QCs tab's three-panel TIC overlay.
+
+    v0.2.157: default window changed from today-only to last 7 days so
+    the card isn't empty when the operator hasn't run an acquisition
+    yet today. Pass ``date=YYYY-MM-DD&days=1`` for the legacy today-
+    only behavior.
 
     Args:
-        date: ISO date YYYY-MM-DD. Defaults to today (local time).
+        date: ISO date YYYY-MM-DD. Defaults to today (local time) and
+            is interpreted as the END of the window.
+        days: How many days back from ``date`` to include (default 7).
+            ``days=1`` gives today-only (legacy behavior).
         instrument: Optional name filter.
 
     Returns:
@@ -257,23 +266,35 @@ async def api_today_tic_overview(
     """
     import json as _json
     import sqlite3
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
     from stan.db import get_db_path
 
     db_path = get_db_path()
     if not db_path.exists():
         return {"date": date, "runs": [], "n_runs": 0, "n_with_tic": 0}
 
-    # Default to local "today" — the dashboard runs on the instrument
+    # Default to local "today" - the dashboard runs on the instrument
     # PC, so the operator thinks in local time.
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
+    # v0.2.157: window is [end_date - days + 1, end_date] inclusive.
+    # days=7 with today = Mon through Sun if today is Sun. days=1
+    # reproduces the legacy today-only behavior.
+    try:
+        end_dt = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        end_dt = datetime.now()
+    start_dt = end_dt - timedelta(days=max(1, days) - 1)
+    start_prefix = start_dt.strftime("%Y-%m-%d")
+    end_prefix = end_dt.strftime("%Y-%m-%d")
+
     # SQLite comparison: run_date is ISO with 'T' separator. Match by
     # date prefix (10-char) so timezone suffixes don't trip us up.
-    where = ["substr(r.run_date, 1, 10) = ?",
+    where = ["substr(r.run_date, 1, 10) >= ?",
+             "substr(r.run_date, 1, 10) <= ?",
              "(r.hidden IS NULL OR r.hidden = 0)"]
-    params: list = [date]
+    params: list = [start_prefix, end_prefix]
     if instrument:
         where.append("r.instrument = ?")
         params.append(instrument)
@@ -298,8 +319,9 @@ async def api_today_tic_overview(
         # health_tic_traces sibling table populated by the watcher.
         # Older sample_health rows have no TIC — they still appear
         # in the facet but render with no line, just metadata.
-        sh_where = ["substr(s.run_date, 1, 10) = ?"]
-        sh_params: list = [date]
+        sh_where = ["substr(s.run_date, 1, 10) >= ?",
+                    "substr(s.run_date, 1, 10) <= ?"]
+        sh_params: list = [start_prefix, end_prefix]
         if instrument:
             sh_where.append("s.instrument = ?")
             sh_params.append(instrument)

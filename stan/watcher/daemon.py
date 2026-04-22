@@ -397,13 +397,18 @@ class InstrumentWatcher:
 
         if n_registered or n_skipped_known:
             logger.info(
-                "watcher: startup scan on %s → registered %d new, "
+                "watcher: startup scan on %s - registered %d new, "
                 "skipped %d already-known (lookback=%sd)",
                 self._name, n_registered, n_skipped_known, catchup_days,
             )
+            # v0.2.157: fix NameError on max_age_min (leftover from the
+            # v0.2.101 minutes-based lookback). That NameError was
+            # silently eaten by the outer try/except in __init__, so
+            # catchup APPEARED to do nothing because the summary event
+            # never got recorded — operator had no visibility.
             self._record_event(
                 "startup_scan_registered", watch,
-                f"count={n_registered} max_age_min={max_age_min}",
+                f"count={n_registered} lookback_days={catchup_days}",
             )
 
     def stop(self) -> None:

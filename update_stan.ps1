@@ -260,8 +260,16 @@ if (Test-Path $instYml) {
     }
 }
 if ($hasBruker) {
-    Write-Host "  Installing alphatims (Bruker PEG reader)..." -ForegroundColor Gray
-    & $venvPython -m pip install --quiet @pipTrust alphatims 2>&1 | ForEach-Object {
+    Write-Host "  Installing alphatims (Bruker PEG + drift reader, pinned <1.0.9)..." -ForegroundColor Gray
+    # v0.2.157: pin alphatims <1.0.9. alphatims 1.0.9 breaks
+    # against polars 1.35+ (internal search_sorted call passes an
+    # invalid side= parameter). --force-reinstall ensures existing
+    # 1.0.9 installs get downgraded to 1.0.8, not left broken.
+    # alphatims 1.0.8 depends on pandas (not polars - polars dep
+    # started in 1.0.9). Don't use --no-deps: STAN proper doesn't
+    # pull pandas, so skipping deps would leave alphatims unable to
+    # import. --force-reinstall handles the 1.0.9 -> 1.0.8 downgrade.
+    & $venvPython -m pip install --quiet --force-reinstall @pipTrust "alphatims>=1.0,<1.0.9" 2>&1 | ForEach-Object {
         $line = $_.ToString()
         if ($line -match "Successfully installed") {
             Write-Host "  $line" -ForegroundColor Green

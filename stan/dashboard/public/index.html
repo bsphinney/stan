@@ -1339,7 +1339,7 @@
       if (!data) {
         return (
           <div className="card" style={{marginTop:'1rem'}}>
-            <h3>Today's TIC overlay</h3>
+            <h3>This Week's TIC overlay</h3>
             <div style={{color:'var(--muted)'}}>Loading…</div>
           </div>
         );
@@ -1361,7 +1361,7 @@
       if (totalWithTic === 0) {
         return (
           <div className="card" style={{marginTop:'1rem'}}>
-            <h3>Today's TIC overlay</h3>
+            <h3>This Week's TIC overlay</h3>
             <div style={{color:'var(--muted)', fontSize:'0.85rem'}}>
               {totalRuns} run{totalRuns === 1 ? '' : 's'} today but none have
               a TIC trace in the DB. Run <code>stan backfill-tic</code> to
@@ -1409,7 +1409,7 @@
         <div className="card" style={{marginTop:'1rem'}}>
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'0.5rem'}}>
             <h3 style={{margin:0}}>
-              Today's TIC overlay ({totalWithTic} trace{totalWithTic === 1 ? '' : 's'})
+              This Week's TIC overlay ({totalWithTic} trace{totalWithTic === 1 ? '' : 's'})
             </h3>
             <div style={{display:'flex', alignItems:'center', gap:'0.6rem', flexWrap:'wrap'}}>
               {/* Facet filter: All / QC / Sample / Blank */}
