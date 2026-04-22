@@ -50,6 +50,188 @@ def version() -> None:
 
 
 @app.command()
+def doctor() -> None:
+    """Environment + dependency diagnostic, synced to Hive mirror.
+
+    Prints STAN version, Python version, venv path, installed versions
+    of critical dependencies (numpy, polars, pandas, alphatims,
+    fisher_py, huggingface_hub, watchdog), instrument config summary,
+    DB stats, and a smoke-import of alphatims.
+
+    Writes the full output to ~/STAN/logs/doctor_<ts>.log so it syncs
+    to the Hive mirror. Brett can share a link to the mirror instead
+    of typing anything.
+
+    Run when anything mysterious happens - faster than relaying specific
+    diagnostic commands one at a time.
+    """
+    import importlib
+    import platform
+    import sqlite3
+    import sys
+    import traceback
+    from datetime import datetime
+
+    from stan.config import get_user_config_dir
+
+    lines: list[str] = []
+
+    def emit(msg: str = "") -> None:
+        console.print(msg)
+        lines.append(msg)
+
+    def pkg_version(name: str) -> str:
+        try:
+            from importlib.metadata import version as _v
+            return _v(name)
+        except Exception:
+            return "(not installed)"
+
+    emit(f"[bold]STAN doctor[/bold] - {datetime.now().isoformat(timespec='seconds')}")
+    emit("=" * 70)
+    emit(f"STAN version:     {__version__}")
+    emit(f"Python:           {sys.version.split()[0]} ({platform.python_implementation()})")
+    emit(f"Platform:         {platform.system()} {platform.release()}")
+    emit(f"sys.prefix:       {sys.prefix}")
+    emit(f"sys.executable:   {sys.executable}")
+    emit(f"Working dir:      {Path.cwd()}")
+    emit("")
+
+    emit("[bold]Dependency versions[/bold]")
+    emit("-" * 70)
+    for pkg in [
+        "numpy", "polars", "pyarrow", "pandas", "watchdog",
+        "alphatims", "fisher_py", "huggingface_hub",
+        "fastapi", "uvicorn", "httpx", "typer", "rich", "pyyaml",
+    ]:
+        emit(f"  {pkg:<20} {pkg_version(pkg)}")
+    emit("")
+
+    emit("[bold]Critical compat checks[/bold]")
+    emit("-" * 70)
+    numpy_ver = pkg_version("numpy")
+    alphatims_ver = pkg_version("alphatims")
+    polars_ver = pkg_version("polars")
+    if alphatims_ver.startswith("1.0.9"):
+        emit("  [red]alphatims 1.0.9 is BROKEN (polars 1.35+ incompat).[/red]")
+        emit("  Fix: stan install-peg-deps")
+    elif alphatims_ver == "(not installed)":
+        emit("  alphatims not installed (PEG/drift disabled)")
+    else:
+        # alphatims 1.0.8 + numpy 2.0+ also reported broken
+        if numpy_ver and numpy_ver[0].isdigit() and int(numpy_ver.split(".")[0]) >= 2:
+            emit(f"  [yellow]numpy {numpy_ver} is 2.0+ - strict searchsorted side= check. "
+                 f"alphatims {alphatims_ver} may still fail on searchsorted calls.[/yellow]")
+            emit("  Fix if PEG/drift errors: pip install 'numpy<2' in the STAN venv")
+        else:
+            emit(f"  [green]alphatims {alphatims_ver} + numpy {numpy_ver} pair looks OK[/green]")
+
+    # Smoke-import alphatims.bruker (fails with the actual ValueError
+    # if that's what's going on).
+    try:
+        importlib.import_module("alphatims.bruker")
+        emit("  [green]alphatims.bruker imports cleanly[/green]")
+    except Exception as e:
+        emit(f"  [red]alphatims.bruker import FAILED: {type(e).__name__}: {e}[/red]")
+    emit("")
+
+    emit("[bold]STAN config[/bold]")
+    emit("-" * 70)
+    cfg_dir = get_user_config_dir()
+    emit(f"  config dir: {cfg_dir}")
+    for name in ("instruments.yml", "community.yml", "thresholds.yml",
+                 "stan.db", "instrument_library.parquet"):
+        p = cfg_dir / name
+        status = f"exists ({p.stat().st_size} bytes)" if p.exists() else "MISSING"
+        emit(f"  {name:<32} {status}")
+    emit("")
+
+    # DB row counts
+    emit("[bold]Database summary[/bold]")
+    emit("-" * 70)
+    db = cfg_dir / "stan.db"
+    if db.exists():
+        try:
+            with sqlite3.connect(str(db)) as con:
+                for table in ("runs", "sample_health", "tic_traces",
+                              "health_tic_traces", "peg_ion_hits",
+                              "drift_window_centroids", "irt_anchor_rts",
+                              "maintenance_events"):
+                    try:
+                        n = con.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                        emit(f"  {table:<28} {n} rows")
+                    except sqlite3.OperationalError:
+                        emit(f"  {table:<28} (table missing)")
+                # Latest run
+                try:
+                    row = con.execute(
+                        "SELECT substr(run_date,1,16), run_name, "
+                        "instrument FROM runs ORDER BY run_date DESC LIMIT 1"
+                    ).fetchone()
+                    if row:
+                        emit(f"  latest runs row:  {row[0]} {row[1]} ({row[2]})")
+                except Exception:
+                    pass
+        except Exception as e:
+            emit(f"  [red]DB read failed: {e}[/red]")
+    else:
+        emit("  (stan.db not found)")
+    emit("")
+
+    # Active watcher? Check process list.
+    emit("[bold]Watcher + dashboard processes[/bold]")
+    emit("-" * 70)
+    try:
+        import subprocess as _sp
+        if platform.system() == "Windows":
+            r = _sp.run(
+                ["wmic", "process", "where", "name='stan.exe'", "get", "CommandLine,ProcessId"],
+                capture_output=True, text=True, timeout=10,
+            )
+            out = (r.stdout or "").strip()
+            emit(out if out else "  (no stan.exe processes)")
+        else:
+            r = _sp.run(["pgrep", "-af", "stan"], capture_output=True, text=True, timeout=10)
+            out = (r.stdout or "").strip()
+            emit(out if out else "  (no stan processes)")
+    except Exception as e:
+        emit(f"  process probe failed: {e}")
+    emit("")
+
+    emit("[bold]Recent alerts (last 5)[/bold]")
+    emit("-" * 70)
+    alerts_dir = cfg_dir / "alerts"
+    if alerts_dir.exists():
+        alerts = sorted(alerts_dir.glob("*.json"))[-5:]
+        if alerts:
+            for a in alerts:
+                emit(f"  {a.name}")
+        else:
+            emit("  (no alerts)")
+    else:
+        emit("  (no alerts dir)")
+    emit("")
+
+    # Write to logs/ so it syncs to Hive.
+    try:
+        log_dir = cfg_dir / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"doctor_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        log_path.write_text("\n".join(lines), encoding="utf-8")
+        emit(f"[dim]Log: {log_path}[/dim]")
+        try:
+            from stan.config import sync_to_hive_mirror
+            sync_to_hive_mirror(include_reports=False)
+            emit("[dim]Synced to Hive mirror.[/dim]")
+        except Exception:
+            pass
+    except Exception as e:
+        emit(f"[yellow]Could not write log: {e}[/yellow]")
+
+
+@app.command()
 def verify() -> None:
     """Check community benchmark auth status and refresh if needed.
 
