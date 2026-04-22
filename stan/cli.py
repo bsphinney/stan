@@ -2820,17 +2820,16 @@ def backfill_window_drift(
 
 @app.command("install-peg-deps")
 def install_peg_deps() -> None:
-    """Install or repair alphatims (Bruker PEG + drift reader).
+    """Install or repair Bruker-only PEG + drift dependencies.
 
-    v0.2.164: probes the installed alphatims version and force-
-    downgrades from the broken 1.0.9 to <1.0.9 if needed.
-    alphatims 1.0.9 uses polars internally and breaks against
-    polars 1.35+ with "search side must be one of 'left' or
-    'right'" - seen on Brett's timsTOF 2026-04-22 where every
-    PEG + drift extraction errored.
+    Only useful on timsTOF instruments. Thermo instruments use
+    fisher_py (installed separately by update_stan.ps1) for MS1
+    spectrum access; alphatims is irrelevant on Orbitrap.
 
-    Run this whenever PEG or drift backfill errors with that
-    ValueError. Safe to run multiple times.
+    Handles two compat breaks: alphatims 1.0.9 vs polars 1.35+,
+    and alphatims 1.0.8 vs numpy 2.0+. Probes installed versions,
+    force-downgrades whichever is broken. Safe to run multiple
+    times - no-op when versions already satisfy the pin.
     """
     import subprocess
     import sys
