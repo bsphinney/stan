@@ -325,7 +325,12 @@ class InstrumentWatcher:
         if not watch.exists() or not exts:
             return
 
-        catchup_days = float(self._config.get("startup_catchup_days", 7))
+        # v0.2.156: bumped default from 7 to 30. Brett notes on-disk
+        # files already acquired don't incur search-time cost on the
+        # walk — the stability trackers register and fire fast when
+        # the file is already stable. 30 days covers most "I was away"
+        # gaps without needing manual config.
+        catchup_days = float(self._config.get("startup_catchup_days", 30))
         if catchup_days <= 0:
             # User disabled catch-up. Nothing to do.
             return

@@ -29,6 +29,28 @@ from pathlib import Path
 from stan.search.convert import get_mzml_path
 
 
+def _find_bundled_fasta() -> Path | None:
+    """Return the path to the bundled community FASTA, or None if missing.
+
+    v0.2.156: every pip install of stan-proteomics ships
+    ``community_fasta/human_hela_202604.fasta`` via the
+    [tool.setuptools.data-files] entry. The FASTA is identical across
+    every STAN install (same reference for every community submission)
+    so defaulting fasta_path to the bundled copy is the correct
+    behavior when the operator hasn't set one.
+    """
+    # baseline.py:718 uses this same relative path successfully.
+    bundled = Path(__file__).resolve().parent.parent.parent / "community_fasta" / "human_hela_202604.fasta"
+    if bundled.exists():
+        return bundled
+    # Fallback: sys.prefix location (some pip configurations)
+    import sys
+    alt = Path(sys.prefix) / "community_fasta" / "human_hela_202604.fasta"
+    if alt.exists():
+        return alt
+    return None
+
+
 def _mirror_log_to_hive(log_file: Path, run_stem: str, engine: str) -> None:
     """Copy a failed search log to the Hive mirror directory.
 
@@ -230,16 +252,35 @@ def run_diann_local(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # v0.2.156: auto-use the bundled FASTA when no fasta_path is set.
+    # Every STAN install ships the standardized human_hela_202604.fasta
+    # via the [tool.setuptools.data-files] entry in pyproject.toml, and
+    # every community submission uses the same reference — so there's
+    # no reason to require operators to configure a path. Brett's
+    # timsTOF HT 2026-04-17 had no fasta_path set → every QC search
+    # silently failed → 5 days of no new runs in the QC table.
+    if search_mode == "local" and not fasta_path:
+        bundled = _find_bundled_fasta()
+        if bundled:
+            logger.info(
+                "No fasta_path configured — using bundled community FASTA: %s",
+                bundled,
+            )
+            fasta_path = str(bundled)
+        else:
+            # Bundled copy missing (shouldn't happen on a normal pip
+            # install) — fall back to community mode which downloads
+            # the FASTA from the HF Dataset.
+            logger.warning(
+                "No fasta_path configured and bundled FASTA missing — "
+                "falling back to community download mode."
+            )
+            search_mode = "community"
+
     if search_mode == "community":
         from stan.search.community_params import get_community_diann_params
         params = get_community_diann_params(vendor, cache_dir=str(output_dir.parent / "_community_assets"))
     else:
-        if not fasta_path:
-            logger.error(
-                "No fasta_path configured for instrument. "
-                "Set fasta_path in instruments.yml or run `stan setup`."
-            )
-            return None
         if not Path(fasta_path).exists():
             logger.error("FASTA file not found: %s", fasta_path)
             return None
@@ -426,17 +467,27 @@ def run_sage_local(
     else:
         input_path = str(raw_path)
 
+    # v0.2.156: same bundled-FASTA fallback as the DIA-NN path above.
+    if search_mode == "local" and not fasta_path:
+        bundled = _find_bundled_fasta()
+        if bundled:
+            logger.info(
+                "No fasta_path configured for Sage — using bundled "
+                "community FASTA: %s", bundled,
+            )
+            fasta_path = str(bundled)
+        else:
+            logger.warning(
+                "No fasta_path configured and bundled FASTA missing — "
+                "falling back to community download mode."
+            )
+            search_mode = "community"
+
     # Build Sage JSON config
     if search_mode == "community":
         from stan.search.community_params import get_community_sage_params
         params = get_community_sage_params(cache_dir=str(output_dir.parent / "_community_assets"))
     else:
-        if not fasta_path:
-            logger.error(
-                "No fasta_path configured for instrument. "
-                "Set fasta_path in instruments.yml or run `stan setup`."
-            )
-            return None
         if not Path(fasta_path).exists():
             logger.error("FASTA file not found: %s", fasta_path)
             return None
