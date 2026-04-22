@@ -1144,8 +1144,15 @@
               <div style={{color:'var(--muted)'}}>No QC runs in the last 7 days. Showing most recent per instrument below.</div>
             </div>
           )}
-          <div className="grid">
-            {Object.entries(byInstrument).map(([name, run]) => (
+          {/* v0.2.154: two-zone layout — instrument cards on the left,
+              WeekHeatmap filling the right. When instrument count >= 4
+              we fall back to the original auto-fill grid (no heatmap)
+              so 4+ cards aren't squeezed into 1/3 of the width. */}
+          {(() => {
+            const instruments = Object.entries(byInstrument);
+            const nInst = instruments.length;
+            const useTwoZone = nInst > 0 && nInst <= 3;
+            const instrumentCards = instruments.map(([name, run]) => (
               <div className="card" key={name}>
                 <h3 style={{display:'flex', alignItems:'center', gap:'0.5rem', flexWrap:'wrap'}}>
                   {name}
@@ -1154,7 +1161,6 @@
                 <ColumnLifeBadge instrument={name} />
                 <div className="metric"><span className="metric-label">Last run</span><span className="metric-value" title={run.run_name} style={{maxWidth:'60%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{run.run_name}</span></div>
                 <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
-                {/* Gate metric removed 2026-04-20 — gating wasn't functional */}
                 <div className="metric"><span className="metric-label">IPS</span><span className="badge badge-grs">IPS {run.ips_score || '—'}</span></div>
                 <div className="metric">
                   <span className="metric-label">PEG / Drift</span>
@@ -1169,9 +1175,138 @@
                 {run.diagnosis && <div className="diagnosis">{run.diagnosis}</div>}
                 <LogEventButton instrument={name} />
               </div>
+            ));
+
+            if (!useTwoZone) {
+              return <div className="grid">{instrumentCards}</div>;
+            }
+            // Two-zone grid: instrument cards get enough columns for their
+            // count, heatmap fills the rest. The `--inst-cols` var and
+            // `1fr` trailing track mean 1 card takes 33%, 2 cards take
+            // 50%, 3 cards take 66% — heatmap always gets the remainder.
+            const gridTemplate =
+              nInst === 1 ? 'minmax(300px, 380px) 1fr'
+              : nInst === 2 ? 'minmax(300px, 360px) minmax(300px, 360px) 1fr'
+              : 'minmax(280px, 340px) minmax(280px, 340px) minmax(280px, 340px) 1fr';
+            return (
+              <div style={{display:'grid', gridTemplateColumns: gridTemplate,
+                           gap:'1rem', alignItems:'start'}}>
+                {instrumentCards}
+                <WeekHeatmap allRuns={allRuns} instruments={instruments.map(([n]) => n)} />
+              </div>
+            );
+          })()}
+          <TodayTicOverlay />
+        </div>
+      );
+    }
+
+    // WeekHeatmap (v0.2.154) — Week-at-a-glance status grid filling the
+    // right zone of "This Week's QCs" when there are ≤3 instruments.
+    // Rows = instruments · Columns = last 7 days.
+    // Cell content = run count that day. Cell color = worst IPS-based
+    // status across that day's runs: green=healthy (IPS≥70), amber=warn
+    // (40-69), red=fail (<40), dim=no runs. Click a cell to filter QC
+    // History to that day for the drill-down.
+    function WeekHeatmap({ allRuns, instruments }) {
+      const runs = allRuns || [];
+      // Build 7-day × N-instrument matrix of runs, keyed by "YYYY-MM-DD".
+      const days = [];
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        days.push(d);
+      }
+      const dayKey = d => d.toISOString().slice(0, 10);
+      const grid = {};  // grid[instrument][dayKey] = [runs]
+      for (const inst of instruments) {
+        grid[inst] = {};
+        for (const d of days) grid[inst][dayKey(d)] = [];
+      }
+      for (const r of runs) {
+        const rd = new Date(r.run_date);
+        const k = dayKey(rd);
+        if (grid[r.instrument] && k in grid[r.instrument]) {
+          grid[r.instrument][k].push(r);
+        }
+      }
+
+      // Worst IPS in a cell determines color. Lower IPS = worse.
+      function cellStatus(cellRuns) {
+        if (!cellRuns.length) return { color: 'rgba(100,116,139,0.15)', text: 'var(--muted)' };
+        const minIps = Math.min(...cellRuns.map(r => r.ips_score ?? 100));
+        if (minIps < 40) return { color: 'rgba(239,68,68,0.35)',  text: '#fecaca' };
+        if (minIps < 70) return { color: 'rgba(234,179,8,0.35)',  text: '#fef08a' };
+        return                  { color: 'rgba(34,197,94,0.30)',  text: '#bbf7d0' };
+      }
+
+      const monthDayLabel = d =>
+        d.toLocaleString([], { month: 'short', day: 'numeric' });
+
+      return (
+        <div className="card" style={{padding:'0.9rem'}}>
+          <h3 style={{margin:'0 0 0.4rem 0'}}>Week at a glance</h3>
+          <p style={{fontSize:'0.7rem', color:'var(--muted)', margin:'0 0 0.6rem 0'}}>
+            Cell = run count that day · color = worst IPS in the cell
+            (green ≥70, amber 40-69, red &lt;40, dim = no runs).
+          </p>
+          <div style={{display:'grid',
+                       gridTemplateColumns: `minmax(80px, auto) repeat(7, 1fr)`,
+                       gap:'0.25rem', fontSize:'0.72rem',
+                       fontVariantNumeric:'tabular-nums'}}>
+            {/* Header row: blank corner + 7 day labels */}
+            <div />
+            {days.map((d, i) => (
+              <div key={`h-${i}`} style={{
+                textAlign:'center', color:'var(--muted)', padding:'0.15rem 0',
+                fontWeight: i === 6 ? 700 : 400,
+              }}>
+                {monthDayLabel(d)}
+              </div>
+            ))}
+            {/* Data rows */}
+            {instruments.map(inst => (
+              <React.Fragment key={`row-${inst}`}>
+                <div style={{
+                  color:'var(--text)', padding:'0.25rem 0.3rem',
+                  whiteSpace:'nowrap', overflow:'hidden',
+                  textOverflow:'ellipsis', fontSize:'0.7rem',
+                }}
+                     title={inst}>
+                  {inst}
+                </div>
+                {days.map((d, di) => {
+                  const k = dayKey(d);
+                  const cellRuns = grid[inst][k] || [];
+                  const status = cellStatus(cellRuns);
+                  const tip = cellRuns.length
+                    ? `${inst} · ${monthDayLabel(d)}\n` +
+                      `${cellRuns.length} run${cellRuns.length === 1 ? '' : 's'}\n` +
+                      `IPS range: ${Math.min(...cellRuns.map(r => r.ips_score ?? 0))}–${Math.max(...cellRuns.map(r => r.ips_score ?? 0))}`
+                    : `${inst} · ${monthDayLabel(d)} · no runs`;
+                  return (
+                    <div key={`c-${inst}-${di}`}
+                         title={tip}
+                         style={{
+                           background: status.color, color: status.text,
+                           borderRadius: '0.2rem',
+                           textAlign: 'center',
+                           padding: '0.3rem 0',
+                           fontWeight: 600,
+                           minHeight: '1.6rem',
+                           display: 'flex',
+                           alignItems: 'center',
+                           justifyContent: 'center',
+                         }}>
+                      {cellRuns.length || ''}
+                    </div>
+                  );
+                })}
+              </React.Fragment>
             ))}
           </div>
-          <TodayTicOverlay />
         </div>
       );
     }
