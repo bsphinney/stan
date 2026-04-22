@@ -260,28 +260,38 @@ if (Test-Path $instYml) {
     }
 }
 if ($hasBruker) {
-    Write-Host "  Installing alphatims (Bruker PEG + drift reader, pinned <1.0.9)..." -ForegroundColor Gray
-    # v0.2.157: pin alphatims <1.0.9. alphatims 1.0.9 breaks
-    # against polars 1.35+ (internal search_sorted call passes an
-    # invalid side= parameter). --force-reinstall ensures existing
-    # 1.0.9 installs get downgraded to 1.0.8, not left broken.
-    # alphatims 1.0.8 depends on pandas (not polars - polars dep
-    # started in 1.0.9). Don't use --no-deps: STAN proper doesn't
-    # pull pandas, so skipping deps would leave alphatims unable to
-    # import. --force-reinstall handles the 1.0.9 -> 1.0.8 downgrade.
-    & $venvPython -m pip install --quiet --force-reinstall @pipTrust "alphatims>=1.0,<1.0.9" 2>&1 | ForEach-Object {
-        $line = $_.ToString()
-        if ($line -match "Successfully installed") {
-            Write-Host "  $line" -ForegroundColor Green
-        } elseif ($line -match "error|ERROR") {
-            Write-Host "  alphatims: $line" -ForegroundColor DarkYellow
-        }
-    }
-    $alphatimsOk = & $venvPython -c "import alphatims; print('ok')" 2>&1
-    if ($alphatimsOk -match "ok") {
-        Write-Host "  alphatims available." -ForegroundColor Green
+    # v0.2.160: only reinstall alphatims when the installed version is
+    # missing or >=1.0.9 (the broken one). Otherwise verify the pin is
+    # satisfied and move on. Previous v0.2.157-159 ran --force-reinstall
+    # on every click - Brett 2026-04-22 called it out as wasteful.
+    $alphaVer = & $venvPython -c "import alphatims; print(alphatims.__version__)" 2>&1
+    $needsAlpha = $false
+    if ($alphaVer -match "^1\.0\.9") {
+        Write-Host "  alphatims 1.0.9 detected - forcing downgrade to <1.0.9 (polars compat fix)..." -ForegroundColor Yellow
+        $needsAlpha = $true
+    } elseif ($alphaVer -match "^1\.0\.([5-8])") {
+        Write-Host "  alphatims $alphaVer already satisfies pin (<1.0.9)." -ForegroundColor Green
     } else {
-        Write-Host "  alphatims not available (PEG detection disabled). Rerun update to retry." -ForegroundColor Yellow
+        Write-Host "  alphatims not importable - installing..." -ForegroundColor Gray
+        $needsAlpha = $true
+    }
+    # alphatims 1.0.8 depends on pandas (not polars - polars dep
+    # started in 1.0.9). Don't use --no-deps.
+    if ($needsAlpha) {
+        & $venvPython -m pip install --quiet --force-reinstall @pipTrust "alphatims>=1.0,<1.0.9" 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            if ($line -match "Successfully installed") {
+                Write-Host "  $line" -ForegroundColor Green
+            } elseif ($line -match "error|ERROR") {
+                Write-Host "  alphatims: $line" -ForegroundColor DarkYellow
+            }
+        }
+        $alphatimsOk = & $venvPython -c "import alphatims; print('ok')" 2>&1
+        if ($alphatimsOk -match "ok") {
+            Write-Host "  alphatims available." -ForegroundColor Green
+        } else {
+            Write-Host "  alphatims not available (PEG/drift disabled). Rerun update to retry." -ForegroundColor Yellow
+        }
     }
 } else {
     Write-Host "  Skipping alphatims (no Bruker instrument in instruments.yml)." -ForegroundColor Gray

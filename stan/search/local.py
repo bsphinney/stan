@@ -252,28 +252,37 @@ def run_diann_local(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # v0.2.156: auto-use the bundled FASTA when no fasta_path is set.
-    # Every STAN install ships the standardized human_hela_202604.fasta
-    # via the [tool.setuptools.data-files] entry in pyproject.toml, and
-    # every community submission uses the same reference — so there's
-    # no reason to require operators to configure a path. Brett's
-    # timsTOF HT 2026-04-17 had no fasta_path set → every QC search
-    # silently failed → 5 days of no new runs in the QC table.
-    if search_mode == "local" and not fasta_path:
-        bundled = _find_bundled_fasta()
-        if bundled:
+    # v0.2.160: auto-discover assets when operator hasn't fully
+    # configured local mode. Two auto-uses:
+    #   1. No fasta_path -> use bundled human_hela_202604.fasta
+    #   2. No lib_path -> use ~/STAN/instrument_library.parquet if
+    #      stan has already built one (stan library_builder).
+    # Falls back to community download mode only when both auto-
+    # discoveries fail (e.g. fresh install before first baseline).
+    # Brett's timsTOF HT 2026-04-22: had an instrument_library.parquet
+    # already built but the watcher wasn't passing lib_path to
+    # run_diann_local, so every QC dispatch errored "DIA-NN requires
+    # a spectral library" despite the library being right there.
+    if search_mode == "local":
+        if not fasta_path:
+            bundled_fa = _find_bundled_fasta()
+            if bundled_fa:
+                logger.info(
+                    "Auto-using bundled FASTA: %s", bundled_fa,
+                )
+                fasta_path = str(bundled_fa)
+        if not lib_path:
+            from stan.config import get_user_config_dir
+            candidate_lib = get_user_config_dir() / "instrument_library.parquet"
+            if candidate_lib.exists():
+                logger.info(
+                    "Auto-using built instrument library: %s", candidate_lib,
+                )
+                lib_path = str(candidate_lib)
+        if not fasta_path or not lib_path:
             logger.info(
-                "No fasta_path configured — using bundled community FASTA: %s",
-                bundled,
-            )
-            fasta_path = str(bundled)
-        else:
-            # Bundled copy missing (shouldn't happen on a normal pip
-            # install) — fall back to community mode which downloads
-            # the FASTA from the HF Dataset.
-            logger.warning(
-                "No fasta_path configured and bundled FASTA missing — "
-                "falling back to community download mode."
+                "Local assets incomplete - falling back to community "
+                "search mode (pulls FASTA + library from HF Dataset)."
             )
             search_mode = "community"
 
