@@ -723,7 +723,8 @@ class InstrumentWatcher:
             )
             return
 
-        # PEG — reuses the backfill pipeline
+        # PEG - reuses the backfill pipeline
+        peg_reader_available = True
         try:
             spectra = list(read_ms1_bruker(d_path))
             peg = detect_peg_in_spectra(spectra)
@@ -752,24 +753,64 @@ class InstrumentWatcher:
                     peg.n_ions_detected,
                 )
         except PegReaderUnavailable:
-            logger.debug("alphatims missing — PEG skipped for %s", d_path.name)
-            return  # drift also needs alphatims, bail out early
-        except Exception:
-            logger.debug("PEG detection failed for %s", d_path.name, exc_info=True)
+            logger.warning("alphatims missing - PEG + drift skipped for %s", d_path.name)
+            peg_reader_available = False
+            # v0.2.160: still mark peg_class="unknown" so the dashboard
+            # surfaces the degraded state instead of a NULL cell.
+            try:
+                update_peg_result(
+                    run_id=row_id, peg_score=0.0,
+                    peg_n_ions_detected=0, peg_intensity_pct=0.0,
+                    peg_class="unknown", table=table,
+                )
+            except Exception:
+                pass
+        except Exception as _e:
+            # Other exceptions (alphatims init ValueError from 1.0.9,
+            # corrupt .d, etc.) - write unknown so operator sees
+            # the degraded state.
+            logger.warning(
+                "PEG detection failed for %s (%s: %s)",
+                d_path.name, type(_e).__name__, _e,
+            )
+            try:
+                update_peg_result(
+                    run_id=row_id, peg_score=0.0,
+                    peg_n_ions_detected=0, peg_intensity_pct=0.0,
+                    peg_class="unknown", table=table,
+                )
+            except Exception:
+                pass
+
+        # v0.2.160: only bail out of drift if the reader is genuinely
+        # unavailable (alphatims not installed at all). A per-file
+        # exception in PEG shouldn't prevent drift from trying on
+        # other files - and drift has its own try/except around init.
+        if not peg_reader_available:
+            return
 
         # DIA window drift
         try:
             drift = detect_window_drift(d_path)
+            # v0.2.160: always write the drift result, even when
+            # drift_class="unknown" (alphatims init failed, no DIA
+            # windows found, etc.). Previously we skipped the write
+            # on unknown, leaving drift_class NULL in the DB - which
+            # looks identical to "drift never ran" in the dashboard
+            # and hides the degraded-extraction signal. Writing
+            # "unknown" surfaces the real state.
+            update_drift_result(
+                run_id=row_id,
+                drift_coverage=drift.global_coverage,
+                drift_median_im=drift.median_drift_im,
+                drift_p90_abs_im=drift.p90_abs_drift_im,
+                drift_class=drift.drift_class,
+                table=table,
+            )
             if drift.drift_class != "unknown":
-                update_drift_result(
-                    run_id=row_id,
-                    drift_coverage=drift.global_coverage,
-                    drift_median_im=drift.median_drift_im,
-                    drift_p90_abs_im=drift.p90_abs_drift_im,
-                    drift_class=drift.drift_class,
-                    table=table,
-                )
-                # v0.2.147: per-window breakdown for the drift scatter chart.
+                # v0.2.147: per-window breakdown for the drift scatter
+                # chart. Only meaningful when we actually computed
+                # windows (i.e. drift_class != "unknown").
                 try:
                     insert_drift_window_centroids(
                         run_id=row_id, per_window=drift.per_window, table=table,
