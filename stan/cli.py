@@ -896,6 +896,67 @@ def _backfill_tic_impl(
             if push_data:
                 pushed_rows.append((run["submission_id"], push_data))
 
+    # ── sample_health TIC re-extraction (v0.2.150) ─────────────
+    # backfill-tic historically only covered runs / tic_traces.
+    # Sample-health rows (non-QC files: blanks, column equilibrations,
+    # chowE standards, etc.) got their TICs from the watcher's live
+    # ingest path, using whatever downsample_trace version happened to
+    # be in the watcher's memory at acquisition time. The v0.2.147
+    # sawtooth fix wasn't retroactive for these rows. With force=True
+    # we re-extract every sample_health row with the current code so
+    # the dashboard Sample panel stops showing the sawtooth on runs
+    # that were live-ingested before the update.
+    if force:
+        from stan.db import insert_health_tic_trace
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            try:
+                sh_rows = con.execute(
+                    "SELECT id, run_name, raw_path FROM sample_health"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                sh_rows = []
+        if sh_rows and verbose:
+            console.print(
+                f"\n[bold]Re-extracting TIC for {len(sh_rows)} sample_health rows...[/bold]"
+            )
+        sh_extracted = 0
+        sh_skipped = 0
+        for sh in sh_rows:
+            raw = sh["raw_path"] or ""
+            if not raw or not Path(raw).exists():
+                sh_skipped += 1
+                continue
+            raw_path = Path(raw)
+            trace = None
+            try:
+                if raw_path.is_dir() and raw_path.suffix == ".d":
+                    trace = extract_tic_bruker(raw_path)
+                elif raw_path.suffix.lower() == ".raw":
+                    try:
+                        trace = extract_tic_thermo(raw_path)
+                    except Exception:
+                        trace = None
+            except Exception:
+                trace = None
+            if trace is None:
+                sh_skipped += 1
+                continue
+            trace = downsample_trace(trace, n_bins=128)
+            try:
+                insert_health_tic_trace(
+                    sh["id"], trace.rt_min, trace.intensity, db_path=db_path
+                )
+                sh_extracted += 1
+                if verbose:
+                    console.print(f"  [green]health TIC[/green] {sh['run_name']}")
+            except Exception:
+                sh_skipped += 1
+        if verbose and sh_rows:
+            console.print(
+                f"[bold]Sample-health:[/bold] extracted={sh_extracted} skipped={sh_skipped}"
+            )
+
     if verbose:
         console.print(
             f"\n[bold]Extracted:[/bold] {extracted}  "
