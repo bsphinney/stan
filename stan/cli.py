@@ -2847,9 +2847,21 @@ def install_peg_deps() -> None:
     except ImportError:
         installed_ver = None
 
+    # v0.2.166: also probe numpy version - alphatims 1.0.8 breaks
+    # against numpy 2.0+ strict searchsorted. Both need to be pinned.
+    numpy_ver: str | None = None
+    try:
+        from importlib.metadata import version as _pkg_version
+        numpy_ver = _pkg_version("numpy")
+    except Exception:
+        pass
+
     pin = "alphatims>=1.0,<1.0.9"
+    numpy_bad = bool(numpy_ver and numpy_ver[0].isdigit()
+                     and int(numpy_ver.split(".")[0]) >= 2)
+
     if installed_ver is None:
-        console.print("alphatims not installed - installing with pin (<1.0.9)...")
+        console.print("alphatims not installed - installing alphatims<1.0.9 + numpy<2...")
         needs_install = True
     elif installed_ver.startswith("1.0.9"):
         console.print(
@@ -2857,8 +2869,17 @@ def install_peg_deps() -> None:
             f"forcing downgrade to <1.0.9...[/yellow]"
         )
         needs_install = True
+    elif numpy_bad:
+        console.print(
+            f"[yellow]numpy {numpy_ver} is 2.0+ - strict searchsorted side= "
+            f"breaks alphatims {installed_ver}. Pinning numpy<2...[/yellow]"
+        )
+        needs_install = True
     elif any(installed_ver.startswith(v) for v in ("1.0.5", "1.0.6", "1.0.7", "1.0.8")):
-        console.print(f"[green]alphatims {installed_ver} is already OK (pin satisfied).[/green]")
+        console.print(
+            f"[green]alphatims {installed_ver} + numpy {numpy_ver} "
+            f"already OK (pins satisfied).[/green]"
+        )
         return
     else:
         console.print(
@@ -2866,9 +2887,14 @@ def install_peg_deps() -> None:
         )
         needs_install = True
 
-    console.print("Installing with --force-reinstall (~150 MB of deps)...")
+    # v0.2.166: also pin numpy<2. alphatims 1.0.8 uses
+    # np.searchsorted with side values that numpy 2.0+ rejects as
+    # strict "left"/"right" only. Brett timsTOF 2026-04-22: after
+    # alphatims downgrade to 1.0.8, PEG backfill STILL failed because
+    # numpy was 2.4.4. Pinning both solves the whole compat chain.
+    console.print("Installing alphatims + numpy<2 with --force-reinstall...")
     cmd = [sys.executable, "-m", "pip", "install",
-           "--force-reinstall", "--quiet", pin]
+           "--force-reinstall", "--quiet", pin, "numpy<2"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
