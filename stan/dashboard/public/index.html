@@ -700,13 +700,14 @@
     /* ── Gas Gauge: 3-second instrument health at a glance ──────── */
 
     function GasGauge({ value, min, max, mean, sd, label }) {
-      // SVG inline gauge: 200 x 36. Shows a bar from min→max with zone
-      // coloring (green near mean, amber ±2σ, red beyond) and a large
-      // triangle pointer at `value`. v0.2.146 bumped H from 28 → 36,
-      // triangle size from 5px → 9px, and added a black stroke so the
-      // pointer doesn't vanish against dark bar colors — Brett reported
-      // the old triangles were hard to see on This Week's QCs gauges.
-      const W = 200, H = 36, BAR_Y = 12, BAR_H = 12;
+      // SVG inline gauge: 220 x 40. v0.2.151: added min/max scale labels
+      // at the bar endpoints and removed the right-side abbreviated value
+      // span — Brett reported that "27.1k" next to a triangle-in-the-middle
+      // read as "bar max is 27.1k" when it was actually the current value.
+      // The bar's range (= this instrument's historical min..max) is now
+      // visible, and the current value lives only in the span BELOW the
+      // gauge (via toLocaleString in QuickStatus), not duplicated.
+      const W = 220, H = 40, BAR_Y = 14, BAR_H = 12;
       const range = max - min || 1;
       const pct = v => Math.max(0, Math.min(1, (v - min) / range));
 
@@ -746,10 +747,17 @@
                      fill={statusColor} stroke="#000" strokeWidth={1} strokeLinejoin="round" />
             <polygon points={`${tx-9},${BAR_Y+BAR_H+10} ${tx+9},${BAR_Y+BAR_H+10} ${tx},${BAR_Y+BAR_H+1}`}
                      fill={statusColor} stroke="#000" strokeWidth={1} strokeLinejoin="round" />
+            {/* v0.2.151: numeric scale labels at bar endpoints — so the
+                reader sees "this bar spans 22k..32k" instead of guessing. */}
+            <text x={4} y={BAR_Y+BAR_H+11} fill="var(--muted)" fontSize="9"
+                  textAnchor="start" fontVariantNumeric="tabular-nums">
+              {min >= 1000 ? (min/1000).toFixed(1)+'k' : min?.toFixed?.(0) || ''}
+            </text>
+            <text x={W-4} y={BAR_Y+BAR_H+11} fill="var(--muted)" fontSize="9"
+                  textAnchor="end" fontVariantNumeric="tabular-nums">
+              {max >= 1000 ? (max/1000).toFixed(1)+'k' : max?.toFixed?.(0) || ''}
+            </text>
           </svg>
-          <span style={{color:statusColor, fontSize:'0.75rem', fontWeight:700, width:'50px', fontVariantNumeric:'tabular-nums'}}>
-            {value >= 1e6 ? (value/1e6).toFixed(1)+'M' : value >= 1000 ? (value/1000).toFixed(1)+'k' : value?.toFixed?.(0) || '—'}
-          </span>
         </div>
       );
     }

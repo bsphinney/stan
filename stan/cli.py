@@ -774,6 +774,19 @@ def _backfill_tic_impl(
     failed = 0
     pushed_rows: list[tuple[str, list, list]] = []
 
+    # v0.2.151: track skip reasons so operators can see why a --force
+    # sweep left rows un-rewritten. Brett's timsTOF 2026-04-22 showed
+    # only 27/277 updated with --force, 250 silently skipped — no way
+    # to tell why from the console. This histogram fixes that.
+    skip_reasons: dict[str, int] = {
+        "raw_missing": 0,
+        "bruker_extract_failed": 0,
+        "no_report_parquet": 0,
+        "report_extract_failed": 0,
+        "thermo_extract_failed": 0,
+        "no_raw_path_recorded": 0,
+    }
+
     for run in missing:
         run_id = run["id"]
         run_name = run.get("run_name", "")
@@ -781,13 +794,20 @@ def _backfill_tic_impl(
         raw_path = Path(raw_path_str) if raw_path_str else None
 
         trace = None
+        last_fail = None  # most recent reason for this run
 
         # 1. Try Bruker .d raw TIC
-        if raw_path and raw_path.exists() and raw_path.suffix.lower() == ".d":
-            try:
-                trace = extract_tic_bruker(raw_path)
-            except Exception:
-                logger.debug("extract_tic_bruker failed for %s", raw_path, exc_info=True)
+        if raw_path and raw_path.suffix.lower() == ".d":
+            if not raw_path.exists():
+                last_fail = "raw_missing"
+            else:
+                try:
+                    trace = extract_tic_bruker(raw_path)
+                    if trace is None:
+                        last_fail = "bruker_extract_failed"
+                except Exception:
+                    logger.debug("extract_tic_bruker failed for %s", raw_path, exc_info=True)
+                    last_fail = "bruker_extract_failed"
 
         # 2. Try the identified TIC from the DIA-NN report.parquet
         if trace is None and output_dir.exists():
@@ -803,20 +823,35 @@ def _backfill_tic_impl(
             if report_path is not None:
                 try:
                     trace = extract_tic_from_report(report_path)
+                    if trace is None:
+                        last_fail = "report_extract_failed"
                 except Exception:
                     logger.debug("extract_tic_from_report failed for %s", report_path, exc_info=True)
+                    last_fail = "report_extract_failed"
+            elif last_fail is None:
+                last_fail = "no_report_parquet"
 
         # 3. Try Thermo .raw via fisher_py
-        if trace is None and raw_path and raw_path.exists() and raw_path.suffix.lower() == ".raw":
-            try:
-                trace = extract_tic_thermo(raw_path)
-            except Exception:
-                logger.debug("extract_tic_thermo failed for %s", raw_path, exc_info=True)
+        if trace is None and raw_path and raw_path.suffix.lower() == ".raw":
+            if not raw_path.exists():
+                last_fail = "raw_missing"
+            else:
+                try:
+                    trace = extract_tic_thermo(raw_path)
+                    if trace is None:
+                        last_fail = "thermo_extract_failed"
+                except Exception:
+                    logger.debug("extract_tic_thermo failed for %s", raw_path, exc_info=True)
+                    last_fail = "thermo_extract_failed"
+
+        if trace is None and not raw_path_str:
+            last_fail = "no_raw_path_recorded"
 
         if trace is None:
             failed += 1
+            skip_reasons[last_fail or "unknown"] = skip_reasons.get(last_fail or "unknown", 0) + 1
             if verbose:
-                console.print(f"  [red]no source[/red] {run_name}")
+                console.print(f"  [red]skip:{last_fail}[/red] {run_name}")
             continue
 
         # Bin to 128 points so local storage + community submission match
@@ -963,6 +998,14 @@ def _backfill_tic_impl(
             f"[bold]Failed:[/bold] {failed}  "
             f"[bold]Skipped:[/bold] {skipped}"
         )
+        # v0.2.151: break down the `failed` count by reason so the operator
+        # can tell whether the missing coverage is fixable (raw_missing =
+        # the disk moved) or code-level (extract_failed = parser bug).
+        if failed:
+            console.print("[bold]Skip reasons:[/bold]")
+            for reason, n in sorted(skip_reasons.items(), key=lambda x: -x[1]):
+                if n > 0:
+                    console.print(f"  {reason:<24} {n}")
 
     # Push corrections to the community relay
     if push and pushed_rows:
@@ -1009,27 +1052,54 @@ def backfill_tic(
     force: bool = typer.Option(
         False, "--force",
         help="Re-extract TIC for every run, not just ones missing one. "
-             "Use this after the v0.2.147 downsample fix to replace "
-             "previously-stored Bruker sawtooth-pattern TICs with clean "
-             "mean-per-bin traces.",
+             "Auto-skipped if this STAN version's force migration is "
+             "already marked complete (marker at ~/STAN/.backfill_tic_force_v<ver>.done). "
+             "Pass --really-force to bypass the marker.",
+    ),
+    really_force: bool = typer.Option(
+        False, "--really-force",
+        help="Force re-extraction even if the version marker says we're done. "
+             "Use when an extractor bug needs a second sweep for the same version.",
     ),
 ) -> None:
     """Re-extract TIC traces for runs that are missing one (or all, with --force).
 
-    Walks the local runs table and, for each run without a TIC, tries
-    (in order) the raw Bruker analysis.tdf, the DIA-NN report.parquet,
-    and fisher_py for Thermo .raw. All traces are downsampled to 128
-    bins before storage. Fast — seconds per file.
-
-    With ``--push``, also uploads corrections to the community benchmark
-    relay via /api/update/{submission_id} for runs that already have a
-    submission_id.
-
-    With ``--force``, re-extracts every run's TIC regardless of whether
-    one is already stored. Combined with ``--push``, this replaces the
-    sawtooth-pattern community submissions made before v0.2.147.
+    With ``--force`` the first time on a given STAN version, every run's TIC
+    is re-extracted. On success a marker file is written; subsequent updates
+    pass --force but the command auto-degrades to gap-only because the
+    migration is already complete for that version. This prevents the
+    overnight backfill chain (updater PS1) from redundantly re-sweeping
+    277 runs on every click.
     """
+    from datetime import datetime
+    from stan.config import get_user_config_dir
+    from stan import __version__ as _stan_ver
+
+    marker_dir = get_user_config_dir()
+    marker = marker_dir / f".backfill_tic_force_v{_stan_ver}.done"
+
+    # Version-sentinel dance: if caller asked for --force but this
+    # version's force sweep already ran, silently degrade to gap-only.
+    if force and not really_force and marker.exists():
+        console.print(
+            f"[dim]--force skipped: marker present ({marker.name}). "
+            f"Running gap-only sweep. Use --really-force to override.[/dim]"
+        )
+        force = False
+
     _backfill_tic_impl(push=push, verbose=True, force=force)
+
+    # On success, persist the marker so the next update is a no-op.
+    if (force or really_force):
+        try:
+            marker_dir.mkdir(parents=True, exist_ok=True)
+            marker.write_text(
+                f"backfill-tic --force completed at "
+                f"{datetime.now().isoformat(timespec='seconds')}\n"
+                f"stan version: {_stan_ver}\n"
+            )
+        except Exception:
+            logger.debug("Failed to write backfill-tic force marker", exc_info=True)
 
 
 @app.command("verify-community-tics")

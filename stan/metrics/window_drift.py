@@ -185,7 +185,21 @@ def detect_window_drift(
         return DriftResult(drift_class="unknown")
     import numpy as np
 
-    data = TimsTOF(str(d_path), use_hdf_if_available=True)
+    # alphatims 1.0.9 + polars 1.35+ throws ValueError
+    # "search side must be one of 'left' or 'right'" during TimsTOF
+    # init — a library compatibility break, not our bug. Brett 2026-04-22:
+    # every one of 220 drift backfill runs failed with that error. Catch
+    # it so the backfill doesn't burn through 220 rows producing zero
+    # results; return "unknown" and let the caller skip gracefully.
+    try:
+        data = TimsTOF(str(d_path), use_hdf_if_available=True)
+    except (ValueError, TypeError, RuntimeError) as e:
+        logger.warning(
+            "alphatims TimsTOF init failed for %s (%s: %s) — drift unknown. "
+            "Likely alphatims/polars version mismatch; try pinning alphatims.",
+            d_path.name, type(e).__name__, e,
+        )
+        return DriftResult(drift_class="unknown")
 
     # Calibrated scan → 1/K0 mapping from alphatims. Essential —
     # without this the window positions are ~0.05 /K0 off from reality.
