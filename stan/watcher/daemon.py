@@ -365,6 +365,7 @@ class InstrumentWatcher:
 
         n_registered = 0
         n_skipped_known = 0
+        n_skipped_old = 0
         try:
             for p in watch.rglob("*"):
                 # Skip anything inside a .d directory — its nested
@@ -381,11 +382,30 @@ class InstrumentWatcher:
                 if p.name in existing:
                     n_skipped_known += 1
                     continue
+                # v0.2.158: for .d directories, use analysis.tdf mtime
+                # instead of directory mtime. Directory mtime updates
+                # any time something inside the .d gets touched
+                # (Bruker bookkeeping, STAN metadata reads, Hive sync),
+                # which made year-old acquisitions appear "fresh" and
+                # get queued past the 30-day cutoff. 477 bogus trackers
+                # registered on Brett's timsTOF 2026-04-22. analysis.tdf
+                # is written once at acquisition end and not modified
+                # afterwards, so its mtime is the real acquisition time.
                 try:
-                    mt = p.stat().st_mtime
+                    if is_d_dir:
+                        tdf = p / "analysis.tdf"
+                        if tdf.exists():
+                            mt = tdf.stat().st_mtime
+                        else:
+                            # No analysis.tdf: incomplete or corrupt .d
+                            # — skip rather than guess.
+                            continue
+                    else:
+                        mt = p.stat().st_mtime
                 except OSError:
                     continue
                 if mt < cutoff:
+                    n_skipped_old += 1
                     continue
                 # Hand off to the same handler path a normal on_created
                 # event would take — honors qc_only, qc_pattern,
@@ -395,11 +415,13 @@ class InstrumentWatcher:
         except Exception:
             logger.debug("startup-scan walk failed", exc_info=True)
 
-        if n_registered or n_skipped_known:
+        if n_registered or n_skipped_known or n_skipped_old:
             logger.info(
                 "watcher: startup scan on %s - registered %d new, "
-                "skipped %d already-known (lookback=%sd)",
-                self._name, n_registered, n_skipped_known, catchup_days,
+                "skipped %d already-known, skipped %d too-old "
+                "(lookback=%sd)",
+                self._name, n_registered, n_skipped_known,
+                n_skipped_old, catchup_days,
             )
             # v0.2.157: fix NameError on max_age_min (leftover from the
             # v0.2.101 minutes-based lookback). That NameError was
@@ -441,6 +463,19 @@ class InstrumentWatcher:
                     if tracker.check():
                         stable_paths.append(key)
                         self._record_event("stable", tracker.path, "")
+                        # v0.2.158: log stability fires at INFO so the
+                        # syncable log shows them. Previously these only
+                        # went to the internal event deque (debug_snapshot)
+                        # which isn't part of the synced watch log -
+                        # Brett's 2026-04-22 log showed 477 trackers
+                        # registered and zero stability events, making
+                        # it look like the pipeline was stuck when in
+                        # fact the events just weren't logged.
+                        logger.info(
+                            "watcher: file stable, dispatching: %s (mode=%s)",
+                            tracker.path.name,
+                            self._tracker_modes.get(key, "qc"),
+                        )
 
             for key in stable_paths:
                 with self._lock:
@@ -458,6 +493,10 @@ class InstrumentWatcher:
                             self._on_acquisition_complete(tracker.path)
                         self._record_event(
                             "acquisition_complete_end", tracker.path, "ok",
+                        )
+                        logger.info(
+                            "watcher: acquisition_complete OK: %s",
+                            tracker.path.name,
                         )
                     except Exception as e:
                         # _on_acquisition_complete catches most things,
