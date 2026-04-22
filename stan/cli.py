@@ -1051,6 +1051,11 @@ def _backfill_tic_impl(
             f"Pushing [bold]{len(pushed_rows)}[/bold] corrections to the relay..."
         )
         ok = 0
+        # v0.2.155: capture per-row push errors so the summary log
+        # records WHY pushes failed (rate limit? auth? relay down?).
+        # Previously only logger.exception fired, invisible to the Hive
+        # mirror — Brett 2026-04-22 saw "HF errors" we couldn't diagnose.
+        push_errors: list[dict] = []
         for sub_id, push_data in pushed_rows:
             try:
                 data = json.dumps(push_data).encode("utf-8")
@@ -1065,9 +1070,57 @@ def _backfill_tic_impl(
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     if resp.status == 200:
                         ok += 1
-            except Exception:
+                    else:
+                        push_errors.append({
+                            "sub_id": sub_id[:8],
+                            "status": resp.status,
+                            "error": f"HTTP {resp.status}",
+                        })
+            except urllib.error.HTTPError as e:
+                push_errors.append({
+                    "sub_id": sub_id[:8], "status": e.code,
+                    "error": f"HTTPError: {e.reason}",
+                })
+            except urllib.error.URLError as e:
+                push_errors.append({
+                    "sub_id": sub_id[:8], "status": None,
+                    "error": f"URLError: {e.reason}",
+                })
+            except Exception as e:
+                push_errors.append({
+                    "sub_id": sub_id[:8], "status": None,
+                    "error": f"{type(e).__name__}: {e}",
+                })
                 logger.exception("Relay TIC push failed for %s", sub_id[:8])
         console.print(f"  [green]{ok}[/green] pushed, [red]{len(pushed_rows) - ok}[/red] failed")
+
+        # Append push-error summary to the syncable log (appended AFTER
+        # the main summary block written below).
+        try:
+            _log_dir = get_user_config_dir() / "logs"
+            _log_dir.mkdir(parents=True, exist_ok=True)
+            from datetime import datetime as _dt
+            _push_log = _log_dir / f"backfill_tic_push_{_dt.now().strftime('%Y%m%d_%H%M%S')}.log"
+            with open(_push_log, "w", encoding="utf-8") as _fh:
+                _fh.write(f"backfill-tic --push summary\n")
+                _fh.write(f"attempted: {len(pushed_rows)}\n")
+                _fh.write(f"succeeded: {ok}\n")
+                _fh.write(f"failed:    {len(push_errors)}\n\n")
+                if push_errors:
+                    # Histogram by status / error-type
+                    from collections import Counter
+                    by_status = Counter(
+                        (e.get("status"), e.get("error", "").split(":")[0])
+                        for e in push_errors
+                    )
+                    _fh.write("Failure histogram:\n")
+                    for (status, kind), n in by_status.most_common():
+                        _fh.write(f"  status={status}  {kind}  x{n}\n")
+                    _fh.write("\nFirst 20 failures:\n")
+                    for err in push_errors[:20]:
+                        _fh.write(f"  {err}\n")
+        except Exception:
+            logger.debug("push-error log write failed", exc_info=True)
 
     return (extracted, skipped, failed)
 
@@ -1665,11 +1718,85 @@ def watch() -> None:
 
     Monitors directories configured in instruments.yml for new raw files,
     detects acquisition mode, and dispatches search jobs.
+
+    v0.2.155: watcher logs are now mirrored to
+    ``~/STAN/logs/watch_<ts>.log`` and synced to Hive every 5 minutes.
+    Cascade bugs, observer deaths, and unhandled exceptions used to be
+    invisible to Claude troubleshooting the Hive mirror — now they're
+    captured in a syncable log + an alert file on crash.
     """
+    import logging as _logging
+    import sys as _sys
+    import threading as _threading
+    import time as _time
+    from datetime import datetime as _dt
+
     from stan.watcher.daemon import WatcherDaemon
+    from stan.config import get_user_config_dir
+    from stan.backfill_telemetry import write_alert
 
     console.print(f"[bold]STAN v{__version__}[/bold] — watcher starting")
     console.print()
+
+    # File-log setup: attach a FileHandler to the root logger so every
+    # module's warn/error/info shows up in the mirrored log. Stderr
+    # handler stays — operator still sees messages in the console.
+    log_dir = get_user_config_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"watch_{_dt.now().strftime('%Y%m%d_%H%M%S')}.log"
+    try:
+        fh = _logging.FileHandler(str(log_path), encoding="utf-8")
+        fh.setLevel(_logging.INFO)
+        fh.setFormatter(_logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+        ))
+        _logging.getLogger().addHandler(fh)
+        _logging.getLogger().setLevel(_logging.INFO)
+        console.print(f"[dim]Log: {log_path}[/dim]")
+    except Exception:
+        console.print("[yellow]Warning: could not open watcher log file[/yellow]")
+
+    # Unhandled-exception alert: intercept sys.excepthook so a
+    # watcher crash drops a high-signal alert into ~/STAN/alerts/.
+    _orig_excepthook = _sys.excepthook
+
+    def _alert_on_crash(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            return _orig_excepthook(exc_type, exc_value, exc_tb)
+        try:
+            write_alert(
+                kind="watcher_crash",
+                summary=f"stan watch crashed: {exc_type.__name__}: {exc_value}",
+                payload={
+                    "exc_type": exc_type.__name__,
+                    "exc_value": str(exc_value),
+                    "log_path": str(log_path),
+                },
+            )
+        except Exception:
+            pass
+        return _orig_excepthook(exc_type, exc_value, exc_tb)
+
+    _sys.excepthook = _alert_on_crash
+
+    # Periodic sync thread: daemon=True so it dies when the main thread
+    # exits. 5-minute cadence keeps Hive within ~5 min of the live
+    # watcher state without over-syncing during idle periods.
+    _stop_sync = _threading.Event()
+
+    def _sync_loop():
+        from stan.config import sync_to_hive_mirror
+        while not _stop_sync.wait(300):  # 5 min
+            try:
+                sync_to_hive_mirror(include_reports=False)
+            except Exception:
+                _logging.getLogger(__name__).debug(
+                    "watcher periodic sync failed", exc_info=True,
+                )
+
+    sync_thread = _threading.Thread(target=_sync_loop, daemon=True,
+                                    name="watch-hive-sync")
+    sync_thread.start()
 
     daemon = WatcherDaemon()
     try:
@@ -1677,6 +1804,14 @@ def watch() -> None:
     except KeyboardInterrupt:
         console.print("\n[yellow]Shutting down...[/yellow]")
         daemon.stop()
+    finally:
+        _stop_sync.set()
+        # Final sync on exit so the last log lines make it to Hive.
+        try:
+            from stan.config import sync_to_hive_mirror
+            sync_to_hive_mirror(include_reports=False)
+        except Exception:
+            pass
 
 
 @app.command()
