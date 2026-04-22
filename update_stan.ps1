@@ -18,12 +18,12 @@ public class TrustAllUpdate {
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# v0.2.148 — defuse the updater-cascade bug.
+# v0.2.148 - defuse the updater-cascade bug.
 #
 # start_stan_loop.bat checks %USERPROFILE%\STAN\update_pending.flag at
 # startup and if present calls update-stan.bat. The previous version of
 # this PS1 launched a new start_stan_loop.bat at the end of EVERY run,
-# and the flag wasn't deleted until the OUTER loop finished — so the
+# and the flag wasn't deleted until the OUTER loop finished - so the
 # just-spawned inner start_stan_loop saw the flag, ran update-stan.bat
 # AGAIN, and each recursion doubled every window (watcher, dashboard,
 # backfill). Brett 2026-04-21 saw 6 parallel backfill windows after
@@ -514,7 +514,7 @@ function Test-StanProcessRunning {
 
 $loopBat = Join-Path $scriptDir "start_stan_loop.bat"
 if (Test-StanProcessRunning "watch") {
-    Write-Host "  Watcher already running — skipping launch." -ForegroundColor Gray
+    Write-Host "  Watcher already running - skipping launch." -ForegroundColor Gray
 } elseif (Test-Path $loopBat) {
     Write-Host "  Launching watcher (supervised)..." -ForegroundColor Cyan
     Start-Process -FilePath $loopBat -WindowStyle Normal
@@ -523,9 +523,9 @@ if (Test-StanProcessRunning "watch") {
     Start-Process -FilePath $stanExe -ArgumentList "watch" -WindowStyle Normal
 }
 
-# Dashboard also gets its own detached window — unless one is already up.
+# Dashboard also gets its own detached window - unless one is already up.
 if (Test-StanProcessRunning "dashboard") {
-    Write-Host "  Dashboard already running — skipping launch." -ForegroundColor Gray
+    Write-Host "  Dashboard already running - skipping launch." -ForegroundColor Gray
 } else {
     Write-Host "  Launching dashboard..." -ForegroundColor Cyan
     Start-Process -FilePath $stanExe -ArgumentList "dashboard" -WindowStyle Normal
@@ -540,10 +540,10 @@ if (Test-StanProcessRunning "dashboard") {
 # PEG + window drift). Sequential within the one window so they
 # don't thrash the disk by running in parallel on the same .d
 # files. The report-parquet-only commands (backfill-metrics,
-# backfill-cirt) run first — they're fast. Then the slow raw-
+# backfill-cirt) run first - they're fast. Then the slow raw-
 # file-scanning commands (backfill-tic, backfill-peg, backfill-
 # window-drift). On a timsTOF with a few hundred runs this is
-# multiple hours of work — designed for overnight.
+# multiple hours of work - designed for overnight.
 # v0.2.148: skip backfill launch if a previous run's console is
 # still open (window title set to "STAN overnight backfill" below).
 # Avoids spawning parallel backfills when the operator clicks the
@@ -557,7 +557,7 @@ try {
 } catch {}
 
 if ($backfillAlreadyRunning) {
-    Write-Host "  Overnight backfill already running — skipping launch." -ForegroundColor Gray
+    Write-Host "  Overnight backfill already running - skipping launch." -ForegroundColor Gray
     $backfillCmd = $null
 } else {
     Write-Host "  Launching overnight backfill sweep (metrics + cIRT + TIC + PEG + drift)..." -ForegroundColor Cyan
