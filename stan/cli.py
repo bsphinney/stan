@@ -1007,6 +1007,36 @@ def _backfill_tic_impl(
                 if n > 0:
                     console.print(f"  {reason:<24} {n}")
 
+    # v0.2.152: also write a summary log file so the histogram syncs to
+    # the Hive mirror via sync_to_hive_mirror's logs/ rule. Before this,
+    # backfill-tic output only lived in the cmd console and was lost
+    # when the window closed — Brett could see the histogram locally
+    # but it never reached Hive for remote debugging.
+    try:
+        from stan.config import get_user_config_dir, sync_to_hive_mirror
+        from datetime import datetime as _dt
+        _log_dir = get_user_config_dir() / "logs"
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _log_path = _log_dir / f"backfill_tic_{_dt.now().strftime('%Y%m%d_%H%M%S')}.log"
+        with open(_log_path, "w", encoding="utf-8") as _fh:
+            _fh.write(f"backfill-tic summary  push={push}  force={force}\n")
+            _fh.write(f"db: {db_path}\n\n")
+            _fh.write(f"Extracted: {extracted}\n")
+            _fh.write(f"Failed:    {failed}\n")
+            _fh.write(f"Skipped:   {skipped}\n\n")
+            _fh.write("Skip reasons:\n")
+            for reason, n in sorted(skip_reasons.items(), key=lambda x: -x[1]):
+                if n > 0:
+                    _fh.write(f"  {reason:<24} {n}\n")
+        try:
+            sync_to_hive_mirror(include_reports=False)
+        except Exception:
+            pass
+        if verbose:
+            console.print(f"[dim]Log: {_log_path}[/dim]")
+    except Exception:
+        logger.debug("Failed to write backfill-tic summary log", exc_info=True)
+
     # Push corrections to the community relay
     if push and pushed_rows:
         from stan.community.submit import RELAY_URL
