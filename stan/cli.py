@@ -2638,29 +2638,55 @@ def backfill_window_drift(
 
 @app.command("install-peg-deps")
 def install_peg_deps() -> None:
-    """Install alphatims (Bruker PEG reader) into the current venv.
+    """Install or repair alphatims (Bruker PEG + drift reader).
 
-    Workaround for the case where update_stan.ps1's alphatims step
-    didn't run — usually because the GitHub raw CDN served a stale
-    PS1 to the instrument PC. Just pip-installs alphatims directly
-    from Python, no PowerShell in the loop.
+    v0.2.164: probes the installed alphatims version and force-
+    downgrades from the broken 1.0.9 to <1.0.9 if needed.
+    alphatims 1.0.9 uses polars internally and breaks against
+    polars 1.35+ with "search side must be one of 'left' or
+    'right'" - seen on Brett's timsTOF 2026-04-22 where every
+    PEG + drift extraction errored.
 
-    Safe to run multiple times (pip is idempotent). After this
-    completes, `stan backfill-peg` will have its Bruker reader.
+    Run this whenever PEG or drift backfill errors with that
+    ValueError. Safe to run multiple times.
     """
     import subprocess
     import sys
 
-    # Check if already installed — avoid a slow pip call when not needed
+    # Probe the installed version.
+    installed_ver: str | None = None
     try:
         import alphatims  # noqa: F401
-        console.print("[green]alphatims already installed.[/green]")
-        return
+        try:
+            from importlib.metadata import version as _pkg_version
+            installed_ver = _pkg_version("alphatims")
+        except Exception:
+            installed_ver = getattr(alphatims, "__version__", None)
     except ImportError:
-        pass
+        installed_ver = None
 
-    console.print("Installing alphatims (~150 MB of deps on first run)...")
-    cmd = [sys.executable, "-m", "pip", "install", "--quiet", "alphatims"]
+    pin = "alphatims>=1.0,<1.0.9"
+    if installed_ver is None:
+        console.print("alphatims not installed - installing with pin (<1.0.9)...")
+        needs_install = True
+    elif installed_ver.startswith("1.0.9"):
+        console.print(
+            f"[yellow]alphatims {installed_ver} is BROKEN against polars 1.35+ - "
+            f"forcing downgrade to <1.0.9...[/yellow]"
+        )
+        needs_install = True
+    elif any(installed_ver.startswith(v) for v in ("1.0.5", "1.0.6", "1.0.7", "1.0.8")):
+        console.print(f"[green]alphatims {installed_ver} is already OK (pin satisfied).[/green]")
+        return
+    else:
+        console.print(
+            f"alphatims {installed_ver} - unknown version, reinstalling pinned..."
+        )
+        needs_install = True
+
+    console.print("Installing with --force-reinstall (~150 MB of deps)...")
+    cmd = [sys.executable, "-m", "pip", "install",
+           "--force-reinstall", "--quiet", pin]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
@@ -2672,14 +2698,28 @@ def install_peg_deps() -> None:
         console.print(result.stderr[-2000:] if result.stderr else "(no stderr)")
         raise typer.Exit(1)
 
-    # Confirm the import works now
+    # Verify the downgrade landed.
     try:
         import importlib
+        importlib.invalidate_caches()
+        # Force a re-import so we see the new version.
+        if "alphatims" in sys.modules:
+            del sys.modules["alphatims"]
         importlib.import_module("alphatims")
-        console.print("[green]alphatims installed and importable.[/green]")
-        console.print("Run: [bold]stan backfill-peg[/bold]")
+        from importlib.metadata import version as _pkg_version
+        new_ver = _pkg_version("alphatims")
+        if new_ver.startswith("1.0.9"):
+            console.print(
+                f"[red]Still 1.0.9 after reinstall: {new_ver} - "
+                f"pip may be using a cached wheel. Try manually: "
+                f"pip install --no-cache-dir --force-reinstall '{pin}'[/red]"
+            )
+            raise typer.Exit(1)
+        console.print(f"[green]alphatims {new_ver} installed and importable.[/green]")
+        console.print("Now rerun: [bold]stan backfill-peg[/bold] and "
+                      "[bold]stan backfill-window-drift[/bold]")
     except ImportError as e:
-        console.print(f"[red]alphatims installed but import still fails: {e}[/red]")
+        console.print(f"[red]alphatims installed but import fails: {e}[/red]")
         raise typer.Exit(1)
 
 
