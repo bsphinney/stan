@@ -196,29 +196,42 @@ def extract_tic_thermo(raw_path: Path) -> TICTrace | None:
     try:
         raw = RawFile(str(raw_path))
 
-        # Get scan count and iterate MS1 scans for TIC
-        first_scan = raw.first_spectrum_number
-        last_scan = raw.last_spectrum_number
+        # v0.2.175: use fisher_py's pre-computed MS1 scan list and
+        # retention times. The previous code called
+        # `raw.first_spectrum_number` / `get_scan_filter` /
+        # `retention_time_from_scan_number` / `get_scan_stats_for_scan_number`
+        # — none of those exist on the public RawFile API, so every
+        # Thermo TIC extraction was hitting AttributeError and silently
+        # falling back to TRFP (if available) or returning None.
+        ms1_scans = list(getattr(raw, "_ms1_scan_numbers", []) or [])
+        ms1_rts = list(getattr(raw, "_ms1_retention_times", []) or [])
 
         rt_min = []
         intensity = []
 
-        for scan_num in range(first_scan, last_scan + 1):
+        # Prefer the fast stored-TIC path via the internal .NET wrapper
+        # when available; fall back to summing intensities from the
+        # full spectrum if the internal accessor isn't exposed.
+        raw_access = getattr(raw, "_raw_file_access", None)
+        for scan_num, rt in zip(ms1_scans, ms1_rts):
             try:
-                # Get scan filter to check if MS1
-                scan_filter = raw.get_scan_filter(scan_num)
-                if scan_filter and "ms " in str(scan_filter).lower() and "ms2" not in str(scan_filter).lower():
-                    rt = raw.retention_time_from_scan_number(scan_num)
-                    # Get TIC for this scan from scan statistics
-                    stats = raw.get_scan_stats_for_scan_number(scan_num)
-                    if stats:
-                        tic_val = stats.tic
-                        rt_min.append(rt)
-                        intensity.append(float(tic_val))
+                tic_val = None
+                if raw_access is not None and hasattr(raw_access, "get_scan_stats_for_scan_number"):
+                    stats = raw_access.get_scan_stats_for_scan_number(int(scan_num))
+                    if stats is not None and hasattr(stats, "tic"):
+                        tic_val = float(stats.tic)
+                if tic_val is None:
+                    _mzs, ints, _c, _fs = raw.get_scan_from_scan_number(int(scan_num))
+                    tic_val = float(sum(float(i) for i in ints))
+                rt_min.append(float(rt))
+                intensity.append(tic_val)
             except Exception:
                 continue
 
-        raw.close()
+        try:
+            raw.close()
+        except Exception:
+            pass
 
         if not rt_min:
             logger.warning("No MS1 scans found in %s", raw_path.name)

@@ -148,6 +148,81 @@ async def api_instruments() -> dict:
     return watcher.data
 
 
+@app.get("/api/warnings")
+async def api_warnings() -> dict:
+    """System-level warnings for the dashboard banner.
+
+    Added v0.2.174. Currently surfaces one warning type:
+
+    - stale_instrument_name: an instrument name has runs in the DB
+      (last 60 days) but is NOT present in the loaded instruments.yml.
+      This typically means a rename like `data_bruker` → `timsTOF HT`
+      left behind orphan runs on the old name, which shows up as two
+      separate cards on the homepage. Surfaces the exact
+      `stan fix-instrument-names` command to merge them.
+    """
+    import sqlite3
+    from datetime import datetime, timedelta
+    from stan.db import get_db_path
+
+    warnings: list[dict] = []
+
+    # Pull configured names from instruments.yml.
+    watcher = _get_instruments_watcher()
+    configured: set[str] = set()
+    if watcher is not None:
+        for inst in (watcher.data.get("instruments") or []):
+            name = (inst or {}).get("name")
+            if isinstance(name, str) and name:
+                configured.add(name)
+
+    # Pull DB names with recent activity (last 60 days).
+    db_path = get_db_path()
+    if db_path.exists() and configured:
+        cutoff = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+        db_names: dict[str, int] = {}
+        with sqlite3.connect(str(db_path)) as con:
+            for table in ("runs", "sample_health"):
+                try:
+                    rows = con.execute(
+                        f"SELECT instrument, COUNT(*) FROM {table} "
+                        f"WHERE substr(run_date, 1, 10) >= ? AND instrument IS NOT NULL "
+                        f"GROUP BY instrument",
+                        (cutoff,),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    continue
+                for name, n in rows:
+                    if not name:
+                        continue
+                    db_names[name] = db_names.get(name, 0) + int(n)
+
+        # Any DB name not in instruments.yml → candidate stale name.
+        for name, n in db_names.items():
+            if name in configured:
+                continue
+            # Heuristic: the user almost certainly meant to merge this into
+            # one of the configured instruments. We can't know which one
+            # for sure, so we list all configured targets in the message.
+            targets = sorted(configured)
+            warnings.append({
+                "kind": "stale_instrument_name",
+                "severity": "warn",
+                "stale_name": name,
+                "recent_run_count": n,
+                "suggested_targets": targets,
+                "message": (
+                    f"Instrument name \"{name}\" has {n} run(s) in the last 60 days "
+                    f"but is NOT in your instruments.yml. This usually means the "
+                    f"instrument was renamed and left orphan runs behind — they will "
+                    f"appear as a second card on the homepage. Merge with: "
+                    f"stan fix-instrument-names --from \"{name}\" --to \"<new_name>\""
+                ),
+            })
+
+    return {"warnings": warnings}
+
+
 class InstrumentsUpdate(BaseModel):
     yaml_content: str
 
@@ -206,13 +281,23 @@ def _classify_run_class(run_name: str) -> str:
     Mirrors the watcher's pattern surfaces but applied at API time so
     we don't need a runs.run_class column. QC = matches stan's QC
     regex (hel[a5] | qc | std_he). Blank = matches the watcher
-    exclude pattern (wash | blank | blnk | blk). Everything else =
-    sample.
+    exclude pattern below. Everything else = sample.
+
+    Blank pattern expanded 2026-04-23 to catch Brett's `_wa_` wash
+    convention on Lumos (FLapr26_wa_20260422...raw). `wa` alone is
+    too risky (matches `wave`, `work`); `_wa_` / `_wa.` / `-wa-` /
+    trailing `_wa` at end-of-name are the safe anchored forms.
+    Common other aliases included: rinse, buffer, solvent, empty.
     """
     import re as _re
     global _BLANK_PATTERN
     if _BLANK_PATTERN is None:
-        _BLANK_PATTERN = _re.compile(r"(?i)(wash|blank|blnk|blk)")
+        _BLANK_PATTERN = _re.compile(
+            r"(?i)("
+            r"wash|blank|blnk|blk|rinse|buffer|solvent|empty|"
+            r"[_\-]wa[_\-]|[_\-]wa$"
+            r")"
+        )
     from stan.watcher.qc_filter import compile_qc_pattern
     name = (run_name or "").rsplit(".", 1)[0]
     if compile_qc_pattern().search(name):

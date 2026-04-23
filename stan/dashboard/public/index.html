@@ -1309,6 +1309,7 @@
 
     function LiveRuns() {
       const { data: allRuns, loading, reload, error } = useFetch('/api/runs?limit=200');
+      const { data: warningsData } = useFetch('/api/warnings');
       useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [reload]);
 
       if (loading && !allRuns) return <div className="empty">Loading...</div>;
@@ -1341,8 +1342,56 @@
       const worstDrift = driftAlerts.find(r => r.drift_class === 'drifted')
                          || driftAlerts[0];
 
+      // v0.2.174: stale-instrument-name warning. Surfaced when a DB
+      // instrument name has recent runs but isn't configured in
+      // instruments.yml — almost always means rename cleanup was missed
+      // and the homepage is showing two cards for one physical instrument.
+      const staleNameWarnings = (warningsData?.warnings || [])
+        .filter(w => w.kind === 'stale_instrument_name');
+
       return (
         <div>
+          {staleNameWarnings.length > 0 && (
+            <div style={{
+              background: 'rgba(234,179,8,0.18)',
+              border: '1px solid #ca8a04',
+              borderLeft: '5px solid #ca8a04',
+              borderRadius: '0.35rem',
+              padding: '0.75rem 1rem',
+              marginBottom: '1rem',
+            }}>
+              <div style={{fontWeight:700, fontSize:'0.95rem', color:'#fde68a'}}>
+                Duplicate instrument cards detected
+              </div>
+              <div style={{fontSize:'0.8rem', color:'var(--muted)', marginTop:'0.25rem'}}>
+                {staleNameWarnings.length === 1
+                  ? 'One instrument name is'
+                  : `${staleNameWarnings.length} instrument names are`} in the DB with recent runs
+                but missing from your <code>instruments.yml</code>. This usually
+                means a rename left orphan runs that now render as a separate card.
+                Merge them with <code>stan fix-instrument-names</code>:
+              </div>
+              <ul style={{margin:'0.35rem 0 0.1rem 1.25rem', padding:0, fontSize:'0.78rem'}}>
+                {staleNameWarnings.map((w, i) => (
+                  <li key={`stale-${i}`} style={{marginBottom:'0.2rem'}}>
+                    <strong style={{color:'var(--text)'}}>{w.stale_name}</strong>
+                    {' '}({w.recent_run_count} recent run{w.recent_run_count === 1 ? '' : 's'})
+                    {w.suggested_targets?.length > 0 && (
+                      <span style={{color:'var(--muted)'}}>
+                        {' → merge into one of: '}
+                        {w.suggested_targets.map((t, ti) => (
+                          <code key={t} style={{marginRight:'0.3rem'}}>"{t}"</code>
+                        ))}
+                      </span>
+                    )}
+                    <div style={{color:'#cbd5e1', fontFamily:'monospace', fontSize:'0.72rem', marginTop:'0.15rem'}}>
+                      stan fix-instrument-names --from "{w.stale_name}" --to "&lt;target&gt;"
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {worstDrift && (
             <div style={{
               background: worstDrift.drift_class === 'drifted'
@@ -1448,7 +1497,7 @@
               <div style={{display:'grid', gridTemplateColumns: gridTemplate,
                            gap:'1rem', alignItems:'start'}}>
                 {instrumentCards}
-                <WeekHeatmap allRuns={allRuns} instruments={instruments.map(([n]) => n)} />
+                <WeekHeatmap instruments={instruments.map(([n]) => n)} />
               </div>
             );
           })()}
@@ -1457,16 +1506,19 @@
       );
     }
 
-    // WeekHeatmap (v0.2.154) — Week-at-a-glance status grid filling the
-    // right zone of "This Week's QCs" when there are ≤3 instruments.
-    // Rows = instruments · Columns = last 7 days.
-    // Cell content = run count that day. Cell color = worst IPS-based
-    // status across that day's runs: green=healthy (IPS≥70), amber=warn
-    // (40-69), red=fail (<40), dim=no runs. Click a cell to filter QC
-    // History to that day for the drill-down.
-    function WeekHeatmap({ allRuns, instruments }) {
-      const runs = allRuns || [];
-      // Build 7-day × N-instrument matrix of runs, keyed by "YYYY-MM-DD".
+    // WeekHeatmap (v0.2.154, expanded v0.2.174) — Week-at-a-glance status
+    // grid filling the right zone of "This Week's QCs".
+    // Rows = instrument × {QC, Sample, Blank} · Columns = last 7 days.
+    // Cell content = run count that day for that class.
+    // Colors:
+    //   QC cells: green=IPS≥70, amber=40–69, red=<40 (QC passes color-graded)
+    //   Sample/Blank cells: blue=runs present, dim=no runs (no QC score)
+    // Uses /api/today/tic-overview which returns facets={qc, sample, blank}
+    // classified by filename pattern (see _classify_run_class on server).
+    function WeekHeatmap({ instruments }) {
+      const { data: overview } = useFetch('/api/today/tic-overview?days=7');
+
+      // Build 7-day array.
       const days = [];
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -1476,43 +1528,64 @@
         days.push(d);
       }
       const dayKey = d => d.toISOString().slice(0, 10);
-      const grid = {};  // grid[instrument][dayKey] = [runs]
-      for (const inst of instruments) {
-        grid[inst] = {};
-        for (const d of days) grid[inst][dayKey(d)] = [];
-      }
-      for (const r of runs) {
-        const rd = new Date(r.run_date);
-        const k = dayKey(rd);
-        if (grid[r.instrument] && k in grid[r.instrument]) {
-          grid[r.instrument][k].push(r);
+
+      // Collect runs from all three facets, tagged with class.
+      const allFaceted = [];
+      if (overview?.facets) {
+        for (const cls of ['qc', 'sample', 'blank']) {
+          for (const r of (overview.facets[cls] || [])) {
+            allFaceted.push({ ...r, _class: cls });
+          }
         }
       }
 
-      // Worst IPS in a cell determines color. Lower IPS = worse.
-      function cellStatus(cellRuns) {
-        if (!cellRuns.length) return { color: 'rgba(100,116,139,0.15)', text: 'var(--muted)' };
+      // grid[inst][cls][dayKey] = [runs]
+      const grid = {};
+      for (const inst of instruments) {
+        grid[inst] = { qc: {}, sample: {}, blank: {} };
+        for (const cls of ['qc', 'sample', 'blank']) {
+          for (const d of days) grid[inst][cls][dayKey(d)] = [];
+        }
+      }
+      for (const r of allFaceted) {
+        const rd = new Date(r.run_date);
+        const k = dayKey(rd);
+        if (grid[r.instrument] && k in grid[r.instrument][r._class]) {
+          grid[r.instrument][r._class][k].push(r);
+        }
+      }
+
+      // Cell color: QC uses IPS grading; sample/blank use activity-only blue.
+      function cellStatus(cellRuns, cls) {
+        if (!cellRuns.length) return { color:'rgba(100,116,139,0.15)', text:'var(--muted)' };
+        if (cls !== 'qc') {
+          return { color: 'rgba(96,165,250,0.22)', text: '#bfdbfe' };
+        }
         const minIps = Math.min(...cellRuns.map(r => r.ips_score ?? 100));
-        if (minIps < 40) return { color: 'rgba(239,68,68,0.35)',  text: '#fecaca' };
-        if (minIps < 70) return { color: 'rgba(234,179,8,0.35)',  text: '#fef08a' };
-        return                  { color: 'rgba(34,197,94,0.30)',  text: '#bbf7d0' };
+        if (minIps < 40) return { color:'rgba(239,68,68,0.35)', text:'#fecaca' };
+        if (minIps < 70) return { color:'rgba(234,179,8,0.35)', text:'#fef08a' };
+        return                  { color:'rgba(34,197,94,0.30)', text:'#bbf7d0' };
       }
 
       const monthDayLabel = d =>
         d.toLocaleString([], { month: 'short', day: 'numeric' });
 
+      const CLASS_LABELS = { qc: 'QC', sample: 'Sample', blank: 'Blank' };
+
       return (
         <div className="card" style={{padding:'0.9rem'}}>
           <h3 style={{margin:'0 0 0.4rem 0'}}>Week at a glance</h3>
           <p style={{fontSize:'0.7rem', color:'var(--muted)', margin:'0 0 0.6rem 0'}}>
-            Cell = run count that day · color = worst IPS in the cell
-            (green ≥70, amber 40-69, red &lt;40, dim = no runs).
+            Rows = instrument × class (QC / Sample / Blank) · cell = count that day.
+            QC cells colored by worst IPS (green ≥70, amber 40–69, red &lt;40).
+            Sample/Blank cells blue when runs present, dim when none.
           </p>
           <div style={{display:'grid',
-                       gridTemplateColumns: `minmax(80px, auto) repeat(7, 1fr)`,
-                       gap:'0.25rem', fontSize:'0.72rem',
+                       gridTemplateColumns: `minmax(110px, auto) minmax(54px, auto) repeat(7, 1fr)`,
+                       gap:'0.2rem', fontSize:'0.72rem',
                        fontVariantNumeric:'tabular-nums'}}>
-            {/* Header row: blank corner + 7 day labels */}
+            {/* Header row: corner, class label header, 7 day labels */}
+            <div />
             <div />
             {days.map((d, i) => (
               <div key={`h-${i}`} style={{
@@ -1522,44 +1595,63 @@
                 {monthDayLabel(d)}
               </div>
             ))}
-            {/* Data rows */}
+            {/* Data rows: one block of 3 rows per instrument */}
             {instruments.map(inst => (
               <React.Fragment key={`row-${inst}`}>
-                <div style={{
-                  color:'var(--text)', padding:'0.25rem 0.3rem',
-                  whiteSpace:'nowrap', overflow:'hidden',
-                  textOverflow:'ellipsis', fontSize:'0.7rem',
-                }}
-                     title={inst}>
-                  {inst}
-                </div>
-                {days.map((d, di) => {
-                  const k = dayKey(d);
-                  const cellRuns = grid[inst][k] || [];
-                  const status = cellStatus(cellRuns);
-                  const tip = cellRuns.length
-                    ? `${inst} · ${monthDayLabel(d)}\n` +
-                      `${cellRuns.length} run${cellRuns.length === 1 ? '' : 's'}\n` +
-                      `IPS range: ${Math.min(...cellRuns.map(r => r.ips_score ?? 0))}–${Math.max(...cellRuns.map(r => r.ips_score ?? 0))}`
-                    : `${inst} · ${monthDayLabel(d)} · no runs`;
-                  return (
-                    <div key={`c-${inst}-${di}`}
-                         title={tip}
-                         style={{
-                           background: status.color, color: status.text,
-                           borderRadius: '0.2rem',
-                           textAlign: 'center',
-                           padding: '0.3rem 0',
-                           fontWeight: 600,
-                           minHeight: '1.6rem',
-                           display: 'flex',
-                           alignItems: 'center',
-                           justifyContent: 'center',
-                         }}>
-                      {cellRuns.length || ''}
+                {['qc', 'sample', 'blank'].map((cls, ci) => (
+                  <React.Fragment key={`row-${inst}-${cls}`}>
+                    {/* Instrument name shown only on first (QC) row */}
+                    <div style={{
+                      gridColumn: 1,
+                      color: ci === 0 ? 'var(--text)' : 'transparent',
+                      padding:'0.2rem 0.3rem',
+                      whiteSpace:'nowrap', overflow:'hidden',
+                      textOverflow:'ellipsis', fontSize:'0.7rem',
+                      fontWeight: ci === 0 ? 600 : 400,
+                      borderTop: ci === 0 ? '1px solid rgba(148,163,184,0.15)' : 'none',
+                    }} title={inst}>
+                      {ci === 0 ? inst : ''}
                     </div>
-                  );
-                })}
+                    <div style={{
+                      color:'var(--muted)', padding:'0.2rem 0.4rem 0.2rem 0',
+                      fontSize:'0.68rem', textAlign:'right',
+                      borderTop: ci === 0 ? '1px solid rgba(148,163,184,0.15)' : 'none',
+                    }}>
+                      {CLASS_LABELS[cls]}
+                    </div>
+                    {days.map((d, di) => {
+                      const k = dayKey(d);
+                      const cellRuns = grid[inst][cls][k] || [];
+                      const status = cellStatus(cellRuns, cls);
+                      const tipHead = `${inst} · ${CLASS_LABELS[cls]} · ${monthDayLabel(d)}`;
+                      const tip = cellRuns.length
+                        ? `${tipHead}\n${cellRuns.length} run${cellRuns.length === 1 ? '' : 's'}` +
+                          (cls === 'qc'
+                            ? `\nIPS range: ${Math.min(...cellRuns.map(r => r.ips_score ?? 0))}` +
+                              `–${Math.max(...cellRuns.map(r => r.ips_score ?? 0))}`
+                            : '')
+                        : `${tipHead} · no runs`;
+                      return (
+                        <div key={`c-${inst}-${cls}-${di}`}
+                             title={tip}
+                             style={{
+                               background: status.color, color: status.text,
+                               borderRadius: '0.2rem',
+                               textAlign: 'center',
+                               padding: '0.25rem 0',
+                               fontWeight: 600,
+                               minHeight: '1.3rem',
+                               display: 'flex',
+                               alignItems: 'center',
+                               justifyContent: 'center',
+                               borderTop: ci === 0 ? '1px solid rgba(148,163,184,0.15)' : 'none',
+                             }}>
+                          {cellRuns.length || ''}
+                        </div>
+                      );
+                    })}
+                  </React.Fragment>
+                ))}
               </React.Fragment>
             ))}
           </div>
@@ -1760,16 +1852,21 @@
 
     function TicOverlaySvg({ runs, normalize, height=260, palette,
                               showCirtMarkers=true }) {
+      // v0.2.174: 'all' | 'outliers' | 'recent10' view.
+      // - all: every trace (old behavior)
+      // - outliers: median curve + top-5 most-deviant traces
+      // - recent10: newest 10 traces
+      // Solves the "50+ trace legend is useless" problem by focusing the
+      // chart on the traces worth investigating.
+      const [view, setView] = useState('all');
+      const [hoverId, setHoverId] = useState(null);
       // Convert each run's rt_min[] + intensity[] into (x, y) path points.
-      // Shared x-axis = max RT across all runs. Shared y-axis = either
-      // normalized per-trace (0-1, useful for shape comparison) or raw
-      // absolute intensity (useful for signal comparison).
       const width = 900;
       const padding = 30;
       const w = width - padding * 2;
       const h = height - padding * 2;
 
-      const series = useMemo(() => runs.map(r => {
+      const baseSeries = useMemo(() => runs.map(r => {
         const rt = r.tic?.rt_min || [];
         const intensity = r.tic?.intensity || [];
         if (rt.length < 2 || rt.length !== intensity.length) return null;
@@ -1780,6 +1877,54 @@
         }
         return { run: r, rt, y: yvals };
       }).filter(Boolean), [runs, normalize]);
+
+      // Build a common RT grid and interpolate every trace onto it so
+      // we can compute a pointwise median and each trace's deviation
+      // from it. Used only by the 'outliers' view.
+      const { medianCurve, deviations } = useMemo(() => {
+        if (baseSeries.length < 3) return { medianCurve: null, deviations: new Map() };
+        const rtMx = Math.max(...baseSeries.map(s => Math.max(...s.rt)));
+        const rtMn = Math.min(...baseSeries.map(s => Math.min(...s.rt)));
+        const N = 120;
+        const grid = Array.from({length:N}, (_,i) => rtMn + (i/(N-1)) * (rtMx - rtMn));
+        const interp = (rt, y, t) => {
+          if (t <= rt[0]) return y[0];
+          if (t >= rt[rt.length-1]) return y[rt.length-1];
+          let lo = 0, hi = rt.length - 1;
+          while (hi - lo > 1) {
+            const mid = (lo + hi) >> 1;
+            if (rt[mid] <= t) lo = mid; else hi = mid;
+          }
+          const f = (t - rt[lo]) / (rt[hi] - rt[lo] || 1);
+          return y[lo] + f * (y[hi] - y[lo]);
+        };
+        const matrix = baseSeries.map(s => grid.map(t => interp(s.rt, s.y, t)));
+        const med = grid.map((_, j) => {
+          const col = matrix.map(row => row[j]).sort((a,b) => a-b);
+          return col[Math.floor(col.length/2)];
+        });
+        const devs = new Map();
+        baseSeries.forEach((s, i) => {
+          let sum = 0;
+          for (let j = 0; j < N; j++) sum += Math.abs(matrix[i][j] - med[j]);
+          devs.set(s.run.run_id, sum / N);
+        });
+        return { medianCurve: { rt: grid, y: med }, deviations: devs };
+      }, [baseSeries]);
+
+      // Pick which traces to actually plot based on the view mode.
+      const series = useMemo(() => {
+        if (view === 'all' || baseSeries.length < 3) return baseSeries;
+        if (view === 'recent10') {
+          // baseSeries is already oldest→newest; take the last 10.
+          return baseSeries.slice(Math.max(0, baseSeries.length - 10));
+        }
+        // outliers: top 5 by mean-abs-deviation from median
+        const scored = baseSeries.map(s => [s, deviations.get(s.run.run_id) || 0]);
+        scored.sort((a, b) => b[1] - a[1]);
+        return scored.slice(0, 5).map(p => p[0])
+          .sort((a, b) => new Date(a.run.run_date) - new Date(b.run.run_date));
+      }, [baseSeries, view, deviations]);
 
       if (series.length === 0) {
         return <div style={{color:'var(--muted)'}}>No renderable traces.</div>;
@@ -1793,8 +1938,28 @@
       const yMin = normalize ? 0 : Math.min(0, ...series.flatMap(s => s.y));
       const yRange = (yMax - yMin) || 1;
 
+      const viewBtn = (k, lab) => (
+        <button key={k} onClick={() => setView(k)} style={{
+          padding:'0.12rem 0.45rem', fontSize:'0.7rem',
+          background: view === k ? 'var(--accent)' : 'transparent',
+          color: view === k ? '#000' : 'var(--muted)',
+          border:'1px solid var(--border)', borderRadius:'0.2rem',
+          cursor:'pointer',
+        }}>{lab}</button>
+      );
+
       return (
         <div>
+          {/* View selector — replaces the unreadable 50-entry legend with a
+              focused outliers-only / newest-10 view */}
+          <div style={{display:'flex', gap:'0.25rem', marginBottom:'0.3rem',
+                       justifyContent:'flex-end', alignItems:'center',
+                       fontSize:'0.7rem', color:'var(--muted)'}}>
+            <span style={{marginRight:'0.3rem'}}>Show:</span>
+            {viewBtn('all', `All (${baseSeries.length})`)}
+            {viewBtn('outliers', 'Outliers (top 5 vs median)')}
+            {viewBtn('recent10', 'Newest 10')}
+          </div>
           <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:`${height}px`}}>
             {/* RT axis tick marks */}
             {Array.from({length: 6}, (_, i) => {
@@ -1818,10 +1983,28 @@
               {normalize ? 'Intensity (normalized)' : 'Intensity (raw)'}
             </text>
 
+            {/* Median reference curve — only shown in outliers mode so the
+                operator can see what "normal" looks like. Gray dashed. */}
+            {view === 'outliers' && medianCurve && (() => {
+              const pts = medianCurve.rt.map((t, i) => {
+                const x = padding + ((t - rtMin) / rtRange) * w;
+                const y = padding + h - ((medianCurve.y[i] - yMin) / yRange) * h;
+                return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+              }).join(' ');
+              return (
+                <path d={pts} fill="none" stroke="#94a3b8"
+                      strokeWidth="2" strokeDasharray="6,4" opacity="0.6">
+                  <title>Cohort median TIC</title>
+                </path>
+              );
+            })()}
+
             {/* TIC lines — oldest first so newest (thicker) paints on top */}
             {series.map((s, si) => {
               const c = traceColor(si, palette);
               const lw = traceWidth(si, series.length);
+              const isHover = hoverId === s.run.run_id;
+              const dim = hoverId && !isHover;
               const pts = s.rt.map((t, i) => {
                 const x = padding + ((t - rtMin) / rtRange) * w;
                 const y = padding + h - ((s.y[i] - yMin) / yRange) * h;
@@ -1831,11 +2014,17 @@
               const timeStr = dt.toLocaleString([], {hour:'2-digit', minute:'2-digit'});
               const ids = s.run.mode === 'DDA' ? s.run.n_psms : s.run.n_precursors;
               const idsLabel = s.run.mode === 'DDA' ? 'PSMs' : 'precursors';
+              const devStr = deviations.get(s.run.run_id);
               const tip = `${s.run.run_name}\n${timeStr} · ${s.run.instrument}\n` +
-                          `IPS ${s.run.ips_score || '—'} · ${ids ? ids.toLocaleString() : '—'} ${idsLabel}`;
+                          `IPS ${s.run.ips_score || '—'} · ${ids ? ids.toLocaleString() : '—'} ${idsLabel}` +
+                          (devStr != null ? `\ndeviation vs median: ${devStr.toFixed(3)}` : '');
               return (
                 <path key={`tic-${s.run.run_id}`} d={pts} fill="none"
-                      stroke={c} strokeWidth={lw} opacity="0.95">
+                      stroke={c} strokeWidth={isHover ? lw + 1.5 : lw}
+                      opacity={dim ? 0.15 : 0.95}
+                      onMouseEnter={() => setHoverId(s.run.run_id)}
+                      onMouseLeave={() => setHoverId(null)}
+                      style={{cursor:'pointer'}}>
                   <title>{tip}</title>
                 </path>
               );
@@ -2190,7 +2379,7 @@
                       </td>
                       <td>{fmtNum(r.n_peptides)}</td>
                       <td>{fmtNum(r.n_proteins)}</td>
-                      <td>{fmtSig(r.ms1_signal)}</td>
+                      <td>{r.ms1_signal ? r.ms1_signal.toExponential(2) : EM_DASH}</td>
                       <td>{fmtFwhmSec(r.fwhm_rt_min)}</td>
                       <td>{fmtSigned(r.median_mass_acc_ms1_ppm, 2)}</td>
                       <td>{new Date(r.run_date).toLocaleString([], {year:'2-digit', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}</td>
@@ -2645,7 +2834,7 @@
     // median + community median reference lines, and hover tooltips.
     function Sparkline({ runs, metric, maintEvents, label,
                         community, instrumentModel, amount_ng=50,
-                        height=160 }) {
+                        height=160, showDrift=true, showZeroLine=false }) {
       if (!runs || runs.length < 2) {
         return <div style={{color:'var(--muted)', fontSize:'0.8rem'}}>Not enough data</div>;
       }
@@ -2663,12 +2852,21 @@
         const v = r[metric];
         return (v == null || isNaN(v)) ? null : Number(v);
       });
-      const validVals = vals.filter(v => v != null && v !== 0);
+      // For signed metrics where 0 is a meaningful value (directional drift),
+      // keep zeros in the valid set. For other metrics, treat 0 as missing.
+      const validVals = showZeroLine
+        ? vals.filter(v => v != null)
+        : vals.filter(v => v != null && v !== 0);
       if (validVals.length === 0) {
         return <div style={{color:'var(--muted)', fontSize:'0.8rem'}}>No {metric} values</div>;
       }
-      const vMin = Math.min(...validVals);
-      const vMax = Math.max(...validVals);
+      let vMin = Math.min(...validVals);
+      let vMax = Math.max(...validVals);
+      if (showZeroLine) {
+        // Expand range to always include 0 so the "no drift" line is visible.
+        vMin = Math.min(vMin, 0);
+        vMax = Math.max(vMax, 0);
+      }
       const vRange = (vMax - vMin) || Math.abs(vMax) || 1;
 
       const width = 800;
@@ -2725,15 +2923,36 @@
         }
       }
 
+      // 5b. Drift marks — vertical dashed lines for runs flagged as drifted/warn.
+      //     Drawn behind the trend line so points remain readable.
+      const driftMarks = [];
+      if (showDrift) {
+        runs.forEach((r, i) => {
+          const dc = r.drift_class;
+          if (dc !== 'drifted' && dc !== 'warn') return;
+          const x = padding + ((dates[i] - tMin) / tRange) * w;
+          driftMarks.push({ x, run: r, severity: dc });
+        });
+      }
+
       const eventColors = {
         column_change:'#60a5fa', source_clean:'#22c55e',
         calibration:'#eab308', pm:'#a78bfa',
         lc_service:'#f472b6', other:'#94a3b8',
       };
 
+      const zeroY = showZeroLine ? padding + h - ((0 - vMin) / vRange) * h : null;
+
       return (
         <div>
           <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:`${height}px`}}>
+            {/* Zero baseline for signed metrics — solid so direction is obvious */}
+            {showZeroLine && (
+              <line x1={padding} y1={zeroY} x2={width-padding} y2={zeroY}
+                    stroke="#94a3b8" strokeWidth="1.2" opacity="0.7">
+                <title>No drift (0.0)</title>
+              </line>
+            )}
             {/* This-instrument median — muted gray dashes */}
             <line x1={padding} y1={instMedianY} x2={width-padding} y2={instMedianY}
                   stroke="var(--muted)" strokeDasharray="4,4" strokeWidth="1" opacity="0.55">
@@ -2747,6 +2966,16 @@
                 <line key={`cm-${spd}`} x1={padding} y1={cm.y} x2={width-padding} y2={cm.y}
                       stroke={c} strokeDasharray="2,5" strokeWidth="1.2" opacity="0.45">
                   <title>Community median @ {spd} SPD: {cm.value.toLocaleString()}</title>
+                </line>
+              );
+            })}
+            {/* Drift marks — drawn behind events/trend so points stay on top */}
+            {driftMarks.map((dm, i) => {
+              const c = dm.severity === 'drifted' ? '#ef4444' : '#f59e0b';
+              return (
+                <line key={`drift-${i}`} x1={dm.x} y1={padding} x2={dm.x} y2={height-padding}
+                      stroke={c} strokeDasharray="2,3" strokeWidth="1.2" opacity="0.45">
+                  <title>{`DIA window drift (${dm.severity}): ${dm.run.run_name}`}</title>
                 </line>
               );
             })}
@@ -2895,10 +3124,33 @@
             </p>
             <Sparkline {...common} metric="median_points_across_peak" label="Datapoints per peak" />
           </div>
+          <div className="card">
+            <h3>PEG Contamination over time</h3>
+            <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0 0 0.5rem 0'}}>
+              0–100 score from Rardin 2018 PEG panel. &lt;20 clean · 20–50 trace · 50–70 moderate · ≥70 heavy.
+              Rising trend = contamination accumulating; drop after source clean = resolved.
+            </p>
+            <Sparkline {...common} metric="peg_score" label="PEG score (0-100)" />
+          </div>
+          <div className="card">
+            <h3>DIA Window Drift (directional) over time</h3>
+            <p style={{fontSize:'0.75rem', color:'var(--muted)', margin:'0 0 0.5rem 0'}}>
+              Signed median peak-to-window-center offset in 1/K<sub>0</sub>.
+              <b> 0 = no drift</b> (peaks centered on declared DIA windows).
+              Positive = peaks drifting to <b>higher 1/K<sub>0</sub></b> (upper edge of windows);
+              negative = drifting to <b>lower 1/K<sub>0</sub></b>.
+              |drift| &lt; 0.04 OK · 0.04–0.06 warn · ≥ 0.06 drifted.
+              Correlate a persistent same-sign trend with ID counts, MS1 signal, or FWHM to see whether
+              drift is eating into your quant.
+            </p>
+            <Sparkline {...common} metric="drift_median_im" label="median drift (1/K0, signed · 0 = no drift)"
+                       showDrift={false} showZeroLine={true} />
+          </div>
           <CIRTCard instrument={selected} timeFilter={timeFilter} />
           <div style={{fontSize:'0.75rem', color:'var(--muted)', padding:'0.5rem'}}>
             Lines split by SPD · solid = local runs · dashed gray = this-instrument median
-            · dashed color = community median · dashed vertical = maintenance event.
+            · dashed color = community median · dashed vertical = maintenance event
+            · dashed amber/red vertical = DIA window drift (warn/drifted).
             Hover any dot for the exact value, run name, SPD, and date.
           </div>
         </div>

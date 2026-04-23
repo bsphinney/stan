@@ -116,30 +116,24 @@ def read_ms1_thermo(
         ) from e
 
     try:
-        first = raw.first_spectrum_number
-        last = raw.last_spectrum_number
-        ms1_scans: list[int] = []
-        for n in range(first, last + 1):
-            try:
-                f = raw.get_scan_filter(n)
-                if not f:
-                    continue
-                fs = str(f).lower()
-                # Heuristic: "ms " in filter, no "ms2" / "dd-ms2"
-                if "ms " in fs and "ms2" not in fs and "dd-ms" not in fs:
-                    ms1_scans.append(n)
-            except Exception:
-                continue
-        # v0.2.168: RT-stratified sampling for ladder-coherence check
-        # (see read_ms1_bruker for rationale). ms1_scans is already in
-        # acquisition order from the scan-number iteration above.
+        # v0.2.175: fisher_py RawFile pre-computes MS1 scan numbers at
+        # __init__ via _get_ms_scan_numbers_and_retention_times_. Use
+        # them directly instead of iterating every scan and checking
+        # the filter string — the previous code called
+        # `raw.first_spectrum_number` / `raw.get_scan_filter(n)` which
+        # don't exist on current fisher_py (those look like they came
+        # from a different/older wrapper). Every Lumos+480 backfill
+        # hit AttributeError under the old code; v0.2.174 diagnosed.
+        ms1_scans: list[int] = list(getattr(raw, "_ms1_scan_numbers", []) or [])
+        # RT-stratified sampling: ms1_scans is already in acquisition order.
         if len(ms1_scans) > n_scans:
             step = len(ms1_scans) / n_scans
             ms1_scans = [ms1_scans[int(i * step)] for i in range(n_scans)]
         for n in ms1_scans:
             try:
-                stats = raw.get_scan_stats_for_scan_number(n)
-                mzs, ints = raw.get_segmented_scan(n)
+                # RawFile.get_scan_from_scan_number returns
+                # (positions/mz, intensities, charges, filter_str).
+                mzs, ints, _charges, _fs = raw.get_scan_from_scan_number(int(n))
                 yield [(float(m), float(i)) for m, i in zip(mzs, ints)]
             except Exception:
                 continue
