@@ -106,6 +106,13 @@ class WindowDriftMetric:
     drift_edge: float = 0.0  # signed distance from ridge to nearest window edge (0 if inside)
     coverage: float = 0.0    # fraction of slice intensity inside window's 1/K0 range
     severely_drifted: bool = False
+    # v0.2.182: true iff window centre falls inside PEPTIDE_IM_LO..HI and
+    # had enough peptide-zone intensity to run drift analysis. Windows
+    # outside the peptide zone (very high / very low m/z tails) are still
+    # reported for visualisation parity with Bruker DataAnalysis, but
+    # drift values on them are sentinel (im_mode=im_center, drift_*=0,
+    # coverage=0, severely_drifted=False) and classification ignores them.
+    in_peptide_zone: bool = True
 
 
 @dataclass
@@ -308,7 +315,20 @@ def detect_window_drift(
         if w.im_lo == 0 and w.im_hi == 0:
             continue
         ctr = (w.im_lo + w.im_hi) / 2.0
+        # v0.2.182: windows outside the peptide zone get a sentinel entry
+        # so they still appear in the Bruker-DA-style visualisation. No
+        # drift analysis is run on them — charge-1 contamination lives
+        # in these tails and would produce phantom drift.
         if not (PEPTIDE_IM_LO <= ctr <= PEPTIDE_IM_HI):
+            per_window.append(WindowDriftMetric(
+                window_group=w.window_group,
+                mz_range=(round(w.mz_lo, 2), round(w.mz_hi, 2)),
+                im_range=(round(w.im_lo, 4), round(w.im_hi, 4)),
+                im_center=round(ctr, 4),
+                im_mode=round(ctr, 4),
+                drift_im=0.0, drift_edge=0.0, coverage=0.0,
+                severely_drifted=False, in_peptide_zone=False,
+            ))
             continue
         # Slice on m/z AND clamp to peptide zone in IM — we search for
         # the ridge across the FULL peptide zone, not just inside the
@@ -316,12 +336,31 @@ def detect_window_drift(
         slc_mask = ((mzs >= w.mz_lo) & (mzs <= w.mz_hi) &
                     (mobs >= PEPTIDE_IM_LO) & (mobs <= PEPTIDE_IM_HI))
         if not slc_mask.any():
+            # Window IS in the peptide zone but has no signal — still
+            # emit a sentinel so the vis shows the window. Flag as
+            # out-of-zone for classification-exclusion purposes.
+            per_window.append(WindowDriftMetric(
+                window_group=w.window_group,
+                mz_range=(round(w.mz_lo, 2), round(w.mz_hi, 2)),
+                im_range=(round(w.im_lo, 4), round(w.im_hi, 4)),
+                im_center=round(ctr, 4), im_mode=round(ctr, 4),
+                drift_im=0.0, drift_edge=0.0, coverage=0.0,
+                severely_drifted=False, in_peptide_zone=False,
+            ))
             continue
         slc_mobs = mobs[slc_mask]
         slc_ints = ints[slc_mask]
         slc_int_sum = float(slc_ints.sum())
         if slc_int_sum < 1000.0:
-            # Too little peptide-zone intensity to trust; skip.
+            # Too little peptide-zone intensity to trust; emit sentinel.
+            per_window.append(WindowDriftMetric(
+                window_group=w.window_group,
+                mz_range=(round(w.mz_lo, 2), round(w.mz_hi, 2)),
+                im_range=(round(w.im_lo, 4), round(w.im_hi, 4)),
+                im_center=round(ctr, 4), im_mode=round(ctr, 4),
+                drift_im=0.0, drift_edge=0.0, coverage=0.0,
+                severely_drifted=False, in_peptide_zone=False,
+            ))
             continue
         hist, edges = np.histogram(
             slc_mobs, bins=MOBILITY_HIST_BINS,
@@ -363,20 +402,25 @@ def detect_window_drift(
         ))
         per_window_slc_int.append(slc_int_sum)
 
-    if not per_window:
-        return DriftResult(drift_class="unknown")
+    # v0.2.182: per_window now contains ALL windows (peptide-zone ones
+    # with real drift data + tail-end ones as sentinels for the viz).
+    # Classification aggregation must only look at in_peptide_zone=True
+    # windows — sentinels would spuriously pull medians toward 0.
+    evaluated = [pw for pw in per_window if pw.in_peptide_zone]
+    if not evaluated:
+        return DriftResult(drift_class="unknown", per_window=per_window)
 
     coverage = float(ints[inside_any].sum()) / total_int
-    drifts = sorted(pw.drift_im for pw in per_window)
+    drifts = sorted(pw.drift_im for pw in evaluated)
     median_drift = drifts[len(drifts) // 2]
     abs_drifts = sorted(abs(d) for d in drifts)
     med_abs = abs_drifts[len(abs_drifts) // 2]
     p90_abs = abs_drifts[int(0.9 * len(abs_drifts))]
 
-    n_severe = sum(1 for pw in per_window if pw.severely_drifted)
+    n_severe = sum(1 for pw in evaluated if pw.severely_drifted)
     total_slc_int = sum(per_window_slc_int)
     severe_int = sum(
-        si for pw, si in zip(per_window, per_window_slc_int)
+        si for pw, si in zip(evaluated, per_window_slc_int)
         if pw.severely_drifted
     )
     severe_int_frac = severe_int / total_slc_int if total_slc_int > 0 else 0.0
@@ -408,8 +452,11 @@ def detect_window_drift(
         logger.debug("drift cloud sampling failed", exc_info=True)
 
     return DriftResult(
-        n_windows=len(per_window),
-        n_window_groups=len(set(w.window_group for w in per_window)),
+        # v0.2.182: n_windows counts EVALUATED windows (peptide-zone
+        # ones) — that's the count that matters for classification.
+        # per_window below includes all windows for viz.
+        n_windows=len(evaluated),
+        n_window_groups=len(set(pw.window_group for pw in evaluated)),
         global_coverage=round(coverage, 3),
         median_drift_im=round(median_drift, 4),
         median_abs_drift_im=round(med_abs, 4),

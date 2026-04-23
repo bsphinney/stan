@@ -241,6 +241,11 @@ CREATE TABLE IF NOT EXISTS drift_window_centroids (
     im_mode             REAL NOT NULL,
     drift_im            REAL NOT NULL,
     coverage            REAL NOT NULL,
+    -- v0.2.182: True iff this window was evaluated for drift (center in
+    -- peptide zone + sufficient signal). Sentinel rows for the tails
+    -- (low/high m/z, high 1/K0) are stored for Bruker-DA-style viz
+    -- parity but excluded from classification aggregation.
+    in_peptide_zone     INTEGER DEFAULT 1,
     PRIMARY KEY (run_id, source, window_idx)
 );
 
@@ -938,10 +943,12 @@ def insert_drift_window_centroids(
         try:
             mz_low, mz_high = float(w.mz_range[0]), float(w.mz_range[1])
             im_low, im_high = float(w.im_range[0]), float(w.im_range[1])
+            # v0.2.182: default True for dataclasses without the flag
+            in_zone = int(bool(getattr(w, "in_peptide_zone", True)))
             rows.append((
                 run_id, table, idx, mz_low, mz_high, im_low, im_high,
                 float(w.im_center), float(w.im_mode),
-                float(w.drift_im), float(w.coverage),
+                float(w.drift_im), float(w.coverage), in_zone,
             ))
         except (AttributeError, TypeError, ValueError):
             continue
@@ -950,6 +957,19 @@ def insert_drift_window_centroids(
         return 0
 
     with sqlite3.connect(str(db_path)) as con:
+        # v0.2.182 migration: add in_peptide_zone column to legacy DBs
+        # where the CREATE TABLE IF NOT EXISTS didn't include it.
+        try:
+            cols = {r[1] for r in con.execute(
+                "PRAGMA table_info(drift_window_centroids)"
+            ).fetchall()}
+            if "in_peptide_zone" not in cols:
+                con.execute(
+                    "ALTER TABLE drift_window_centroids "
+                    "ADD COLUMN in_peptide_zone INTEGER DEFAULT 1"
+                )
+        except sqlite3.OperationalError:
+            pass
         con.execute(
             "DELETE FROM drift_window_centroids WHERE run_id = ? AND source = ?",
             (run_id, table),
@@ -957,8 +977,8 @@ def insert_drift_window_centroids(
         con.executemany(
             "INSERT OR REPLACE INTO drift_window_centroids "
             "(run_id, source, window_idx, mz_low, mz_high, im_low, im_high, "
-            "im_center, im_mode, drift_im, coverage) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "im_center, im_mode, drift_im, coverage, in_peptide_zone) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         return len(rows)
@@ -974,18 +994,35 @@ def get_drift_window_centroids(
         db_path = get_db_path()
     with sqlite3.connect(str(db_path)) as con:
         con.row_factory = sqlite3.Row
+        # v0.2.182: defensively check for in_peptide_zone column so
+        # read-only legacy DBs (pre-migration) still return sensible
+        # data. Any missing column → treat as True (the old behaviour).
+        cols: set[str] = set()
         try:
-            return [
-                dict(r) for r in con.execute(
-                    "SELECT window_idx, mz_low, mz_high, im_low, im_high, "
-                    "im_center, im_mode, drift_im, coverage "
-                    "FROM drift_window_centroids WHERE run_id = ? AND source = ? "
-                    "ORDER BY window_idx ASC",
-                    (run_id, table),
-                ).fetchall()
-            ]
+            cols = {r[1] for r in con.execute(
+                "PRAGMA table_info(drift_window_centroids)"
+            ).fetchall()}
         except sqlite3.OperationalError:
             return []
+        has_zone = "in_peptide_zone" in cols
+        select_cols = (
+            "window_idx, mz_low, mz_high, im_low, im_high, "
+            "im_center, im_mode, drift_im, coverage" +
+            (", in_peptide_zone" if has_zone else "")
+        )
+        try:
+            rows = [dict(r) for r in con.execute(
+                f"SELECT {select_cols} "
+                f"FROM drift_window_centroids WHERE run_id = ? AND source = ? "
+                f"ORDER BY window_idx ASC",
+                (run_id, table),
+            ).fetchall()]
+        except sqlite3.OperationalError:
+            return []
+        # Normalize so API callers always see an int 0/1 on the key.
+        for r in rows:
+            r["in_peptide_zone"] = int(r.get("in_peptide_zone", 1) or 0)
+        return rows
 
 
 def insert_drift_peak_cloud(

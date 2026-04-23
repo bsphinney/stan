@@ -743,8 +743,14 @@
 
       // Window rectangle color by drift class — slightly darker strokes
       // and lighter fills tuned for white background readability.
-      function winColor(drift_im) {
-        const a = Math.abs(drift_im);
+      // v0.2.182: windows flagged in_peptide_zone=0 were not evaluated
+      // (tails, high-m/z low-peptide-density). Render as neutral gray so
+      // Brett's Bruker-DA comparison shows the FULL DIA method layout.
+      function winColor(wd) {
+        if (wd && wd.in_peptide_zone === 0) {
+          return { stroke: '#94a3b8', fill: 'rgba(148,163,184,0.06)' };
+        }
+        const a = Math.abs(wd ? wd.drift_im : 0);
         if (a < 0.02) return { stroke: '#16a34a', fill: 'rgba(34,197,94,0.08)' };
         if (a < 0.05) return { stroke: '#ca8a04', fill: 'rgba(234,179,8,0.10)' };
         return               { stroke: '#b91c1c', fill: 'rgba(220,38,38,0.10)' };
@@ -778,17 +784,21 @@
               const x1 = xFor(wd.mz_high);
               const y0 = yFor(wd.im_high);
               const y1 = yFor(wd.im_low);
-              const col = winColor(wd.drift_im);
+              const col = winColor(wd);
+              const outOfZone = wd.in_peptide_zone === 0;
               const tip = `window ${wd.window_idx}\n` +
                           `m/z ${wd.mz_low.toFixed(1)}-${wd.mz_high.toFixed(1)}\n` +
                           `expected 1/K0: ${wd.im_low.toFixed(3)}-${wd.im_high.toFixed(3)}\n` +
-                          `observed mode: ${wd.im_mode.toFixed(3)}\n` +
-                          `drift: ${(wd.drift_im >= 0 ? '+' : '') + wd.drift_im.toFixed(3)}\n` +
-                          `coverage: ${(wd.coverage * 100).toFixed(1)}%`;
+                          (outOfZone
+                            ? `(not evaluated: outside peptide zone 0.70-1.15)`
+                            : `observed mode: ${wd.im_mode.toFixed(3)}\n` +
+                              `drift: ${(wd.drift_im >= 0 ? '+' : '') + wd.drift_im.toFixed(3)}\n` +
+                              `coverage: ${(wd.coverage * 100).toFixed(1)}%`);
               return (
                 <g key={`w-${wi}`}>
                   <rect x={x0} y={y0} width={Math.max(1, x1 - x0)} height={Math.max(1, y1 - y0)}
-                        fill={col.fill} stroke={col.stroke} strokeWidth="0.6">
+                        fill={col.fill} stroke={col.stroke} strokeWidth="0.6"
+                        strokeDasharray={outOfZone ? "2,2" : undefined}>
                     <title>{tip}</title>
                   </rect>
                 </g>
@@ -840,9 +850,14 @@
               warn (0.02-0.05)
             </span>
             <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
-              <span style={{width:'0.9rem', height:'0.6rem', background:'rgba(220,38,38,0.15)',
-                            border:'1px solid #dc2626', display:'inline-block'}} />
+              <span style={{width:'0.9rem', height:'0.6rem', background:'rgba(220,38,38,0.10)',
+                            border:'1px solid #b91c1c', display:'inline-block'}} />
               drifted (&gt;0.05)
+            </span>
+            <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'0.9rem', height:'0.6rem', background:'rgba(148,163,184,0.06)',
+                            border:'1px dashed #94a3b8', display:'inline-block'}} />
+              not evaluated (outside peptide zone)
             </span>
           </div>
         </div>
