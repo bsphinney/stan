@@ -124,7 +124,14 @@ def read_ms1_thermo(
         # don't exist on current fisher_py (those look like they came
         # from a different/older wrapper). Every Lumos+480 backfill
         # hit AttributeError under the old code; v0.2.174 diagnosed.
-        ms1_scans: list[int] = list(getattr(raw, "_ms1_scan_numbers", []) or [])
+        # v0.2.189: `_ms1_scan_numbers` is a numpy array; `arr or []`
+        # raises "truth value of an array is ambiguous". Use an explicit
+        # None check + len() so empty arrays fall back cleanly.
+        _raw_scans = getattr(raw, "_ms1_scan_numbers", None)
+        ms1_scans: list[int] = (
+            [int(s) for s in _raw_scans] if _raw_scans is not None and len(_raw_scans) > 0
+            else []
+        )
         # RT-stratified sampling: ms1_scans is already in acquisition order.
         if len(ms1_scans) > n_scans:
             step = len(ms1_scans) / n_scans

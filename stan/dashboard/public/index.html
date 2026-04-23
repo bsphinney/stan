@@ -3237,6 +3237,17 @@
       // Primary identifications: precursors for DIA, PSMs for DDA
       const primaryIds = (r) => r.mode === 'DDA' ? r.n_psms : r.n_precursors;
 
+      // v0.2.189: hide the Drift column entirely on Orbitrap-only
+      // dashboards. Drift detection is Bruker diaPASEF only — Thermo
+      // .raw files never get drift data, so an all-em-dash column is
+      // wasted horizontal space. Shown when ANY run in the current
+      // filtered set has drift_class set (so mixed fleets still see
+      // it, and a Bruker install that currently shows zero drifted
+      // runs still sees the OK badge).
+      const showDriftCol = filtered.some(r =>
+        r && r.drift_class && r.drift_class !== 'unknown'
+      );
+
       return (
         <div className="card">
           <div style={{display:'flex', gap:'0.75rem', marginBottom:'0.75rem', flexWrap:'wrap', alignItems:'center'}}>
@@ -3284,7 +3295,7 @@
                 <SortHeader col="mode" label="Mode" />
                 <SortHeader col="ips_score" label="IPS" />
                 <SortHeader col="peg_class" label="PEG" />
-                <SortHeader col="drift_class" label="Drift" />
+                {showDriftCol && <SortHeader col="drift_class" label="Drift" />}
                 <SortHeader col="primary_ids" label="Precursors / PSMs" />
                 <SortHeader col="n_peptides" label="Peptides" />
                 <SortHeader col="n_proteins" label="Proteins" />
@@ -3325,7 +3336,7 @@
                       <td>{r.mode}</td>
                       <td><IpsBadge run={r} /></td>
                       <td><PegBadge run={r} /></td>
-                      <td><DriftBadge run={r} /></td>
+                      {showDriftCol && <td><DriftBadge run={r} /></td>}
                       <td title={`${idsLabel}: ${ids != null ? ids.toLocaleString() : EM_DASH}`}>
                         {fmtNum(ids)} <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>{ids > 0 ? idsLabel : ''}</span>
                       </td>

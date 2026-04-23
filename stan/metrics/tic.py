@@ -203,8 +203,13 @@ def extract_tic_thermo(raw_path: Path) -> TICTrace | None:
         # — none of those exist on the public RawFile API, so every
         # Thermo TIC extraction was hitting AttributeError and silently
         # falling back to TRFP (if available) or returning None.
-        ms1_scans = list(getattr(raw, "_ms1_scan_numbers", []) or [])
-        ms1_rts = list(getattr(raw, "_ms1_retention_times", []) or [])
+        # v0.2.189: `_ms1_scan_numbers` / `_ms1_retention_times` are
+        # numpy arrays; `arr or []` raises "truth value of an array
+        # is ambiguous". Use None + len() checks instead.
+        _s = getattr(raw, "_ms1_scan_numbers", None)
+        _r = getattr(raw, "_ms1_retention_times", None)
+        ms1_scans = [int(x) for x in _s] if _s is not None and len(_s) > 0 else []
+        ms1_rts   = [float(x) for x in _r] if _r is not None and len(_r) > 0 else []
 
         rt_min = []
         intensity = []
