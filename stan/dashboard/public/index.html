@@ -706,7 +706,43 @@
     //   green = drift_im within +-0.02 (ok)
     //   amber = drift_im within +-0.05
     //   red   = drift_im outside +-0.05 (drifted)
+    // v0.2.187: Zone-based charge assignment for ion cloud dots. Published
+    // Meier/Mann-lab timsTOF calibrations show peptide ions occupy separate
+    // diagonal regions in m/z × 1/K0 per charge state. We compute expected
+    // 1/K0 at each m/z per charge, then assign each observed ion to the
+    // charge whose predicted line is closest (±0.03 /K0 tolerance). Outside
+    // any band → "z=?" unclassified. This is a heuristic — +1 contamination
+    // near the +2 line can be mis-assigned — but needs no search or 4DFF,
+    // works on every .d file.
+    function inferredCharge(mz, im) {
+      // Regression coefficients: predicted_im = a + b*mz per charge
+      const LINES = [
+        { z: 1, a: 1.050, b: 0.0012, tol: 0.05 },  // wider tolerance — z=1 is noisy
+        { z: 2, a: 0.700, b: 0.0008, tol: 0.04 },
+        { z: 3, a: 0.550, b: 0.0006, tol: 0.04 },
+        { z: 4, a: 0.450, b: 0.0005, tol: 0.04 },
+        { z: 5, a: 0.400, b: 0.0004, tol: 0.04 },
+      ];
+      let best = null;
+      let bestDist = Infinity;
+      for (const L of LINES) {
+        const predicted = L.a + L.b * mz;
+        const d = Math.abs(im - predicted);
+        if (d < L.tol && d < bestDist) { best = L.z; bestDist = d; }
+      }
+      return best;  // null if no charge fits
+    }
+    const CHARGE_COLORS = {
+      1: '#94a3b8',  // slate — usually contamination
+      2: '#1d4ed8',  // deep blue — primary peptide signal
+      3: '#0891b2',  // teal
+      4: '#ca8a04',  // amber
+      5: '#b91c1c',  // red
+      null: '#cbd5e1',  // light gray — unclassified
+    };
+
     function DriftCloudSvg({ cloud, windows, summary, runId }) {
+      const [colorBy, setColorBy] = useState('intensity');  // 'intensity' | 'charge'
       if (!cloud || !cloud.mz || !cloud.mz.length) {
         return (
           <div style={{color:'var(--muted)'}}>
@@ -787,18 +823,38 @@
             </strong>
             {' . '}{cloud.n_points} points
           </div>
+          {/* v0.2.187: color-by toggle — intensity (heatmap) or inferred
+              charge state via m/z × 1/K0 zones */}
+          <div style={{display:'inline-flex', gap:'0.3rem', marginBottom:'0.4rem',
+                       fontSize:'0.7rem', alignItems:'center'}}>
+            <span style={{color:'var(--muted)', marginRight:'0.2rem'}}>Color by:</span>
+            {[['intensity', 'Intensity'], ['charge', 'Inferred charge']].map(([k, lab]) => (
+              <button key={k} onClick={() => setColorBy(k)} style={{
+                padding:'0.12rem 0.45rem', fontSize:'0.7rem',
+                background: colorBy === k ? 'var(--accent)' : 'transparent',
+                color: colorBy === k ? '#000' : 'var(--muted)',
+                border:'1px solid var(--border)', borderRadius:'0.2rem',
+                cursor:'pointer',
+              }}>{lab}</button>
+            ))}
+          </div>
           <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:'auto'}}>
             {/* v0.2.180: white plot area for Bruker-DataAnalysis parity */}
             <rect x={padding.l} y={padding.t} width={w} height={h}
                   fill="#ffffff" stroke="#cbd5e1" strokeWidth="0.5" />
-            {/* Ion cloud — v0.2.186: r=1.6 + opacity 0.85 + cap 20k
-                makes the ridge read as a dense solid band like Bruker
-                DataAnalysis. At smaller sizes individual dots were
-                visible and the band looked sparse. */}
+            {/* Ion cloud — v0.2.186: r=1.6 + opacity 0.85 + cap 20k.
+                v0.2.187: optional color-by-inferred-charge via zone
+                assignment from Meier/Mann timsTOF calibrations. */}
             {cloud.mz.map((mz, i) => {
               const x = xFor(mz);
               const y = yFor(cloud.im[i]);
-              const c = colorFor(cloud.log_intensity[i]);
+              let c;
+              if (colorBy === 'charge') {
+                const z = inferredCharge(mz, cloud.im[i]);
+                c = CHARGE_COLORS[z];
+              } else {
+                c = colorFor(cloud.log_intensity[i]);
+              }
               return <circle key={`p-${i}`} cx={x} cy={y} r="1.6" fill={c} opacity="0.85" />;
             })}
             {/* Expected DIA windows on top of the cloud */}
@@ -861,7 +917,25 @@
           <div style={{display:'flex', gap:'0.9rem', flexWrap:'wrap',
                        fontSize:'0.72rem', color:'var(--muted)',
                        marginTop:'0.3rem', paddingLeft:'1rem'}}>
-            <span>Points = MS1 peaks (color = log intensity)</span>
+            {colorBy === 'charge' ? (
+              <>
+                <span>Points = MS1 peaks (color = inferred charge from m/z × 1/K0 zones)</span>
+                {[['+1 (often contamination)', 1],
+                  ['+2',                        2],
+                  ['+3',                        3],
+                  ['+4',                        4],
+                  ['+5',                        5],
+                  ['unclassified',              null]].map(([lab, z]) => (
+                  <span key={`cz-${z}`} style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+                    <span style={{width:'0.6rem', height:'0.6rem', borderRadius:'50%',
+                                  background: CHARGE_COLORS[z], display:'inline-block'}} />
+                    {lab}
+                  </span>
+                ))}
+              </>
+            ) : (
+              <span>Points = MS1 peaks (color = log intensity)</span>
+            )}
             <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
               <span style={{width:'0.9rem', height:'0.6rem', background:'rgba(34,197,94,0.12)',
                             border:'1px solid #22c55e', display:'inline-block'}} />
