@@ -1041,8 +1041,74 @@ class WatcherDaemon:
         logger.info("Received signal %d — shutting down", signum)
         self.stop()
 
+    def _auto_merge_aliases(self, config: dict) -> None:
+        """For each instrument with an ``aliases:`` list, rewrite any
+        DB rows whose ``instrument`` column matches an alias to the
+        canonical ``name``. Fixes the "two cards for one physical
+        instrument" problem that otherwise recurs whenever a rename
+        happens out of sync with new acquisitions coming in (e.g. a
+        17-minute race between apply_config and fix_instrument_names
+        bit us 2026-04-23 on TIMS — 3 runs + 13 sample_health rows
+        landed under the stale name during the gap).
+
+        Runs on daemon startup and on every config hot-reload
+        (v0.2.183). Idempotent — a no-op when nothing matches.
+        """
+        import sqlite3
+        from stan.db import get_db_path, init_db
+
+        try:
+            init_db()
+            db = get_db_path()
+            if not db.exists():
+                return
+        except Exception:
+            logger.debug("auto-merge init_db failed", exc_info=True)
+            return
+
+        for inst in config.get("instruments", []) or []:
+            if not isinstance(inst, dict):
+                continue
+            name = inst.get("name")
+            aliases = inst.get("aliases") or []
+            if not (isinstance(name, str) and name and isinstance(aliases, list)):
+                continue
+            aliases = [a for a in aliases
+                       if isinstance(a, str) and a and a != name]
+            if not aliases:
+                continue
+            total_merged = 0
+            try:
+                with sqlite3.connect(str(db)) as con:
+                    for alias in aliases:
+                        for table in ("runs", "sample_health"):
+                            try:
+                                r = con.execute(
+                                    f"UPDATE {table} SET instrument = ? "
+                                    f"WHERE instrument = ?",
+                                    (name, alias),
+                                )
+                                total_merged += r.rowcount
+                            except sqlite3.OperationalError:
+                                pass
+                    con.commit()
+            except Exception:
+                logger.warning("auto-merge alias sweep failed for %s",
+                               name, exc_info=True)
+                continue
+            if total_merged:
+                logger.info(
+                    "Auto-merged %d rows from aliases %s into %s",
+                    total_merged, aliases, name,
+                )
+
     def _apply_config(self, config: dict) -> None:
         """Diff current watchers against config and add/remove as needed."""
+        # v0.2.183: auto-merge any legacy-named rows into the canonical
+        # name BEFORE spinning up new watchers, so the dashboard never
+        # sees two cards for a renamed instrument.
+        self._auto_merge_aliases(config)
+
         instruments = config.get("instruments", [])
         enabled = {
             inst["name"]: inst
