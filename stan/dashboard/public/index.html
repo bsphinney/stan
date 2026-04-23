@@ -392,9 +392,27 @@
     // PEG ion lollipop chart. x = m/z, y = intensity (log), marker
     // colored by adduct, faint polyline connects runs of the same
     // adduct so the 44 Da repeat spacing is visible.
+    // v0.2.181: PEG view toggle — matches drift modal UX. 'ladder' = m/z
+    // lollipop showing the 44 Da ladder. 'peak_areas' = Skyline-style
+    // grouped bars by oligomer size n (requested 2026-04-23).
     function PegChart({ payload }) {
+      const [view, setView] = useState("ladder");
       const summary = payload?.summary || {};
       const hits = payload?.hits || [];
+
+      const toggle = (
+        <div style={{display:'inline-flex', gap:'0.3rem', marginBottom:'0.5rem'}}>
+          {[['ladder', 'Ladder (m/z)'], ['peak_areas', 'Peak areas']].map(([k, lab]) => (
+            <button key={k} onClick={() => setView(k)} style={{
+              padding:'0.2rem 0.55rem', fontSize:'0.75rem',
+              background: view === k ? 'var(--accent)' : 'var(--bg)',
+              color: view === k ? '#000' : 'var(--text)',
+              border:'1px solid var(--border)', borderRadius:'0.25rem',
+              cursor:'pointer',
+            }}>{lab}</button>
+          ))}
+        </div>
+      );
 
       if (hits.length === 0) {
         return (
@@ -411,10 +429,10 @@
       }
 
       const ADDUCT_COLORS = {
-        '+H':   '#60a5fa',   // blue
-        '+Na':  '#fbbf24',   // amber
-        '+NH4': '#c084fc',   // purple
-        '+K':   '#22d3ee',   // teal
+        '+H':   '#2563eb',   // blue (darker for white bg)
+        '+Na':  '#d97706',   // amber (darker)
+        '+NH4': '#9333ea',   // purple (darker)
+        '+K':   '#0891b2',   // teal (darker)
       };
 
       const width = 920, height = 380;
@@ -449,29 +467,137 @@
 
       const adductsPresent = Object.keys(byAdduct);
 
+      const header = (
+        <div style={{fontSize:'0.8rem', color:'var(--muted)', marginBottom:'0.4rem'}}>
+          Run: <strong style={{color:'var(--text)'}}>{summary.run_name || payload.run_id}</strong>
+          {' · '}class <strong style={{color:'var(--text)'}}>{summary.peg_class || '—'}</strong>
+          {' · '}score <strong style={{color:'var(--text)'}}>
+            {summary.peg_score != null ? summary.peg_score.toFixed(1) : '—'}
+          </strong>
+          {' · '}{hits.length} ions detected
+          {summary.peg_intensity_pct != null && (
+            <>{' · '}<strong style={{color:'var(--text)'}}>
+              {summary.peg_intensity_pct.toFixed(2)}%</strong> of MS1 TIC
+            </>
+          )}
+        </div>
+      );
+
+      // ── Peak areas view ────────────────────────────────────────────
+      // Skyline-style: grouped bars by oligomer size n, one bar per
+      // adduct within each group, side-by-side. White plot background
+      // to match v0.2.180 drift cloud aesthetic.
+      if (view === "peak_areas") {
+        // Group ions by repeat_n then adduct.
+        const byN = new Map();
+        for (const ion of hits) {
+          if (!byN.has(ion.repeat_n)) byN.set(ion.repeat_n, {});
+          byN.get(ion.repeat_n)[ion.adduct] = ion;
+        }
+        const ns = [...byN.keys()].sort((a, b) => a - b);
+        const adductsPresentPA = [...new Set(hits.map(x => x.adduct))];
+        // Stable adduct order for bar positioning
+        const ADDUCT_ORDER = ['+H', '+Na', '+NH4', '+K'];
+        const adductOrder = ADDUCT_ORDER.filter(a => adductsPresentPA.includes(a))
+          .concat(adductsPresentPA.filter(a => !ADDUCT_ORDER.includes(a)));
+        const intsPA = hits.map(x => Math.max(1, x.observed_intensity));
+        const lminPA = Math.log10(Math.min(...intsPA));
+        const lmaxPA = Math.log10(Math.max(...intsPA));
+        const lrangePA = (lmaxPA - lminPA) || 1;
+        const yForPA = i => padding.t + h - ((Math.log10(Math.max(1, i)) - lminPA) / lrangePA) * h;
+        const groupW = w / Math.max(1, ns.length);
+        const barW = Math.min(12, (groupW - 6) / adductOrder.length);
+        return (
+          <div>
+            {toggle}
+            {header}
+            <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:'auto'}}>
+              <rect x={padding.l} y={padding.t} width={w} height={h}
+                    fill="#ffffff" stroke="#cbd5e1" strokeWidth="0.5" />
+              {/* y-axis log ticks */}
+              {[lminPA, lminPA + lrangePA * 0.25, lminPA + lrangePA * 0.5, lminPA + lrangePA * 0.75, lmaxPA].map((lv, i) => {
+                const y = padding.t + h - ((lv - lminPA) / lrangePA) * h;
+                return (
+                  <g key={`yt-pa-${i}`}>
+                    <line x1={padding.l} y1={y} x2={width - padding.r} y2={y}
+                          stroke="#e5e7eb" strokeDasharray="2,3" strokeWidth="0.5" />
+                    <text x={padding.l - 6} y={y + 3} fill="var(--muted)"
+                          fontSize="10" textAnchor="end">
+                      {`10^${lv.toFixed(1)}`}
+                    </text>
+                  </g>
+                );
+              })}
+              {/* Grouped bars */}
+              {ns.map((n, gi) => {
+                const gx0 = padding.l + gi * groupW + (groupW - barW * adductOrder.length) / 2;
+                return (
+                  <g key={`grp-${n}`}>
+                    {adductOrder.map((ad, ai) => {
+                      const ion = byN.get(n)[ad];
+                      if (!ion) return null;
+                      const bx = gx0 + ai * barW;
+                      const by = yForPA(ion.observed_intensity);
+                      const bh = (padding.t + h) - by;
+                      const c = ADDUCT_COLORS[ad] || '#94a3b8';
+                      const tip = `n=${n} [M${ad}]${ion.charge > 1 ? '^'+ion.charge+'+' : '⁺'}\n` +
+                                  `m/z ${ion.mz.toFixed(4)}\n` +
+                                  `intensity ${Number(ion.observed_intensity).toExponential(2)}` +
+                                  (ion.ppm_error != null ? `\nΔ ${ion.ppm_error.toFixed(2)} ppm` : '');
+                      return (
+                        <rect key={`bar-${n}-${ad}`} x={bx} y={by}
+                              width={Math.max(1, barW - 1)} height={Math.max(0.5, bh)}
+                              fill={c} stroke="#1f2937" strokeWidth="0.4">
+                          <title>{tip}</title>
+                        </rect>
+                      );
+                    })}
+                    {/* x tick label (oligomer n) */}
+                    <text x={padding.l + gi * groupW + groupW / 2}
+                          y={padding.t + h + 14} fill="var(--muted)"
+                          fontSize="10" textAnchor="middle">{n}</text>
+                  </g>
+                );
+              })}
+              <text x={width / 2} y={height - 6} fill="var(--muted)"
+                    fontSize="11" textAnchor="middle">PEG oligomer size (n)</text>
+              <text x={12} y={padding.t + h / 2} fill="var(--muted)"
+                    fontSize="11" transform={`rotate(-90 12 ${padding.t + h / 2})`}
+                    textAnchor="middle">intensity (log)</text>
+            </svg>
+            <div style={{display:'flex', gap:'1rem', flexWrap:'wrap',
+                         fontSize:'0.75rem', color:'var(--muted)',
+                         marginTop:'0.4rem', paddingLeft:'1rem'}}>
+              {adductOrder.map(ad => (
+                <span key={`leg-pa-${ad}`}
+                      style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+                  <span style={{width:'0.8rem', height:'0.8rem',
+                                background: ADDUCT_COLORS[ad] || '#94a3b8',
+                                display:'inline-block'}} />
+                  [M{ad}]⁺
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      }
+
+      // ── Ladder view (m/z lollipop) ─────────────────────────────────
       return (
         <div>
-          <div style={{fontSize:'0.8rem', color:'var(--muted)', marginBottom:'0.4rem'}}>
-            Run: <strong style={{color:'var(--text)'}}>{summary.run_name || payload.run_id}</strong>
-            {' · '}class <strong style={{color:'var(--text)'}}>{summary.peg_class || '—'}</strong>
-            {' · '}score <strong style={{color:'var(--text)'}}>
-              {summary.peg_score != null ? summary.peg_score.toFixed(1) : '—'}
-            </strong>
-            {' · '}{hits.length} ions detected
-            {summary.peg_intensity_pct != null && (
-              <>{' · '}<strong style={{color:'var(--text)'}}>
-                {summary.peg_intensity_pct.toFixed(2)}%</strong> of MS1 TIC
-              </>
-            )}
-          </div>
+          {toggle}
+          {header}
           <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:'auto'}}>
+            {/* White plot background for Bruker-style parity */}
+            <rect x={padding.l} y={padding.t} width={w} height={h}
+                  fill="#ffffff" stroke="#cbd5e1" strokeWidth="0.5" />
             {/* y-axis log-scale ticks */}
             {[lmin, lmin + lrange * 0.25, lmin + lrange * 0.5, lmin + lrange * 0.75, lmax].map((lv, i) => {
               const y = padding.t + h - ((lv - lmin) / lrange) * h;
               return (
                 <g key={`yt-${i}`}>
                   <line x1={padding.l} y1={y} x2={width - padding.r} y2={y}
-                        stroke="var(--border)" strokeDasharray="2,3" strokeWidth="0.5" />
+                        stroke="#e5e7eb" strokeDasharray="2,3" strokeWidth="0.5" />
                   <text x={padding.l - 6} y={y + 3} fill="var(--muted)"
                         fontSize="10" textAnchor="end">
                     {`10^${lv.toFixed(1)}`}
