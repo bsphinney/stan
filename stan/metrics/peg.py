@@ -280,7 +280,7 @@ def detect_peg_in_spectra(
         n_ions_reference=len(ref),
         intensity_pct=intensity_pct,
         peg_score=score,
-        peg_class=classify_peg_score(score),
+        peg_class=classify_peg_score(score, n_ions_detected=n_detected),
         matches=matches,
         total_intensity=total_intensity,
         ladder_coherence=coherence,
@@ -327,18 +327,28 @@ def compute_peg_score(
     return base
 
 
-def classify_peg_score(score: float) -> str:
+def classify_peg_score(score: float, n_ions_detected: int = 999) -> str:
     """Map a peg_score to a 4-class label.
 
     Thresholds tuned around the score formula above:
-      clean    < 20  — typical baseline for clean labs (a few stray PEG hits)
-      trace   20-50  — measurable PEG, common with shared plasticware
-      moderate 50-70 — clearly contaminated, fix sample prep before next QC
-      heavy    > 70  — sample is dominated by PEG, hold from community
+      clean    < 20  - typical baseline for clean labs (a few stray PEG hits)
+      trace   20-50  - measurable PEG, common with shared plasticware
+      moderate 50-70 - clearly contaminated, fix sample prep before next QC
+      heavy    > 70  - sample is dominated by PEG, hold from community
+
+    v0.2.169: require n_ions_detected >= 4 before allowing moderate+
+    classification. Calibration across 15 Hive timsTOF files 2023-2026
+    caught a 2023-12 run that scored 65.3 "moderate" from only 2 ions
+    at 16% intensity - one high-intensity peak coincidentally at a PEG
+    m/z. Real PEG contamination shows as a LADDER (many oligomers);
+    without the breadth we don't trust the classification above "trace".
     """
     if score < 20:
         return "clean"
     if score < 50:
+        return "trace"
+    # Guard against the low-n_ions high-intensity false positive.
+    if n_ions_detected < 4:
         return "trace"
     if score < 70:
         return "moderate"
