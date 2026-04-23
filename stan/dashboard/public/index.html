@@ -1142,8 +1142,68 @@
         if (!byInstrument[r.instrument]) byInstrument[r.instrument] = r;
       }
 
+      // v0.2.172: surface drift alerts prominently. Any recent run
+      // with drift_class in ('warn', 'drifted') triggers a banner
+      // at the top of the page. Brett asked for a "clear warning"
+      // so operators see it without scrolling to find the badge.
+      const driftAlerts = runs
+        .filter(r => r.drift_class === 'drifted' || r.drift_class === 'warn')
+        .sort((a, b) => new Date(b.run_date) - new Date(a.run_date));
+      const worstDrift = driftAlerts.find(r => r.drift_class === 'drifted')
+                         || driftAlerts[0];
+
       return (
         <div>
+          {worstDrift && (
+            <div style={{
+              background: worstDrift.drift_class === 'drifted'
+                ? 'rgba(220,38,38,0.22)' : 'rgba(234,179,8,0.22)',
+              border: '1px solid ' + (worstDrift.drift_class === 'drifted'
+                ? '#dc2626' : '#ca8a04'),
+              borderLeft: '5px solid ' + (worstDrift.drift_class === 'drifted'
+                ? '#dc2626' : '#ca8a04'),
+              borderRadius: '0.35rem',
+              padding: '0.75rem 1rem',
+              marginBottom: '1rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.75rem',
+              flexWrap: 'wrap',
+            }}>
+              <span style={{fontSize:'1.5rem'}}>
+                {worstDrift.drift_class === 'drifted' ? '🔴' : '⚠️'}
+              </span>
+              <div style={{flex:'1 1 auto', minWidth:0}}>
+                <div style={{fontWeight:700, fontSize:'0.95rem',
+                             color: worstDrift.drift_class === 'drifted' ? '#fca5a5' : '#fde68a'}}>
+                  {worstDrift.drift_class === 'drifted'
+                    ? 'DIA window drift detected'
+                    : 'DIA window drift warning'}
+                  {' '}
+                  ({driftAlerts.length} run{driftAlerts.length === 1 ? '' : 's'}
+                  {' '}in the last 7 days)
+                </div>
+                <div style={{fontSize:'0.8rem', color:'var(--muted)', marginTop:'0.15rem'}}>
+                  Most recent: <strong style={{color:'var(--text)'}}>
+                    {worstDrift.run_name}</strong>
+                  {' '}on <strong style={{color:'var(--text)'}}>{worstDrift.instrument}</strong>
+                  {' '}at {new Date(worstDrift.run_date).toLocaleString([], {
+                    month:'short', day:'numeric', hour:'2-digit', minute:'2-digit',
+                  })}
+                  {' · coverage '}<strong style={{color:'var(--text)'}}>
+                    {(worstDrift.drift_coverage * 100).toFixed(1)}%</strong>
+                  {' · median drift '}<strong style={{color:'var(--text)'}}>
+                    {(worstDrift.drift_median_im >= 0 ? '+' : '') + worstDrift.drift_median_im.toFixed(3)} /K0
+                  </strong>
+                </div>
+                <div style={{fontSize:'0.75rem', color:'var(--muted)', marginTop:'0.25rem'}}>
+                  Click the drift badge on the run's row for the per-window scatter chart.
+                  Usual causes: column resettling (transient - resolves after 10-20 runs),
+                  method-file mismatch (load the right DIA-PASEF method), or mobility recalibration needed.
+                </div>
+              </div>
+            </div>
+          )}
           {runs.length > 0 ? (
             <QuickStatus runs={runs} />
           ) : (

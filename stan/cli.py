@@ -2818,6 +2818,96 @@ def backfill_window_drift(
     console.print(f"[dim]Log: {log_path}[/dim]")
 
 
+@app.command("fix-instrument-names")
+def fix_instrument_names(
+    from_name: str = typer.Option(
+        ..., "--from",
+        help="Current instrument value to replace (e.g. 'data_bruker').",
+    ),
+    to_name: str = typer.Option(
+        ..., "--to",
+        help="Canonical instrument value to rewrite it to (e.g. 'timsTOF HT').",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Preview the update without writing to the DB.",
+    ),
+) -> None:
+    """Rewrite instrument column values in runs + sample_health.
+
+    Brett 2026-04-23: dashboard shows two cards for the same physical
+    timsTOF HT because historical rows were inserted with the model
+    name from metadata ('timsTOF HT') while v0.2.159+ catchup used
+    the instruments.yml config key ('data_bruker'). This CLI merges
+    them into one canonical value.
+
+    Always pass the MODEL name as --to (e.g. 'timsTOF HT',
+    'Orbitrap Fusion Lumos', 'Orbitrap Exploris 480'). The model is
+    what community benchmarks key off, so it's the right canonical
+    value.
+    """
+    import sqlite3
+    from stan.db import get_db_path, init_db
+
+    init_db()
+    db = get_db_path()
+    if not db.exists():
+        console.print(f"[red]DB not found: {db}[/red]")
+        raise typer.Exit(1)
+
+    with sqlite3.connect(str(db)) as con:
+        n_runs = con.execute(
+            "SELECT COUNT(*) FROM runs WHERE instrument = ?", (from_name,)
+        ).fetchone()[0]
+        n_sh = 0
+        try:
+            n_sh = con.execute(
+                "SELECT COUNT(*) FROM sample_health WHERE instrument = ?",
+                (from_name,),
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
+        conflict_runs = con.execute(
+            "SELECT COUNT(*) FROM runs WHERE instrument = ?", (to_name,)
+        ).fetchone()[0]
+
+    console.print(f"[bold]Rewrite plan:[/bold]")
+    console.print(f"  from: {from_name!r}")
+    console.print(f"  to:   {to_name!r}")
+    console.print(f"  runs with {from_name!r}:          {n_runs}")
+    console.print(f"  sample_health with {from_name!r}: {n_sh}")
+    console.print(f"  runs already on {to_name!r} (merge target): {conflict_runs}")
+    console.print()
+
+    if n_runs == 0 and n_sh == 0:
+        console.print(f"[yellow]No rows to rewrite - nothing to do.[/yellow]")
+        return
+
+    if dry_run:
+        console.print("[yellow]--dry-run: no DB writes.[/yellow]")
+        return
+
+    with sqlite3.connect(str(db)) as con:
+        r1 = con.execute(
+            "UPDATE runs SET instrument = ? WHERE instrument = ?",
+            (to_name, from_name),
+        )
+        r2 = (0,)
+        try:
+            r2 = con.execute(
+                "UPDATE sample_health SET instrument = ? WHERE instrument = ?",
+                (to_name, from_name),
+            )
+        except sqlite3.OperationalError:
+            pass
+        con.commit()
+        console.print(
+            f"[green]Rewrote {r1.rowcount} runs + "
+            f"{r2.rowcount if hasattr(r2,'rowcount') else 0} sample_health rows.[/green]"
+        )
+    console.print("Refresh the dashboard - the two cards should merge into one.")
+
+
 @app.command("recover-search-outputs")
 def recover_search_outputs(
     src: str = typer.Option(
