@@ -53,7 +53,13 @@ logger = logging.getLogger(__name__)
 
 
 N_FRAMES_DEFAULT = 500
-INTENSITY_THRESHOLD_DEFAULT = 100.0
+INTENSITY_THRESHOLD_DEFAULT = 10.0  # v0.2.186: was 100 — too aggressive a cut
+                                    # for the display cloud. Lower threshold
+                                    # lets the background scatter through so
+                                    # the cloud matches Bruker DA's "show
+                                    # every peak" view. Ridge-finding still
+                                    # works fine because histogram mode is
+                                    # dominated by the intense ridge ions.
 MOBILITY_HIST_BINS = 80
 RANDOM_SEED = 42
 
@@ -75,8 +81,13 @@ PEPTIDE_IM_HI = 1.15
 OUTSIDE_EDGE_THRESHOLD = 0.015   # |ridge − nearest window edge|
 LOW_COVERAGE_FOR_DRIFT = 0.50    # per-window capture fraction
 
-# Run-level classification thresholds
-SEVERE_COUNT_DRIFTED = 3          # ≥3 severely-drifted windows → drifted
+# Run-level classification thresholds.
+# v0.2.186: lowered SEVERE_COUNT_DRIFTED 3 → 2 because frame-sampling
+# randomness caused identical files to land on either side of the
+# count=3 threshold. TIMS scored 21144 as warn (2 severe windows)
+# while a local re-score found 3. A count of 2 already indicates a
+# clear pattern (not noise) so this catches borderline cases.
+SEVERE_COUNT_DRIFTED = 2          # ≥2 severely-drifted windows → drifted
 SEVERE_COUNT_WARN = 1             # ≥1 → warn
 SEVERE_INT_FRAC_DRIFTED = 0.08    # severely-drifted intensity fraction
 SEVERE_INT_FRAC_WARN = 0.03
@@ -425,11 +436,14 @@ def detect_window_drift(
     )
     severe_int_frac = severe_int / total_slc_int if total_slc_int > 0 else 0.0
 
-    # v0.2.173: downsampled cloud for the Bruker DataAnalysis-style
-    # visualization. Intensity-weighted random sample so high-signal
-    # peaks are preferentially retained - the cloud ridge shows up
-    # cleanly at ~5000 points. log10 intensity for colormap.
-    CLOUD_CAP = 5000
+    # v0.2.186: cap raised 5000 → 20000 for Bruker-DA density parity.
+    # At 5000 points the ridge was too sparse — Brett's DA comparison
+    # showed a continuous solid band while STAN had visible gaps
+    # between dots. 20000 points triples payload size (~800 KB per
+    # run) but the cloud ridge reads as a coherent band.
+    # Intensity-weighted random sample so high-signal peaks are
+    # preferentially retained. log10 intensity for colormap.
+    CLOUD_CAP = 20000
     cloud_mz: list[float] = []
     cloud_im: list[float] = []
     cloud_log_i: list[float] = []
@@ -438,9 +452,17 @@ def detect_window_drift(
         if n_pts > 0:
             log_int = np.log10(np.maximum(ints, 1.0))
             if n_pts > CLOUD_CAP:
-                # Weighted sample by intensity - brighter peaks more likely
-                # to be picked, so the ridge is visible in the cloud.
-                w = ints / ints.sum()
+                # v0.2.186: switched intensity-weighted sampling → LOG-
+                # weighted so dim background ions are not squeezed out.
+                # Bruker DataAnalysis shows every MS1 peak (ions exist
+                # outside the DIA windows because the windows are MS2
+                # selection boxes, not MS1 coverage). Linear-intensity
+                # weighting threw away the off-ridge context that Brett
+                # relies on to judge drift visually. log10(ints) down-
+                # weights the ridge only modestly so the ridge is still
+                # visibly denser than the background.
+                w = log_int.clip(min=0.1)
+                w = w / w.sum()
                 rng = np.random.default_rng(RANDOM_SEED)
                 idx = rng.choice(n_pts, size=CLOUD_CAP, replace=False, p=w)
             else:
