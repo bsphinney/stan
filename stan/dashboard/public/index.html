@@ -586,26 +586,42 @@
       const xFor = m => padding.l + ((m - mzMin) / mzRange) * w;
       const yFor = k => padding.t + h - ((k - imMin) / imRange) * h;
 
-      // log_intensity for color scale - map to blue -> cyan -> white.
+      // v0.2.180: Bruker-DataAnalysis-style vis — white background, dark
+      // heatmap ramp (light gray → blue → dark purple/magenta at high
+      // intensity). Previous dark-navy+cyan ramp washed out on dark dashboard
+      // and made the ridge hard to read.
       const lis = cloud.log_intensity || [];
       const liMin = Math.min(...lis);
       const liMax = Math.max(...lis);
       const liRange = (liMax - liMin) || 1;
       function colorFor(li) {
         const t = (li - liMin) / liRange;  // 0..1
-        // low = dark navy, mid = blue, high = cyan/white (high intensity)
-        const r = Math.round(40 + t * 215);
-        const g = Math.round(60 + t * 190);
-        const b = Math.round(180 + t * 75);
+        // Three-stop ramp designed to read on white:
+        //   t=0.0  light blue-gray  rgb(210,220,235)
+        //   t=0.5  mid indigo       rgb(80, 80, 180)
+        //   t=1.0  dark magenta     rgb(90, 10, 90)
+        let r, g, b;
+        if (t < 0.5) {
+          const u = t / 0.5;
+          r = Math.round(210 + u * (80 - 210));
+          g = Math.round(220 + u * (80 - 220));
+          b = Math.round(235 + u * (180 - 235));
+        } else {
+          const u = (t - 0.5) / 0.5;
+          r = Math.round(80 + u * (90 - 80));
+          g = Math.round(80 + u * (10 - 80));
+          b = Math.round(180 + u * (90 - 180));
+        }
         return `rgb(${r},${g},${b})`;
       }
 
-      // Window rectangle color by drift class
+      // Window rectangle color by drift class — slightly darker strokes
+      // and lighter fills tuned for white background readability.
       function winColor(drift_im) {
         const a = Math.abs(drift_im);
-        if (a < 0.02) return { stroke: '#22c55e', fill: 'rgba(34,197,94,0.10)' };
-        if (a < 0.05) return { stroke: '#eab308', fill: 'rgba(234,179,8,0.10)' };
-        return               { stroke: '#dc2626', fill: 'rgba(220,38,38,0.15)' };
+        if (a < 0.02) return { stroke: '#16a34a', fill: 'rgba(34,197,94,0.08)' };
+        if (a < 0.05) return { stroke: '#ca8a04', fill: 'rgba(234,179,8,0.10)' };
+        return               { stroke: '#b91c1c', fill: 'rgba(220,38,38,0.10)' };
       }
 
       return (
@@ -620,14 +636,15 @@
             {' . '}{cloud.n_points} points
           </div>
           <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:'auto'}}>
+            {/* v0.2.180: white plot area for Bruker-DataAnalysis parity */}
             <rect x={padding.l} y={padding.t} width={w} height={h}
-                  fill="#0b1220" stroke="var(--border)" strokeWidth="0.5" />
-            {/* Ion cloud - dots */}
+                  fill="#ffffff" stroke="#cbd5e1" strokeWidth="0.5" />
+            {/* Ion cloud — slightly bigger dots for readability on white */}
             {cloud.mz.map((mz, i) => {
               const x = xFor(mz);
               const y = yFor(cloud.im[i]);
               const c = colorFor(cloud.log_intensity[i]);
-              return <circle key={`p-${i}`} cx={x} cy={y} r="0.8" fill={c} opacity="0.6" />;
+              return <circle key={`p-${i}`} cx={x} cy={y} r="1.1" fill={c} opacity="0.7" />;
             })}
             {/* Expected DIA windows on top of the cloud */}
             {(windows || []).map((wd, wi) => {
