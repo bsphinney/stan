@@ -637,6 +637,21 @@ async def api_run_drift(run_id: str, source: str = "runs") -> dict:
     return {"run_id": run_id, "source": source, "summary": summary, "windows": windows}
 
 
+@app.get("/api/runs/{run_id}/drift-cloud")
+async def api_run_drift_cloud(run_id: str, source: str = "runs") -> dict:
+    """Return the downsampled MS1 peak cloud for the Bruker-DataAnalysis-
+    style drift visualization. {mz, im, log_intensity, n_points}.
+    v0.2.173+."""
+    from stan.db import get_drift_peak_cloud
+    if source not in ("runs", "sample_health"):
+        raise HTTPException(status_code=400,
+                            detail="source must be 'runs' or 'sample_health'")
+    cloud = get_drift_peak_cloud(run_id=run_id, table=source)
+    if cloud is None:
+        return {"run_id": run_id, "source": source, "cloud": None}
+    return {"run_id": run_id, "source": source, "cloud": cloud}
+
+
 @app.get("/api/thresholds")
 async def api_thresholds() -> dict:
     """Get current QC thresholds (hot-reloaded)."""

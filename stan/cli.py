@@ -2646,7 +2646,7 @@ def backfill_window_drift(
     from stan.config import get_user_config_dir, sync_to_hive_mirror
     from stan.db import (
         get_db_path, init_db, update_drift_result,
-        insert_drift_window_centroids,
+        insert_drift_window_centroids, insert_drift_peak_cloud,
     )
     from stan.metrics.window_drift import detect_window_drift
 
@@ -2777,6 +2777,19 @@ def backfill_window_drift(
             )
         except Exception as _e:
             _log({"event": "breakdown_error", "run_id": run["id"],
+                  "error": str(_e), "error_type": type(_e).__name__})
+        # v0.2.173: persist the m/z x 1/K0 cloud for the Bruker-
+        # DataAnalysis-style visualization.
+        try:
+            if drift.cloud_mz:
+                insert_drift_peak_cloud(
+                    run_id=run["id"],
+                    mz=drift.cloud_mz, im=drift.cloud_im,
+                    log_intensity=drift.cloud_log_intensity,
+                    table="runs",
+                )
+        except Exception as _e:
+            _log({"event": "cloud_error", "run_id": run["id"],
                   "error": str(_e), "error_type": type(_e).__name__})
         n_updated += 1
         _log({

@@ -245,6 +245,23 @@ CREATE TABLE IF NOT EXISTS drift_window_centroids (
 );
 
 CREATE INDEX IF NOT EXISTS idx_drift_centroids_run ON drift_window_centroids(run_id, source);
+
+-- DIA window drift "ion cloud" storage (v0.2.173). Downsampled MS1
+-- peak cloud (mz, 1/K0, log-intensity) so the dashboard can render
+-- the Bruker DataAnalysis-style cloud + overlaid-windows view.
+-- Caller downsamples to ~5000 points per run to bound payload size
+-- (~100 KB JSON). Same split-source pattern as peg_ion_hits.
+CREATE TABLE IF NOT EXISTS drift_peak_clouds (
+    run_id              TEXT NOT NULL,
+    source              TEXT NOT NULL,          -- 'runs' | 'sample_health'
+    mz                  TEXT NOT NULL,          -- JSON array of floats
+    im                  TEXT NOT NULL,          -- JSON array of floats (1/K0)
+    log_intensity       TEXT NOT NULL,          -- JSON array of floats
+    n_points            INTEGER NOT NULL,
+    PRIMARY KEY (run_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_drift_cloud_run ON drift_peak_clouds(run_id, source);
 """
 
 
@@ -969,6 +986,76 @@ def get_drift_window_centroids(
             ]
         except sqlite3.OperationalError:
             return []
+
+
+def insert_drift_peak_cloud(
+    run_id: str,
+    mz: "list[float]",
+    im: "list[float]",
+    log_intensity: "list[float]",
+    table: str = "runs",
+    db_path: Path | None = None,
+) -> int:
+    """Store the downsampled MS1 peak cloud for the drift detail view.
+
+    Caller is responsible for downsampling to a reasonable point count
+    (~5000) and taking log10(intensity) before storing. Same split-
+    source pattern as peg_ion_hits / drift_window_centroids.
+    Idempotent: REPLACE semantics so --force backfill gets a clean write.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if table not in ("runs", "sample_health"):
+        raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
+
+    n = min(len(mz), len(im), len(log_intensity))
+    if n == 0:
+        return 0
+
+    import json as _json
+    with sqlite3.connect(str(db_path)) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO drift_peak_clouds "
+            "(run_id, source, mz, im, log_intensity, n_points) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                run_id, table,
+                _json.dumps([round(float(x), 4) for x in mz[:n]]),
+                _json.dumps([round(float(x), 4) for x in im[:n]]),
+                _json.dumps([round(float(x), 3) for x in log_intensity[:n]]),
+                n,
+            ),
+        )
+    return n
+
+
+def get_drift_peak_cloud(
+    run_id: str,
+    table: str = "runs",
+    db_path: Path | None = None,
+) -> dict | None:
+    """Return the stored cloud as {mz, im, log_intensity, n_points} dict.
+    Returns None if no cloud exists for this run."""
+    if db_path is None:
+        db_path = get_db_path()
+    import json as _json
+    with sqlite3.connect(str(db_path)) as con:
+        try:
+            row = con.execute(
+                "SELECT mz, im, log_intensity, n_points "
+                "FROM drift_peak_clouds WHERE run_id = ? AND source = ?",
+                (run_id, table),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    if row is None:
+        return None
+    return {
+        "mz": _json.loads(row[0]),
+        "im": _json.loads(row[1]),
+        "log_intensity": _json.loads(row[2]),
+        "n_points": row[3],
+    }
 
 
 def insert_health_tic_trace(

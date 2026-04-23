@@ -727,6 +727,7 @@ class InstrumentWatcher:
             from stan.db import (
                 update_peg_result, update_drift_result,
                 insert_peg_ion_hits, insert_drift_window_centroids,
+                insert_drift_peak_cloud,
             )
         except Exception:
             logger.debug(
@@ -842,6 +843,21 @@ class InstrumentWatcher:
                 except Exception:
                     logger.debug(
                         "drift breakdown write failed for %s", d_path.name,
+                        exc_info=True,
+                    )
+                # v0.2.173: persist downsampled cloud for the Bruker
+                # DataAnalysis-style m/z x 1/K0 visualization.
+                try:
+                    if drift.cloud_mz:
+                        insert_drift_peak_cloud(
+                            run_id=row_id,
+                            mz=drift.cloud_mz, im=drift.cloud_im,
+                            log_intensity=drift.cloud_log_intensity,
+                            table=table,
+                        )
+                except Exception:
+                    logger.debug(
+                        "drift cloud write failed for %s", d_path.name,
                         exc_info=True,
                     )
                 if drift.drift_class in ("warn", "drifted"):

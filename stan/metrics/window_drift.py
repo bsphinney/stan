@@ -94,6 +94,11 @@ class DriftResult:
     p90_abs_drift_im: float = 0.0
     drift_class: str = "unknown"  # ok | warn | drifted | unknown
     per_window: list[WindowDriftMetric] = field(default_factory=list)
+    # v0.2.173: downsampled (mz, im, log_intensity) cloud for the
+    # Bruker DataAnalysis-style visualization. Capped at ~5000 points.
+    cloud_mz: list = field(default_factory=list)
+    cloud_im: list = field(default_factory=list)
+    cloud_log_intensity: list = field(default_factory=list)
 
 
 def _extract_sub_windows(d_path: Path, scan_to_mobility) -> list[_SubWindow]:
@@ -296,6 +301,32 @@ def detect_window_drift(
     med_abs = abs_drifts[len(abs_drifts) // 2]
     p90_abs = abs_drifts[int(0.9 * len(abs_drifts))]
 
+    # v0.2.173: downsampled cloud for the Bruker DataAnalysis-style
+    # visualization. Intensity-weighted random sample so high-signal
+    # peaks are preferentially retained - the cloud ridge shows up
+    # cleanly at ~5000 points. log10 intensity for colormap.
+    CLOUD_CAP = 5000
+    cloud_mz: list[float] = []
+    cloud_im: list[float] = []
+    cloud_log_i: list[float] = []
+    try:
+        n_pts = len(mzs)
+        if n_pts > 0:
+            log_int = np.log10(np.maximum(ints, 1.0))
+            if n_pts > CLOUD_CAP:
+                # Weighted sample by intensity - brighter peaks more likely
+                # to be picked, so the ridge is visible in the cloud.
+                w = ints / ints.sum()
+                rng = np.random.default_rng(RANDOM_SEED)
+                idx = rng.choice(n_pts, size=CLOUD_CAP, replace=False, p=w)
+            else:
+                idx = np.arange(n_pts)
+            cloud_mz = [float(x) for x in mzs[idx]]
+            cloud_im = [float(x) for x in mobs[idx]]
+            cloud_log_i = [float(x) for x in log_int[idx]]
+    except Exception:
+        logger.debug("drift cloud sampling failed", exc_info=True)
+
     return DriftResult(
         n_windows=len(per_window),
         n_window_groups=len(set(w.window_group for w in per_window)),
@@ -305,4 +336,7 @@ def detect_window_drift(
         p90_abs_drift_im=round(p90_abs, 4),
         drift_class=_classify_drift(coverage, med_abs, p90_abs),
         per_window=per_window,
+        cloud_mz=cloud_mz,
+        cloud_im=cloud_im,
+        cloud_log_intensity=cloud_log_i,
     )

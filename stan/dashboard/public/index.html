@@ -556,9 +556,190 @@
     // DIA window drift scatter. x = window index, y = observed 1/K0 mode
     // minus window-center (so "drift from expected" is directly readable).
     // Band around 0 shows the expected range; dots colored by coverage.
+    // v0.2.173: Bruker-DataAnalysis-style ion-cloud view.
+    // x = m/z, y = 1/K0, point color = log10 intensity.
+    // Overlaid rectangles = expected DIA windows, colored by drift class:
+    //   green = drift_im within +-0.02 (ok)
+    //   amber = drift_im within +-0.05
+    //   red   = drift_im outside +-0.05 (drifted)
+    function DriftCloudSvg({ cloud, windows, summary, runId }) {
+      if (!cloud || !cloud.mz || !cloud.mz.length) {
+        return (
+          <div style={{color:'var(--muted)'}}>
+            No cloud data stored for this run. Re-run{' '}
+            <code>stan backfill-window-drift --force</code> (v0.2.173+).
+          </div>
+        );
+      }
+      const width = 920, height = 440;
+      const padding = { l: 56, r: 14, t: 24, b: 46 };
+      const w = width - padding.l - padding.r;
+      const h = height - padding.t - padding.b;
+
+      // Axis ranges — fit to data with small padding.
+      const mzMin = Math.max(150, Math.min(...cloud.mz) - 20);
+      const mzMax = Math.min(1600, Math.max(...cloud.mz) + 20);
+      const imMin = Math.max(0.4, Math.min(...cloud.im) - 0.05);
+      const imMax = Math.min(1.8, Math.max(...cloud.im) + 0.05);
+      const mzRange = mzMax - mzMin || 1;
+      const imRange = imMax - imMin || 1;
+      const xFor = m => padding.l + ((m - mzMin) / mzRange) * w;
+      const yFor = k => padding.t + h - ((k - imMin) / imRange) * h;
+
+      // log_intensity for color scale - map to blue -> cyan -> white.
+      const lis = cloud.log_intensity || [];
+      const liMin = Math.min(...lis);
+      const liMax = Math.max(...lis);
+      const liRange = (liMax - liMin) || 1;
+      function colorFor(li) {
+        const t = (li - liMin) / liRange;  // 0..1
+        // low = dark navy, mid = blue, high = cyan/white (high intensity)
+        const r = Math.round(40 + t * 215);
+        const g = Math.round(60 + t * 190);
+        const b = Math.round(180 + t * 75);
+        return `rgb(${r},${g},${b})`;
+      }
+
+      // Window rectangle color by drift class
+      function winColor(drift_im) {
+        const a = Math.abs(drift_im);
+        if (a < 0.02) return { stroke: '#22c55e', fill: 'rgba(34,197,94,0.10)' };
+        if (a < 0.05) return { stroke: '#eab308', fill: 'rgba(234,179,8,0.10)' };
+        return               { stroke: '#dc2626', fill: 'rgba(220,38,38,0.15)' };
+      }
+
+      return (
+        <div>
+          <div style={{fontSize:'0.8rem', color:'var(--muted)', marginBottom:'0.4rem'}}>
+            Run: <strong style={{color:'var(--text)'}}>{summary?.run_name || runId}</strong>
+            {' . '}class <strong style={{color:'var(--text)'}}>{summary?.drift_class || '-'}</strong>
+            {' . '}coverage <strong style={{color:'var(--text)'}}>
+              {summary?.drift_coverage != null
+                ? (summary.drift_coverage * 100).toFixed(1) + '%' : '-'}
+            </strong>
+            {' . '}{cloud.n_points} points
+          </div>
+          <svg viewBox={`0 0 ${width} ${height}`} style={{width:'100%', height:'auto'}}>
+            <rect x={padding.l} y={padding.t} width={w} height={h}
+                  fill="#0b1220" stroke="var(--border)" strokeWidth="0.5" />
+            {/* Ion cloud - dots */}
+            {cloud.mz.map((mz, i) => {
+              const x = xFor(mz);
+              const y = yFor(cloud.im[i]);
+              const c = colorFor(cloud.log_intensity[i]);
+              return <circle key={`p-${i}`} cx={x} cy={y} r="0.8" fill={c} opacity="0.6" />;
+            })}
+            {/* Expected DIA windows on top of the cloud */}
+            {(windows || []).map((wd, wi) => {
+              const x0 = xFor(wd.mz_low);
+              const x1 = xFor(wd.mz_high);
+              const y0 = yFor(wd.im_high);
+              const y1 = yFor(wd.im_low);
+              const col = winColor(wd.drift_im);
+              const tip = `window ${wd.window_idx}\n` +
+                          `m/z ${wd.mz_low.toFixed(1)}-${wd.mz_high.toFixed(1)}\n` +
+                          `expected 1/K0: ${wd.im_low.toFixed(3)}-${wd.im_high.toFixed(3)}\n` +
+                          `observed mode: ${wd.im_mode.toFixed(3)}\n` +
+                          `drift: ${(wd.drift_im >= 0 ? '+' : '') + wd.drift_im.toFixed(3)}\n` +
+                          `coverage: ${(wd.coverage * 100).toFixed(1)}%`;
+              return (
+                <g key={`w-${wi}`}>
+                  <rect x={x0} y={y0} width={Math.max(1, x1 - x0)} height={Math.max(1, y1 - y0)}
+                        fill={col.fill} stroke={col.stroke} strokeWidth="0.6">
+                    <title>{tip}</title>
+                  </rect>
+                </g>
+              );
+            })}
+            {/* Axes */}
+            {Array.from({length: 6}, (_, i) => {
+              const mz = mzMin + (i / 5) * mzRange;
+              const x = padding.l + (i / 5) * w;
+              return (
+                <g key={`xt-${i}`}>
+                  <line x1={x} y1={padding.t + h} x2={x} y2={padding.t + h + 4}
+                        stroke="var(--muted)" strokeWidth="0.5" />
+                  <text x={x} y={padding.t + h + 16} fill="var(--muted)"
+                        fontSize="10" textAnchor="middle">{mz.toFixed(0)}</text>
+                </g>
+              );
+            })}
+            {Array.from({length: 5}, (_, i) => {
+              const im = imMin + (i / 4) * imRange;
+              const y = yFor(im);
+              return (
+                <g key={`yt-${i}`}>
+                  <line x1={padding.l - 4} y1={y} x2={padding.l} y2={y}
+                        stroke="var(--muted)" strokeWidth="0.5" />
+                  <text x={padding.l - 6} y={y + 3} fill="var(--muted)"
+                        fontSize="10" textAnchor="end">{im.toFixed(2)}</text>
+                </g>
+              );
+            })}
+            <text x={padding.l + w / 2} y={height - 6} fill="var(--muted)"
+                  fontSize="11" textAnchor="middle">m/z</text>
+            <text x={12} y={padding.t + h / 2} fill="var(--muted)" fontSize="11"
+                  transform={`rotate(-90 12 ${padding.t + h / 2})`}
+                  textAnchor="middle">1/K0 (mobility)</text>
+          </svg>
+          <div style={{display:'flex', gap:'0.9rem', flexWrap:'wrap',
+                       fontSize:'0.72rem', color:'var(--muted)',
+                       marginTop:'0.3rem', paddingLeft:'1rem'}}>
+            <span>Points = MS1 peaks (color = log intensity)</span>
+            <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'0.9rem', height:'0.6rem', background:'rgba(34,197,94,0.12)',
+                            border:'1px solid #22c55e', display:'inline-block'}} />
+              expected window (ok, |drift|&lt;0.02)
+            </span>
+            <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'0.9rem', height:'0.6rem', background:'rgba(234,179,8,0.12)',
+                            border:'1px solid #eab308', display:'inline-block'}} />
+              warn (0.02-0.05)
+            </span>
+            <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'0.9rem', height:'0.6rem', background:'rgba(220,38,38,0.15)',
+                            border:'1px solid #dc2626', display:'inline-block'}} />
+              drifted (&gt;0.05)
+            </span>
+          </div>
+        </div>
+      );
+    }
+
     function DriftChart({ payload }) {
       const summary = payload?.summary || {};
       const windows = payload?.windows || [];
+      // v0.2.173: toggle between two views:
+      //   "summary"  = per-window scatter (drift_im vs window index)
+      //   "cloud"    = m/z x 1/K0 heatmap + expected-window overlay
+      //                (matches the Bruker DataAnalysis view)
+      const [view, setView] = useState("summary");
+      const [cloud, setCloud] = useState(null);
+      const runId = payload?.run_id;
+      const source = payload?.source || "runs";
+
+      useEffect(() => {
+        if (view !== "cloud" || !runId) return;
+        if (cloud && cloud._run_id === runId) return;
+        fetch(API + `/api/runs/${encodeURIComponent(runId)}/drift-cloud?source=${source}`)
+          .then(r => r.json())
+          .then(d => setCloud({ ...(d.cloud || {}), _run_id: runId }))
+          .catch(() => setCloud({ _run_id: runId }));
+      }, [view, runId, source]);
+
+      const toggle = (
+        <div style={{display:'inline-flex', gap:'0.3rem', marginBottom:'0.5rem'}}>
+          {[['summary', 'Window summary'], ['cloud', 'Ion cloud']].map(([k, lab]) => (
+            <button key={k} onClick={() => setView(k)} style={{
+              padding:'0.2rem 0.55rem', fontSize:'0.75rem',
+              background: view === k ? 'var(--accent)' : 'var(--bg)',
+              color: view === k ? '#000' : 'var(--text)',
+              border:'1px solid var(--border)', borderRadius:'0.25rem',
+              cursor:'pointer',
+            }}>{lab}</button>
+          ))}
+        </div>
+      );
 
       if (windows.length === 0) {
         return (
@@ -573,6 +754,14 @@
           </div>
         );
       }
+
+      if (view === "cloud") {
+        if (!cloud) {
+          return <div>{toggle}<div style={{color:'var(--muted)'}}>Loading cloud...</div></div>;
+        }
+        return <div>{toggle}<DriftCloudSvg cloud={cloud} windows={windows} summary={summary} runId={runId} /></div>;
+      }
+      // else fall through to the summary scatter below
 
       const width = 920, height = 360;
       const padding = { l: 64, r: 20, t: 24, b: 46 };
