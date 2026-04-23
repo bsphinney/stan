@@ -267,12 +267,29 @@
     // DIA window drift badge. class ∈ {ok, warn, drifted, unknown}.
     // Hover shows coverage % + median and p90 drift in 1/K0 units.
     // v0.2.147: click opens the per-window scatter chart.
+    // v0.2.184: drift score 0-100 derived from p90 |drift|.
+    //   p90=0    → 0   (perfectly centered on windows)
+    //   p90=0.04 → 40
+    //   p90=0.07 → 70  (legacy ok/warn boundary)
+    //   p90=0.09 → 90  (legacy warn/drifted boundary)
+    //   p90≥0.10 → 100 (catastrophically drifted)
+    // Convention matches PEG: 0 = healthy, 100 = worst. Color class
+    // still driven by server-side drift_class so the new detector's
+    // severity-fraction-based classification is authoritative.
+    function driftScore(run) {
+      const p90 = Number(run?.drift_p90_abs_im);
+      if (!isFinite(p90)) return null;
+      return Math.round(Math.max(0, Math.min(100, p90 * 1000)));
+    }
+
     function DriftBadge({ run, source="runs" }) {
       const cls = run?.drift_class;
       if (!cls || cls === 'unknown') {
         return <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>—</span>;
       }
-      const label = { ok: 'OK', warn: 'WARN', drifted: 'DRFT' }[cls] || '?';
+      const score = driftScore(run);
+      const label = score != null ? String(score)
+        : { ok: 'OK', warn: 'WARN', drifted: 'DRFT' }[cls] || '?';
       const color = {
         ok:      '#16a34a',
         warn:    '#eab308',
@@ -286,9 +303,10 @@
         : '—';
       const p90 = run.drift_p90_abs_im != null ? run.drift_p90_abs_im.toFixed(3) : '—';
       const title =
-        `DIA window drift: ${cls} — click for per-window chart\n` +
+        `DIA window drift score: ${score != null ? score : '—'}/100 (${cls})\n` +
+        `click for per-window chart\n` +
         `coverage: ${cov}\n` +
-        `median drift: ${md} /K0\n` +
+        `median drift: ${md} /K0 (signed)\n` +
         `p90 |drift|: ${p90} /K0`;
       const onClick = () => {
         const rid = run?.id || run?.run_id;
