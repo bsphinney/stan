@@ -282,6 +282,64 @@ The watcher polls for config changes every 30 seconds using file mtime.
 
 Do not swap these — they're different because the vendors handle file writing differently.
 
+### SPD resolution chain (v0.2.188+)
+
+`spd` (samples per day) is the cohort key for Trends / community
+benchmarks. Never hardcode SPD extraction — always go through
+`InstrumentWatcher._resolve_spd(raw_path)` on ingest OR
+`validate_spd_from_metadata(raw_path)` in backfills. Both apply
+the same layered fallback:
+
+1. **Bruker `.d` method XML** — `_bruker_spd_from_xml()` reads
+   the HyStar_LC `<name>` element from `<N>.m/submethods.xml`
+   (UTF-8) or the `HyStar_LC_Method_Name` property from
+   `SampleInfo.xml` (UTF-16). Parses labels like
+   `"100 samples per day"` → 100. This is authoritative when
+   present because it's what the operator actually loaded in
+   HyStar. Works even with cryptic PAC method names like
+   `DIA_Bps_11x3-k07t13Ra85.proteoscape.m`.
+
+2. **Bruker TDF `GlobalMetadata.MethodName`** — pattern-match
+   via `_spd_from_method_string()` (e.g. `100 SPD`, `Whisper40`,
+   `30spd`). Weaker than XML because the method name is
+   user-defined and often inconsistent, but fills gaps when
+   the XML is missing.
+
+3. **Bruker TDF `Frames.Time`** — compute gradient length from
+   first/last frame timestamps, snap to nearest known SPD via
+   `gradient_min_to_spd()`. Thermo `.raw` gets this path via
+   `fisher_py` InstrumentMethod or `stan.tools.trfp` metadata.
+
+4. **`instruments.yml` cohort default** — `spd:` field on the
+   instrument block. Last-resort fallback when raw-file reading
+   fails (e.g. network issue, corrupt .d). Do NOT rely on this
+   as the primary source — it's a blanket that stamps every run
+   with the same value, which bucket-mixes cohorts when an
+   operator switches gradients mid-day.
+
+5. **Filename regex** — `(\d+)[\s_-]*spd` catches inline tokens
+   like `60spd`, `60-spd`, `60 SPD`, `100SPD`. Ordered LAST so
+   a mistyped filename can't override real metadata.
+
+6. **NULL** — Trends panel renders as "SPD unknown" and the
+   community benchmark treats the row as unusable for cohort
+   stats.
+
+**Backfill old NULL rows** with `stan fix-spds` — walks the
+`runs` table, re-reads each raw file, and updates `spd` where
+the chain now produces a definitive answer. Idempotent; safe to
+re-run.
+
+**Adding a new Evosep gradient**: extend `_EVOSEP_METHOD_PATTERNS`
+in `stan/metrics/scoring.py` AND `GRADIENT_TO_SPD` snapping table,
+and add a regression test against a real `.d` method XML in
+`tests/fixtures/`.
+
+**Never pull SPD from cohort default alone** in new code paths.
+The real-time watcher did this pre-v0.2.188 and left 58 timsTOF
+runs NULL despite their filenames containing `60spd` — the XML
+lookup would have caught them all.
+
 ### GRS score (0–100)
 
 Gradient Reproducibility Score — a single composite number for LC health:
