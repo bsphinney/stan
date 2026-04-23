@@ -790,6 +790,7 @@
 
       return (
         <div>
+          {toggle}
           <div style={{fontSize:'0.8rem', color:'var(--muted)', marginBottom:'0.4rem'}}>
             Run: <strong style={{color:'var(--text)'}}>{summary.run_name || payload.run_id}</strong>
             {' · '}class <strong style={{color:'var(--text)'}}>{summary.drift_class || '—'}</strong>
