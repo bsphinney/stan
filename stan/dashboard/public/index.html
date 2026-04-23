@@ -2991,6 +2991,24 @@
       return (r.n_precursors || 0) < 5000;
     }
 
+    // v0.2.185: parse the trailing Bruker/Thermo sequential file number
+    // from a run_name. Examples:
+    //   "22April2026_DIA_HeLa50_60spd_S1-A4_1_21144.d"      -> "21144"
+    //   "FL220426_VelozB-UnivPe_60m_7.raw"                   -> "7"
+    //   "1mai25_HeL50-C43tk078b3_100spd_S4-F6_1_12816.d"    -> "12816"
+    // Strategy: strip extension, take the last "_" segment that's all
+    // digits. If nothing matches, return empty so the cell stays blank
+    // rather than showing a misleading partial match.
+    function fileNumber(runName) {
+      if (!runName) return '';
+      const stem = String(runName).replace(/\.[dD]$/, '').replace(/\.raw$/i, '');
+      const parts = stem.split('_');
+      for (let i = parts.length - 1; i >= 0; i--) {
+        if (/^\d+$/.test(parts[i])) return parts[i];
+      }
+      return '';
+    }
+
     function RunHistory() {
       // Fetch with include_hidden=true so we can show/hide client-side
       // via a toggle without refetching. Hidden rows are filtered out
@@ -3087,6 +3105,11 @@
       }
       const getSortVal = (r) => {
         if (sortKey === 'primary_ids') return (r.mode === 'DDA' ? r.n_psms : r.n_precursors) || 0;
+        // v0.2.185: file number is derived from run_name, not a column
+        if (sortKey === 'file_number') {
+          const n = parseInt(fileNumber(r.run_name), 10);
+          return isFinite(n) ? n : 0;
+        }
         return r[sortKey];
       };
       filtered.sort((a, b) => {
@@ -3175,7 +3198,10 @@
             <table>
               <thead><tr>
                 <SortHeader col="run_name" label="Run" />
-                <SortHeader col="instrument" label="Instrument" />
+                {/* v0.2.185: replaced Instrument with File # (Bruker
+                    sequential number parsed from the run_name tail) so
+                    the run number is always visible without truncation */}
+                <SortHeader col="file_number" label="File #" />
                 <SortHeader col="mode" label="Mode" />
                 <SortHeader col="ips_score" label="IPS" />
                 <SortHeader col="peg_class" label="PEG" />
@@ -3206,7 +3232,8 @@
                   return (
                     <tr key={r.id} onClick={() => setSelectedRun(r)} style={rowStyle}
                         title={isHidden ? `Hidden: ${r.hidden_reason || '(no reason given)'}` : (failed ? 'Near-zero result — flagged as failed run' : undefined)}>
-                      <td style={{maxWidth:'280px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                      <td style={{maxWidth:'280px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}
+                          title={r.run_name}>
                         {failed && !isHidden && (
                           <span title="Failed run (below community-gate threshold)"
                                 style={{display:'inline-block', width:'0.5rem', height:'0.5rem',
@@ -3215,7 +3242,7 @@
                         )}
                         {r.run_name}
                       </td>
-                      <td>{r.instrument}</td>
+                      <td title={r.instrument || ''}>{fileNumber(r.run_name)}</td>
                       <td>{r.mode}</td>
                       <td><IpsBadge run={r} /></td>
                       <td><PegBadge run={r} /></td>
