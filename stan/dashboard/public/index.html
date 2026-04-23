@@ -958,11 +958,25 @@
       );
     }
 
-    function QuickStatus({ runs }) {
+    /* ── GaugesView ──────────────────────────────────────────────────
+       Top-of-LiveRuns snapshot view. Extracted from the old
+       QuickStatus component (same visuals, same SVG gauges).
+       Part of the v0.2.106 front-page view selector: rendered when
+       `prefs.front_page_view === 'gauges'`. Takes the same in-memory
+       `runs` array that WeeklyTableView and MetricMatrixView consume,
+       so switching views is zero-network. */
+    function GaugesView({ runs }) {
       // Show the most recent 5 runs with gas gauges for 3 key metrics.
       // Stats (min/max/mean/sd) are computed from ALL runs for the same
       // instrument so the gauge reflects that instrument's own history.
-      if (!runs || runs.length === 0) return null;
+      if (!runs || runs.length === 0) {
+        return (
+          <div className="card" style={{marginBottom:'1.5rem', color:'var(--muted)'}}>
+            No QC runs in the selected window. Try expanding "Since" or
+            switching instrument filter.
+          </div>
+        );
+      }
 
       // Build per-instrument stats from all available runs
       const byInst = {};
@@ -1307,10 +1321,630 @@
       );
     }
 
+    /* ── Front-page view selector (v0.2.106) ─────────────────────────
+       Shared config + helpers + hook + UI for the three-way toggle at
+       the top of the "This Week's QCs" tab. Lets operators pick the
+       way they want to scan the week's QC runs — gauges (snapshot),
+       weekly table (numbers), or metric matrix (decoupling).
+
+       The three views are interchangeable widgets occupying the same
+       slot; they all consume the same in-memory `runs` array so
+       switching is instant with no refetch. See
+       STAN Brainstorming/SPEC_front_page_view_selector.md. */
+
+    // Shared metric config: the four operator-facing metrics on the
+    // front page are fixed (Proteins, Peptides, Precursors, MS1 AUC).
+    // `ddaFallback` lets a DDA run populate a "Precursors"/"Peptides"
+    // column from PSM/DDA-peptide counts without renaming the column.
+    const METRIC_CONFIG = [
+      { key: 'n_proteins',   label: 'Proteins' },
+      { key: 'n_peptides',   label: 'Peptides',   ddaFallback: 'n_peptides_dda' },
+      { key: 'n_precursors', label: 'Precursors', ddaFallback: 'n_psms' },
+      { key: 'tic_auc',      label: 'MS1 AUC' },
+    ];
+
+    // Tint thresholds: deviation from baseline in percent.
+    // ±4/±12 per the spec; single source of truth so tuning is one edit.
+    const TINT_THRESHOLDS = { amber_neg: -4, red_neg: -12, green_pos: 4 };
+
+    // HeLa-only narrower regex for the "Sample" filter on the front
+    // page. See SPEC §7 — stricter than `stan/watcher/qc_filter.py`
+    // because mixing load-test dilutions into the QC trend looks like
+    // drift but isn't. Matches HeLa, HeLa200, Hela5, he12, etc.
+    const HELA_ONLY_REGEX = /(?:^|[^a-z])he(?:l[a5\d]|\d)/i;
+
+    function isHelaRun(run) {
+      const s = `${run.run_name || ''} ${run.sample || ''}`;
+      return HELA_ONLY_REGEX.test(s);
+    }
+
+    // MS1 AUC formatter. Small values stay sci (most MS1 TIC AUCs are
+    // 1e9 .. 5e11 so sci is how people read them). `short` collapses
+    // to 86.0B / 1.2T for dense tables.
+    function formatMs1(val, fmt) {
+      if (val == null || !isFinite(val) || val === 0) return '—';
+      if (fmt === 'short') {
+        const abs = Math.abs(val);
+        if (abs >= 1e12) return (val / 1e12).toFixed(2) + 'T';
+        if (abs >= 1e9)  return (val / 1e9).toFixed(1) + 'B';
+        if (abs >= 1e6)  return (val / 1e6).toFixed(1) + 'M';
+        return val.toFixed(0);
+      }
+      // default: scientific, 1 decimal.
+      return val.toExponential(1).replace('e+', 'e').replace('e0', 'e');
+    }
+
+    function formatMetric(key, val, ms1Fmt) {
+      if (val == null || val === 0) return '—';
+      if (key === 'tic_auc') return formatMs1(val, ms1Fmt);
+      return Number(val).toLocaleString();
+    }
+
+    // Read a run's value for a given METRIC_CONFIG entry, falling back
+    // to the DDA-specific column when the primary is missing/zero.
+    function readMetric(run, mcfg) {
+      const v = run?.[mcfg.key];
+      if (v != null && v !== 0) return { value: v, viaFallback: false };
+      if (mcfg.ddaFallback) {
+        const vf = run?.[mcfg.ddaFallback];
+        if (vf != null) return { value: vf, viaFallback: true };
+      }
+      return { value: null, viaFallback: false };
+    }
+
+    // Compute baseline per instrument × metric as the median of the
+    // last N QC runs for that instrument. Simpler than wiring up the
+    // Python-side baseline — the UI only needs "is this run drifting"
+    // colorization, not an authoritative number. Recomputed on every
+    // render from the in-memory runs; cheap for N<=500.
+    function computeBaselines(allRuns, window = 30) {
+      const byInst = {};
+      for (const r of allRuns || []) {
+        if (!byInst[r.instrument]) byInst[r.instrument] = [];
+        byInst[r.instrument].push(r);
+      }
+      const out = {};
+      for (const [inst, rs] of Object.entries(byInst)) {
+        rs.sort((a, b) => new Date(b.run_date) - new Date(a.run_date));
+        const recent = rs.slice(0, window);
+        out[inst] = {};
+        for (const m of METRIC_CONFIG) {
+          const vals = recent
+            .map(r => readMetric(r, m).value)
+            .filter(v => v != null && v > 0);
+          if (!vals.length) { out[inst][m.key] = null; continue; }
+          vals.sort((a, b) => a - b);
+          const mid = Math.floor(vals.length / 2);
+          out[inst][m.key] = vals.length % 2
+            ? vals[mid]
+            : (vals[mid - 1] + vals[mid]) / 2;
+        }
+      }
+      return out;
+    }
+
+    // Return a background tint for a metric cell based on pct deviation
+    // from the instrument's baseline. ≤-12% red, -12..-4% amber,
+    // ≥+4% green, otherwise no tint. Null baseline → no tint.
+    function tintFor(pct) {
+      if (pct == null) return 'transparent';
+      if (pct <= TINT_THRESHOLDS.red_neg)  return 'rgba(239,68,68,0.18)';
+      if (pct <= TINT_THRESHOLDS.amber_neg) return 'rgba(234,179,8,0.18)';
+      if (pct >= TINT_THRESHOLDS.green_pos) return 'rgba(34,197,94,0.18)';
+      return 'transparent';
+    }
+
+    function pctFromBaseline(val, baseline) {
+      if (val == null || !baseline || baseline <= 0) return null;
+      return ((val - baseline) / baseline) * 100;
+    }
+
+    /* usePreferences — per-browser UI prefs with localStorage backing
+       and a lab-wide /api/ui-prefs fallback. Single key so it's easy
+       to clear for support ("delete stan.ui.prefs and reload"). */
+    const PREFS_STORAGE_KEY = 'stan.ui.prefs';
+    const DEFAULT_PREFS = {
+      front_page_view: 'gauges',     // preserves today's behavior for existing users
+      matrix_bar_scale: 'week_range',
+      ms1_format: 'sci',
+    };
+
+    function usePreferences() {
+      const [prefs, setPrefs] = useState(DEFAULT_PREFS);
+      const [loaded, setLoaded] = useState(false);
+
+      useEffect(() => {
+        let cancelled = false;
+        // 1) Try localStorage first — most common path, avoids a
+        //    network round-trip on every dashboard load.
+        let local = null;
+        try {
+          const raw = window.localStorage.getItem(PREFS_STORAGE_KEY);
+          if (raw) local = JSON.parse(raw);
+        } catch (_) {}
+        if (local && typeof local === 'object') {
+          setPrefs({ ...DEFAULT_PREFS, ...local });
+          setLoaded(true);
+          return;
+        }
+        // 2) Otherwise fetch the lab-wide default from the server.
+        //    404 is expected when no ui_prefs.yml exists — treat as
+        //    "use built-in defaults".
+        fetch(API + '/api/ui-prefs')
+          .then(r => (r.ok ? r.json() : null))
+          .then(server => {
+            if (cancelled) return;
+            if (server && typeof server === 'object') {
+              setPrefs({ ...DEFAULT_PREFS, ...server });
+            }
+            setLoaded(true);
+          })
+          .catch(() => { if (!cancelled) setLoaded(true); });
+        return () => { cancelled = true; };
+      }, []);
+
+      // Session-only update (doesn't persist). Used by view buttons.
+      const setPref = useCallback((key, value) => {
+        setPrefs(p => ({ ...p, [key]: value }));
+      }, []);
+
+      // Persist the current prefs to localStorage. Called by the
+      // explicit "Set as default" button so casual view-switching
+      // doesn't silently change the user's default.
+      const saveDefaults = useCallback((override) => {
+        try {
+          const snap = {
+            ...(override || prefs),
+            last_updated: new Date().toISOString(),
+          };
+          window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(snap));
+        } catch (_) {}
+      }, [prefs]);
+
+      return { prefs, setPref, saveDefaults, prefsLoaded: loaded };
+    }
+
+    /* ── ViewSelector — segmented control for the three views ───── */
+    function ViewSelector({ value, onChange, onSetDefault, savedDefault }) {
+      const options = [
+        { key: 'gauges',       label: 'Gauges' },
+        { key: 'weekly_table', label: 'Weekly table' },
+        { key: 'matrix',       label: 'Metric matrix' },
+      ];
+      return (
+        <div style={{display:'flex', gap:'0.5rem', alignItems:'center',
+                     marginBottom:'0.75rem', flexWrap:'wrap'}}>
+          <div role="radiogroup" aria-label="Front page view"
+               style={{display:'inline-flex', border:'0.5px solid var(--border)',
+                       borderRadius:'0.4rem', overflow:'hidden'}}>
+            {options.map((o, i) => {
+              const active = value === o.key;
+              return (
+                <button key={o.key}
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => onChange(o.key)}
+                  style={{
+                    padding:'0 0.8rem', height:'28px', fontSize:'12.5px',
+                    background: active ? 'var(--bg)' : 'var(--surface)',
+                    color: active ? 'var(--accent)' : 'var(--muted)',
+                    fontWeight: active ? 700 : 500,
+                    border:'none',
+                    borderLeft: i === 0 ? 'none' : '0.5px solid var(--border)',
+                    cursor:'pointer', outline:'none',
+                  }}>
+                  {o.label}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            onClick={onSetDefault}
+            title={savedDefault === value
+              ? 'Already saved as your default'
+              : 'Save the current view as your per-browser default'}
+            disabled={savedDefault === value}
+            style={{
+              padding:'0 0.6rem', height:'28px', fontSize:'11.5px',
+              background:'transparent',
+              color: savedDefault === value ? 'var(--muted)' : 'var(--accent)',
+              border:'0.5px solid var(--border)',
+              borderRadius:'0.4rem',
+              cursor: savedDefault === value ? 'default' : 'pointer',
+              opacity: savedDefault === value ? 0.6 : 1,
+            }}>
+            {savedDefault === value ? '✓ Default saved' : '⚙ Set as default'}
+          </button>
+        </div>
+      );
+    }
+
+    /* ── FilterBar — shared filter controls for all three views ──── */
+    function FilterBar({ filters, onChange, instrumentNames, ms1Format, onMs1Format }) {
+      const sel = {
+        height:'26px', fontSize:'12px', padding:'0 0.4rem',
+        background:'var(--surface)', color:'var(--text)',
+        border:'0.5px solid var(--border)', borderRadius:'0.3rem',
+      };
+      return (
+        <div style={{display:'flex', gap:'0.75rem', alignItems:'center',
+                     marginBottom:'0.75rem', flexWrap:'wrap', fontSize:'12px',
+                     color:'var(--muted)'}}>
+          <label style={{display:'flex', gap:'0.3rem', alignItems:'center'}}>
+            Instrument:
+            <select style={sel} value={filters.instrument}
+              onChange={e => onChange({ ...filters, instrument: e.target.value })}>
+              <option value="__all__">All</option>
+              {instrumentNames.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </label>
+          <label style={{display:'flex', gap:'0.3rem', alignItems:'center'}}>
+            Since:
+            <select style={sel} value={filters.sinceDays}
+              onChange={e => onChange({ ...filters, sinceDays: Number(e.target.value) })}>
+              <option value={1}>24h</option>
+              <option value={7}>7d</option>
+              <option value={14}>14d</option>
+              <option value={30}>30d</option>
+            </select>
+          </label>
+          <label style={{display:'flex', gap:'0.3rem', alignItems:'center'}}>
+            Sample:
+            <select style={sel} value={filters.sample}
+              onChange={e => onChange({ ...filters, sample: e.target.value })}>
+              <option value="hela">HeLa QC only</option>
+              <option value="all">All QC runs</option>
+            </select>
+          </label>
+          {ms1Format && (
+            <label style={{display:'flex', gap:'0.3rem', alignItems:'center',
+                           marginLeft:'auto'}}>
+              MS1 AUC:
+              <select style={sel} value={ms1Format}
+                onChange={e => onMs1Format(e.target.value)}>
+                <option value="sci">sci (8.6e10)</option>
+                <option value="short">short (86.0B)</option>
+              </select>
+            </label>
+          )}
+        </div>
+      );
+    }
+
+    /* ── WeeklyTableView ─────────────────────────────────────────── */
+    // One row per QC run, grouped by day, numeric values visible for
+    // each of the four metrics + tint + thin 3-px range bar. Answers
+    // "give me the numbers for the week" directly.
+    function WeeklyTableView({ runs, allRuns, ms1Format }) {
+      if (!runs || runs.length === 0) {
+        return (
+          <div className="card" style={{marginBottom:'1.5rem', color:'var(--muted)'}}>
+            No QC runs this week.{' '}
+            <a href="#" onClick={e => {
+              e.preventDefault();
+              // naive hop to history tab — keeps behavior if we add a
+              // real router later. The tab state lives in App().
+              window.dispatchEvent(new CustomEvent('stan:gotoTab', { detail: 'history' }));
+            }} style={{color:'var(--accent)'}}>Open QC History →</a>
+          </div>
+        );
+      }
+
+      const baselines = computeBaselines(allRuns, 30);
+
+      // Per-metric min/max across the displayed runs (for the range bar).
+      const weekRange = {};
+      for (const m of METRIC_CONFIG) {
+        const vals = runs.map(r => readMetric(r, m).value).filter(v => v != null && v > 0);
+        if (vals.length) {
+          weekRange[m.key] = { min: Math.min(...vals), max: Math.max(...vals) };
+        } else {
+          weekRange[m.key] = null;
+        }
+      }
+
+      // Group by day.
+      const byDay = {};
+      for (const r of runs) {
+        const d = new Date(r.run_date);
+        const key = d.toDateString();
+        (byDay[key] ||= []).push(r);
+      }
+      // Iterate newest→oldest
+      const dayKeys = Object.keys(byDay).sort((a, b) => new Date(b) - new Date(a));
+
+      function medianOf(arr, m) {
+        const v = arr.map(r => readMetric(r, m).value).filter(x => x != null && x > 0);
+        if (!v.length) return null;
+        v.sort((a, b) => a - b);
+        const mid = Math.floor(v.length / 2);
+        return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+      }
+
+      const th = {padding:'0.4rem 0.5rem', fontSize:'11.5px', color:'var(--muted)',
+                  borderBottom:'1px solid var(--border)', textAlign:'left',
+                  whiteSpace:'nowrap'};
+      const thR = {...th, textAlign:'right'};
+      const td = {padding:'0.4rem 0.5rem', fontSize:'12.5px',
+                  borderBottom:'1px solid var(--border)', whiteSpace:'nowrap',
+                  fontVariantNumeric:'tabular-nums'};
+
+      return (
+        <div className="card" style={{marginBottom:'1.5rem', padding:'0.75rem 0.9rem'}}>
+          <div style={{fontSize:'0.95rem', color:'var(--accent)', marginBottom:'0.5rem',
+                       fontWeight:600}}>
+            This Week's QCs — {runs.length} run{runs.length === 1 ? '' : 's'}
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%', borderCollapse:'collapse'}}>
+              <thead>
+                <tr>
+                  <th style={th}>Time</th>
+                  <th style={th}>Sample</th>
+                  <th style={th}>Mode</th>
+                  {METRIC_CONFIG.map(m => (
+                    <th key={m.key} style={thR}>{m.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {dayKeys.map(dk => {
+                  const dayRuns = byDay[dk].sort(
+                    (a, b) => new Date(b.run_date) - new Date(a.run_date)
+                  );
+                  const dLabel = new Date(dk).toLocaleDateString([], {
+                    weekday: 'short', month: 'short', day: 'numeric',
+                  });
+                  return (
+                    <React.Fragment key={dk}>
+                      <tr style={{background:'rgba(218,170,0,0.06)'}}>
+                        <td colSpan={3} style={{...td, fontWeight:600,
+                                                color:'var(--accent)'}}>
+                          {dLabel} · {dayRuns.length} run{dayRuns.length === 1 ? '' : 's'}
+                        </td>
+                        {METRIC_CONFIG.map(m => {
+                          const med = medianOf(dayRuns, m);
+                          return (
+                            <td key={m.key} style={{...td, textAlign:'right',
+                                                    color:'var(--muted)',
+                                                    fontStyle:'italic'}}
+                                title={`Day median`}>
+                              {med == null ? '—' : (m.key === 'tic_auc'
+                                ? formatMs1(med, ms1Format)
+                                : Math.round(med).toLocaleString())}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                      {dayRuns.map(r => {
+                        const inst = r.instrument;
+                        const base = baselines[inst] || {};
+                        return (
+                          <tr key={r.id || r.run_id}>
+                            <td style={td} title={new Date(r.run_date).toLocaleString()}>
+                              {new Date(r.run_date).toLocaleTimeString(
+                                [], {hour: '2-digit', minute: '2-digit'}
+                              )}
+                            </td>
+                            <td style={{...td, maxWidth:'22ch', overflow:'hidden',
+                                        textOverflow:'ellipsis'}}
+                                title={r.run_name}>
+                              {r.run_name}
+                            </td>
+                            <td style={td}>{r.mode || '—'}</td>
+                            {METRIC_CONFIG.map(m => {
+                              const { value: v, viaFallback } = readMetric(r, m);
+                              const pct = pctFromBaseline(v, base[m.key]);
+                              const tint = tintFor(pct);
+                              const range = weekRange[m.key];
+                              const barPct = (v != null && range && range.max > range.min)
+                                ? ((v - range.min) / (range.max - range.min)) * 100
+                                : null;
+                              return (
+                                <td key={m.key}
+                                    style={{...td, textAlign:'right',
+                                            background: tint, position:'relative',
+                                            minWidth:'6.5rem'}}
+                                    title={pct != null
+                                      ? `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% vs 30-run baseline`
+                                      + (viaFallback ? ` (via ${m.ddaFallback})` : '')
+                                      : (viaFallback ? `via ${m.ddaFallback}` : '')}>
+                                  <span>{formatMetric(m.key, v, ms1Format)}</span>
+                                  {viaFallback && v != null && (
+                                    <span style={{fontSize:'0.65rem',
+                                                  color:'var(--muted)',
+                                                  marginLeft:'0.25rem'}}>*</span>
+                                  )}
+                                  {barPct != null && (
+                                    <div style={{height:'3px',
+                                                 background:'rgba(255,255,255,0.08)',
+                                                 marginTop:'3px',
+                                                 borderRadius:'2px',
+                                                 overflow:'hidden'}}>
+                                      <div style={{width:`${barPct}%`, height:'100%',
+                                                   background:'var(--accent)'}} />
+                                    </div>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{marginTop:'0.4rem', fontSize:'0.7rem', color:'var(--muted)'}}>
+            Tint: green ≥ +4% vs 30-run baseline · amber −4% to −12% · red ≤ −12% ·
+            bar scale = this week's min/max per metric ·
+            <span style={{marginLeft:'0.2rem'}}>* = value via DDA fallback column</span>
+            {/* TODO (SPEC §7 column-tracking): show a visual divider in
+                the table if a column change happened mid-week. Waiting
+                on TODO #18 (longitudinal column tracking). */}
+          </div>
+        </div>
+      );
+    }
+
+    /* ── MetricMatrixView ────────────────────────────────────────── */
+    // Transposed heatmap: rows = 4 metrics, columns = QC runs across
+    // the week. Surfaces decoupling between metrics that gauges and
+    // per-run tables can't. Column click → deep-link to run detail.
+    function MetricMatrixView({ runs, allRuns, ms1Format }) {
+      if (!runs || runs.length === 0) {
+        return (
+          <div className="card" style={{marginBottom:'1.5rem', color:'var(--muted)'}}>
+            No QC runs in the selected window.
+          </div>
+        );
+      }
+
+      const baselines = computeBaselines(allRuns, 30);
+      const ordered = [...runs].sort(
+        (a, b) => new Date(a.run_date) - new Date(b.run_date)
+      );
+
+      // Where each day begins in the ordered list — we draw a 1-px
+      // vertical divider on those boundaries.
+      const dayStarts = new Set();
+      let lastDay = null;
+      ordered.forEach((r, i) => {
+        const d = new Date(r.run_date).toDateString();
+        if (d !== lastDay) { dayStarts.add(i); lastDay = d; }
+      });
+
+      const cellStyle = {
+        padding: '0.35rem 0.5rem', fontSize: '12px',
+        fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap',
+        textAlign: 'right', borderBottom: '1px solid var(--border)',
+      };
+      const headerCellStyle = {
+        ...cellStyle, color: 'var(--muted)', fontSize: '11px',
+        borderBottom: '1px solid var(--border)', cursor: 'pointer',
+        fontWeight: 500,
+      };
+      const labelColStyle = {
+        ...cellStyle, textAlign: 'left', position: 'sticky', left: 0,
+        background: 'var(--surface)', fontWeight: 600,
+        color: 'var(--accent)', zIndex: 2,
+      };
+
+      // When a column header is clicked, hop to the run detail.
+      // LiveRuns doesn't own a router, so we dispatch a window event
+      // the History tab (or a future run-detail panel) can listen for.
+      function openRun(r) {
+        const id = r.id || r.run_id;
+        if (!id) return;
+        window.dispatchEvent(new CustomEvent('stan:openRun', { detail: { id } }));
+      }
+
+      return (
+        <div className="card" style={{marginBottom:'1.5rem', padding:'0.75rem 0.9rem'}}>
+          <div style={{fontSize:'0.95rem', color:'var(--accent)', marginBottom:'0.5rem',
+                       fontWeight:600}}>
+            Metric matrix — {ordered.length} run{ordered.length === 1 ? '' : 's'}
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table style={{borderCollapse:'collapse',
+                           borderSpacing:0}}>
+              <thead>
+                <tr>
+                  <th style={{...labelColStyle, top:0, zIndex:3,
+                              borderBottom:'1px solid var(--border)'}}></th>
+                  {ordered.map((r, i) => {
+                    const d = new Date(r.run_date);
+                    const showDay = dayStarts.has(i);
+                    return (
+                      <th key={(r.id || r.run_id) + '_' + i}
+                          onClick={() => openRun(r)}
+                          title={`${r.run_name}\n${d.toLocaleString()}\nClick to open run detail`}
+                          style={{...headerCellStyle,
+                                  borderLeft: dayStarts.has(i) && i !== 0
+                                    ? '1px solid var(--accent)'
+                                    : 'none'}}>
+                        {showDay && (
+                          <div style={{fontWeight:600, color:'var(--text)',
+                                       fontSize:'10.5px'}}>
+                            {d.toLocaleDateString([], {weekday:'short', day:'numeric'})}
+                          </div>
+                        )}
+                        <div>{d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</div>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {METRIC_CONFIG.map(m => (
+                  <tr key={m.key}>
+                    <td style={labelColStyle}>{m.label}</td>
+                    {ordered.map((r, i) => {
+                      const { value: v, viaFallback } = readMetric(r, m);
+                      const base = (baselines[r.instrument] || {})[m.key];
+                      const pct = pctFromBaseline(v, base);
+                      return (
+                        <td key={(r.id || r.run_id) + '_' + m.key}
+                            style={{...cellStyle, background: tintFor(pct),
+                                    borderLeft: dayStarts.has(i) && i !== 0
+                                      ? '1px solid var(--accent)'
+                                      : 'none'}}
+                            title={(v == null
+                              ? 'no value'
+                              : `${r.run_name}\n${m.label}: ${formatMetric(m.key, v, ms1Format)}`
+                                + (pct != null
+                                    ? `\n${pct >= 0 ? '+' : ''}${pct.toFixed(1)}% vs 30-run baseline`
+                                    : '')
+                                + (viaFallback ? `\n(via ${m.ddaFallback})` : ''))}>
+                          {formatMetric(m.key, v, ms1Format)}
+                          {viaFallback && v != null && (
+                            <span style={{fontSize:'0.65rem',
+                                          color:'var(--muted)',
+                                          marginLeft:'0.15rem'}}>*</span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{marginTop:'0.4rem', fontSize:'0.7rem', color:'var(--muted)'}}>
+            Click a column header to jump to that run · dividers mark day boundaries ·
+            tint matches the weekly-table scale (±4 / ±12%)
+          </div>
+        </div>
+      );
+    }
+
     function LiveRuns() {
-      const { data: allRuns, loading, reload, error } = useFetch('/api/runs?limit=200');
+      // qc_only=True is the default on /api/runs, but we pass it
+      // explicitly to lock in the invariant documented in SPEC §3
+      // ("Only QC-classified runs are ever displayed").
+      const { data: allRuns, loading, reload, error } = useFetch('/api/runs?limit=200&qc_only=True');
       const { data: warningsData } = useFetch('/api/warnings');
       useEffect(() => { const t = setInterval(reload, 15000); return () => clearInterval(t); }, [reload]);
+
+      // v0.2.106: front-page view selector state. Prefs drive the
+      // initial view; session-only filter state sits alongside.
+      const { prefs, setPref, saveDefaults, prefsLoaded } = usePreferences();
+      const [filters, setFilters] = useState({
+        instrument: '__all__',
+        sinceDays: 7,
+        sample: 'hela',
+      });
+      // Track what value is currently saved as the user's default
+      // (so the "Set as default" button can render a checkmark).
+      const [savedDefault, setSavedDefault] = useState(null);
+      useEffect(() => {
+        try {
+          const raw = window.localStorage.getItem(PREFS_STORAGE_KEY);
+          if (raw) setSavedDefault((JSON.parse(raw) || {}).front_page_view || null);
+        } catch (_) {}
+      }, [prefsLoaded]);
 
       if (loading && !allRuns) return <div className="empty">Loading...</div>;
       // Defensive: /api/runs should return an array but a server error may
@@ -1319,12 +1953,18 @@
         return <div className="empty">No QC runs yet. Start the watcher to begin monitoring.</div>;
       }
 
-      // Filter to runs from the last 7 days. Was "today only" pre-v0.2.143
-      // but a lab that runs QC a few times a week saw an empty tab on most
-      // days; week-window keeps the panel useful without drowning it in
-      // history (QC History tab is for deeper review).
-      const weekAgo = new Date(Date.now() - 7 * 86400000);
-      const runs = allRuns.filter(r => new Date(r.run_date) >= weekAgo);
+      // Apply the session filters. Same 7-day default as before, but
+      // the user can now widen / narrow via the FilterBar.
+      const sinceCutoff = new Date(Date.now() - filters.sinceDays * 86400000);
+      const runs = allRuns.filter(r => {
+        if (new Date(r.run_date) < sinceCutoff) return false;
+        if (filters.instrument !== '__all__' && r.instrument !== filters.instrument) return false;
+        if (filters.sample === 'hela' && !isHelaRun(r)) return false;
+        return true;
+      });
+      const instrumentNames = Array.from(
+        new Set(allRuns.map(r => r.instrument).filter(Boolean))
+      ).sort();
 
       // Show most recent per instrument (always, even if not today)
       const byInstrument = {};
@@ -1442,12 +2082,41 @@
               </div>
             </div>
           )}
-          {runs.length > 0 ? (
-            <QuickStatus runs={runs} />
-          ) : (
-            <div className="card" style={{marginBottom:'1.5rem'}}>
-              <div style={{color:'var(--muted)'}}>No QC runs in the last 7 days. Showing most recent per instrument below.</div>
-            </div>
+          {/* v0.2.106: three-way view selector (Gauges / Weekly table /
+              Metric matrix). All three consume the same in-memory
+              `runs` so switching is instant with no refetch. */}
+          <ViewSelector
+            value={prefs.front_page_view}
+            onChange={v => setPref('front_page_view', v)}
+            onSetDefault={() => {
+              saveDefaults({ ...prefs });
+              setSavedDefault(prefs.front_page_view);
+            }}
+            savedDefault={savedDefault}
+          />
+          <FilterBar
+            filters={filters}
+            onChange={setFilters}
+            instrumentNames={instrumentNames}
+            ms1Format={prefs.front_page_view !== 'gauges' ? prefs.ms1_format : null}
+            onMs1Format={v => setPref('ms1_format', v)}
+          />
+          {prefs.front_page_view === 'gauges' && (
+            runs.length > 0 ? (
+              <GaugesView runs={runs} />
+            ) : (
+              <div className="card" style={{marginBottom:'1.5rem'}}>
+                <div style={{color:'var(--muted)'}}>
+                  No QC runs in the selected window. Showing most recent per instrument below.
+                </div>
+              </div>
+            )
+          )}
+          {prefs.front_page_view === 'weekly_table' && (
+            <WeeklyTableView runs={runs} allRuns={allRuns} ms1Format={prefs.ms1_format} />
+          )}
+          {prefs.front_page_view === 'matrix' && (
+            <MetricMatrixView runs={runs} allRuns={allRuns} ms1Format={prefs.ms1_format} />
           )}
           {/* v0.2.154: two-zone layout — instrument cards on the left,
               WeekHeatmap filling the right. When instrument count >= 4

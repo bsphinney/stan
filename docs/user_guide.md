@@ -327,8 +327,32 @@ The dashboard serves a FastAPI backend with a basic HTML frontend. The full Reac
 - `/api/trends/{instrument}` -- time-series metrics for trend analysis
 - `/api/instruments` -- current instrument config (hot-reloaded)
 - `/api/thresholds` -- current QC thresholds
+- `/api/ui-prefs` -- optional lab-wide UI defaults from `ui_prefs.yml` (404 when not configured)
 - `/api/community/submit` -- submit a run to the community benchmark
 - `/docs` -- Swagger UI for interactive API exploration
+
+### Front Page View Selector (v0.2.106+)
+
+The "This Week's QCs" tab has a three-way view selector at the top:
+
+- **Gauges** -- per-instrument SVG gauges, snapshot of the latest run (the pre-v0.2.106 default)
+- **Weekly table** -- one row per QC run grouped by day, numeric values for Proteins / Peptides / Precursors / MS1 AUC, background tint when a value drifts >=4% from the instrument's 30-run rolling median, and a thin range bar per cell
+- **Metric matrix** -- transposed heatmap: rows = the four metrics, columns = QC runs across the week in chronological order. Surfaces decoupling (e.g. MS1 steady but precursors collapsing). Click a column header to jump to that run.
+
+All three views share the same filter bar (Instrument / Since / Sample) and consume the same in-memory `runs` array, so switching is instant with no refetch. "HeLa QC only" is the default Sample filter to keep load-test dilutions from polluting the trend.
+
+**Persisting your preference.** Clicking a view only changes the current session. To save your selection as your per-browser default, click **Set as default** -- the preference is written to `localStorage` and will load automatically next time.
+
+**Lab-wide default (optional).** A PI can set a default for every operator by creating `~/.stan/ui_prefs.yml` (or `~/STAN/ui_prefs.yml` on Windows):
+
+```yaml
+# Lab-wide UI defaults. Per-user localStorage always overrides these.
+front_page_view: weekly_table   # gauges | weekly_table | matrix
+matrix_bar_scale: week_range    # week_range | baseline_gates
+ms1_format: sci                 # sci | short
+```
+
+Unknown keys are silently ignored. The file is optional; if absent, the built-in defaults (gauges, week_range, sci) are used.
 
 **Planned frontend views:**
 

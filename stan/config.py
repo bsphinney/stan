@@ -326,6 +326,38 @@ def load_community() -> dict:
     return load_yaml(path)
 
 
+# Allow-list of UI preference keys the dashboard consumes. Unknown keys are
+# silently dropped so a typo in ui_prefs.yml can't pollute localStorage or
+# flip unrelated behavior. Keep in sync with usePreferences() in
+# stan/dashboard/public/index.html.
+UI_PREF_KEYS: tuple[str, ...] = (
+    "front_page_view",     # "gauges" | "weekly_table" | "matrix"
+    "matrix_bar_scale",    # "week_range" | "baseline_gates"
+    "ms1_format",          # "sci" | "short"
+)
+
+
+def load_ui_prefs() -> dict:
+    """Load the optional lab-wide UI defaults from ``ui_prefs.yml``.
+
+    This file is optional. If it doesn't exist, an empty dict is returned
+    and the dashboard falls back to its built-in defaults. Unknown keys
+    are filtered out so YAML typos can't propagate into the UI.
+
+    Returns:
+        Dict of whitelisted UI preference keys. Empty if the file is
+        missing or all keys are unknown.
+    """
+    try:
+        path = resolve_config_path("ui_prefs.yml")
+    except FileNotFoundError:
+        return {}
+    data = load_yaml(path)
+    if not isinstance(data, dict):
+        return {}
+    return {k: data[k] for k in UI_PREF_KEYS if k in data}
+
+
 def get_default_config_dir() -> Path:
     """Return the package-level config/ directory path."""
     return _PACKAGE_CONFIG_DIR

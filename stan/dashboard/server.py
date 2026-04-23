@@ -20,6 +20,7 @@ from stan import __version__
 from stan.config import (
     ConfigWatcher,
     get_user_config_dir,
+    load_ui_prefs,
     load_yaml,
     resolve_config_path,
 )
@@ -39,6 +40,7 @@ app.add_middleware(
 # Config watchers — hot-reload on API access
 _instruments_watcher: ConfigWatcher | None = None
 _thresholds_watcher: ConfigWatcher | None = None
+_ui_prefs_watcher: ConfigWatcher | None = None
 
 
 def _get_instruments_watcher() -> ConfigWatcher | None:
@@ -63,6 +65,24 @@ def _get_thresholds_watcher() -> ConfigWatcher | None:
     elif _thresholds_watcher.is_stale():
         _thresholds_watcher.reload()
     return _thresholds_watcher
+
+
+def _get_ui_prefs_watcher() -> ConfigWatcher | None:
+    """Return a hot-reloading watcher for ``ui_prefs.yml`` if it exists.
+
+    Returns None when the file is missing — the dashboard falls back to
+    its built-in defaults in that case, and the ``/api/ui-prefs`` route
+    returns a 404.
+    """
+    global _ui_prefs_watcher
+    if _ui_prefs_watcher is None:
+        try:
+            _ui_prefs_watcher = ConfigWatcher(resolve_config_path("ui_prefs.yml"))
+        except FileNotFoundError:
+            return None
+    elif _ui_prefs_watcher.is_stale():
+        _ui_prefs_watcher.reload()
+    return _ui_prefs_watcher
 
 
 # ── Startup ──────────────────────────────────────────────────────────
@@ -765,6 +785,27 @@ async def api_update_thresholds(body: ThresholdsUpdate) -> dict:
     watcher.reload()
 
     return {"status": "ok"}
+
+
+@app.get("/api/ui-prefs")
+async def api_ui_prefs() -> dict:
+    """Lab-wide UI preference defaults from ``ui_prefs.yml``.
+
+    This endpoint serves the fallback defaults when a user's browser
+    ``localStorage`` is empty. Per-user selection always wins; the YAML
+    exists so a PI can set a sensible starting view for everyone in the
+    lab without asking each operator to click through settings.
+
+    Returns a JSON object with only the whitelisted keys (see
+    ``UI_PREF_KEYS`` in ``stan.config``). Responds 404 when the file
+    doesn't exist — the frontend treats that as "use built-in defaults".
+    """
+    watcher = _get_ui_prefs_watcher()
+    if watcher is None:
+        raise HTTPException(status_code=404, detail="ui_prefs.yml not configured")
+    # Run the result through load_ui_prefs's whitelist via re-reading
+    # the file, so unknown keys get filtered consistently.
+    return load_ui_prefs()
 
 
 @app.get("/api/instruments/{instrument}/events")
