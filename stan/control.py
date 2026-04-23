@@ -624,6 +624,102 @@ def _action_cleanup_excluded(args: dict) -> dict:
     }
 
 
+def _action_fix_instrument_names(args: dict) -> dict:
+    """Merge two instrument-name values in runs + sample_health.
+
+    Remote mirror of `stan fix-instrument-names` — rewrites rows where
+    instrument == from_name to use to_name instead. Fixes the "two
+    cards for one physical instrument" problem when a historical name
+    (e.g. 'data_bruker') and the canonical model name (e.g. 'timsTOF
+    HT') both accumulated rows.
+
+    Args (all required except dry_run):
+        from_name: existing instrument value to replace
+        to_name:   canonical value to rewrite it to
+        dry_run:   preview only, default False (operator intent is
+                   signalled by queuing the command)
+
+    Narrowly scoped: only UPDATE on the `instrument` column in the
+    `runs` and `sample_health` tables. No DELETE, no other columns
+    touched, no ability to rewrite arbitrary data. Refuses to run if
+    from_name or to_name is empty or not a string.
+    """
+    import sqlite3
+    from stan.db import get_db_path, init_db
+
+    from_name = args.get("from_name")
+    to_name = args.get("to_name")
+    dry_run = bool(args.get("dry_run", False))
+
+    if not isinstance(from_name, str) or not from_name:
+        return {"error": "from_name (non-empty string) is required"}
+    if not isinstance(to_name, str) or not to_name:
+        return {"error": "to_name (non-empty string) is required"}
+    if from_name == to_name:
+        return {"error": "from_name and to_name are identical; nothing to do"}
+
+    init_db()
+    db = get_db_path()
+    if not db.exists():
+        return {"error": f"stan.db not found at {db}"}
+
+    with sqlite3.connect(str(db)) as con:
+        n_runs = con.execute(
+            "SELECT COUNT(*) FROM runs WHERE instrument = ?", (from_name,)
+        ).fetchone()[0]
+        n_sh = 0
+        try:
+            n_sh = con.execute(
+                "SELECT COUNT(*) FROM sample_health WHERE instrument = ?",
+                (from_name,),
+            ).fetchone()[0]
+        except sqlite3.OperationalError:
+            # sample_health may not exist on very old DBs
+            pass
+        conflict_runs = con.execute(
+            "SELECT COUNT(*) FROM runs WHERE instrument = ?", (to_name,)
+        ).fetchone()[0]
+
+    preview = {
+        "from_name": from_name,
+        "to_name": to_name,
+        "runs_to_rewrite": int(n_runs),
+        "sample_health_to_rewrite": int(n_sh),
+        "runs_already_on_target": int(conflict_runs),
+        "dry_run": dry_run,
+    }
+
+    if n_runs == 0 and n_sh == 0:
+        preview["result"] = "noop: no rows matched from_name"
+        return preview
+
+    if dry_run:
+        preview["result"] = "dry_run: no DB writes"
+        return preview
+
+    with sqlite3.connect(str(db)) as con:
+        r1 = con.execute(
+            "UPDATE runs SET instrument = ? WHERE instrument = ?",
+            (to_name, from_name),
+        )
+        rewrote_runs = r1.rowcount
+        rewrote_sh = 0
+        try:
+            r2 = con.execute(
+                "UPDATE sample_health SET instrument = ? WHERE instrument = ?",
+                (to_name, from_name),
+            )
+            rewrote_sh = r2.rowcount
+        except sqlite3.OperationalError:
+            pass
+        con.commit()
+
+    preview["result"] = "ok"
+    preview["rewrote_runs"] = int(rewrote_runs)
+    preview["rewrote_sample_health"] = int(rewrote_sh)
+    return preview
+
+
 def _action_apply_config(args: dict) -> dict:
     """Write a new config YAML on this instrument.
 
@@ -770,6 +866,9 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     # Retroactive cleanup — only deletes rows matching an instrument's
     # *already-declared* exclude_pattern. Cannot delete arbitrary rows.
     "cleanup_excluded":    _action_cleanup_excluded,
+    # Narrowly-scoped instrument-name merge: only UPDATEs the
+    # `instrument` column in runs + sample_health. No DELETE.
+    "fix_instrument_names": _action_fix_instrument_names,
 }
 
 
