@@ -2826,7 +2826,13 @@ def recover_search_outputs(
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run",
-        help="Show what would be moved without touching the filesystem.",
+        help="Show what would be moved/deleted without touching the filesystem.",
+    ),
+    delete_duplicates: bool = typer.Option(
+        False, "--delete-duplicates",
+        help="When a source folder matches a target that already exists, "
+             "assume the target is canonical and DELETE the source copy. "
+             "Default: skip duplicates (no cleanup).",
     ),
 ) -> None:
     """Move orphan DIA-NN / Sage search-output dirs into baseline_output.
@@ -2878,11 +2884,30 @@ def recover_search_outputs(
 
         target = dest_dir / entry.name
         if target.exists():
-            # Already in baseline_output - skip to avoid overwrite.
-            collisions += 1
-            console.print(
-                f"  [yellow]skip[/yellow] (already exists): {entry.name}"
-            )
+            # Already in baseline_output.
+            if delete_duplicates:
+                if dry_run:
+                    console.print(
+                        f"  [dim]would delete[/dim] Downloads/{entry.name} "
+                        f"(duplicate of baseline_output copy)"
+                    )
+                    collisions += 1
+                else:
+                    try:
+                        shutil.rmtree(str(entry))
+                        console.print(
+                            f"  [cyan]deleted[/cyan] duplicate: {entry.name}"
+                        )
+                        collisions += 1
+                    except Exception as e:
+                        console.print(
+                            f"  [red]fail[/red] delete {entry.name}: {e}"
+                        )
+            else:
+                collisions += 1
+                console.print(
+                    f"  [yellow]skip[/yellow] (already exists): {entry.name}"
+                )
             continue
 
         if dry_run:
