@@ -171,6 +171,56 @@ class _AcquisitionHandler(FileSystemEventHandler):
 class InstrumentWatcher:
     """Watches a single instrument's raw data directory."""
 
+    def _resolve_spd(self, raw_path) -> int | None:
+        """Best-effort SPD resolution for a new acquisition.
+
+        v0.2.188: previously the watcher only read `spd:` from
+        instruments.yml, which meant instruments without that
+        key got NULL for every run even though the gradient was
+        easily derivable from the raw file's own metadata.
+
+        Order of precedence:
+          1. validate_spd_from_metadata(raw_path) — reads the
+             Bruker .d XML HyStar_LC method name ("60 samples
+             per day"), falls back to Frames.Time gradient
+             length, or Thermo InstrumentMethod.
+          2. instruments.yml `spd:` field (cohort default).
+          3. Filename regex as a last resort (matches tokens
+             like "60spd" / "60-spd" / "100 SPD").
+          4. None — Trends panel shows "SPD unknown".
+        """
+        # 1. Try the authoritative per-file resolver.
+        try:
+            from stan.metrics.scoring import validate_spd_from_metadata
+            spd = validate_spd_from_metadata(raw_path)
+            if spd:
+                return int(spd)
+        except Exception:
+            logger.debug("validate_spd_from_metadata failed for %s",
+                         raw_path, exc_info=True)
+
+        # 2. Cohort default from the yaml.
+        cfg_spd = self._config.get("spd")
+        if cfg_spd:
+            try:
+                return int(cfg_spd)
+            except (TypeError, ValueError):
+                pass
+
+        # 3. Filename regex fallback — catches the common Evosep
+        #    label written directly into the run name. Underscore
+        #    and hyphen separators both accepted.
+        try:
+            import re
+            stem = getattr(raw_path, "stem", str(raw_path))
+            m = re.search(r"(\d+)[\s_-]*spd", str(stem), re.IGNORECASE)
+            if m:
+                return int(m.group(1))
+        except Exception:
+            pass
+
+        return None
+
     def __init__(self, instrument_config: dict) -> None:
         import collections
         self._config = instrument_config
@@ -887,13 +937,13 @@ class InstrumentWatcher:
                 )
                 from stan.metrics.chromatography import compute_ips_dia
                 metrics["instrument_family"] = self._config.get("family") or self._config.get("vendor_family")
-                metrics["spd"] = self._config.get("spd")
+                metrics["spd"] = self._resolve_spd(raw_path)
                 metrics["ips_score"] = compute_ips_dia(metrics)
             else:
                 metrics = extract_dda_metrics(str(result_path))
                 from stan.metrics.chromatography import compute_ips_dda
                 metrics["instrument_family"] = self._config.get("family") or self._config.get("vendor_family")
-                metrics["spd"] = self._config.get("spd")
+                metrics["spd"] = self._resolve_spd(raw_path)
                 metrics["ips_score"] = compute_ips_dda(metrics)
 
             # Resolve acquisition mode string for threshold lookup
@@ -930,7 +980,7 @@ class InstrumentWatcher:
                 failed_gates=decision.failed_gates,
                 diagnosis=decision.diagnosis,
                 amount_ng=self._config.get("hela_amount_ng", 50.0),
-                spd=self._config.get("spd"),
+                spd=metrics.get("spd"),
                 gradient_length_min=self._config.get("gradient_length_min"),
                 run_date=raw_mtime,
             )
