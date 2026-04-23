@@ -2818,6 +2818,100 @@ def backfill_window_drift(
     console.print(f"[dim]Log: {log_path}[/dim]")
 
 
+@app.command("recover-search-outputs")
+def recover_search_outputs(
+    src: str = typer.Option(
+        "", "--src",
+        help="Source directory to sweep. Default: ~/Downloads",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Show what would be moved without touching the filesystem.",
+    ),
+) -> None:
+    """Move orphan DIA-NN / Sage search-output dirs into baseline_output.
+
+    v0.2.170: Brett 2026-04-23 found ~40 run-stem directories in
+    Downloads because update-stan.bat was clicked from there, the
+    spawned backfill process inherited Downloads as CWD, and some
+    STAN code path wrote relative output paths. This command sweeps
+    a source directory for folders that contain ``report.parquet``
+    or ``results.sage.parquet`` (confirming they're real search
+    outputs) and moves them into ~/STAN/baseline_output/<stem>/.
+
+    Run this once after upgrading to v0.2.170. The PS1 fix prevents
+    future occurrences by spawning all processes with a stable
+    CWD = ~/STAN.
+    """
+    import shutil
+    from stan.config import get_user_config_dir
+
+    src_dir = Path(src) if src else Path.home() / "Downloads"
+    dest_dir = get_user_config_dir() / "baseline_output"
+
+    if not src_dir.exists():
+        console.print(f"[red]Source dir not found: {src_dir}[/red]")
+        raise typer.Exit(code=1)
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    moved = 0
+    skipped_not_search = 0
+    skipped_already_there = 0
+    collisions = 0
+
+    for entry in sorted(src_dir.iterdir()):
+        if not entry.is_dir():
+            continue
+        # Must contain at least one search-output marker to be
+        # considered a DIA-NN / Sage result dir.
+        markers = (
+            list(entry.glob("report.parquet"))
+            + list(entry.glob("results.sage.parquet"))
+            + list(entry.glob("*.stats.tsv"))
+            + list(entry.glob("diann.log"))
+            + list(entry.glob("sage.log"))
+        )
+        if not markers:
+            skipped_not_search += 1
+            continue
+
+        target = dest_dir / entry.name
+        if target.exists():
+            # Already in baseline_output - skip to avoid overwrite.
+            collisions += 1
+            console.print(
+                f"  [yellow]skip[/yellow] (already exists): {entry.name}"
+            )
+            continue
+
+        if dry_run:
+            console.print(f"  [dim]would move[/dim] {entry.name} -> baseline_output/")
+            moved += 1
+        else:
+            try:
+                shutil.move(str(entry), str(target))
+                console.print(f"  [green]moved[/green] {entry.name}")
+                moved += 1
+            except Exception as e:
+                console.print(f"  [red]fail[/red] {entry.name}: {e}")
+
+    console.print()
+    console.print(
+        f"[bold]Summary:[/bold] moved {moved}, "
+        f"already-in-dest {collisions}, "
+        f"skipped (not search output) {skipped_not_search}"
+    )
+    if dry_run:
+        console.print("[yellow]--dry-run: nothing was actually moved.[/yellow]")
+    elif moved > 0:
+        console.print()
+        console.print("Now rerun these to ingest the moved runs:")
+        console.print("  [cyan]stan backfill-metrics[/cyan]")
+        console.print("  [cyan]stan backfill-cirt[/cyan]")
+        console.print("  [cyan]stan backfill-tic --push[/cyan]")
+
+
 @app.command("install-peg-deps")
 def install_peg_deps() -> None:
     """Install or repair Bruker-only PEG + drift dependencies.

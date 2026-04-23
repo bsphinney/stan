@@ -530,15 +530,25 @@ function Test-StanProcessRunning {
     return $false
 }
 
+# v0.2.170: set a stable working directory for every spawned
+# process. Without this they inherit update-stan.bat's parent
+# folder (usually Downloads) and any STAN code path using a
+# relative output path writes there. Brett 2026-04-23 found
+# ~40 DIA-NN report directories in Downloads for this reason.
+$stanHome = Join-Path $env:USERPROFILE "STAN"
+if (-not (Test-Path $stanHome)) {
+    New-Item -ItemType Directory -Path $stanHome -Force | Out-Null
+}
+
 $loopBat = Join-Path $scriptDir "start_stan_loop.bat"
 if (Test-StanProcessRunning "watch") {
     Write-Host "  Watcher already running - skipping launch." -ForegroundColor Gray
 } elseif (Test-Path $loopBat) {
     Write-Host "  Launching watcher (supervised)..." -ForegroundColor Cyan
-    Start-Process -FilePath $loopBat -WindowStyle Normal
+    Start-Process -FilePath $loopBat -WorkingDirectory $stanHome -WindowStyle Normal
 } else {
     Write-Host "  Launching watcher..." -ForegroundColor Cyan
-    Start-Process -FilePath $stanExe -ArgumentList "watch" -WindowStyle Normal
+    Start-Process -FilePath $stanExe -ArgumentList "watch" -WorkingDirectory $stanHome -WindowStyle Normal
 }
 
 # Dashboard also gets its own detached window - unless one is already up.
@@ -546,7 +556,7 @@ if (Test-StanProcessRunning "dashboard") {
     Write-Host "  Dashboard already running - skipping launch." -ForegroundColor Gray
 } else {
     Write-Host "  Launching dashboard..." -ForegroundColor Cyan
-    Start-Process -FilePath $stanExe -ArgumentList "dashboard" -WindowStyle Normal
+    Start-Process -FilePath $stanExe -ArgumentList "dashboard" -WorkingDirectory $stanHome -WindowStyle Normal
 }
 
 # Auto-backfill every metric gap. New metrics land in new releases
@@ -587,7 +597,7 @@ if ($backfillAlreadyRunning) {
         "echo === stan backfill-peg     === && stan backfill-peg && " +
         "echo === stan backfill-window-drift === && stan backfill-window-drift && " +
         "echo ALL BACKFILLS COMPLETE && pause"
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/k", $backfillCmd -WindowStyle Normal
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/k", $backfillCmd -WorkingDirectory $stanHome -WindowStyle Normal
 }
 
 Write-Host ""
