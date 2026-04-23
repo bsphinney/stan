@@ -6,26 +6,37 @@ off-ridge (instrument retune, firmware update, calibration shift)
 silently waste fragmentation — you still get a report.parquet, but
 the IDs drop because a fraction of peptides are missed by every window.
 
-Validated against Brett's known-drifted file
-04172026__60SPD_DIA-SM1_S3-A1_1_21029.d:
-    v2 coverage=35.5%, median drift=+0.081 /K0
-vs the clean reference 03jun2024_HeLa50ng_DIA_100spd_S1-B2_1_6205.d:
-    v2 coverage=73.0%, median drift=+0.024 /K0
+v0.2.175 retune: Brett tuned against two visually-verified files
+(1mai25...12816.d = clean per DataAnalysis, 22April2026...21144.d =
+drifted). The prior algorithm flagged BOTH as drifted — 12816 because
+its per-window IM centre sat ~0.06 /K0 below the window geometric
+centre (a systematic instrument-design offset, NOT drift), and 21144
+only via a coverage-<0.50 threshold that every Bruker file trips.
 
-Two non-obvious choices baked into the algorithm:
+Key algorithm changes:
 
-1. **Windows use alphatims's CALIBRATED scan→mobility mapping, not the
-   linear approximation** (`1/K0 ≈ 1.6 - scan/max_scan`). The linear
-   approximation is ~0.05 /K0 off from real Bruker calibration — big
-   enough to mask drift that's genuinely smaller than the calibration
-   error. Peaks are placed via real calibration, so windows must be too.
+1. **Peptide-zone restriction**: both the ridge search and the
+   per-window analysis are restricted to 1/K0 ∈ [0.70, 1.15]. Outside
+   that range is singly-charged contamination (~1.20-1.35) or
+   instrument floor — including them flips the mode to a phantom peak
+   that has nothing to do with peptide drift. Windows whose geometric
+   centre falls outside the peptide zone are skipped entirely.
 
-2. **Per-window centroid is the MODE (peak of intensity-weighted 1/K0
-   histogram) of the window's m/z slice, NOT the intensity-weighted
-   mean.** The m/z slice contains both peptide signal and contaminant
-   background across the full 1/K0 range; a weighted mean averages
-   the two and muddles the drift signal. The mode tracks the peptide
-   peak cleanly.
+2. **Ridge-outside-edge metric**: `drift_from_edge` = 0 if the ridge
+   peak sits inside the declared window IM range; otherwise it's the
+   signed distance from ridge to the nearest window edge. A window
+   is "severely drifted" when BOTH:
+       |drift_from_edge| > 0.015 /K0  (ridge clearly outside)
+       in-window coverage < 0.50      (capture badly impaired)
+   Classification uses count-of-severe + intensity-weighted severity.
+
+3. **Signed median_drift_im** still reports ridge-minus-window-centre
+   for the peptide-zone windows. The dashboard's directional trend
+   chart reads this value; changing to absolute would break it.
+
+4. **Global coverage** is now reported as a diagnostic but does NOT
+   feed classification — Bruker MS1 naturally has ~50% of intensity
+   outside DIA windows (they apply to MS2), so it's uninformative.
 
 Requires alphatims — `pip install stan-proteomics[peg]` (shares the
 same extra as PEG detection since both need MS1 spectrum access).
@@ -37,7 +48,6 @@ import random
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -47,16 +57,29 @@ INTENSITY_THRESHOLD_DEFAULT = 100.0
 MOBILITY_HIST_BINS = 80
 RANDOM_SEED = 42
 
+# Peptide-zone filter: multi-charge tryptic HeLa peptides overwhelmingly
+# sit in 1/K0 ∈ [0.70, 1.15] on Bruker timsTOF HT. Above 1.15 is mostly
+# singly-charged contamination (solvent clusters, autolysis peaks) — a
+# dense pile at ~1.25 that will dominate any intensity-weighted mode
+# unless we filter it out. Below 0.70 is the instrument's low-IM
+# boundary for the diaPASEF scan table. Changing these ranges invalidates
+# the per-window ridge placement.
+PEPTIDE_IM_LO = 0.70
+PEPTIDE_IM_HI = 1.15
 
-# Drift class thresholds (validated on 2 real timsTOF files, to be
-# recalibrated on a larger sweep). Tune per instrument family once we
-# have enough clean-run distribution data.
-COVERAGE_OK = 0.65
-COVERAGE_WARN = 0.50
-DRIFT_OK = 0.04     # |median drift| in 1/K0 units
-DRIFT_WARN = 0.06
-P90_DRIFT_OK = 0.07
-P90_DRIFT_WARN = 0.09
+# Per-window drift thresholds. Tuned 2026-04-23 against two
+# visually-classified test files:
+#   12816.d (OK per DataAnalysis): 0 severely-drifted windows
+#   21144.d (drifted per DataAnalysis): 3 severely-drifted low-m/z
+#     narrow windows, ridge 0.02-0.06 below im_lo, coverage 0.07-0.29
+OUTSIDE_EDGE_THRESHOLD = 0.015   # |ridge − nearest window edge|
+LOW_COVERAGE_FOR_DRIFT = 0.50    # per-window capture fraction
+
+# Run-level classification thresholds
+SEVERE_COUNT_DRIFTED = 3          # ≥3 severely-drifted windows → drifted
+SEVERE_COUNT_WARN = 1             # ≥1 → warn
+SEVERE_INT_FRAC_DRIFTED = 0.08    # severely-drifted intensity fraction
+SEVERE_INT_FRAC_WARN = 0.03
 
 
 @dataclass
@@ -78,9 +101,11 @@ class WindowDriftMetric:
     mz_range: tuple[float, float]
     im_range: tuple[float, float]
     im_center: float
-    im_mode: float           # peak of observed 1/K0 density in this m/z slice
-    drift_im: float          # im_mode − im_center (signed)
-    coverage: float          # fraction of slice intensity inside window's 1/K0 range
+    im_mode: float           # peptide-zone ridge peak in this m/z slice
+    drift_im: float          # im_mode − im_center (signed, vs geometric centre)
+    drift_edge: float = 0.0  # signed distance from ridge to nearest window edge (0 if inside)
+    coverage: float = 0.0    # fraction of slice intensity inside window's 1/K0 range
+    severely_drifted: bool = False
 
 
 @dataclass
@@ -92,6 +117,9 @@ class DriftResult:
     median_drift_im: float = 0.0
     median_abs_drift_im: float = 0.0
     p90_abs_drift_im: float = 0.0
+    # v0.2.175: severity counters drive classification
+    n_severely_drifted: int = 0
+    severe_intensity_fraction: float = 0.0
     drift_class: str = "unknown"  # ok | warn | drifted | unknown
     per_window: list[WindowDriftMetric] = field(default_factory=list)
     # v0.2.173: downsampled (mz, im, log_intensity) cloud for the
@@ -155,17 +183,23 @@ def _extract_sub_windows(d_path: Path, scan_to_mobility) -> list[_SubWindow]:
     return subs
 
 
-def _classify_drift(coverage: float, med_abs_drift: float, p90_abs_drift: float) -> str:
-    """Three-class verdict from the two primary metrics."""
-    cov_level = ("ok" if coverage >= COVERAGE_OK
-                 else "warn" if coverage >= COVERAGE_WARN
-                 else "drifted")
-    drift_level = ("ok" if med_abs_drift < DRIFT_OK and p90_abs_drift < P90_DRIFT_OK
-                   else "warn" if med_abs_drift < DRIFT_WARN and p90_abs_drift < P90_DRIFT_WARN
-                   else "drifted")
-    # Worst of the two wins.
-    priority = {"ok": 0, "warn": 1, "drifted": 2}
-    return cov_level if priority[cov_level] >= priority[drift_level] else drift_level
+def _classify_drift(n_severe: int, severe_int_frac: float) -> str:
+    """Run-level verdict from per-window severity counters.
+
+    v0.2.175: drift classification is now driven by the count of
+    *severely-drifted* windows (ridge outside window edge AND low capture
+    coverage) and the fraction of peptide-zone intensity they contain —
+    NOT by median |drift|. A systematic ridge-off-centre offset (common
+    on well-calibrated Bruker instruments) is no longer classified as
+    drift. Global MS1 coverage is no longer part of classification
+    because Bruker MS1 has ~50% of intensity outside DIA windows by
+    design (DIA windows apply to MS2 precursor isolation).
+    """
+    if n_severe >= SEVERE_COUNT_DRIFTED or severe_int_frac >= SEVERE_INT_FRAC_DRIFTED:
+        return "drifted"
+    if n_severe >= SEVERE_COUNT_WARN or severe_int_frac >= SEVERE_INT_FRAC_WARN:
+        return "warn"
+    return "ok"
 
 
 def detect_window_drift(
@@ -252,54 +286,100 @@ def detect_window_drift(
     if total_int == 0:
         return DriftResult(drift_class="unknown")
 
+    # Run-level global coverage still reported (diagnostic only, not
+    # used for classification). Uses the union of ALL declared windows,
+    # including those whose centres are outside the peptide zone.
     inside_any = np.zeros(len(mzs), dtype=bool)
-    per_window: list[WindowDriftMetric] = []
-    im_hist_lo = float(scan_to_mobility.min())
-    im_hist_hi = float(scan_to_mobility.max())
-
     for w in subs:
         if w.im_lo == 0 and w.im_hi == 0:
             continue
-        mz_mask = (mzs >= w.mz_lo) & (mzs <= w.mz_hi)
-        if not mz_mask.any():
+        m = ((mzs >= w.mz_lo) & (mzs <= w.mz_hi) &
+             (mobs >= w.im_lo) & (mobs <= w.im_hi))
+        inside_any |= m
+
+    # Per-window drift is measured only for windows whose geometric
+    # centre falls in the peptide-zone 1/K0 range. Windows centred above
+    # ~1.15 (high-m/z, low charge) don't have a reliable peptide ridge
+    # to compare against — any mode we'd extract would be dominated by
+    # charge-1 contamination or too-sparse signal to trust.
+    per_window: list[WindowDriftMetric] = []
+    per_window_slc_int: list[float] = []  # peptide-zone intensity per window
+    for w in subs:
+        if w.im_lo == 0 and w.im_hi == 0:
             continue
-        mz_mobs = mobs[mz_mask]
-        mz_ints = ints[mz_mask]
-        # Intensity-weighted histogram → MODE (peak bin midpoint)
+        ctr = (w.im_lo + w.im_hi) / 2.0
+        if not (PEPTIDE_IM_LO <= ctr <= PEPTIDE_IM_HI):
+            continue
+        # Slice on m/z AND clamp to peptide zone in IM — we search for
+        # the ridge across the FULL peptide zone, not just inside the
+        # window, so we can detect "ridge is outside window" drift.
+        slc_mask = ((mzs >= w.mz_lo) & (mzs <= w.mz_hi) &
+                    (mobs >= PEPTIDE_IM_LO) & (mobs <= PEPTIDE_IM_HI))
+        if not slc_mask.any():
+            continue
+        slc_mobs = mobs[slc_mask]
+        slc_ints = ints[slc_mask]
+        slc_int_sum = float(slc_ints.sum())
+        if slc_int_sum < 1000.0:
+            # Too little peptide-zone intensity to trust; skip.
+            continue
         hist, edges = np.histogram(
-            mz_mobs, bins=MOBILITY_HIST_BINS,
-            range=(im_hist_lo, im_hist_hi), weights=mz_ints,
+            slc_mobs, bins=MOBILITY_HIST_BINS,
+            range=(PEPTIDE_IM_LO, PEPTIDE_IM_HI), weights=slc_ints,
         )
-        if hist.max() == 0:
+        # 3-point [1,2,1] smoothing reduces bin-edge jitter on the mode
+        # without masking real shifts (<0.02 /K0 smoothing radius).
+        hist_smooth = np.convolve(hist, [1.0, 2.0, 1.0], mode="same")
+        if hist_smooth.max() == 0:
             continue
-        peak_idx = int(hist.argmax())
+        peak_idx = int(hist_smooth.argmax())
         peak_im = float((edges[peak_idx] + edges[peak_idx + 1]) / 2.0)
-        # What fraction of slice intensity falls inside the window's 1/K0 range?
-        in_win = (mz_mobs >= w.im_lo) & (mz_mobs <= w.im_hi)
-        global_mask = mz_mask.copy()
-        global_mask[mz_mask] = in_win
-        inside_any |= global_mask
-        slice_int = float(mz_ints.sum())
+
+        # Coverage = peptide-zone intensity captured by this window
+        in_win = (slc_mobs >= w.im_lo) & (slc_mobs <= w.im_hi)
+        cov = float(slc_ints[in_win].sum()) / slc_int_sum
+
+        # Distance from ridge to nearest window EDGE. Zero if inside.
+        if w.im_lo <= peak_im <= w.im_hi:
+            drift_edge = 0.0
+        elif peak_im < w.im_lo:
+            drift_edge = peak_im - w.im_lo  # negative
+        else:
+            drift_edge = peak_im - w.im_hi  # positive
+
+        severe = (abs(drift_edge) > OUTSIDE_EDGE_THRESHOLD and
+                  cov < LOW_COVERAGE_FOR_DRIFT)
+
         per_window.append(WindowDriftMetric(
             window_group=w.window_group,
             mz_range=(round(w.mz_lo, 2), round(w.mz_hi, 2)),
             im_range=(round(w.im_lo, 4), round(w.im_hi, 4)),
-            im_center=round((w.im_lo + w.im_hi) / 2.0, 4),
+            im_center=round(ctr, 4),
             im_mode=round(peak_im, 4),
-            drift_im=round(peak_im - (w.im_lo + w.im_hi) / 2.0, 4),
-            coverage=round(float(mz_ints[in_win].sum()) / slice_int, 3)
-                     if slice_int > 0 else 0.0,
+            drift_im=round(peak_im - ctr, 4),
+            drift_edge=round(drift_edge, 4),
+            coverage=round(cov, 3),
+            severely_drifted=severe,
         ))
+        per_window_slc_int.append(slc_int_sum)
 
     if not per_window:
         return DriftResult(drift_class="unknown")
 
     coverage = float(ints[inside_any].sum()) / total_int
-    drifts = sorted(w.drift_im for w in per_window)
+    drifts = sorted(pw.drift_im for pw in per_window)
     median_drift = drifts[len(drifts) // 2]
     abs_drifts = sorted(abs(d) for d in drifts)
     med_abs = abs_drifts[len(abs_drifts) // 2]
     p90_abs = abs_drifts[int(0.9 * len(abs_drifts))]
+
+    n_severe = sum(1 for pw in per_window if pw.severely_drifted)
+    total_slc_int = sum(per_window_slc_int)
+    severe_int = sum(
+        si for pw, si in zip(per_window, per_window_slc_int)
+        if pw.severely_drifted
+    )
+    severe_int_frac = severe_int / total_slc_int if total_slc_int > 0 else 0.0
 
     # v0.2.173: downsampled cloud for the Bruker DataAnalysis-style
     # visualization. Intensity-weighted random sample so high-signal
@@ -334,7 +414,9 @@ def detect_window_drift(
         median_drift_im=round(median_drift, 4),
         median_abs_drift_im=round(med_abs, 4),
         p90_abs_drift_im=round(p90_abs, 4),
-        drift_class=_classify_drift(coverage, med_abs, p90_abs),
+        n_severely_drifted=n_severe,
+        severe_intensity_fraction=round(severe_int_frac, 4),
+        drift_class=_classify_drift(n_severe, severe_int_frac),
         per_window=per_window,
         cloud_mz=cloud_mz,
         cloud_im=cloud_im,
