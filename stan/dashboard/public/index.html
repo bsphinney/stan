@@ -289,14 +289,21 @@
       const p90 = Number(run?.drift_p90_abs_im);
       const cls = run?.drift_class;
       if (!isFinite(p90)) return null;
-      const base = Math.round(Math.max(0, Math.min(100, p90 * 1000)));
-      // v0.2.194: clamp the score into the range that matches the
-      // classifier verdict so number + color + class always agree.
+      // v0.2.195: HIGHER = WORSE, consistent with PEG (same as the
+      // original intent — I briefly flipped to higher=better but
+      // Brett pointed out that would diverge from PEG, which can't
+      // be flipped because PEG is intrinsically a contamination
+      // COUNT. IPS remains the one "higher = better" outlier — it's
+      // a performance grade, a different kind of metric.
+      //
+      // Problem indicators: PEG, Drift. Higher score → worse.
+      // Performance grade: IPS. Higher score → better.
+      //
+      // Clamp score into each class's colour lane:
       //   ok      → 0-39   (green)
       //   warn    → 40-69  (amber)
       //   drifted → 70-100 (red)
-      // Within each range the p90 still varies so trends across a
-      // single class are meaningful.
+      const base = Math.round(Math.max(0, Math.min(100, p90 * 1000)));
       if (cls === 'ok')      return Math.min(base, 39);
       if (cls === 'warn')    return Math.min(69, Math.max(base, 40));
       if (cls === 'drifted') return Math.max(base, 70);

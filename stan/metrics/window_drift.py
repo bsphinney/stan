@@ -80,6 +80,16 @@ PEPTIDE_IM_HI = 1.15
 #     narrow windows, ridge 0.02-0.06 below im_lo, coverage 0.07-0.29
 OUTSIDE_EDGE_THRESHOLD = 0.015   # |ridge − nearest window edge|
 LOW_COVERAGE_FOR_DRIFT = 0.50    # per-window capture fraction
+# v0.2.195: windows below this coverage are "unreliable" — so little
+# peptide-zone intensity is actually inside the declared window that
+# the histogram mode is driven by whatever out-of-window contamination
+# is densest (typically +1 solvent clusters at 1/K0 ~1.25 dominating
+# low-m/z slices). Real drift leaves 20-50% of signal inside the
+# declared range; <20% means we're looking at the wrong ion population.
+# Brett's 21149 false-positive (m/z 299-325 window, coverage 18%,
+# ridge mode 1.125 in a 0.70-0.79 declared range) is the canonical
+# case — the "drift" was +1 contamination, not peptide movement.
+MIN_COVERAGE_FOR_SEVERITY = 0.20
 
 # Run-level classification thresholds.
 # v0.2.186: lowered SEVERE_COUNT_DRIFTED 3 → 2 because frame-sampling
@@ -397,8 +407,12 @@ def detect_window_drift(
         else:
             drift_edge = peak_im - w.im_hi  # positive
 
+        # v0.2.195: require MIN_COVERAGE_FOR_SEVERITY (20%) — below that
+        # the histogram mode reflects out-of-window contamination, not
+        # peptide drift, and we'd flag false positives on low-m/z tails.
         severe = (abs(drift_edge) > OUTSIDE_EDGE_THRESHOLD and
-                  cov < LOW_COVERAGE_FOR_DRIFT)
+                  cov < LOW_COVERAGE_FOR_DRIFT and
+                  cov >= MIN_COVERAGE_FOR_SEVERITY)
 
         per_window.append(WindowDriftMetric(
             window_group=w.window_group,
