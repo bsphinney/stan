@@ -601,6 +601,7 @@ if ($backfillAlreadyRunning) {
     # data available on rescoring.
     $backfillCmd = "title STAN overnight backfill && " +
         "echo === stan install-4dff === && stan install-4dff && " +
+        "echo === stan fix-spds      === && stan fix-spds && " +
         "echo === stan backfill-metrics === && stan backfill-metrics && " +
         "echo === stan backfill-cirt    === && stan backfill-cirt && " +
         "echo === stan backfill-tic --force --push === && " +
