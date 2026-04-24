@@ -764,9 +764,13 @@ def _locate_features_file(raw_path: str | None) -> Path | None:
     inline to avoid importing from that module — a parallel worker is
     actively editing it, and we want zero coupling.
 
-    Preference order (matches 4DFF default behavior):
-      1. <raw.d>/<stem>.features   — inside the .d
-      2. <parent>/<stem>.features  — sibling of the .d
+    v0.2.203 fix: 4DFF's actual output name is ``<d_full_name>.features``
+    (the ``.d`` suffix is PRESERVED before ``.features``, e.g.
+    ``foo.d/foo.d.features``). Earlier revisions used ``d.stem`` which
+    strips the ``.d`` and produced a guaranteed miss — the dashboard
+    then surfaced the misleading "no .features file found" banner even
+    when 4DFF had successfully written the file. Try both name forms
+    plus parent-directory variants so all 4DFF placements are covered.
 
     Returns None if raw_path is empty, the .d doesn't exist, or no
     .features file can be located.
@@ -776,13 +780,17 @@ def _locate_features_file(raw_path: str | None) -> Path | None:
     d = Path(raw_path)
     if not d.exists():
         return None
-    stem = d.stem
-    inside = d / f"{stem}.features" if d.is_dir() else None
-    if inside is not None and inside.exists():
-        return inside
-    sibling = d.parent / f"{stem}.features"
-    if sibling.exists():
-        return sibling
+    full = d.name   # "foo.d"
+    stem = d.stem   # "foo"
+    candidates = [
+        d / f"{full}.features",          # 4DFF current: foo.d/foo.d.features
+        d / f"{stem}.features",          # legacy:       foo.d/foo.features
+        d.parent / f"{full}.features",   # sibling variant
+        d.parent / f"{stem}.features",   # Ziggy-style sibling
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
     return None
 
 
