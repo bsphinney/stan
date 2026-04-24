@@ -279,21 +279,39 @@ def detect_feature_drift(
     )
     severe_frac = severe_feat / total_feat if total_feat > 0 else 0.0
 
-    # Global coverage here is the fraction of z=2 features that fall
-    # inside any declared window (geometry cross-check, not a
-    # classification input — same semantics as window_drift).
-    inside_any_global = 0
-    for i, w in enumerate(subs):
+    # v0.2.206: global_coverage is now INTENSITY-WEIGHTED, not feature
+    # -count weighted. The old count-weighted metric gave a garbage
+    # answer on well-functioning runs: 4DFF detects every MS1 z=2 peak
+    # including low-intensity noise and non-peptide in-source charge-2
+    # artifacts that fall outside PASEF scheduled ranges. Coverage of
+    # 42% on 21149 coexists with 46 k precursor IDs at 1% FDR because
+    # the windows catch the SIGNAL even when ~half the raw 4DFF peaks
+    # miss — those peaks are background, not peptides.
+    #
+    # Intensity weighting: a single bright real peptide contributes as
+    # much as a thousand dim noise peaks. "Fraction of z=2 intensity
+    # inside any DIA window" tracks actual quant performance.
+    #
+    # Also fixes a separate bug: the old code summed `m.sum()` across
+    # windows, so a feature inside N overlapping windows was counted N
+    # times and coverage could legitimately exceed 1.0. Using a single
+    # boolean mask (|=) gives the correct unique-feature accounting.
+    in_any = np.zeros(mzs.size, dtype=bool)
+    for w in subs:
         if w.im_lo == 0 and w.im_hi == 0:
             continue
         m = (
             (mzs >= w.mz_lo) & (mzs <= w.mz_hi)
             & (mobs >= w.im_lo) & (mobs <= w.im_hi)
         )
-        inside_any_global += int(m.sum())
-    global_coverage = (
-        inside_any_global / float(mzs.size) if mzs.size else 0.0
-    )
+        in_any |= m
+    total_intensity = float(ints.sum())
+    if total_intensity > 0:
+        global_coverage = float(ints[in_any].sum()) / total_intensity
+    else:
+        global_coverage = (
+            float(in_any.sum()) / float(mzs.size) if mzs.size else 0.0
+        )
 
     # v0.2.205: classify from whole-cloud metrics (spread + centroid
     # + coverage) instead of per-window severity counters. Keeps the
