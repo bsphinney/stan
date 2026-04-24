@@ -588,13 +588,25 @@ if ($backfillAlreadyRunning) {
     Write-Host "  Overnight backfill already running - skipping launch." -ForegroundColor Gray
     $backfillCmd = $null
 } else {
-    Write-Host "  Launching overnight backfill sweep (metrics + cIRT + TIC + PEG + drift)..." -ForegroundColor Cyan
+    Write-Host "  Launching overnight backfill sweep (metrics + cIRT + TIC + PEG + features + drift)..." -ForegroundColor Cyan
+    # v0.2.201: `stan install-4dff` fetches Bruker's universal feature
+    # finder binary (~65 MB) on first run; idempotent after that.
+    # `backfill-features` runs 4DFF on every Bruker .d that doesn't
+    # yet have a .features sidecar, generating authoritative charge
+    # assignments that the v0.2.200 feature-based drift detector
+    # uses. On Thermo instruments stan install-4dff is a no-op and
+    # backfill-features iterates nothing (Bruker-only feature finder)
+    # so it's safe to always include in the chain.
+    # Drift runs AFTER features so detect_drift_best() has the new
+    # data available on rescoring.
     $backfillCmd = "title STAN overnight backfill && " +
+        "echo === stan install-4dff === && stan install-4dff && " +
         "echo === stan backfill-metrics === && stan backfill-metrics && " +
         "echo === stan backfill-cirt    === && stan backfill-cirt && " +
         "echo === stan backfill-tic --force --push === && " +
         "stan backfill-tic --force --push && " +
         "echo === stan backfill-peg     === && stan backfill-peg && " +
+        "echo === stan backfill-features === && stan backfill-features && " +
         "echo === stan backfill-window-drift === && stan backfill-window-drift && " +
         "echo ALL BACKFILLS COMPLETE && pause"
     Start-Process -FilePath "cmd.exe" -ArgumentList "/k", $backfillCmd -WorkingDirectory $stanHome -WindowStyle Normal
