@@ -289,10 +289,18 @@
       const p90 = Number(run?.drift_p90_abs_im);
       const cls = run?.drift_class;
       if (!isFinite(p90)) return null;
-      let score = Math.round(Math.max(0, Math.min(100, p90 * 1000)));
-      if (cls === 'drifted') score = Math.max(score, 70);
-      else if (cls === 'warn') score = Math.max(score, 40);
-      return score;
+      const base = Math.round(Math.max(0, Math.min(100, p90 * 1000)));
+      // v0.2.194: clamp the score into the range that matches the
+      // classifier verdict so number + color + class always agree.
+      //   ok      → 0-39   (green)
+      //   warn    → 40-69  (amber)
+      //   drifted → 70-100 (red)
+      // Within each range the p90 still varies so trends across a
+      // single class are meaningful.
+      if (cls === 'ok')      return Math.min(base, 39);
+      if (cls === 'warn')    return Math.min(69, Math.max(base, 40));
+      if (cls === 'drifted') return Math.max(base, 70);
+      return base;
     }
 
     function DriftBadge({ run, source="runs" }) {
