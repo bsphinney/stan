@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>PEG Invaders — STAN Arcade</title>
+<title>Keratin Invaders — STAN Arcade</title>
 <style>
   html, body {
     margin: 0; padding: 0; height: 100%;
@@ -20,7 +20,7 @@
     margin-bottom: 8px; font-size: 14px;
   }
   #hud b { color: #fbbf24; }
-  #hud .title { color: #60a5fa; font-weight: bold; font-size: 16px; }
+  #hud .title { color: #f472b6; font-weight: bold; font-size: 16px; }
   #hud .subtitle { color: #94a3b8; font-style: italic; font-size: 12px; }
   #hud button {
     background: #1e293b; color: #e5e7eb;
@@ -30,8 +30,8 @@
   #hud button:hover { background: #334155; }
   canvas {
     background:
-      radial-gradient(circle at 20% 10%, rgba(96,165,250,0.08), transparent 40%),
-      radial-gradient(circle at 80% 90%, rgba(168,85,247,0.08), transparent 40%),
+      radial-gradient(circle at 20% 20%, rgba(244,114,182,0.07), transparent 40%),
+      radial-gradient(circle at 80% 80%, rgba(251,191,36,0.06), transparent 40%),
       #0a0f1a;
     border: 1px solid #334155;
     border-radius: 6px;
@@ -49,20 +49,20 @@
 <body>
 <div id="wrap">
   <div id="hud">
-    <span class="title">🫧 PEG Invaders</span>
-    <span class="subtitle">fragment the polymer before it floods the source</span>
-    <span>Ions destroyed: <b id="score">0</b></span>
+    <span class="title">💇 Keratin Invaders</span>
+    <span class="subtitle">filter the hair before it ruins your HeLa digest</span>
+    <span>Hairs filtered: <b id="score">0</b></span>
     <span>Level: <b id="level">1</b></span>
-    <span>Source integrity: <b id="lives">3</b></span>
+    <span>Cleanroom integrity: <b id="lives">3</b></span>
     <button onclick="resetGame()">Reset</button>
   </div>
   <canvas id="game" width="900" height="600"></canvas>
-  <div id="msg">← → or mouse to move source · SPACE or click to fragment</div>
+  <div id="msg">← → or mouse to move HEPA · SPACE or click to suck up hair</div>
 </div>
 <script>
 const W = 900, H = 600;
-const PLAYER_Y = H - 40;
-const PLAYER_W = 60, PLAYER_H = 18;
+const PLAYER_Y = H - 44;
+const PLAYER_W = 70, PLAYER_H = 26;
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -71,21 +71,36 @@ const levelEl = document.getElementById('level');
 const livesEl = document.getElementById('lives');
 const msgEl = document.getElementById('msg');
 
-// ── PEG physics: real m/z ladder ─────────────────────────────
-// PEG (polyethylene glycol) +1 ions at 44.026 Da spacing.
-// +2 charge state halves spacing but same ladder pattern.
-// Starting m/z for +1 row = C2H4O repeating unit + Na/H adduct.
-const PEG_REPEAT = 44.026;
-const PEG_BASE = 370.2;
-
-function mzForCol(col) { return PEG_BASE + col * PEG_REPEAT; }
+// ── Invader species ─────────────────────────────────────────
+// Each species maps to a real keratin contaminant family.
+// Hippies = human skin keratins (K1/K10/K14 — the Big Three of
+// every trypsin digest). Dogs = KRT82/KRT86 (canine hair).
+// Cats = KRT77 + friends (feline hair, the worst offender
+// because cat dander travels for days).
+const SPECIES = {
+  hippie: {
+    emoji: '🧔', hp: 1, hair: '#a16207',
+    body: '#fde68a', label: 'K1/K10',
+    score: 10,
+  },
+  dog: {
+    emoji: '🐕', hp: 2, hair: '#78350f',
+    body: '#fcd34d', label: 'KRT86',
+    score: 25,
+  },
+  cat: {
+    emoji: '🐈', hp: 3, hair: '#1c1917',
+    body: '#e0e7ff', label: 'KRT77',
+    score: 50,
+  },
+};
 
 // ── Game state ───────────────────────────────────────────────
 const state = {
   player: { x: W / 2 - PLAYER_W / 2, vx: 0 },
-  bullets: [],        // player fragmentation pulses (going up)
-  enemies: [],        // PEG ions
-  contaminants: [],   // enemy drops (going down)
+  bullets: [],
+  enemies: [],
+  hairs: [],
   particles: [],
   keys: {},
   score: 0,
@@ -94,35 +109,50 @@ const state = {
   mouseX: null,
   gameOver: false,
   levelCleared: false,
-  enemyDir: 1,        // 1 right, -1 left
-  enemySpeed: 0.6,    // base horizontal speed
+  enemyDir: 1,
+  enemySpeed: 0.55,
   enemyDropTimer: 0,
   message: '',
 };
 
-// ── Level setup ──────────────────────────────────────────────
 function buildEnemies(level) {
-  const rows = Math.min(3 + Math.floor(level / 2), 5);
-  const cols = 10;
+  const cols = 9;
   const startX = 80, startY = 70;
-  const gapX = 70, gapY = 46;
+  const gapX = 85, gapY = 56;
   const enemies = [];
-  // Each row is a different charge state: +1 at bottom (easier, small),
-  // +2 in middle (2 hits), +3 cluster at top (3 hits, biggest payoff).
-  for (let r = 0; r < rows; r++) {
+  // Top row = cats (hardest), middle = dogs, bottom = hippies.
+  // On later levels more rows appear starting from the top.
+  const rowSpec = [
+    { kind: 'cat' },
+    { kind: 'dog' },
+    { kind: 'hippie' },
+  ];
+  const nRows = Math.min(3 + Math.floor((level - 1) / 2), 5);
+  for (let r = 0; r < Math.min(nRows, rowSpec.length); r++) {
     for (let c = 0; c < cols; c++) {
-      // higher rows = higher charge = harder
-      const z = 1 + Math.floor((rows - 1 - r) / Math.max(1, Math.floor(rows / 3)));
-      const hp = z;
+      const sp = SPECIES[rowSpec[r].kind];
       enemies.push({
         x: startX + c * gapX,
         y: startY + r * gapY,
-        w: 38, h: 28,
-        hp, maxHp: hp,
-        z,                           // charge state
-        mz: mzForCol(c) / z,        // displayed m/z depends on charge
-        col: c,                     // column index — drives firing cadence
+        w: 46, h: 42,
+        hp: sp.hp, maxHp: sp.hp,
+        kind: rowSpec[r].kind,
         alive: true,
+        wobble: Math.random() * Math.PI,
+      });
+    }
+  }
+  // Extra "boss" rows of cats on higher levels
+  for (let r = rowSpec.length; r < nRows; r++) {
+    for (let c = 0; c < cols; c++) {
+      enemies.push({
+        x: startX + c * gapX,
+        y: startY + r * gapY,
+        w: 46, h: 42,
+        hp: 3, maxHp: 3,
+        kind: 'cat',
+        alive: true,
+        wobble: Math.random() * Math.PI,
       });
     }
   }
@@ -132,7 +162,7 @@ function buildEnemies(level) {
 function resetGame() {
   state.player = { x: W / 2 - PLAYER_W / 2, vx: 0 };
   state.bullets = [];
-  state.contaminants = [];
+  state.hairs = [];
   state.particles = [];
   state.score = 0;
   state.level = 1;
@@ -140,9 +170,9 @@ function resetGame() {
   state.gameOver = false;
   state.levelCleared = false;
   state.enemyDir = 1;
-  state.enemySpeed = 0.6;
+  state.enemySpeed = 0.55;
   state.enemies = buildEnemies(1);
-  state.message = 'Fire to fragment. Higher charge states = more hits, more score.';
+  state.message = 'Cats have 3x the HP of hippies. Aim accordingly.';
   msgEl.className = '';
   updateHud();
 }
@@ -151,11 +181,11 @@ function nextLevel() {
   state.level++;
   state.enemies = buildEnemies(state.level);
   state.bullets = [];
-  state.contaminants = [];
+  state.hairs = [];
   state.enemyDir = 1;
-  state.enemySpeed = 0.6 + state.level * 0.15;
+  state.enemySpeed = 0.55 + state.level * 0.12;
   state.levelCleared = false;
-  state.message = `Level ${state.level}: threshold tightened. ${state.enemies.length} ions inbound.`;
+  state.message = `Level ${state.level}: more rows, faster shedding.`;
   msgEl.className = '';
   updateHud();
 }
@@ -169,86 +199,109 @@ function updateHud() {
 
 // ── Drawing ──────────────────────────────────────────────────
 function drawStars() {
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  for (let i = 0; i < 40; i++) {
+  ctx.fillStyle = 'rgba(255,255,255,0.3)';
+  for (let i = 0; i < 30; i++) {
     const x = (i * 137) % W;
-    const y = (i * 83 + Date.now() * 0.02) % H;
+    const y = (i * 83 + Date.now() * 0.015) % H;
     ctx.fillRect(x, y, 1, 1);
   }
 }
 
 function drawPlayer() {
   const p = state.player;
-  // Main body — a stylized fragmentation cell (hex prism)
+  // HEPA air intake — hexagonal prism
   ctx.fillStyle = '#22c55e';
   ctx.beginPath();
   ctx.moveTo(p.x, PLAYER_Y + PLAYER_H);
-  ctx.lineTo(p.x + 10, PLAYER_Y);
-  ctx.lineTo(p.x + PLAYER_W - 10, PLAYER_Y);
+  ctx.lineTo(p.x + 12, PLAYER_Y);
+  ctx.lineTo(p.x + PLAYER_W - 12, PLAYER_Y);
   ctx.lineTo(p.x + PLAYER_W, PLAYER_Y + PLAYER_H);
   ctx.closePath();
   ctx.fill();
   ctx.strokeStyle = '#14532d';
   ctx.lineWidth = 2;
   ctx.stroke();
-  // Collision cell indicator
-  ctx.fillStyle = '#86efac';
-  ctx.fillRect(p.x + PLAYER_W / 2 - 3, PLAYER_Y + 3, 6, 4);
+  // HEPA grille
+  ctx.strokeStyle = '#052e16';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 4; i++) {
+    ctx.beginPath();
+    ctx.moveTo(p.x + 16, PLAYER_Y + 6 + i * 5);
+    ctx.lineTo(p.x + PLAYER_W - 16, PLAYER_Y + 6 + i * 5);
+    ctx.stroke();
+  }
   // Label
-  ctx.font = '9px sans-serif';
+  ctx.font = 'bold 8px sans-serif';
+  ctx.fillStyle = '#052e16';
   ctx.textAlign = 'center';
-  ctx.fillStyle = '#0a0f1a';
-  ctx.fillText('HCD', p.x + PLAYER_W / 2, PLAYER_Y + 14);
+  ctx.textBaseline = 'middle';
+  ctx.fillText('HEPA', p.x + PLAYER_W / 2, PLAYER_Y + PLAYER_H - 6);
 }
 
 function drawEnemy(e) {
   if (!e.alive) return;
-  // Intensity based on hp remaining — fades as it gets fragmented
-  const intensity = e.hp / e.maxHp;
-  // Color by charge state
-  const colors = {
-    1: '#60a5fa',  // +1 blue
-    2: '#a855f7',  // +2 purple
-    3: '#ef4444',  // +3 red
-  };
-  const baseColor = colors[e.z] || '#60a5fa';
-  ctx.globalAlpha = 0.4 + 0.6 * intensity;
-  ctx.fillStyle = baseColor;
-  // Draw as a rounded ion cloud
-  const r = e.w / 2;
+  const sp = SPECIES[e.kind];
+  const cx = e.x + e.w / 2;
+  const cy = e.y + e.h / 2;
+  const hpFrac = e.hp / e.maxHp;
+
+  // Hair tufts around the body (more tufts when hp high)
+  const tufts = Math.round(12 * hpFrac);
+  ctx.strokeStyle = sp.hair;
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < tufts; i++) {
+    const a = (i / tufts) * Math.PI * 2 + e.wobble;
+    const r1 = 20;
+    const r2 = 26 + Math.sin(Date.now() * 0.005 + i) * 2;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1);
+    ctx.lineTo(cx + Math.cos(a) * r2, cy + Math.sin(a) * r2);
+    ctx.stroke();
+  }
+
+  // Body — soft rounded shape
+  ctx.globalAlpha = 0.5 + 0.5 * hpFrac;
+  ctx.fillStyle = sp.body;
   ctx.beginPath();
-  ctx.ellipse(e.x + e.w / 2, e.y + e.h / 2, r, e.h / 2, 0, 0, Math.PI * 2);
+  ctx.ellipse(cx, cy, 20, 17, 0, 0, Math.PI * 2);
   ctx.fill();
-  // Charge label
   ctx.globalAlpha = 1;
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 10px sans-serif';
+
+  // Emoji face
+  ctx.font = '22px serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(`+${e.z}`, e.x + e.w / 2, e.y + e.h / 2 - 4);
-  // m/z below
+  ctx.fillText(sp.emoji, cx, cy + 2);
+
+  // Tiny keratin label below
   ctx.font = '8px monospace';
   ctx.fillStyle = 'rgba(255,255,255,0.75)';
-  ctx.fillText(e.mz.toFixed(1), e.x + e.w / 2, e.y + e.h / 2 + 7);
+  ctx.fillText(sp.label, cx, e.y + e.h + 2);
 }
 
 function drawBullet(b) {
-  ctx.strokeStyle = '#fbbf24';
+  // HEPA airflow — upward arrow / puff
+  ctx.strokeStyle = '#86efac';
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(b.x, b.y);
   ctx.lineTo(b.x, b.y + 10);
+  ctx.moveTo(b.x - 3, b.y + 3);
+  ctx.lineTo(b.x + 3, b.y + 3);
   ctx.stroke();
 }
 
-function drawContaminant(c) {
-  // PEG contamination dripping down — solvent drop
-  ctx.fillStyle = '#60a5fa';
-  ctx.globalAlpha = 0.8;
+function drawHair(h) {
+  // Hair strand falling — wavy
+  ctx.strokeStyle = h.color;
+  ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.arc(c.x, c.y, 3, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.globalAlpha = 1;
+  const wiggle = Math.sin(Date.now() * 0.01 + h.phase) * 3;
+  ctx.moveTo(h.x + wiggle, h.y - 6);
+  ctx.lineTo(h.x - wiggle, h.y - 2);
+  ctx.lineTo(h.x + wiggle, h.y + 2);
+  ctx.lineTo(h.x - wiggle, h.y + 6);
+  ctx.stroke();
 }
 
 function drawParticles() {
@@ -261,9 +314,8 @@ function drawParticles() {
 }
 
 function drawSourceLine() {
-  // Critical line — if PEG crosses this, source is flooded
   const sourceY = PLAYER_Y - 10;
-  ctx.strokeStyle = 'rgba(239,68,68,0.4)';
+  ctx.strokeStyle = 'rgba(239,68,68,0.35)';
   ctx.setLineDash([5, 5]);
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -272,9 +324,9 @@ function drawSourceLine() {
   ctx.stroke();
   ctx.setLineDash([]);
   ctx.font = '10px sans-serif';
-  ctx.fillStyle = 'rgba(239,68,68,0.6)';
+  ctx.fillStyle = 'rgba(239,68,68,0.5)';
   ctx.textAlign = 'right';
-  ctx.fillText('source contamination threshold', W - 10, sourceY - 4);
+  ctx.fillText('clean bench threshold', W - 10, sourceY - 4);
 }
 
 function draw() {
@@ -283,21 +335,21 @@ function draw() {
   drawSourceLine();
   state.enemies.forEach(drawEnemy);
   state.bullets.forEach(drawBullet);
-  state.contaminants.forEach(drawContaminant);
+  state.hairs.forEach(drawHair);
   drawPlayer();
   drawParticles();
-  // Game over overlay
   if (state.gameOver) {
     ctx.fillStyle = 'rgba(0,0,0,0.75)';
     ctx.fillRect(0, 0, W, H);
     ctx.fillStyle = '#ef4444';
     ctx.font = 'bold 32px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('SOURCE FLOODED', W / 2, H / 2 - 20);
+    ctx.fillText('CLEANROOM CONTAMINATED', W / 2, H / 2 - 20);
     ctx.fillStyle = '#e5e7eb';
     ctx.font = '16px sans-serif';
-    ctx.fillText(`Final score: ${state.score} ions · reached level ${state.level}`, W / 2, H / 2 + 20);
-    ctx.fillText('Click Reset to clean the source.', W / 2, H / 2 + 48);
+    ctx.fillText(`Final score: ${state.score} hairs · reached level ${state.level}`, W / 2, H / 2 + 20);
+    ctx.fillText('Every HeLa run for the next week will show K1 and K10 at 10× abundance.', W / 2, H / 2 + 44);
+    ctx.fillText('Click Reset to start over.', W / 2, H / 2 + 68);
   }
 }
 
@@ -333,7 +385,7 @@ function step() {
   for (const b of state.bullets) b.y -= 9;
   state.bullets = state.bullets.filter(b => b.y > -10);
 
-  // Enemy movement — classic grid slide
+  // Enemy horizontal slide
   let hitEdge = false;
   for (const e of state.enemies) {
     if (!e.alive) continue;
@@ -345,22 +397,24 @@ function step() {
     for (const e of state.enemies) if (e.alive) e.y += 18;
   }
 
-  // Enemy contamination drops
+  // Enemy hair drops
   state.enemyDropTimer--;
   if (state.enemyDropTimer <= 0) {
     const live = state.enemies.filter(e => e.alive);
     if (live.length > 0) {
       const shooter = live[Math.floor(Math.random() * live.length)];
-      state.contaminants.push({
+      state.hairs.push({
         x: shooter.x + shooter.w / 2,
         y: shooter.y + shooter.h,
-        vy: 2.5 + state.level * 0.3,
+        vy: 2 + state.level * 0.25,
+        color: SPECIES[shooter.kind].hair,
+        phase: Math.random() * Math.PI * 2,
       });
     }
-    state.enemyDropTimer = 90 - state.level * 8;
-    if (state.enemyDropTimer < 25) state.enemyDropTimer = 25;
+    state.enemyDropTimer = 85 - state.level * 7;
+    if (state.enemyDropTimer < 22) state.enemyDropTimer = 22;
   }
-  for (const c of state.contaminants) c.y += c.vy;
+  for (const h of state.hairs) h.y += h.vy;
 
   // Bullet × enemy
   for (const b of state.bullets) {
@@ -368,12 +422,12 @@ function step() {
       if (!e.alive) continue;
       if (b.x > e.x && b.x < e.x + e.w && b.y > e.y && b.y < e.y + e.h) {
         e.hp--;
-        b.y = -100; // consume bullet
-        spawnParticles(b.x, b.y + 5, '#fbbf24', 5);
+        b.y = -100;
+        spawnParticles(b.x, b.y + 5, '#86efac', 4);
         if (e.hp <= 0) {
           e.alive = false;
-          state.score += 10 * e.z;
-          spawnParticles(e.x + e.w / 2, e.y + e.h / 2, '#60a5fa', 14);
+          state.score += SPECIES[e.kind].score;
+          spawnParticles(e.x + e.w / 2, e.y + e.h / 2, SPECIES[e.kind].hair, 16);
         }
         break;
       }
@@ -381,28 +435,28 @@ function step() {
   }
   state.bullets = state.bullets.filter(b => b.y > -10);
 
-  // Contaminant × player
+  // Hair × player
   const p = state.player;
-  for (const c of state.contaminants) {
-    if (c.x > p.x && c.x < p.x + PLAYER_W && c.y > PLAYER_Y && c.y < PLAYER_Y + PLAYER_H) {
+  for (const h of state.hairs) {
+    if (h.x > p.x && h.x < p.x + PLAYER_W && h.y > PLAYER_Y && h.y < PLAYER_Y + PLAYER_H) {
       state.lives--;
-      c.y = H + 100;
-      spawnParticles(c.x, PLAYER_Y, '#60a5fa', 20);
-      state.message = `Contamination hit! ${state.lives} source integrity left.`;
+      h.y = H + 100;
+      spawnParticles(h.x, PLAYER_Y, h.color, 14);
+      state.message = `Keratin got through! ${state.lives} filter lives left.`;
       if (state.lives <= 0) {
         state.gameOver = true;
-        state.message = 'Source flooded by PEG. Clean required.';
+        state.message = 'Cleanroom contaminated. K1/K10 in every sample for a week.';
         msgEl.className = 'lose';
       }
     }
   }
-  state.contaminants = state.contaminants.filter(c => c.y < H + 20);
+  state.hairs = state.hairs.filter(h => h.y < H + 20);
 
-  // Enemies reaching source line = instant game over
+  // Invaders reaching bench = immediate loss
   for (const e of state.enemies) {
     if (e.alive && e.y + e.h > PLAYER_Y - 10) {
       state.gameOver = true;
-      state.message = 'PEG reached the ion source. Game over.';
+      state.message = `A ${e.kind} got onto your bench. Game over.`;
       msgEl.className = 'lose';
       break;
     }
@@ -421,11 +475,9 @@ function step() {
   if (aliveCount === 0 && !state.levelCleared && !state.gameOver) {
     state.levelCleared = true;
     state.score += 50 * state.lives;
-    state.message = `Level ${state.level} cleared! +${50 * state.lives} integrity bonus.`;
+    state.message = `Level ${state.level} clean! +${50 * state.lives} filter bonus.`;
     msgEl.className = 'win';
-    setTimeout(() => {
-      if (!state.gameOver) nextLevel();
-    }, 1400);
+    setTimeout(() => { if (!state.gameOver) nextLevel(); }, 1400);
   }
 
   updateHud();
@@ -463,15 +515,11 @@ let lastFireT = 0;
 function fireBullet() {
   if (state.gameOver) return;
   const now = Date.now();
-  if (now - lastFireT < 200) return; // rate limit
+  if (now - lastFireT < 200) return;
   lastFireT = now;
-  state.bullets.push({
-    x: state.player.x + PLAYER_W / 2,
-    y: PLAYER_Y,
-  });
+  state.bullets.push({ x: state.player.x + PLAYER_W / 2, y: PLAYER_Y });
 }
 
-// ── Main loop ────────────────────────────────────────────────
 function loop() {
   step();
   draw();
