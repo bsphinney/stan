@@ -702,6 +702,7 @@ Tests marked `@pytest.mark.integration` require Hive SLURM access and real instr
 - [ ] Community dashboard figures: SPD vs. points-across-peak (shows the quantitation cliff), faceted/colored by LC column model
 - [ ] LC column as a dimension in all community dashboard figures (color, facet, or filter)
 - [ ] End-to-end watcher integration test with real instrument data
+- [ ] **[HIGH PRIORITY]** Install wizard for shared drive selection. On first run of both STAN (`stan init`) and godmode, prompt operator for the fleet-sync root — could be (a) an SMB network mount path (current setup; e.g. `/Volumes/proteomics-grp/STAN/` on Brett's Mac, `\\share\STAN\` on Windows), (b) a Hugging Face Space URL for the HTTP-relayed variant, or (c) `none` for instruments that don't participate in the fleet. Store in `~/.stan/fleet.yml` so subsequent runs skip the prompt. Currently operators have to hand-edit `instruments.yml` + figure out the mirror path themselves, and godmode has no equivalent config — you have to pass `--root` every time. Wizard should: validate the path is readable, suggest sensible defaults per OS, let operators reconfigure via `stan init --reconfigure-fleet` / `godmode setup`. Ties in with the HF-hosted fleet DB idea (see brainstorming) — that path unblocks the SMB-free fleet view for labs that can't mount the share.
 
 ---
 
