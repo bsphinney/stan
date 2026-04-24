@@ -362,6 +362,54 @@ def _migrate(con: sqlite3.Connection) -> None:
             con.execute(ddl)
             logger.info("Migration: added column '%s' to runs table", col)
 
+    # v0.2.208: dedup + unique index on (instrument, run_name, raw_path).
+    # Historical inserts used plain INSERT INTO runs with a fresh UUID
+    # per call, so any caller that re-ingested the same file (watcher
+    # restart, backfill walks) produced duplicate dashboard rows. Clean
+    # up existing dupes once, then enforce uniqueness going forward.
+    # Both dup rows usually carry identical child data because every
+    # backfill ran twice — drop the loser + loser's children.
+    idx_exists = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND name='idx_runs_unique'"
+    ).fetchone()
+    if not idx_exists:
+        dup_groups = con.execute(
+            "SELECT instrument, run_name, raw_path FROM runs "
+            "GROUP BY instrument, run_name, raw_path "
+            "HAVING COUNT(*) > 1"
+        ).fetchall()
+        for inst, rn, rp in dup_groups:
+            ids = [r[0] for r in con.execute(
+                "SELECT id FROM runs WHERE instrument=? AND run_name=? "
+                "AND raw_path IS ? ORDER BY id", (inst, rn, rp),
+            ).fetchall()]
+            winner, losers = ids[0], ids[1:]
+            placeholders = ",".join("?" * len(losers))
+            for child in (
+                "tic_traces", "drift_window_centroids", "peg_ion_hits",
+                "irt_anchor_rts", "drift_peak_clouds",
+            ):
+                try:
+                    con.execute(
+                        f"DELETE FROM {child} WHERE run_id IN ({placeholders})",
+                        losers,
+                    )
+                except sqlite3.OperationalError:
+                    pass  # table not yet created in a fresh DB
+            con.execute(
+                f"DELETE FROM runs WHERE id IN ({placeholders})", losers,
+            )
+            logger.info(
+                "Deduped %d copies of %s (kept %s)",
+                len(losers), rn, winner[:8],
+            )
+        con.execute(
+            "CREATE UNIQUE INDEX idx_runs_unique "
+            "ON runs(instrument, run_name, raw_path)"
+        )
+        logger.info("Migration: unique index idx_runs_unique created")
+
 
 def insert_run(
     instrument: str,
@@ -467,8 +515,27 @@ def insert_run(
     cols = ", ".join(row.keys())
     placeholders = ", ".join(f":{k}" for k in row.keys())
 
+    # v0.2.208: idx_runs_unique enforces (instrument, run_name, raw_path)
+    # uniqueness. On conflict, return the existing id instead of
+    # silently inserting a dup (pre-v0.2.208 behavior — every restart
+    # of the watcher or backfill walk created a new row).
     with sqlite3.connect(str(db_path)) as con:
-        con.execute(f"INSERT INTO runs ({cols}) VALUES ({placeholders})", row)
+        try:
+            con.execute(
+                f"INSERT INTO runs ({cols}) VALUES ({placeholders})", row,
+            )
+        except sqlite3.IntegrityError:
+            existing = con.execute(
+                "SELECT id FROM runs WHERE instrument=? AND run_name=? "
+                "AND raw_path IS ?", (instrument, run_name, raw_path),
+            ).fetchone()
+            if existing:
+                logger.info(
+                    "Skipped dup insert for %s (existing id %s)",
+                    run_name, existing[0][:8],
+                )
+                return existing[0]
+            raise
 
     logger.info("Inserted run %s: %s (%s)", run_id[:8], run_name, gate_result)
     return run_id
