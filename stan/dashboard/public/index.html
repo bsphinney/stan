@@ -716,12 +716,19 @@
     // works on every .d file.
     function inferredCharge(mz, im) {
       // Regression coefficients: predicted_im = a + b*mz per charge
+      // v0.2.191: regressions re-anchored against real HeLa trypsin
+      // data (Brett's 21144.d). +2 line passes through (200, 0.70) →
+      // (1200, 1.25) — that's the main ridge in his Bruker DA view.
+      // +1 sits ABOVE it (smaller CCS per charge), +3/+4 BELOW it
+      // (more compact). The previous constants came from a back-of-
+      // envelope generic table and were off by ~0.1-0.2 /K0 per line,
+      // which shifted every color label by one charge state.
       const LINES = [
-        { z: 1, a: 1.050, b: 0.0012, tol: 0.05 },  // wider tolerance — z=1 is noisy
-        { z: 2, a: 0.700, b: 0.0008, tol: 0.04 },
-        { z: 3, a: 0.550, b: 0.0006, tol: 0.04 },
-        { z: 4, a: 0.450, b: 0.0005, tol: 0.04 },
-        { z: 5, a: 0.400, b: 0.0004, tol: 0.04 },
+        { z: 1, a: 1.12,  b: 0.00020, tol: 0.06 },  // +1 contamination
+        { z: 2, a: 0.59,  b: 0.00055, tol: 0.05 },  // main peptide ridge
+        { z: 3, a: 0.50,  b: 0.00045, tol: 0.040 },
+        { z: 4, a: 0.40,  b: 0.00035, tol: 0.040 },
+        { z: 5, a: 0.35,  b: 0.00030, tol: 0.045 },
       ];
       let best = null;
       let bestDist = Infinity;

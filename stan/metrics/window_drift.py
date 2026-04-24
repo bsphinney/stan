@@ -452,16 +452,15 @@ def detect_window_drift(
         if n_pts > 0:
             log_int = np.log10(np.maximum(ints, 1.0))
             if n_pts > CLOUD_CAP:
-                # v0.2.186: switched intensity-weighted sampling → LOG-
-                # weighted so dim background ions are not squeezed out.
-                # Bruker DataAnalysis shows every MS1 peak (ions exist
-                # outside the DIA windows because the windows are MS2
-                # selection boxes, not MS1 coverage). Linear-intensity
-                # weighting threw away the off-ridge context that Brett
-                # relies on to judge drift visually. log10(ints) down-
-                # weights the ridge only modestly so the ridge is still
-                # visibly denser than the background.
-                w = log_int.clip(min=0.1)
+                # v0.2.191: log weighting (v0.2.186) flattened the ridge
+                # against the background too much — Brett's comparison
+                # against Bruker DA showed STAN's ridge barely visible
+                # against the haze. sqrt-intensity weighting is the
+                # middle ground: ridge dots are ~100x more likely than
+                # background (vs log's ~5x and linear's ~10000x), so
+                # the ridge is clearly denser but background still
+                # shows up for context.
+                w = np.sqrt(np.maximum(ints, 1.0))
                 w = w / w.sum()
                 rng = np.random.default_rng(RANDOM_SEED)
                 idx = rng.choice(n_pts, size=CLOUD_CAP, replace=False, p=w)
