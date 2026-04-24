@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>PEG Invaders — STAN Arcade</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0a0f1a; color: #e5e7eb;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+  #wrap {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 12px;
+  }
+  #hud {
+    display: flex; gap: 18px; align-items: center;
+    margin-bottom: 8px; font-size: 14px;
+  }
+  #hud b { color: #fbbf24; }
+  #hud .title { color: #60a5fa; font-weight: bold; font-size: 16px; }
+  #hud .subtitle { color: #94a3b8; font-style: italic; font-size: 12px; }
+  #hud button {
+    background: #1e293b; color: #e5e7eb;
+    border: 1px solid #475569; padding: 6px 14px;
+    border-radius: 4px; cursor: pointer; font-size: 13px;
+  }
+  #hud button:hover { background: #334155; }
+  canvas {
+    background:
+      radial-gradient(circle at 20% 10%, rgba(96,165,250,0.08), transparent 40%),
+      radial-gradient(circle at 80% 90%, rgba(168,85,247,0.08), transparent 40%),
+      #0a0f1a;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    cursor: none;
+    touch-action: none;
+  }
+  #msg {
+    margin-top: 6px; font-size: 13px; color: #94a3b8;
+    min-height: 20px;
+  }
+  #msg.win { color: #22c55e; font-weight: bold; }
+  #msg.lose { color: #ef4444; font-weight: bold; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">
+    <span class="title">🫧 PEG Invaders</span>
+    <span class="subtitle">fragment the polymer before it floods the source</span>
+    <span>Ions destroyed: <b id="score">0</b></span>
+    <span>Level: <b id="level">1</b></span>
+    <span>Source integrity: <b id="lives">3</b></span>
+    <button onclick="resetGame()">Reset</button>
+  </div>
+  <canvas id="game" width="900" height="600"></canvas>
+  <div id="msg">← → or mouse to move source · SPACE or click to fragment</div>
+</div>
+<script>
+const W = 900, H = 600;
+const PLAYER_Y = H - 40;
+const PLAYER_W = 60, PLAYER_H = 18;
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const levelEl = document.getElementById('level');
+const livesEl = document.getElementById('lives');
+const msgEl = document.getElementById('msg');
+
+// ── PEG physics: real m/z ladder ─────────────────────────────
+// PEG (polyethylene glycol) +1 ions at 44.026 Da spacing.
+// +2 charge state halves spacing but same ladder pattern.
+// Starting m/z for +1 row = C2H4O repeating unit + Na/H adduct.
+const PEG_REPEAT = 44.026;
+const PEG_BASE = 370.2;
+
+function mzForCol(col) { return PEG_BASE + col * PEG_REPEAT; }
+
+// ── Game state ───────────────────────────────────────────────
+const state = {
+  player: { x: W / 2 - PLAYER_W / 2, vx: 0 },
+  bullets: [],        // player fragmentation pulses (going up)
+  enemies: [],        // PEG ions
+  contaminants: [],   // enemy drops (going down)
+  particles: [],
+  keys: {},
+  score: 0,
+  level: 1,
+  lives: 3,
+  mouseX: null,
+  gameOver: false,
+  levelCleared: false,
+  enemyDir: 1,        // 1 right, -1 left
+  enemySpeed: 0.6,    // base horizontal speed
+  enemyDropTimer: 0,
+  message: '',
+};
+
+// ── Level setup ──────────────────────────────────────────────
+function buildEnemies(level) {
+  const rows = Math.min(3 + Math.floor(level / 2), 5);
+  const cols = 10;
+  const startX = 80, startY = 70;
+  const gapX = 70, gapY = 46;
+  const enemies = [];
+  // Each row is a different charge state: +1 at bottom (easier, small),
+  // +2 in middle (2 hits), +3 cluster at top (3 hits, biggest payoff).
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      // higher rows = higher charge = harder
+      const z = 1 + Math.floor((rows - 1 - r) / Math.max(1, Math.floor(rows / 3)));
+      const hp = z;
+      enemies.push({
+        x: startX + c * gapX,
+        y: startY + r * gapY,
+        w: 38, h: 28,
+        hp, maxHp: hp,
+        z,                           // charge state
+        mz: mzForCol(c) / z,        // displayed m/z depends on charge
+        col: c,                     // column index — drives firing cadence
+        alive: true,
+      });
+    }
+  }
+  return enemies;
+}
+
+function resetGame() {
+  state.player = { x: W / 2 - PLAYER_W / 2, vx: 0 };
+  state.bullets = [];
+  state.contaminants = [];
+  state.particles = [];
+  state.score = 0;
+  state.level = 1;
+  state.lives = 3;
+  state.gameOver = false;
+  state.levelCleared = false;
+  state.enemyDir = 1;
+  state.enemySpeed = 0.6;
+  state.enemies = buildEnemies(1);
+  state.message = 'Fire to fragment. Higher charge states = more hits, more score.';
+  msgEl.className = '';
+  updateHud();
+}
+
+function nextLevel() {
+  state.level++;
+  state.enemies = buildEnemies(state.level);
+  state.bullets = [];
+  state.contaminants = [];
+  state.enemyDir = 1;
+  state.enemySpeed = 0.6 + state.level * 0.15;
+  state.levelCleared = false;
+  state.message = `Level ${state.level}: threshold tightened. ${state.enemies.length} ions inbound.`;
+  msgEl.className = '';
+  updateHud();
+}
+
+function updateHud() {
+  scoreEl.textContent = state.score;
+  levelEl.textContent = state.level;
+  livesEl.textContent = state.lives;
+  if (state.message) msgEl.textContent = state.message;
+}
+
+// ── Drawing ──────────────────────────────────────────────────
+function drawStars() {
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  for (let i = 0; i < 40; i++) {
+    const x = (i * 137) % W;
+    const y = (i * 83 + Date.now() * 0.02) % H;
+    ctx.fillRect(x, y, 1, 1);
+  }
+}
+
+function drawPlayer() {
+  const p = state.player;
+  // Main body — a stylized fragmentation cell (hex prism)
+  ctx.fillStyle = '#22c55e';
+  ctx.beginPath();
+  ctx.moveTo(p.x, PLAYER_Y + PLAYER_H);
+  ctx.lineTo(p.x + 10, PLAYER_Y);
+  ctx.lineTo(p.x + PLAYER_W - 10, PLAYER_Y);
+  ctx.lineTo(p.x + PLAYER_W, PLAYER_Y + PLAYER_H);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = '#14532d';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  // Collision cell indicator
+  ctx.fillStyle = '#86efac';
+  ctx.fillRect(p.x + PLAYER_W / 2 - 3, PLAYER_Y + 3, 6, 4);
+  // Label
+  ctx.font = '9px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#0a0f1a';
+  ctx.fillText('HCD', p.x + PLAYER_W / 2, PLAYER_Y + 14);
+}
+
+function drawEnemy(e) {
+  if (!e.alive) return;
+  // Intensity based on hp remaining — fades as it gets fragmented
+  const intensity = e.hp / e.maxHp;
+  // Color by charge state
+  const colors = {
+    1: '#60a5fa',  // +1 blue
+    2: '#a855f7',  // +2 purple
+    3: '#ef4444',  // +3 red
+  };
+  const baseColor = colors[e.z] || '#60a5fa';
+  ctx.globalAlpha = 0.4 + 0.6 * intensity;
+  ctx.fillStyle = baseColor;
+  // Draw as a rounded ion cloud
+  const r = e.w / 2;
+  ctx.beginPath();
+  ctx.ellipse(e.x + e.w / 2, e.y + e.h / 2, r, e.h / 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // Charge label
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(`+${e.z}`, e.x + e.w / 2, e.y + e.h / 2 - 4);
+  // m/z below
+  ctx.font = '8px monospace';
+  ctx.fillStyle = 'rgba(255,255,255,0.75)';
+  ctx.fillText(e.mz.toFixed(1), e.x + e.w / 2, e.y + e.h / 2 + 7);
+}
+
+function drawBullet(b) {
+  ctx.strokeStyle = '#fbbf24';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(b.x, b.y);
+  ctx.lineTo(b.x, b.y + 10);
+  ctx.stroke();
+}
+
+function drawContaminant(c) {
+  // PEG contamination dripping down — solvent drop
+  ctx.fillStyle = '#60a5fa';
+  ctx.globalAlpha = 0.8;
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+function drawParticles() {
+  for (const p of state.particles) {
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = p.life / p.maxLife;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawSourceLine() {
+  // Critical line — if PEG crosses this, source is flooded
+  const sourceY = PLAYER_Y - 10;
+  ctx.strokeStyle = 'rgba(239,68,68,0.4)';
+  ctx.setLineDash([5, 5]);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, sourceY);
+  ctx.lineTo(W, sourceY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = '10px sans-serif';
+  ctx.fillStyle = 'rgba(239,68,68,0.6)';
+  ctx.textAlign = 'right';
+  ctx.fillText('source contamination threshold', W - 10, sourceY - 4);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  drawStars();
+  drawSourceLine();
+  state.enemies.forEach(drawEnemy);
+  state.bullets.forEach(drawBullet);
+  state.contaminants.forEach(drawContaminant);
+  drawPlayer();
+  drawParticles();
+  // Game over overlay
+  if (state.gameOver) {
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ef4444';
+    ctx.font = 'bold 32px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('SOURCE FLOODED', W / 2, H / 2 - 20);
+    ctx.fillStyle = '#e5e7eb';
+    ctx.font = '16px sans-serif';
+    ctx.fillText(`Final score: ${state.score} ions · reached level ${state.level}`, W / 2, H / 2 + 20);
+    ctx.fillText('Click Reset to clean the source.', W / 2, H / 2 + 48);
+  }
+}
+
+// ── Physics ──────────────────────────────────────────────────
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    state.particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 5,
+      vy: (Math.random() - 0.5) * 5,
+      size: 2 + Math.random() * 2,
+      color,
+      life: 20 + Math.random() * 15,
+      maxLife: 30,
+    });
+  }
+}
+
+function step() {
+  if (state.gameOver) return;
+
+  // Player input
+  if (state.keys['ArrowLeft']) state.player.vx = -5;
+  else if (state.keys['ArrowRight']) state.player.vx = 5;
+  else state.player.vx = 0;
+  state.player.x += state.player.vx;
+  if (state.mouseX !== null) {
+    state.player.x += (state.mouseX - PLAYER_W / 2 - state.player.x) * 0.25;
+  }
+  state.player.x = Math.max(0, Math.min(W - PLAYER_W, state.player.x));
+
+  // Bullets
+  for (const b of state.bullets) b.y -= 9;
+  state.bullets = state.bullets.filter(b => b.y > -10);
+
+  // Enemy movement — classic grid slide
+  let hitEdge = false;
+  for (const e of state.enemies) {
+    if (!e.alive) continue;
+    e.x += state.enemyDir * state.enemySpeed;
+    if (e.x < 20 || e.x + e.w > W - 20) hitEdge = true;
+  }
+  if (hitEdge) {
+    state.enemyDir *= -1;
+    for (const e of state.enemies) if (e.alive) e.y += 18;
+  }
+
+  // Enemy contamination drops
+  state.enemyDropTimer--;
+  if (state.enemyDropTimer <= 0) {
+    const live = state.enemies.filter(e => e.alive);
+    if (live.length > 0) {
+      const shooter = live[Math.floor(Math.random() * live.length)];
+      state.contaminants.push({
+        x: shooter.x + shooter.w / 2,
+        y: shooter.y + shooter.h,
+        vy: 2.5 + state.level * 0.3,
+      });
+    }
+    state.enemyDropTimer = 90 - state.level * 8;
+    if (state.enemyDropTimer < 25) state.enemyDropTimer = 25;
+  }
+  for (const c of state.contaminants) c.y += c.vy;
+
+  // Bullet × enemy
+  for (const b of state.bullets) {
+    for (const e of state.enemies) {
+      if (!e.alive) continue;
+      if (b.x > e.x && b.x < e.x + e.w && b.y > e.y && b.y < e.y + e.h) {
+        e.hp--;
+        b.y = -100; // consume bullet
+        spawnParticles(b.x, b.y + 5, '#fbbf24', 5);
+        if (e.hp <= 0) {
+          e.alive = false;
+          state.score += 10 * e.z;
+          spawnParticles(e.x + e.w / 2, e.y + e.h / 2, '#60a5fa', 14);
+        }
+        break;
+      }
+    }
+  }
+  state.bullets = state.bullets.filter(b => b.y > -10);
+
+  // Contaminant × player
+  const p = state.player;
+  for (const c of state.contaminants) {
+    if (c.x > p.x && c.x < p.x + PLAYER_W && c.y > PLAYER_Y && c.y < PLAYER_Y + PLAYER_H) {
+      state.lives--;
+      c.y = H + 100;
+      spawnParticles(c.x, PLAYER_Y, '#60a5fa', 20);
+      state.message = `Contamination hit! ${state.lives} source integrity left.`;
+      if (state.lives <= 0) {
+        state.gameOver = true;
+        state.message = 'Source flooded by PEG. Clean required.';
+        msgEl.className = 'lose';
+      }
+    }
+  }
+  state.contaminants = state.contaminants.filter(c => c.y < H + 20);
+
+  // Enemies reaching source line = instant game over
+  for (const e of state.enemies) {
+    if (e.alive && e.y + e.h > PLAYER_Y - 10) {
+      state.gameOver = true;
+      state.message = 'PEG reached the ion source. Game over.';
+      msgEl.className = 'lose';
+      break;
+    }
+  }
+
+  // Particles
+  for (const pt of state.particles) {
+    pt.x += pt.vx;
+    pt.y += pt.vy;
+    pt.life--;
+  }
+  state.particles = state.particles.filter(p => p.life > 0);
+
+  // Level cleared?
+  const aliveCount = state.enemies.filter(e => e.alive).length;
+  if (aliveCount === 0 && !state.levelCleared && !state.gameOver) {
+    state.levelCleared = true;
+    state.score += 50 * state.lives;
+    state.message = `Level ${state.level} cleared! +${50 * state.lives} integrity bonus.`;
+    msgEl.className = 'win';
+    setTimeout(() => {
+      if (!state.gameOver) nextLevel();
+    }, 1400);
+  }
+
+  updateHud();
+}
+
+// ── Input ────────────────────────────────────────────────────
+window.addEventListener('keydown', (e) => {
+  state.keys[e.code] = true;
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    fireBullet();
+  }
+});
+window.addEventListener('keyup', (e) => { state.keys[e.code] = false; });
+
+canvas.addEventListener('mousemove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  state.mouseX = (e.clientX - r.left) * (W / r.width);
+});
+canvas.addEventListener('mouseleave', () => { state.mouseX = null; });
+canvas.addEventListener('mousedown', () => { fireBullet(); });
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  state.mouseX = (e.touches[0].clientX - r.left) * (W / r.width);
+}, { passive: false });
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  state.mouseX = (e.touches[0].clientX - r.left) * (W / r.width);
+  fireBullet();
+}, { passive: false });
+
+let lastFireT = 0;
+function fireBullet() {
+  if (state.gameOver) return;
+  const now = Date.now();
+  if (now - lastFireT < 200) return; // rate limit
+  lastFireT = now;
+  state.bullets.push({
+    x: state.player.x + PLAYER_W / 2,
+    y: PLAYER_Y,
+  });
+}
+
+// ── Main loop ────────────────────────────────────────────────
+function loop() {
+  step();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+resetGame();
+loop();
+</script>
+</body>
+</html>

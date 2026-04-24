@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>m/zork — STAN Arcade</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: #22c55e;
+    font-family: 'Courier New', 'Menlo', monospace;
+    overflow: hidden;
+  }
+  #crt {
+    height: 100vh; padding: 20px;
+    max-width: 900px; margin: 0 auto;
+    display: flex; flex-direction: column;
+    text-shadow: 0 0 4px rgba(34, 197, 94, 0.5);
+  }
+  #banner {
+    color: #fbbf24; white-space: pre; font-size: 11px;
+    text-align: center; line-height: 1.2;
+    text-shadow: 0 0 6px rgba(251, 191, 36, 0.6);
+    margin-bottom: 8px;
+  }
+  #log {
+    flex: 1; overflow-y: auto; padding: 10px;
+    background: rgba(34, 197, 94, 0.02);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    border-radius: 4px;
+    font-size: 14px; line-height: 1.55;
+    white-space: pre-wrap;
+  }
+  #log .room { color: #fbbf24; font-weight: bold; }
+  #log .cmd  { color: #60a5fa; }
+  #log .err  { color: #ef4444; }
+  #log .win  { color: #a855f7; font-weight: bold; }
+  .prompt {
+    display: flex; align-items: center; margin-top: 10px;
+    padding: 8px; border: 1px solid rgba(34, 197, 94, 0.4);
+    border-radius: 4px;
+  }
+  .prompt span { color: #fbbf24; margin-right: 6px; }
+  #input {
+    flex: 1; background: transparent; color: #22c55e;
+    border: none; outline: none;
+    font-family: inherit; font-size: 14px;
+  }
+  #help {
+    color: #64748b; font-size: 11px; margin-top: 4px; text-align: center;
+  }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: #000; }
+  ::-webkit-scrollbar-thumb { background: #166534; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="crt">
+  <pre id="banner">
+  ███╗   ███╗  ██╗ ███████╗ ██████╗ ██████╗ ██╗  ██╗
+  ████╗ ████║ ██╔╝ ╚══███╔╝██╔═══██╗██╔══██╗██║ ██╔╝
+  ██╔████╔██║██╔╝    ███╔╝ ██║   ██║██████╔╝█████╔╝
+  ██║╚██╔╝██║███████╗███╔╝  ██║   ██║██╔══██╗██╔═██╗
+  ██║ ╚═╝ ██║╚════██║███████╗╚██████╔╝██║  ██║██║  ██╗
+  ╚═╝     ╚═╝     ╚═╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝
+          a mass-spec text adventure · v1.0
+  </pre>
+  <div id="log"></div>
+  <div class="prompt">
+    <span>&gt;</span>
+    <input id="input" autofocus autocomplete="off" spellcheck="false" />
+  </div>
+  <div id="help">Try: LOOK · GO NORTH · TAKE VIAL · INVENTORY · HELP · TALK BRETT</div>
+</div>
+<script>
+// ── World map ────────────────────────────────────────────────
+const rooms = {
+  office: {
+    name: "Your Office",
+    desc: "A cramped PI's office lit by a single flickering monitor. The screen shows STAN's dashboard — half the drift badges are amber, one is red. A coffee mug steams. A sticky note on the monitor reads: 'BACK UP THE LIBRARY.' An exit leads east to the main lab; another door north is labeled SERVER ROOM.",
+    exits: { east: 'lab', north: 'server' },
+    items: ['coffee', 'sticky_note'],
+  },
+  lab: {
+    name: "Main Lab",
+    desc: "Benches loaded with pipette tips, HeLa aliquots, and a gradient bottle half-empty. A centrifuge whines. On the wall, a drift canary bird sits quietly in a small cage — perfectly still, watching you with one eye. Doors lead west (office), north (instrument room), and south (storage).",
+    exits: { west: 'office', north: 'instrument', south: 'storage' },
+    items: ['hela_vial', 'canary'],
+  },
+  storage: {
+    name: "Storage Closet",
+    desc: "Shelves of LC columns, nitrogen cylinders, and one extremely cursed-looking bottle labeled 'PEG 10k — do not open.' A wrench hangs on a hook. The door leads north back to the lab.",
+    exits: { north: 'lab' },
+    items: ['wrench', 'peg_bottle'],
+  },
+  instrument: {
+    name: "Instrument Room",
+    desc: "Two mass specs dominate the room, humming at different pitches. To the east, a Thermo ASTRAL radiates corporate red. To the west, a Bruker timsTOF HT glows blue. A dark corner in the northeast smells faintly of solvent. Exits: south (lab), east (Astral source), west (TIMS cell), northeast (dark corner).",
+    exits: { south: 'lab', east: 'astral_src', west: 'tims_cell', northeast: 'dark' },
+    items: [],
+  },
+  astral_src: {
+    name: "Astral Ion Source",
+    desc: "You stand inside a shimmering spray of solvent droplets. High voltage crackles. You can go DOWN into the orbitrap (but only if the source is properly sealed with a wrench) or WEST back to the instrument room.",
+    exits: { west: 'instrument', down: 'orbitrap' },
+    items: [],
+    lockedExit: { dir: 'down', needs: 'wrench_used', msg: "The source is not sealed. HV is arcing dangerously. You'd be fried. USE WRENCH first." },
+  },
+  orbitrap: {
+    name: "The Orbitrap",
+    desc: "You are inside the m/z dimension. Fragment ions orbit in resonant rings, each labeled with a fraction. In the center floats a glowing object — the MASTER SPECTRAL LIBRARY. Exit: UP (back out).",
+    exits: { up: 'astral_src' },
+    items: ['library'],
+  },
+  tims_cell: {
+    name: "TIMS Cell",
+    desc: "A narrow tube filled with cascading ion mobility gradients. Peptides drift past you sorted by charge and cross section. You can see a +2 peptide ridge tracking at 1/K0 ≈ 1.0. Something small glints on the floor — a USB DRIVE. Exit: EAST (instrument room).",
+    exits: { east: 'instrument' },
+    items: ['usb'],
+  },
+  dark: {
+    name: "Dark Chamber",
+    desc: "The room is PITCH BLACK. You are likely to be eaten by a GRUE.",
+    exits: { southwest: 'instrument' },
+    items: [],
+    dark: true,
+  },
+  server: {
+    name: "Server Room",
+    desc: "A rack of blinking servers. On the main terminal, a Hive SSH session is open. It's asking for AUTHENTICATION. Text on the screen: 'require: master library parquet + DIA-NN license key'. Exit: south (office).",
+    exits: { south: 'office' },
+    items: [],
+  },
+};
+
+const items = {
+  coffee: { desc: "Coffee, still hot. Smells like survival. Restores your ability to notice things." },
+  sticky_note: { desc: "The note says: 'If cornered, throw PEG at it. It loves PEG. — B'", take: false },
+  hela_vial: { desc: "50 ng HeLa aliquot in 0.1% formic acid. The lab's sacrament." },
+  canary: { desc: "A small yellow bird. It chirps when peptide IDs are healthy; it stops chirping when drift arrives. Right now: chirping normally." },
+  wrench: { desc: "A heavy source-cleaning wrench. Fits the Astral's source manifold." },
+  peg_bottle: { desc: "A sealed bottle of PEG 10k. Don't open this unless you hate life." },
+  library: { desc: "The master spectral library — predicted + empirical combined. Glows faintly. Required to auth to Hive." },
+  usb: { desc: "A small USB drive. On the label: 'DIA-NN 2.3.1 LICENSE'. Someone was backing this up." },
+};
+
+const flags = {
+  wrench_used: false,
+  grue_aware: false,
+  grue_defeated: false,
+  won: false,
+};
+
+const state = {
+  here: 'office',
+  inv: [],
+  dead: false,
+};
+
+// ── IO ───────────────────────────────────────────────────────
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+
+function echo(text, cls) {
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text + '\n';
+  log.appendChild(span);
+  log.scrollTop = log.scrollHeight;
+}
+
+function look() {
+  const r = rooms[state.here];
+  echo(r.name.toUpperCase(), 'room');
+  if (r.dark && !state.inv.includes('library')) {
+    echo("It is pitch black. You hear something slithering. It smells of ethylene oxide.");
+    if (!flags.grue_aware) {
+      echo("A GRUE is in this room.", 'err');
+      flags.grue_aware = true;
+    }
+    return;
+  }
+  echo(r.desc);
+  if (r.items.length) {
+    echo("You see here: " + r.items.map(i => i.replace('_', ' ')).join(', '));
+  }
+}
+
+// ── Parser ───────────────────────────────────────────────────
+const DIRS = {
+  n: 'north', north: 'north',
+  s: 'south', south: 'south',
+  e: 'east',  east: 'east',
+  w: 'west',  west: 'west',
+  u: 'up',    up: 'up',
+  d: 'down',  down: 'down',
+  ne: 'northeast', northeast: 'northeast',
+  sw: 'southwest', southwest: 'southwest',
+};
+
+function handle(raw) {
+  const cmd = raw.trim().toLowerCase();
+  echo("> " + raw, 'cmd');
+  if (!cmd) return;
+  if (state.dead) {
+    echo("You are dead. Type RESTART to begin again.", 'err');
+    if (cmd === 'restart') restart();
+    return;
+  }
+  if (flags.won) {
+    echo("You have already won. Type RESTART to play again.", 'win');
+    if (cmd === 'restart') restart();
+    return;
+  }
+
+  const tokens = cmd.split(/\s+/);
+  const verb = tokens[0];
+  const rest = tokens.slice(1).join(' ').replace(/ /g, '_');
+
+  // Directions as bare words
+  if (DIRS[verb]) return move(DIRS[verb]);
+
+  switch (verb) {
+    case 'look': case 'l': return look();
+    case 'go': case 'move':
+      if (DIRS[tokens[1]]) return move(DIRS[tokens[1]]);
+      return echo("Go where?", 'err');
+    case 'take': case 'get': case 'grab': return take(rest);
+    case 'drop': return drop(rest);
+    case 'inventory': case 'i': case 'inv': return showInv();
+    case 'examine': case 'x': case 'read': return examine(rest);
+    case 'use': return use(tokens);
+    case 'open': return openIt(rest);
+    case 'talk':
+      if (rest === 'brett') return talkBrett();
+      return echo("Nobody by that name is here.", 'err');
+    case 'throw': return throwIt(tokens);
+    case 'help': return echo("Commands: LOOK, GO <dir>, TAKE, DROP, INVENTORY, EXAMINE, USE <item>, OPEN, TALK BRETT, THROW <item> AT <target>, RESTART.");
+    case 'restart': return restart();
+    case 'quit': return echo("This game has no quit button. You live here now.");
+    default: return echo("I don't understand that verb.", 'err');
+  }
+}
+
+function move(dir) {
+  const r = rooms[state.here];
+  if (r.dark && !state.inv.includes('library') && dir !== 'southwest') {
+    // In the dark — trying to move = grue ambush unless you have light
+    echo("You stumble in the dark...");
+    if (!flags.grue_defeated) {
+      echo("The GRUE seizes you! It smells of polyethylene glycol. You are eaten.", 'err');
+      state.dead = true;
+      return;
+    }
+  }
+  if (!r.exits[dir]) return echo("You can't go that way.", 'err');
+  if (r.lockedExit && r.lockedExit.dir === dir && !flags[r.lockedExit.needs]) {
+    return echo(r.lockedExit.msg, 'err');
+  }
+  state.here = r.exits[dir];
+  look();
+  // Entering dark triggers grue awareness
+  if (rooms[state.here].dark && !flags.grue_defeated && !state.inv.includes('library')) {
+    // Grue only eats you when you MOVE in the dark, not on entry.
+  }
+}
+
+function take(name) {
+  const r = rooms[state.here];
+  if (!name) return echo("Take what?", 'err');
+  const idx = r.items.indexOf(name);
+  if (idx < 0) return echo("There's no " + name.replace('_',' ') + " here.", 'err');
+  const item = items[name];
+  if (item && item.take === false) return echo("You can't take that.", 'err');
+  r.items.splice(idx, 1);
+  state.inv.push(name);
+  echo("Taken: " + name.replace('_',' ') + ".");
+  // Library lights up the dark
+  if (name === 'library' && state.here === 'orbitrap') {
+    echo("The library glows in your hand. Darkness recoils from it. You could probably illuminate the grue now.", 'win');
+  }
+}
+
+function drop(name) {
+  const idx = state.inv.indexOf(name);
+  if (idx < 0) return echo("You don't have that.", 'err');
+  state.inv.splice(idx, 1);
+  rooms[state.here].items.push(name);
+  echo("Dropped: " + name.replace('_',' '));
+}
+
+function showInv() {
+  if (!state.inv.length) return echo("You are empty-handed.");
+  echo("You are carrying: " + state.inv.map(i => i.replace('_',' ')).join(', '));
+}
+
+function examine(name) {
+  if (!name) return echo("Examine what?", 'err');
+  if (items[name] && (state.inv.includes(name) || rooms[state.here].items.includes(name))) {
+    return echo(items[name].desc);
+  }
+  if (name === 'canary' && state.inv.includes('canary')) {
+    // Dynamic canary behavior
+    if (state.here === 'dark') return echo("The canary has STOPPED CHIRPING. Something here is catastrophically wrong.");
+    return echo(items.canary.desc);
+  }
+  echo("You don't see that.", 'err');
+}
+
+function use(tokens) {
+  // "use X" or "use X on Y"
+  const onIdx = tokens.indexOf('on');
+  const item = onIdx > 1 ? tokens.slice(1, onIdx).join('_') : tokens.slice(1).join('_');
+  const target = onIdx > 1 ? tokens.slice(onIdx+1).join('_') : null;
+  if (!item) return echo("Use what?", 'err');
+  if (!state.inv.includes(item)) return echo("You don't have a " + item.replace('_',' ') + ".", 'err');
+
+  if (item === 'wrench' && state.here === 'astral_src') {
+    flags.wrench_used = true;
+    return echo("You torque the source manifold shut. A green seal light comes on. The HV arcing stops. You could safely go DOWN now.");
+  }
+  if (item === 'coffee') {
+    return echo("You drink the coffee. You feel the universe sharpen by 3 dB. Metrics make more sense.");
+  }
+  if (item === 'usb' && state.here === 'server') {
+    if (state.inv.includes('library')) {
+      flags.won = true;
+      echo("You insert the USB. The Hive terminal accepts the DIA-NN license. You upload the master library.", 'win');
+      echo("", 'win');
+      echo("*** YOU HAVE WON ***", 'win');
+      echo("", 'win');
+      echo("Every instrument on the STAN fleet can now search with the canonical library. Drift stops being a mystery. Brett ships a paper. The proteomics core gets a new espresso machine.", 'win');
+      echo("", 'win');
+      echo("Type RESTART to replay.", 'win');
+      return;
+    }
+    return echo("The terminal says: 'LIBRARY NOT FOUND. Retrieve the master spectral library.'", 'err');
+  }
+  if (item === 'library' && state.here === 'server') {
+    if (state.inv.includes('usb')) {
+      flags.won = true;
+      echo("You present the library. The Hive terminal accepts the DIA-NN license. You publish the canonical library.", 'win');
+      echo("*** YOU HAVE WON ***", 'win');
+      echo("Drift becomes quantifiable. PEG becomes tractable. Brett's core finally gets a decent espresso machine.", 'win');
+      echo("Type RESTART to play again.", 'win');
+      return;
+    }
+    return echo("The terminal asks for the DIA-NN license key too.");
+  }
+  if (item === 'library' && state.here === 'dark' && !flags.grue_defeated) {
+    flags.grue_defeated = true;
+    echo("The library's glow fills the chamber. The GRUE — a mass of polymeric tendrils and sodium adducts — shrieks and retreats into the shadow of a fume hood. It drops something as it flees.", 'win');
+    rooms.dark.items.push('peg_vial_rare');
+    items.peg_vial_rare = { desc: "A rare high-MW PEG calibration standard. Ironically useful." };
+    rooms.dark.desc = "You have lit the chamber with the master library. The grue's lair is revealed: a pile of crushed coffee cups and old source cones. Exit: southwest (instrument room).";
+    rooms.dark.dark = false;
+    return;
+  }
+  echo("You can't use that here.", 'err');
+}
+
+function throwIt(tokens) {
+  // "throw X at Y"
+  const atIdx = tokens.indexOf('at');
+  const item = atIdx > 1 ? tokens.slice(1, atIdx).join('_') : tokens.slice(1).join('_');
+  const target = atIdx > 1 ? tokens.slice(atIdx+1).join('_') : null;
+  if (!state.inv.includes(item)) return echo("You don't have that.", 'err');
+  if (item === 'peg_bottle' && state.here === 'dark' && !flags.grue_defeated) {
+    flags.grue_defeated = true;
+    echo("You hurl the PEG 10k at the grue. It catches the bottle in its tendrils and starts purring. Ethylene oxide mist fills the air. It is, for the moment, distracted.", 'win');
+    state.inv.splice(state.inv.indexOf('peg_bottle'), 1);
+    rooms.dark.dark = false;
+    rooms.dark.desc = "The chamber is lit now by the phosphorescent glow of a grue sprawled happily over a bottle of PEG 10k. Exit: southwest.";
+    return;
+  }
+  echo("Throwing that accomplishes nothing.");
+}
+
+function openIt(what) {
+  if (what === 'peg_bottle' && state.inv.includes('peg_bottle')) {
+    echo("You unscrew the PEG bottle. A fine mist escapes. The canary immediately stops chirping. You sneeze. Your next MS run will be contaminated for a week.", 'err');
+    return;
+  }
+  echo("That doesn't open.", 'err');
+}
+
+function talkBrett() {
+  echo("Brett is not here, but his influence permeates the lab. His legacy: ruthless standardization, a healthy skepticism of protein counts, and the belief that every instrument deserves a canary.");
+}
+
+function restart() {
+  location.reload();
+}
+
+// ── Input handler ────────────────────────────────────────────
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const v = input.value;
+    input.value = '';
+    handle(v);
+  }
+});
+
+// ── Opening ──────────────────────────────────────────────────
+echo("");
+echo("WEST OF MASS SPEC", 'room');
+echo("You are a proteomics core director. It is 11:47 PM. The instruments are running overnight. A deadline looms. The master DIA-NN spectral library has gone missing, and Hive won't authenticate without it.");
+echo("");
+echo("Type HELP for commands. Type LOOK to begin.");
+echo("");
+</script>
+</body>
+</html>

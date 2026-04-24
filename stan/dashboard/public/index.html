@@ -5088,7 +5088,7 @@
             <span className="version">{ver ? `v${ver.version}` : ''}</span>
           </header>
           <div className="tabs">
-            {[['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community']].map(([k, label]) =>
+            {[['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community'], ['arcade', '🎮 Arcade']].map(([k, label]) =>
               <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
             )}
           </div>
@@ -5100,6 +5100,11 @@
             {tab === 'fleet' && <FleetPanel />}
             {tab === 'config' && <ConfigEditor />}
             {tab === 'community' && <CommunityTab />}
+            {tab === 'arcade' && (
+              <iframe src="/static/arcade.html"
+                      style={{width:'100%', height:'calc(100vh - 120px)', border:'0', borderRadius:'6px'}}
+                      title="STAN Arcade" />
+            )}
           </ErrorBoundary>
           {/* PEG/Drift breakdown modal. Event-driven so any badge,
               in any tab, can open it without prop-drilling state. */}

@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Angry Mass Specs — STAN Arcade</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0a0f1a; color: #e5e7eb;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+  #wrap {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 12px;
+  }
+  #hud {
+    display: flex; gap: 16px; align-items: center;
+    margin-bottom: 8px; font-size: 14px;
+  }
+  #hud b { color: #fbbf24; }
+  #hud button {
+    background: #1e293b; color: #e5e7eb;
+    border: 1px solid #475569; padding: 6px 14px;
+    border-radius: 4px; cursor: pointer; font-size: 13px;
+  }
+  #hud button:hover { background: #334155; }
+  #hud .title { color: #fbbf24; font-weight: bold; font-size: 16px; }
+  #hud .subtitle { color: #94a3b8; font-style: italic; font-size: 12px; }
+  canvas {
+    background: linear-gradient(to bottom, #1e293b 0%, #0f172a 60%, #1a2f1e 60%, #0b1a10 100%);
+    border: 1px solid #334155;
+    border-radius: 6px;
+    cursor: crosshair;
+    touch-action: none;
+  }
+  #msg {
+    margin-top: 6px; font-size: 13px; color: #94a3b8;
+    min-height: 20px;
+  }
+  #msg.win { color: #22c55e; font-weight: bold; }
+  #msg.lose { color: #ef4444; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">
+    <span class="title">🧪 Angry Mass Specs</span>
+    <span class="subtitle">sling HeLa at the competition</span>
+    <span>Score: <b id="score">0</b></span>
+    <span>Shots: <b id="shots">5</b></span>
+    <span>Broken: <b id="broken">0</b> / <b id="total">0</b></span>
+    <button onclick="resetGame()">Reset</button>
+    <button onclick="nextLevel()" id="nextBtn" style="display:none;">Next Level →</button>
+  </div>
+  <canvas id="game" width="1100" height="560"></canvas>
+  <div id="msg">Drag from the scientist. Pull back, release to fire. Direct hits > glancing blows.</div>
+</div>
+<script>
+const W = 1100, H = 560;
+const GROUND_Y = H - 80;
+const GRAVITY = 0.35;
+const DRAG = 0.999;
+const SLING_X = 140, SLING_Y = GROUND_Y - 70;
+const MAX_PULL = 130;
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const shotsEl = document.getElementById('shots');
+const brokenEl = document.getElementById('broken');
+const totalEl = document.getElementById('total');
+const msgEl = document.getElementById('msg');
+const nextBtn = document.getElementById('nextBtn');
+
+const state = {
+  projectiles: [],
+  parts: [],
+  aiming: false,
+  aim: null,
+  shotsLeft: 5,
+  score: 0,
+  level: 1,
+  particles: [],
+  nextShotType: 0,
+  message: '',
+};
+
+const SHOT_KINDS = [
+  { name: 'HeLa vial',     emoji: '🧪', damage: 1, color: '#f472b6' },
+  { name: 'PEG cloud',     emoji: '🫧', damage: 2, color: '#60a5fa' },
+  { name: 'Gradient bomb', emoji: '💣', damage: 3, color: '#fbbf24' },
+  { name: 'DIA-NN bolt',   emoji: '⚡', damage: 2, color: '#a855f7' },
+  { name: 'Affi-tip',      emoji: '💉', damage: 1, color: '#22c55e' },
+];
+
+function buildLevel(n) {
+  const parts = [];
+  const BASELINE = GROUND_Y;
+
+  const astralX = 720;
+  parts.push({ x: astralX,     y: BASELINE-60,  w: 180, h: 60, hp: 2, color: '#b91c1c', label: 'ASTRAL', kind: 'astral' });
+  parts.push({ x: astralX+20,  y: BASELINE-110, w: 140, h: 50, hp: 2, color: '#dc2626', label: 'orbitrap', kind: 'astral' });
+  parts.push({ x: astralX+50,  y: BASELINE-150, w: 80,  h: 40, hp: 3, color: '#991b1b', label: 'trap', kind: 'astral' });
+  parts.push({ x: astralX+60,  y: BASELINE-185, w: 60,  h: 35, hp: 3, color: '#fef2f2', label: '', kind: 'astral' });
+
+  const tofX = 940;
+  parts.push({ x: tofX,    y: BASELINE-50,  w: 120, h: 50, hp: 2, color: '#1e40af', label: 'timsTOF', kind: 'bruker' });
+  parts.push({ x: tofX+10, y: BASELINE-95,  w: 100, h: 45, hp: 2, color: '#2563eb', label: 'TIMS', kind: 'bruker' });
+  parts.push({ x: tofX+20, y: BASELINE-135, w: 80,  h: 40, hp: 3, color: '#1d4ed8', label: 'TOF', kind: 'bruker' });
+  parts.push({ x: tofX+30, y: BASELINE-165, w: 60,  h: 30, hp: 3, color: '#dbeafe', label: '', kind: 'bruker' });
+
+  if (n >= 2) {
+    parts.push({ x: 480, y: BASELINE-40, w: 40, h: 40, hp: 1, color: '#92400e', label: '', kind: 'crate' });
+    parts.push({ x: 540, y: BASELINE-80, w: 40, h: 40, hp: 1, color: '#92400e', label: '', kind: 'crate' });
+    parts.push({ x: 480, y: BASELINE-80, w: 40, h: 40, hp: 1, color: '#92400e', label: '', kind: 'crate' });
+  }
+  if (n >= 3) {
+    parts.push({ x: 600, y: BASELINE-50, w: 100, h: 15, hp: 1, color: '#78350f', label: '', kind: 'beam' });
+    parts.push({ x: 620, y: BASELINE-130, w: 40, h: 80, hp: 1, color: '#92400e', label: '', kind: 'support' });
+  }
+
+  return parts;
+}
+
+function resetGame() {
+  state.projectiles = [];
+  state.parts = buildLevel(state.level);
+  state.shotsLeft = 5;
+  state.score = 0;
+  state.particles = [];
+  state.message = '';
+  nextBtn.style.display = 'none';
+  updateHud();
+}
+
+function nextLevel() {
+  state.level++;
+  state.parts = buildLevel(state.level);
+  state.shotsLeft = 5;
+  state.projectiles = [];
+  state.particles = [];
+  state.message = `Level ${state.level} — harder shot, same vials.`;
+  msgEl.className = '';
+  nextBtn.style.display = 'none';
+  updateHud();
+}
+
+function updateHud() {
+  scoreEl.textContent = state.score;
+  shotsEl.textContent = state.shotsLeft;
+  const total = state.parts.length;
+  const broken = state.parts.filter(p => p.hp <= 0).length;
+  brokenEl.textContent = broken;
+  totalEl.textContent = total;
+  if (state.message) msgEl.textContent = state.message;
+}
+
+function drawScientist() {
+  ctx.strokeStyle = '#78350f';
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.moveTo(SLING_X, SLING_Y + 50);
+  ctx.lineTo(SLING_X, SLING_Y - 10);
+  ctx.stroke();
+  ctx.lineWidth = 6;
+  ctx.beginPath();
+  ctx.moveTo(SLING_X, SLING_Y - 10);
+  ctx.lineTo(SLING_X - 20, SLING_Y - 35);
+  ctx.moveTo(SLING_X, SLING_Y - 10);
+  ctx.lineTo(SLING_X + 20, SLING_Y - 35);
+  ctx.stroke();
+
+  ctx.fillStyle = '#f3f4f6';
+  ctx.fillRect(SLING_X - 55, SLING_Y + 10, 30, 60);
+  ctx.fillStyle = '#fcd34d';
+  ctx.beginPath();
+  ctx.arc(SLING_X - 40, SLING_Y + 2, 12, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#1e293b';
+  ctx.fillRect(SLING_X - 48, SLING_Y - 2, 6, 5);
+  ctx.fillRect(SLING_X - 40, SLING_Y - 2, 6, 5);
+
+  let anchorX = SLING_X, anchorY = SLING_Y - 30;
+  if (state.aiming && state.aim) {
+    const dx = state.aim.x - SLING_X;
+    const dy = state.aim.y - SLING_Y;
+    let d = Math.hypot(dx, dy);
+    if (d > MAX_PULL) {
+      const k = MAX_PULL / d;
+      anchorX = SLING_X + dx * k;
+      anchorY = SLING_Y + dy * k;
+    } else {
+      anchorX = state.aim.x;
+      anchorY = state.aim.y;
+    }
+    ctx.strokeStyle = '#525252';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(SLING_X - 20, SLING_Y - 35);
+    ctx.lineTo(anchorX, anchorY);
+    ctx.lineTo(SLING_X + 20, SLING_Y - 35);
+    ctx.stroke();
+    drawVial(anchorX, anchorY, SHOT_KINDS[state.nextShotType]);
+
+    const vx = -(anchorX - SLING_X) * 0.18;
+    const vy = -(anchorY - SLING_Y) * 0.18;
+    ctx.fillStyle = 'rgba(251, 191, 36, 0.5)';
+    let px = anchorX, py = anchorY, pvx = vx, pvy = vy;
+    for (let i = 0; i < 40; i++) {
+      px += pvx; py += pvy; pvy += GRAVITY;
+      if (i % 3 === 0) {
+        ctx.beginPath(); ctx.arc(px, py, 2, 0, Math.PI*2); ctx.fill();
+      }
+      if (py > GROUND_Y) break;
+    }
+  }
+}
+
+function drawVial(x, y, kind) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = kind.color;
+  ctx.beginPath();
+  ctx.arc(0, 0, 12, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#fff';
+  ctx.fillText(kind.emoji, 0, 1);
+  ctx.restore();
+}
+
+function drawParts() {
+  for (const p of state.parts) {
+    if (p.hp <= 0) continue;
+    const dmgFrac = p.initialHp ? (p.initialHp - p.hp) / p.initialHp : 0;
+    if (!p.initialHp) p.initialHp = p.hp;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, p.w, p.h);
+    ctx.strokeStyle = '#0a0f1a';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(p.x, p.y, p.w, p.h);
+    if (dmgFrac > 0) {
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(p.x + p.w * 0.2, p.y);
+      ctx.lineTo(p.x + p.w * 0.4, p.y + p.h * 0.6);
+      ctx.lineTo(p.x + p.w * 0.2, p.y + p.h);
+      if (dmgFrac > 0.5) {
+        ctx.moveTo(p.x + p.w * 0.7, p.y);
+        ctx.lineTo(p.x + p.w * 0.5, p.y + p.h * 0.5);
+        ctx.lineTo(p.x + p.w * 0.8, p.y + p.h);
+      }
+      ctx.stroke();
+    }
+    if (p.label) {
+      ctx.font = 'bold 12px sans-serif';
+      ctx.fillStyle = '#0a0f1a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(p.label, p.x + p.w / 2, p.y + p.h / 2);
+    }
+  }
+}
+
+function drawGround() {
+  ctx.fillStyle = '#0b1a10';
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.strokeStyle = '#166534';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 12) {
+    ctx.beginPath();
+    ctx.moveTo(x, GROUND_Y);
+    ctx.lineTo(x + 3, GROUND_Y - 6);
+    ctx.stroke();
+  }
+}
+
+function drawParticles() {
+  for (const p of state.particles) {
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = p.life / p.maxLife;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  drawGround();
+  drawParts();
+  drawScientist();
+  for (const proj of state.projectiles) drawVial(proj.x, proj.y, proj.kind);
+  drawParticles();
+}
+
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    state.particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 6,
+      vy: -Math.random() * 6 - 2,
+      size: 2 + Math.random() * 3,
+      color,
+      life: 30 + Math.random() * 20,
+      maxLife: 40,
+    });
+  }
+}
+
+function step() {
+  for (const proj of state.projectiles) {
+    proj.vx *= DRAG;
+    proj.vy += GRAVITY;
+    proj.x += proj.vx;
+    proj.y += proj.vy;
+    if (proj.y > GROUND_Y - 8) {
+      proj.alive = false;
+      spawnParticles(proj.x, GROUND_Y - 8, proj.kind.color, 6);
+    }
+    if (proj.x > W + 40 || proj.x < -40) proj.alive = false;
+    for (const p of state.parts) {
+      if (p.hp <= 0) continue;
+      if (proj.x + 10 > p.x && proj.x - 10 < p.x + p.w
+          && proj.y + 10 > p.y && proj.y - 10 < p.y + p.h) {
+        p.hp -= proj.kind.damage;
+        state.score += 10 * proj.kind.damage;
+        spawnParticles(proj.x, proj.y, p.color, 10);
+        if (p.hp <= 0) {
+          state.score += 50;
+          spawnParticles(p.x + p.w / 2, p.y + p.h / 2, p.color, 20);
+        }
+        proj.vx = -proj.vx * 0.3;
+        proj.vy = -Math.abs(proj.vy) * 0.4;
+        if (Math.hypot(proj.vx, proj.vy) < 1) proj.alive = false;
+      }
+    }
+  }
+  state.projectiles = state.projectiles.filter(p => p.alive !== false);
+
+  for (const pt of state.particles) {
+    pt.vy += 0.3;
+    pt.x += pt.vx;
+    pt.y += pt.vy;
+    pt.life--;
+  }
+  state.particles = state.particles.filter(p => p.life > 0);
+
+  const liveParts = state.parts.filter(p => p.hp > 0 && (p.kind === 'astral' || p.kind === 'bruker'));
+  if (liveParts.length === 0 && state.projectiles.length === 0 && state.parts.length > 0) {
+    if (!state.message.startsWith('Level')) {
+      state.message = `Level ${state.level} cleared! +${50 * state.shotsLeft} bonus for unused vials.`;
+      state.score += 50 * state.shotsLeft;
+      msgEl.className = 'win';
+      nextBtn.style.display = 'inline-block';
+    }
+  } else if (state.shotsLeft <= 0 && state.projectiles.length === 0) {
+    state.message = `Out of vials! ${liveParts.length} instruments still standing. Click Reset.`;
+    msgEl.className = 'lose';
+  }
+
+  updateHud();
+}
+
+function canvasPos(e) {
+  const r = canvas.getBoundingClientRect();
+  const t = e.touches ? e.touches[0] : e;
+  return { x: (t.clientX - r.left) * (W / r.width),
+           y: (t.clientY - r.top) * (H / r.height) };
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  if (state.shotsLeft <= 0) return;
+  const p = canvasPos(e);
+  if (Math.hypot(p.x - SLING_X, p.y - SLING_Y) < 120) {
+    state.aiming = true;
+    state.aim = p;
+  }
+});
+canvas.addEventListener('mousemove', (e) => {
+  if (state.aiming) state.aim = canvasPos(e);
+});
+canvas.addEventListener('mouseup', () => {
+  if (!state.aiming || !state.aim) return;
+  fire();
+});
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (state.shotsLeft <= 0) return;
+  const p = canvasPos(e);
+  if (Math.hypot(p.x - SLING_X, p.y - SLING_Y) < 120) {
+    state.aiming = true;
+    state.aim = p;
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (state.aiming) state.aim = canvasPos(e);
+}, { passive: false });
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  if (state.aiming && state.aim) fire();
+}, { passive: false });
+
+function fire() {
+  const dx = state.aim.x - SLING_X;
+  const dy = state.aim.y - SLING_Y;
+  let d = Math.hypot(dx, dy);
+  let ax = state.aim.x, ay = state.aim.y;
+  if (d > MAX_PULL) {
+    const k = MAX_PULL / d;
+    ax = SLING_X + dx * k;
+    ay = SLING_Y + dy * k;
+  }
+  const kind = SHOT_KINDS[state.nextShotType];
+  state.nextShotType = (state.nextShotType + 1) % SHOT_KINDS.length;
+  state.projectiles.push({
+    x: ax, y: ay,
+    vx: -(ax - SLING_X) * 0.18,
+    vy: -(ay - SLING_Y) * 0.18,
+    kind, alive: true,
+  });
+  state.shotsLeft--;
+  state.aiming = false;
+  state.aim = null;
+  state.message = `Fired: ${kind.name} (${kind.damage} dmg)`;
+  msgEl.className = '';
+}
+
+function loop() {
+  step();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+resetGame();
+loop();
+</script>
+</body>
+</html>

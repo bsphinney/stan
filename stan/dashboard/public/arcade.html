@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>STAN Arcade</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0a0f1a; color: #e5e7eb;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow: hidden;
+  }
+  #menu {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: flex-start; padding: 30px;
+    height: calc(100% - 60px); overflow: hidden;
+  }
+  h1 {
+    color: #fbbf24; margin: 0 0 4px 0; font-size: 28px;
+  }
+  .subtitle {
+    color: #94a3b8; margin-bottom: 24px; font-style: italic; font-size: 13px;
+  }
+  .games {
+    display: flex; gap: 24px; flex-wrap: wrap; justify-content: center;
+    max-width: 900px;
+  }
+  .game-card {
+    background: #1e293b; border: 1px solid #334155;
+    border-radius: 10px; padding: 20px; width: 320px;
+    cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
+  }
+  .game-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px rgba(251, 191, 36, 0.15);
+    border-color: #fbbf24;
+  }
+  .game-card h2 {
+    margin: 0 0 8px 0; color: #fbbf24; font-size: 20px;
+  }
+  .game-card p { color: #cbd5e1; font-size: 13px; line-height: 1.5; margin: 6px 0; }
+  .badge {
+    display: inline-block; background: #334155; color: #94a3b8;
+    font-size: 10px; padding: 2px 8px; border-radius: 8px; margin-right: 4px;
+  }
+  iframe {
+    border: 0; width: 100%; height: calc(100vh - 40px);
+    display: none;
+  }
+  #backBtn {
+    display: none;
+    position: absolute; top: 10px; left: 10px; z-index: 10;
+    background: #1e293b; color: #e5e7eb;
+    border: 1px solid #475569; padding: 6px 14px;
+    border-radius: 4px; cursor: pointer; font-size: 13px;
+  }
+  #backBtn:hover { background: #334155; }
+  .footer {
+    margin-top: 30px; color: #64748b; font-size: 11px; text-align: center;
+  }
+</style>
+</head>
+<body>
+<button id="backBtn" onclick="backToMenu()">← Arcade Menu</button>
+<div id="menu">
+  <h1>🎮 STAN Arcade</h1>
+  <div class="subtitle">workstation-friendly distractions for the proteomics life</div>
+  <div class="games">
+    <div class="game-card" onclick="launch('peg-invaders.html')">
+      <h2>🫧 PEG Invaders</h2>
+      <p><span class="badge">ARCADE</span><span class="badge">KEYBOARD</span></p>
+      <p>Fragment a descending m/z ladder of PEG ions before they flood the source. Charge states +1 / +2 / +3 march down on the 44 Da ladder. Collision energy shots upward, contamination drops on you.</p>
+      <p style="color:#60a5fa;font-size:12px;">←→ or mouse · SPACE or click to fire</p>
+    </div>
+    <div class="game-card" onclick="launch('angry-specs.html')">
+      <h2>🧪 Angry Mass Specs</h2>
+      <p><span class="badge">PHYSICS</span><span class="badge">MOUSE</span></p>
+      <p>Slingshot a scientist's worst samples at a Thermo Astral and a Bruker timsTOF HT. Each instrument has multi-part destructible anatomy. HeLa vials, PEG clouds, gradient bombs, DIA-NN bolts.</p>
+      <p style="color:#f472b6;font-size:12px;">click + drag from scientist, release to fire</p>
+    </div>
+    <div class="game-card" onclick="launch('mzork.html')">
+      <h2>&gt;_ m/zork</h2>
+      <p><span class="badge">TEXT</span><span class="badge">ADVENTURE</span></p>
+      <p>A Zork parody set in a proteomics core at 11:47 PM. Recover the missing master DIA-NN library. Beware the grue — it smells of PEG. Featuring a drift canary, an Astral ion source, a dark chamber, and multiple win paths.</p>
+      <p style="color:#22c55e;font-size:12px;">type LOOK, GO NORTH, HELP</p>
+    </div>
+  </div>
+  <div class="footer">
+    Built for Brett's labs. No actual instruments were harmed.
+  </div>
+</div>
+<iframe id="gameFrame"></iframe>
+<script>
+function launch(url) {
+  document.getElementById('menu').style.display = 'none';
+  const f = document.getElementById('gameFrame');
+  f.src = url;
+  f.style.display = 'block';
+  document.getElementById('backBtn').style.display = 'block';
+}
+function backToMenu() {
+  document.getElementById('menu').style.display = 'flex';
+  const f = document.getElementById('gameFrame');
+  f.src = 'about:blank';
+  f.style.display = 'none';
+  document.getElementById('backBtn').style.display = 'none';
+}
+</script>
+</body>
+</html>
