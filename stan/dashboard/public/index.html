@@ -233,12 +233,15 @@
       const label = score != null
         ? (score < 10 ? score.toFixed(1) : Math.round(score).toString())
         : { clean: 'CLN', trace: 'TRC', moderate: 'MOD', heavy: 'PEG' }[cls] || '—';
-      const color = {
-        clean:    '#6b7280',    // gray — uninteresting, don't draw the eye
-        trace:    '#a8a29e',    // warm gray — background contamination
-        moderate: '#eab308',    // yellow — fix sample prep
-        heavy:    '#dc2626',    // red — hold from community
-      }[cls] || '#6b7280';
+      // v0.2.192: color by SCORE so the number and color always agree.
+      // Brett spotted that Drift 80 was amber while Drift 45 was red
+      // (classifier-driven colors disagreed with score). Thresholds
+      // mirror the classifier boundaries from stan/metrics/peg.py.
+      const color =
+        score == null      ? '#6b7280' :
+        score < 20         ? '#16a34a' :  // green — clean
+        score < 50         ? '#eab308' :  // amber — trace / moderate zone
+                             '#dc2626';   // red — heavy
       const title =
         `PEG ${cls} — click for ion breakdown\n` +
         `score: ${run.peg_score != null ? run.peg_score.toFixed(1) : '—'}\n` +
@@ -290,11 +293,16 @@
       const score = driftScore(run);
       const label = score != null ? String(score)
         : { ok: 'OK', warn: 'WARN', drifted: 'DRFT' }[cls] || '?';
-      const color = {
-        ok:      '#16a34a',
-        warn:    '#eab308',
-        drifted: '#dc2626',
-      }[cls] || '#6b7280';
+      // v0.2.192: color by SCORE, not by drift_class. Brett spotted
+      // that score=80 was rendering amber while score=45 was red
+      // because the classifier (severe-count + intensity-fraction)
+      // disagrees with the p90-based score on edge cases. Now the
+      // color always matches the number on screen: higher = worse.
+      const color =
+        score == null      ? '#6b7280' :
+        score < 40         ? '#16a34a' :  // green
+        score < 70         ? '#eab308' :  // amber
+                             '#dc2626';   // red
       const cov = run.drift_coverage != null
         ? (run.drift_coverage * 100).toFixed(1) + '%'
         : '—';
