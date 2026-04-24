@@ -168,6 +168,73 @@ class _AcquisitionHandler(FileSystemEventHandler):
                 self._on_event("already_tracked", path, "")
 
 
+def _resolve_instrument_name(config: dict) -> str:
+    """Return a human-readable instrument name from a watcher config.
+
+    v0.2.190: handles the `name: auto` placeholder by reading vendor
+    metadata from the first raw file in the configured watch_dir.
+    Previously the watcher stamped rows with the literal string "auto"
+    when operators left the default in place, which then showed up in
+    the dashboard + mirror as a meaningless identifier.
+
+    Resolution order:
+      1. Explicit name in yaml (anything other than "auto"/empty/
+         "unknown") — use verbatim.
+      2. First `.d` under watch_dir → TDF GlobalMetadata.InstrumentName
+         (e.g. "timsTOF HT").
+      3. First `.raw` under watch_dir → fisher_py or TRFP metadata's
+         instrument_model field (e.g. "Orbitrap Fusion Lumos").
+      4. Fall back to the literal "auto" so the operator sees the
+         same surprising value in the dashboard that prompts them to
+         rename.
+    """
+    configured = (config.get("name") or "").strip()
+    if configured and configured.lower() not in ("auto", "unknown", ""):
+        return configured
+
+    watch = Path(config.get("watch_dir") or "")
+    if not watch.exists():
+        return "auto"
+
+    try:
+        # Bruker .d — read the first one we find.
+        for d in watch.glob("*.d"):
+            tdf = d / "analysis.tdf"
+            if not tdf.exists():
+                continue
+            try:
+                import sqlite3 as _sq
+                with _sq.connect(str(tdf)) as con:
+                    row = con.execute(
+                        "SELECT Value FROM GlobalMetadata WHERE Key='InstrumentName'"
+                    ).fetchone()
+                    if row and row[0]:
+                        return str(row[0]).strip()
+            except Exception:
+                continue
+            break  # Only try the first .d
+    except Exception:
+        logger.debug("auto-name Bruker path failed", exc_info=True)
+
+    try:
+        # Thermo .raw — use the existing trfp helper.
+        for r in watch.glob("*.raw"):
+            try:
+                from stan.tools.trfp import extract_metadata
+                meta = extract_metadata(r)
+                model = getattr(meta, "instrument_model", None) or \
+                        (isinstance(meta, dict) and meta.get("instrument_model"))
+                if model:
+                    return str(model).strip()
+            except Exception:
+                continue
+            break  # Only try the first .raw
+    except Exception:
+        logger.debug("auto-name Thermo path failed", exc_info=True)
+
+    return "auto"
+
+
 class InstrumentWatcher:
     """Watches a single instrument's raw data directory."""
 
@@ -224,7 +291,16 @@ class InstrumentWatcher:
     def __init__(self, instrument_config: dict) -> None:
         import collections
         self._config = instrument_config
-        self._name = instrument_config.get("name", "unknown")
+        # v0.2.190: resolve "auto" to a real vendor metadata name so
+        # rows don't get stamped with a placeholder.
+        resolved_name = _resolve_instrument_name(instrument_config)
+        if resolved_name != instrument_config.get("name"):
+            logger.info(
+                "Auto-resolved instrument name '%s' → '%s' from raw metadata",
+                instrument_config.get("name"), resolved_name,
+            )
+            instrument_config["name"] = resolved_name
+        self._name = resolved_name
         self._watch_dir = instrument_config.get("watch_dir", "")
         self._trackers: dict[str, StabilityTracker] = {}
         # Parallel map of tracker path → "qc" | "monitor". Written by
