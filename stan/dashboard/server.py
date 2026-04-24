@@ -757,6 +757,182 @@ async def api_run_drift_cloud(run_id: str, source: str = "runs") -> dict:
     return {"run_id": run_id, "source": source, "cloud": cloud}
 
 
+def _locate_features_file(raw_path: str | None) -> Path | None:
+    """Find the .features SQLite next to a raw .d directory.
+
+    Mirrors ``stan.metrics.features.find_features_file`` but implemented
+    inline to avoid importing from that module — a parallel worker is
+    actively editing it, and we want zero coupling.
+
+    Preference order (matches 4DFF default behavior):
+      1. <raw.d>/<stem>.features   — inside the .d
+      2. <parent>/<stem>.features  — sibling of the .d
+
+    Returns None if raw_path is empty, the .d doesn't exist, or no
+    .features file can be located.
+    """
+    if not raw_path:
+        return None
+    d = Path(raw_path)
+    if not d.exists():
+        return None
+    stem = d.stem
+    inside = d / f"{stem}.features" if d.is_dir() else None
+    if inside is not None and inside.exists():
+        return inside
+    sibling = d.parent / f"{stem}.features"
+    if sibling.exists():
+        return sibling
+    return None
+
+
+@app.get("/api/runs/{run_id}/features-by-charge")
+async def api_run_features_by_charge(run_id: str, source: str = "runs") -> dict:
+    """Return per-charge MS1 feature points from a 4DFF .features file.
+
+    Powers the Ziggy-style Plotly scatter in the dashboard: one trace
+    per charge state, so +1 contamination and +2/+3 peptides can be
+    toggled independently. Reads the .features SQLite (LcTimsMsFeature
+    table) that 4DFF writes next to the Bruker .d. Falls back to
+    ``{"has_features": false, "reason": ...}`` when no file exists so
+    the frontend can show a friendly "run ``stan run-4dff`` first"
+    message and revert to the legacy SVG cloud.
+
+    Caps at 50,000 features — anything larger is uniformly downsampled
+    to keep the browser responsive.
+    """
+    import sqlite3 as _sqlite
+
+    if source not in ("runs", "sample_health"):
+        raise HTTPException(
+            status_code=400, detail="source must be 'runs' or 'sample_health'"
+        )
+
+    db_path = get_db_path()
+    if not db_path.exists():
+        raise HTTPException(status_code=404, detail="database not found")
+
+    # Pull raw_path + run_name for this row. Both runs and sample_health
+    # carry a raw_path column so the lookup is symmetric.
+    raw_path: str | None = None
+    run_name: str | None = None
+    with _sqlite.connect(str(db_path)) as con:
+        con.row_factory = _sqlite.Row
+        row = con.execute(
+            f"SELECT run_name, raw_path FROM {source} WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        if row is not None:
+            raw_path = row["raw_path"]
+            run_name = row["run_name"]
+
+    if raw_path is None:
+        return {
+            "run_id": run_id,
+            "source": source,
+            "has_features": False,
+            "reason": f"run {run_id} not found in {source} table",
+        }
+
+    feat_path = _locate_features_file(raw_path)
+    if feat_path is None:
+        return {
+            "run_id": run_id,
+            "source": source,
+            "run_name": run_name,
+            "has_features": False,
+            "reason": (
+                "no .features file found next to raw data — "
+                f"run `stan run-4dff {raw_path}` to generate it"
+            ),
+        }
+
+    # Read the LcTimsMsFeature table. Use a fresh sqlite3 connection —
+    # do NOT import from stan.metrics.features (race risk).
+    try:
+        fcon = _sqlite.connect(str(feat_path))
+        fcon.row_factory = _sqlite.Row
+        total = fcon.execute(
+            "SELECT COUNT(*) FROM LcTimsMsFeature WHERE Intensity > 0"
+        ).fetchone()[0]
+        # Uniform sampling via ROWID modulo when the table is huge.
+        # Use ceil-style division so 60_000 / 50_000 → step=2 (not 1),
+        # guaranteeing we actually drop below the cap.
+        cap = 50_000
+        if total > cap:
+            step = max(2, (total + cap - 1) // cap)
+            cursor = fcon.execute(
+                "SELECT MZ, Charge, RT, Mobility, Intensity "
+                "FROM LcTimsMsFeature "
+                "WHERE Intensity > 0 AND (rowid % ?) = 0",
+                (step,),
+            )
+        else:
+            cursor = fcon.execute(
+                "SELECT MZ, Charge, RT, Mobility, Intensity "
+                "FROM LcTimsMsFeature WHERE Intensity > 0"
+            )
+        by_charge: dict[str, dict[str, list[float]]] = {}
+        mz_min = float("inf")
+        mz_max = float("-inf")
+        im_min = float("inf")
+        im_max = float("-inf")
+        n_kept = 0
+        for r in cursor:
+            mz = float(r["MZ"] or 0.0)
+            z = int(r["Charge"] or 0)
+            rt = float(r["RT"] or 0.0)
+            im = float(r["Mobility"] or 0.0)
+            inten = float(r["Intensity"] or 0.0)
+            if mz <= 0 or im <= 0:
+                continue
+            key = str(z)
+            bucket = by_charge.setdefault(
+                key, {"mz": [], "mobility": [], "rt": [], "intensity": []}
+            )
+            bucket["mz"].append(round(mz, 4))
+            bucket["mobility"].append(round(im, 5))
+            bucket["rt"].append(round(rt, 2))
+            bucket["intensity"].append(round(inten, 1))
+            if mz < mz_min:
+                mz_min = mz
+            if mz > mz_max:
+                mz_max = mz
+            if im < im_min:
+                im_min = im
+            if im > im_max:
+                im_max = im
+            n_kept += 1
+        fcon.close()
+    except _sqlite.Error as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"failed to read .features file: {exc}",
+        ) from exc
+
+    if n_kept == 0:
+        return {
+            "run_id": run_id,
+            "source": source,
+            "run_name": run_name,
+            "has_features": False,
+            "reason": ".features file contains no usable rows",
+        }
+
+    return {
+        "run_id": run_id,
+        "source": source,
+        "run_name": run_name,
+        "has_features": True,
+        "features_path": str(feat_path),
+        "n_features": n_kept,
+        "n_total": total,
+        "by_charge": by_charge,
+        "mz_range": [round(mz_min, 2), round(mz_max, 2)],
+        "mobility_range": [round(im_min, 4), round(im_max, 4)],
+    }
+
+
 @app.get("/api/thresholds")
 async def api_thresholds() -> dict:
     """Get current QC thresholds (hot-reloaded)."""
