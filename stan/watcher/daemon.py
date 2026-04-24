@@ -1110,6 +1110,15 @@ class WatcherDaemon:
             logger.info("No enabled instruments configured. Waiting for config changes...")
 
         tick = 0
+        # v0.2.198: keep-alive ping to the HF relay. Spaces sleep after
+        # 48h idle; when they sleep the first request returns a 200 HTML
+        # loading page which the backfill-tic --push code counted as
+        # successful commits for MONTHS (root cause of the 590 sawtooth
+        # rows stuck on HF). Every 12 hours we hit /api/health — tiny
+        # cost, bulletproof prevention.
+        import time as _hf_time
+        _hf_last_ping = 0.0
+        _HF_PING_INTERVAL_S = 12 * 3600
         while not self._stop_event.is_set():
             # Remote restart request (from stan.control.restart_watcher).
             # The presence of ~/.stan/restart.flag means someone on the
@@ -1153,6 +1162,21 @@ class WatcherDaemon:
                     _write_heartbeat()
                 except Exception:
                     logger.debug("control: heartbeat failed", exc_info=True)
+
+            # v0.2.198: HF Space keep-alive ping. See the comment above
+            # the _hf_last_ping init for rationale.
+            if _hf_time.time() - _hf_last_ping > _HF_PING_INTERVAL_S:
+                try:
+                    import urllib.request
+                    from stan.community.submit import RELAY_URL
+                    with urllib.request.urlopen(
+                        f"{RELAY_URL}/api/health", timeout=10
+                    ) as _r:
+                        _r.read(256)   # drain + discard
+                    logger.info("HF relay keep-alive ping: ok")
+                except Exception as _e:
+                    logger.warning("HF relay keep-alive ping failed: %s", _e)
+                _hf_last_ping = _hf_time.time()
 
             tick += 1
             self._stop_event.wait(timeout=CONFIG_POLL_INTERVAL)

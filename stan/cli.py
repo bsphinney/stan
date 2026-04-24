@@ -1232,13 +1232,51 @@ def _backfill_tic_impl(
         console.print(
             f"Pushing [bold]{len(pushed_rows)}[/bold] corrections to the relay..."
         )
+        # v0.2.198: wake the HF Space BEFORE the burst. Spaces sleep
+        # after 48h idle and the first request lands on a "Space is
+        # starting..." HTML loading page that still returns HTTP 200.
+        # Before this fix the client counted those loading-page 200s
+        # as successful patches. Result: 590 sawtooth rows on HF all
+        # summer because every push reported succeeded but nothing
+        # committed. Poll /api/health until we get the real JSON
+        # `{"status":"ok"}` payload (up to 90s). Skip the burst and
+        # log every row as failed if the Space never wakes.
+        import time as _time
+        _space_awake = False
+        _wake_started = _time.time()
+        while _time.time() - _wake_started < 90:
+            try:
+                with urllib.request.urlopen(
+                    f"{RELAY_URL}/api/health", timeout=15
+                ) as _r:
+                    _body = _r.read(512).decode("utf-8", errors="replace")
+                    if _r.status == 200 and '"status":"ok"' in _body:
+                        _space_awake = True
+                        break
+            except Exception:
+                pass
+            _time.sleep(3)
+        if not _space_awake:
+            console.print(
+                "[yellow]Relay health check never returned "
+                "{\"status\":\"ok\"} within 90s — the Space may be "
+                "asleep or down. Skipping push.[/yellow]"
+            )
         ok = 0
         # v0.2.155: capture per-row push errors so the summary log
         # records WHY pushes failed (rate limit? auth? relay down?).
-        # Previously only logger.exception fired, invisible to the Hive
-        # mirror — Brett 2026-04-22 saw "HF errors" we couldn't diagnose.
+        # v0.2.198: now also validates the JSON response body, not just
+        # the HTTP status. Sleeping-Space loading pages return HTTP
+        # 200 with HTML — previously counted as success despite no
+        # commit landing.
         push_errors: list[dict] = []
         for sub_id, push_data in pushed_rows:
+            if not _space_awake:
+                push_errors.append({
+                    "sub_id": sub_id[:8], "status": None,
+                    "error": "Relay asleep — skipped",
+                })
+                continue
             try:
                 data = json.dumps(push_data).encode("utf-8")
                 _hdrs = {"Content-Type": "application/json"}
@@ -1250,18 +1288,48 @@ def _backfill_tic_impl(
                     headers=_hdrs,
                 )
                 with urllib.request.urlopen(req, timeout=30) as resp:
+                    _body_text = resp.read().decode("utf-8", errors="replace")
                     if resp.status == 200:
-                        ok += 1
+                        # Validate that the response is a real patch
+                        # result, not an HF loading page.
+                        try:
+                            _body_json = json.loads(_body_text)
+                            if _body_json.get("status") == "updated":
+                                ok += 1
+                            else:
+                                push_errors.append({
+                                    "sub_id": sub_id[:8],
+                                    "status": 200,
+                                    "error": (
+                                        "Relay returned 200 but not "
+                                        f"'updated': {_body_text[:160]}"
+                                    ),
+                                })
+                        except ValueError:
+                            push_errors.append({
+                                "sub_id": sub_id[:8],
+                                "status": 200,
+                                "error": (
+                                    "Relay returned non-JSON 200 "
+                                    "(likely sleeping-Space HTML): "
+                                    f"{_body_text[:160]}"
+                                ),
+                            })
                     else:
                         push_errors.append({
                             "sub_id": sub_id[:8],
                             "status": resp.status,
-                            "error": f"HTTP {resp.status}",
+                            "error": f"HTTP {resp.status}: {_body_text[:160]}",
                         })
             except urllib.error.HTTPError as e:
+                _err_body = ""
+                try:
+                    _err_body = e.read(512).decode("utf-8", errors="replace")
+                except Exception:
+                    pass
                 push_errors.append({
                     "sub_id": sub_id[:8], "status": e.code,
-                    "error": f"HTTPError: {e.reason}",
+                    "error": f"HTTPError: {e.reason} — {_err_body[:160]}",
                 })
             except urllib.error.URLError as e:
                 push_errors.append({
@@ -2824,6 +2892,211 @@ def backfill_window_drift(
           "skipped_no_path": n_skip_no_path, "skipped_unknown": n_skip_unknown,
           "errors": n_errors})
     log_fh.close()
+    try:
+        sync_to_hive_mirror(include_reports=False)
+    except Exception:
+        pass
+    console.print(f"[dim]Log: {log_path}[/dim]")
+
+
+# ─────────────────────────────────────────────────────────────
+#  4DFF — Bruker universal feature finder integration (v0.2.196+)
+# ─────────────────────────────────────────────────────────────
+
+@app.command("install-4dff")
+def install_4dff_cmd(
+    platform: str = typer.Option(
+        "", "--platform",
+        help="'linux' or 'windows'. Empty = auto-detect from current OS.",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Re-download even if cached binaries pass SHA verification.",
+    ),
+) -> None:
+    """Download Bruker 4D feature finder (uff-cmdline2) into ~/.stan/bruker_ff/.
+
+    4DFF is vendored by AlphaPept (MIT). We pull from a pinned
+    alphapept commit SHA and SHA256-verify every file. License text
+    is installed alongside per AlphaPept's redistribution terms.
+
+    Use `--platform linux` from a mac when bootstrapping a Hive
+    install (mac won't pick linux64 via auto-detect).
+    """
+    from stan.metrics.features import _ALPHAPEPT_PINNED_SHA, install_4dff
+
+    plat_arg = platform or None
+    try:
+        binary = install_4dff(platform=plat_arg, force=force)
+    except Exception as e:
+        console.print(f"[red]4DFF install failed: {e}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]4DFF installed[/green] at [bold]{binary}[/bold]\n"
+        f"  alphapept pin: {_ALPHAPEPT_PINNED_SHA}"
+    )
+
+
+@app.command("run-4dff")
+def run_4dff_cmd(
+    d_path: Path = typer.Argument(..., help="Path to a Bruker .d directory."),
+    timeout: int = typer.Option(
+        30, "--timeout",
+        help="Max minutes to wait for uff-cmdline2.",
+    ),
+    platform: str = typer.Option(
+        "", "--platform",
+        help="'linux' or 'windows'. Empty = auto-detect.",
+    ),
+) -> None:
+    """Run Bruker 4D feature finder on a .d directory.
+
+    Produces <d>/<stem>.features (SQLite) which the feature-based
+    drift detector reads. Fails if 4DFF is not installed — run
+    `stan install-4dff` first.
+    """
+    from stan.metrics.features import run_4dff
+
+    plat_arg = platform or None
+    try:
+        result = run_4dff(d_path, timeout_min=timeout, platform=plat_arg)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]4DFF run failed: {e}[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]4DFF complete[/green] in {result.wall_clock_sec:.1f}s "
+        f"(rc={result.returncode})\n"
+        f"  features: [bold]{result.features_path}[/bold]"
+    )
+
+
+@app.command("backfill-features")
+def backfill_features(
+    limit: int = typer.Option(
+        0, "--limit",
+        help="Stop after this many runs (0 = all queued).",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Re-run 4DFF even when a .features file already exists.",
+    ),
+    instrument: str = typer.Option(
+        "", "--instrument",
+        help="Only runs from this instrument (DB instrument string).",
+    ),
+    timeout: int = typer.Option(
+        30, "--timeout",
+        help="Max minutes per run.",
+    ),
+    platform: str = typer.Option(
+        "", "--platform",
+        help="'linux' or 'windows'. Empty = auto-detect.",
+    ),
+) -> None:
+    """Generate 4DFF .features for every indexed Bruker .d run.
+
+    Iterates the local DB, calls run_4dff on each run's raw_path
+    that doesn't yet have a .features file alongside. Logs a JSONL
+    record per run (and the summary) to ~/.stan/logs/ so the Hive
+    mirror can surface progress.
+    """
+    import json as _json
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from stan.config import get_user_config_dir, sync_to_hive_mirror
+    from stan.db import get_db_path, init_db
+    from stan.metrics.features import find_features_file, run_4dff
+
+    init_db()
+    db_path = get_db_path()
+
+    with sqlite3.connect(str(db_path)) as con:
+        con.row_factory = sqlite3.Row
+        where = ["mode LIKE '%dia%' OR mode = 'qc'"]
+        params: list = []
+        if instrument:
+            where.append("instrument = ?")
+            params.append(instrument)
+        sql = "SELECT id, run_name, instrument, raw_path FROM runs"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY run_date DESC"
+        if limit > 0:
+            sql += f" LIMIT {limit}"
+        rows = con.execute(sql, params).fetchall()
+
+    console.print(f"[bold]{len(rows)} runs queued for 4DFF backfill[/bold]")
+    log_dir = get_user_config_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = (
+        log_dir / f"backfill_features_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    )
+    log_fh = open(log_path, "a", encoding="utf-8")
+
+    def _log(record: dict) -> None:
+        record["ts"] = datetime.now(timezone.utc).isoformat()
+        log_fh.write(_json.dumps(record) + "\n")
+        log_fh.flush()
+
+    _log({"event": "start", "n_queued": len(rows), "force": force,
+          "timeout_min": timeout})
+
+    n_done = 0
+    n_skipped = 0
+    n_errors = 0
+    plat_arg = platform or None
+
+    for row in rows:
+        run = dict(row)
+        raw_path = run.get("raw_path") or ""
+        if not raw_path:
+            n_skipped += 1
+            _log({"event": "skip", "run_id": run["id"], "reason": "no raw_path"})
+            continue
+        d = Path(raw_path)
+        if not d.exists() or not d.is_dir() or d.suffix.lower() != ".d":
+            n_skipped += 1
+            _log({"event": "skip", "run_id": run["id"],
+                  "reason": "not a .d on disk", "raw_path": raw_path})
+            continue
+        if not force and find_features_file(d) is not None:
+            n_skipped += 1
+            _log({"event": "skip", "run_id": run["id"],
+                  "reason": "already has .features"})
+            continue
+
+        try:
+            result = run_4dff(d, timeout_min=timeout, platform=plat_arg)
+        except Exception as e:
+            n_errors += 1
+            _log({"event": "error", "run_id": run["id"], "run_name": run["run_name"],
+                  "error": str(e), "error_type": type(e).__name__})
+            console.print(f"  [red]{run['run_name'][:60]}: {e}[/red]")
+            continue
+
+        n_done += 1
+        _log({
+            "event": "done", "run_id": run["id"], "run_name": run["run_name"],
+            "features_path": str(result.features_path),
+            "wall_clock_sec": result.wall_clock_sec,
+            "returncode": result.returncode,
+        })
+        console.print(
+            f"  [green]{run['run_name'][:60]:<60}[/green] "
+            f"{result.wall_clock_sec:6.1f}s"
+        )
+
+    _log({"event": "end", "done": n_done, "skipped": n_skipped, "errors": n_errors})
+    log_fh.close()
+    console.print(
+        f"[bold]4DFF backfill complete[/bold] — "
+        f"done={n_done} skipped={n_skipped} errors={n_errors}"
+    )
     try:
         sync_to_hive_mirror(include_reports=False)
     except Exception:
