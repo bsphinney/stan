@@ -704,6 +704,29 @@ A minimum of 10 runs with TIC AUC data is required for the assessment.
 
 ---
 
+## Ion Cloud View (timsTOF, v0.2.192+)
+
+The dashboard's **Ion cloud** tab shows a Bruker-DataAnalysis-style scatter of
+m/z vs 1/K0 mobility for a single run, with DIA isolation windows overlaid.
+Two rendering modes exist depending on whether 4DFF features are available:
+
+- **Charge-labeled Plotly view** (preferred) — shown when a `.features` file
+  from the 4D feature finder (`stan run-4dff`) exists next to the raw `.d`.
+  Each charge state becomes its own legend entry; click `+1` once in the
+  legend to hide contamination and watch the +2/+3 peptide ridge pop. DIA
+  windows are rendered as colored rectangles grouped by `window_group`.
+  Colors follow the Ziggy palette (`+1` teal, `+2` blue, `+3` green, `+4`
+  orange, `+5` purple, `+6` red, unassigned yellow).
+- **Legacy SVG cloud** (fallback) — when no `.features` file is present the
+  view falls back to the heatmap of MS1 peaks. A helpful hint tells you to
+  run `stan run-4dff <path/to/.d>` to enable the richer view.
+
+To enable the new view on older runs, generate the `.features` files in
+bulk with `stan run-4dff` (or the per-instrument backfill variant). The
+dashboard will pick them up on the next page load — no re-search required.
+
+---
+
 ## Troubleshooting
 
 ### "Config file not found"

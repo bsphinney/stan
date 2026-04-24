@@ -371,11 +371,65 @@ a core facility staff member quotes when telling a PI about run quality.
 
 ### HPC: Hive (UC Davis)
 
+- Host: `hive.hpc.ucdavis.edu` (user `brettsp`, SSH alias `hive`)
 - Scheduler: SLURM
-- Connection: SSH via `paramiko`
-- DIA-NN and Sage run as SLURM batch jobs on Hive
+- DIA-NN, Sage, 4DFF, etc. run as SLURM batch jobs
 - SQLite database lives on Hive scratch/project storage
 - Dashboard API can be SSH-tunneled to local machine
+- Full context doc at `/Users/brettphinney/Documents/claude_private/HIVE_CLAUDE_GUIDE.md`
+  (read at session start for partition/QOS/path details)
+
+**Hive rules of engagement — violate at your peril:**
+
+1. **Never run compute on the login node (`login1`)**. CPU/memory-heavy
+   work gets flagged. Always use `sbatch` for real work or `srun --pty`
+   for interactive. Brett caught me running `uff-cmdline2` directly on
+   login1 on 2026-04-24 — stop, `pkill`, resubmit as a SLURM job.
+
+2. **Never use `~/` or `/home/brettsp/` for large artifacts** — the home
+   quota is tight and others can't see it. All shared binaries, FASTA
+   files, analysis outputs, and generated `.features` live under
+   `/quobyte/proteomics-grp/...`. Brett's personal scratch dir is
+   `/quobyte/proteomics-grp/brett/` — writable + visible to the lab.
+
+3. **SLURM commands need module environment loaded**. Non-interactive
+   `ssh hive "sbatch ..."` won't find `sbatch` on PATH. Either:
+   - `ssh hive "bash -l -c 'sbatch ...'"` (login shell), or
+   - `ssh hive "source /etc/profile.d/modules.sh && source
+     /etc/profile.d/hpccf.sh && sbatch ..."`
+
+4. **Partitions + QOS** (summary; see the private guide for detail):
+   | Partition | QOS | Use |
+   |---|---|---|
+   | `high` | `genome-center-grp-high-qos` | Priority CPU; 64-CPU per-user cap |
+   | `gpu-a100` | `genome-center-grp-gpu-a100-qos` | 1 A100, use for Casanovo inference/training |
+   | `low` | `publicgrp-low-qos` | Preemptible, huge capacity. Fine for fast (<30 min) jobs. `Requeue=1` recommended. |
+
+   When `high` shows `(QOSGrpCpuLimit)` as the reason, fall back to `low`
+   — different quota, usually works.
+
+5. **Check queue state** with:
+   ```bash
+   squeue -u brettsp -o '%.10i %.12j %.9P %.2t %.10M %.6C %.8m %R'
+   ```
+   Look for the REASON column — `(None)` means just waiting for scheduler,
+   `(QOSGrpCpuLimit)` / `(QOSGrpGRES)` mean quota is capped.
+
+6. **SSH ControlMaster** speeds up repeated invocations:
+   ```bash
+   ssh -o ControlMaster=auto -o ControlPath=/tmp/.stan_brettsp_hive \
+       -o ControlPersist=300 brettsp@hive.hpc.ucdavis.edu "<cmd>"
+   ```
+   macOS socket path must be ≤104 bytes — keep `ControlPath` under
+   `/tmp/` not `/Users/.../...`.
+
+**Bruker 4DFF on Hive** (v0.2.200+):
+- Binary: `/quobyte/proteomics-grp/brett/bruker_ff/linux/uff-cmdline2`
+- `LD_LIBRARY_PATH` must include that dir (for `libtbb.so.2`)
+- STAN's `_install_dir()` in `stan/metrics/features.py` respects the
+  `STAN_BRUKER_FF_DIR` env var — set it to the shared path on Hive
+  so `stan install-4dff` doesn't fill up the home directory:
+  `export STAN_BRUKER_FF_DIR=/quobyte/proteomics-grp/brett/bruker_ff`
 
 ---
 
@@ -696,6 +750,30 @@ Do not introduce MSConvert as a dependency.
   script should batch all reads, not iterate one file at a time in a hot loop.
 - **Upload method** — use `api.upload_file()` for single files, `api.upload_folder()`
   for directories. Check current docs for correct parameter names.
+
+---
+
+## Dashboard: Ion Cloud View (v0.2.192+)
+
+The drift "Ion cloud" tab has two render modes that switch automatically
+depending on whether a 4DFF `.features` file exists next to the raw `.d`:
+
+- **Plotly per-charge scatter** (`DriftCloudPlotly` in `public/index.html`)
+  is the preferred view. It fetches `/api/runs/{run_id}/features-by-charge`
+  which reads the `LcTimsMsFeature` table directly with a raw `sqlite3`
+  connection — **never import from `stan.metrics.features` here**. One
+  trace per charge state, Ziggy palette (`+2` blue, `+1` teal, `+3` green,
+  `+4` orange, `+5` purple, `+6` red, unassigned yellow). DIA windows are
+  overlaid as rectangles grouped by `window_group` with an 8-color palette
+  cycled modulo the group count. Click the legend entries to toggle charges.
+- **Legacy SVG cloud** (`DriftCloudSvg`) is the fallback when no `.features`
+  exists. The friendly stub tells the user to run `stan run-4dff <path>`
+  to unlock the richer view.
+
+Plotly is loaded from `cdn.plot.ly/plotly-2.35.2.min.js` — pure client-side,
+same CDN pattern as React + Babel. No build step needed. If the CDN is
+unreachable the Plotly component renders a "failed to load" note and the
+SVG fallback still works from its own code path.
 
 ---
 
