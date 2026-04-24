@@ -276,13 +276,23 @@
     //   p90=0.07 → 70  (legacy ok/warn boundary)
     //   p90=0.09 → 90  (legacy warn/drifted boundary)
     //   p90≥0.10 → 100 (catastrophically drifted)
-    // Convention matches PEG: 0 = healthy, 100 = worst. Color class
-    // still driven by server-side drift_class so the new detector's
-    // severity-fraction-based classification is authoritative.
+    // Convention matches PEG: 0 = healthy, 100 = worst.
+    //
+    // v0.2.193: floor to classifier verdict so the number + color can
+    // never disagree with drift_class. p90 alone misses severity-count
+    // and severity-intensity-fraction signals — e.g. 21144 has p90=0.044
+    // (raw score 44) but 3 severely-drifted windows → classifier calls
+    // it drifted. Under the old formula the badge would render amber
+    // at 44; under the floor it becomes 70 (red) so the badge reads
+    // the same story the classifier tells.
     function driftScore(run) {
       const p90 = Number(run?.drift_p90_abs_im);
+      const cls = run?.drift_class;
       if (!isFinite(p90)) return null;
-      return Math.round(Math.max(0, Math.min(100, p90 * 1000)));
+      let score = Math.round(Math.max(0, Math.min(100, p90 * 1000)));
+      if (cls === 'drifted') score = Math.max(score, 70);
+      else if (cls === 'warn') score = Math.max(score, 40);
+      return score;
     }
 
     function DriftBadge({ run, source="runs" }) {
