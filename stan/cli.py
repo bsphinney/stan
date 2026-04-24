@@ -2716,7 +2716,12 @@ def backfill_window_drift(
         get_db_path, init_db, update_drift_result,
         insert_drift_window_centroids, insert_drift_peak_cloud,
     )
-    from stan.metrics.window_drift import detect_window_drift
+    # v0.2.202: route through detect_drift_best so every backfilled run
+    # gets the feature-based detector when a .features sidecar exists
+    # and falls back to the MS1-mode histogram otherwise. This is how
+    # Brett's 21144 / 12816 / 21149 get correctly classified after the
+    # 4DFF install step runs earlier in the PS1 chain.
+    from stan.metrics.window_drift import detect_drift_best as detect_window_drift
 
     init_db()
     db_path = get_db_path()

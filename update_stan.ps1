@@ -607,7 +607,7 @@ if ($backfillAlreadyRunning) {
         "stan backfill-tic --force --push && " +
         "echo === stan backfill-peg     === && stan backfill-peg && " +
         "echo === stan backfill-features === && stan backfill-features && " +
-        "echo === stan backfill-window-drift === && stan backfill-window-drift && " +
+        "echo === stan backfill-window-drift --force === && stan backfill-window-drift --force && " +
         "echo ALL BACKFILLS COMPLETE && pause"
     Start-Process -FilePath "cmd.exe" -ArgumentList "/k", $backfillCmd -WorkingDirectory $stanHome -WindowStyle Normal
 }
