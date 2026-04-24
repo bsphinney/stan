@@ -99,26 +99,72 @@ function buildLevel(n) {
   const parts = [];
   const BASELINE = GROUND_Y;
 
-  const astralX = 720;
-  parts.push({ x: astralX,     y: BASELINE-60,  w: 180, h: 60, hp: 2, color: '#b91c1c', label: 'ASTRAL', kind: 'astral' });
-  parts.push({ x: astralX+20,  y: BASELINE-110, w: 140, h: 50, hp: 2, color: '#dc2626', label: 'orbitrap', kind: 'astral' });
-  parts.push({ x: astralX+50,  y: BASELINE-150, w: 80,  h: 40, hp: 3, color: '#991b1b', label: 'trap', kind: 'astral' });
-  parts.push({ x: astralX+60,  y: BASELINE-185, w: 60,  h: 35, hp: 3, color: '#fef2f2', label: '', kind: 'astral' });
+  // ── Thermo Orbitrap Astral ──────────────────────────────
+  // Real proportions: tall white cabinet with red ion-source
+  // tower on the left and a dark cylindrical Orbitrap on top.
+  // "thermo SCIENTIFIC" logo on the front.
+  const astralX = 660;
+  // 1. Main cabinet — white, tall. Flagship Thermo look.
+  parts.push({
+    x: astralX+30, y: BASELINE-190, w: 140, h: 190, hp: 3,
+    color: '#f8fafc', label: 'thermo SCIENTIFIC', kind: 'astral', sub: 'cabinet',
+  });
+  // 2. Ion source tower — red cone on the left side of the cabinet.
+  parts.push({
+    x: astralX, y: BASELINE-110, w: 40, h: 110, hp: 2,
+    color: '#dc2626', label: '', kind: 'astral', sub: 'source',
+  });
+  // 3. Orbitrap mass analyzer — dark cylinder on top.
+  parts.push({
+    x: astralX+50, y: BASELINE-230, w: 100, h: 45, hp: 2,
+    color: '#334155', label: 'Orbitrap', kind: 'astral', sub: 'orbitrap',
+  });
+  // 4. Touchscreen display.
+  parts.push({
+    x: astralX+60, y: BASELINE-140, w: 80, h: 40, hp: 1,
+    color: '#0f172a', label: '', kind: 'astral', sub: 'display',
+  });
 
-  const tofX = 940;
-  parts.push({ x: tofX,    y: BASELINE-50,  w: 120, h: 50, hp: 2, color: '#1e40af', label: 'timsTOF', kind: 'bruker' });
-  parts.push({ x: tofX+10, y: BASELINE-95,  w: 100, h: 45, hp: 2, color: '#2563eb', label: 'TIMS', kind: 'bruker' });
-  parts.push({ x: tofX+20, y: BASELINE-135, w: 80,  h: 40, hp: 3, color: '#1d4ed8', label: 'TOF', kind: 'bruker' });
-  parts.push({ x: tofX+30, y: BASELINE-165, w: 60,  h: 30, hp: 3, color: '#dbeafe', label: '', kind: 'bruker' });
+  // ── Bruker timsTOF HT ───────────────────────────────────
+  // Real proportions: wider low-profile gray/silver cabinet,
+  // blue accent stripe, CaptiveSpray source sticking out the
+  // front-left as a horizontal cylinder.
+  const tofX = 870;
+  // 1. Main cabinet — dark gray, wide.
+  parts.push({
+    x: tofX+20, y: BASELINE-140, w: 200, h: 140, hp: 3,
+    color: '#1e293b', label: 'Bruker', kind: 'bruker', sub: 'cabinet',
+  });
+  // 2. Blue accent stripe along the top.
+  parts.push({
+    x: tofX+20, y: BASELINE-155, w: 200, h: 18, hp: 2,
+    color: '#2563eb', label: 'timsTOF HT', kind: 'bruker', sub: 'stripe',
+  });
+  // 3. CaptiveSpray ion source — cylinder poking out the front-left.
+  parts.push({
+    x: tofX-15, y: BASELINE-80, w: 45, h: 22, hp: 2,
+    color: '#94a3b8', label: '', kind: 'bruker', sub: 'captive_spray',
+  });
+  // 4. TOF reflector tube on the back — small tall rectangle.
+  parts.push({
+    x: tofX+165, y: BASELINE-200, w: 40, h: 50, hp: 2,
+    color: '#475569', label: 'TOF', kind: 'bruker', sub: 'tof_tube',
+  });
+  // 5. Display screen on the front.
+  parts.push({
+    x: tofX+50, y: BASELINE-100, w: 90, h: 32, hp: 1,
+    color: '#0f172a', label: '', kind: 'bruker', sub: 'display',
+  });
 
+  // ── Obstacles (levels 2+) ───────────────────────────────
   if (n >= 2) {
-    parts.push({ x: 480, y: BASELINE-40, w: 40, h: 40, hp: 1, color: '#92400e', label: '', kind: 'crate' });
-    parts.push({ x: 540, y: BASELINE-80, w: 40, h: 40, hp: 1, color: '#92400e', label: '', kind: 'crate' });
-    parts.push({ x: 480, y: BASELINE-80, w: 40, h: 40, hp: 1, color: '#92400e', label: '', kind: 'crate' });
+    parts.push({ x: 450, y: BASELINE-40, w: 40, h: 40, hp: 1, color: '#92400e', label: '', kind: 'crate', sub: 'crate' });
+    parts.push({ x: 510, y: BASELINE-80, w: 40, h: 40, hp: 1, color: '#92400e', label: '', kind: 'crate', sub: 'crate' });
+    parts.push({ x: 450, y: BASELINE-80, w: 40, h: 40, hp: 1, color: '#92400e', label: '', kind: 'crate', sub: 'crate' });
   }
   if (n >= 3) {
-    parts.push({ x: 600, y: BASELINE-50, w: 100, h: 15, hp: 1, color: '#78350f', label: '', kind: 'beam' });
-    parts.push({ x: 620, y: BASELINE-130, w: 40, h: 80, hp: 1, color: '#92400e', label: '', kind: 'support' });
+    parts.push({ x: 560, y: BASELINE-50, w: 100, h: 15, hp: 1, color: '#78350f', label: '', kind: 'beam', sub: 'beam' });
+    parts.push({ x: 580, y: BASELINE-130, w: 40, h: 80, hp: 1, color: '#92400e', label: '', kind: 'support', sub: 'crate' });
   }
 
   return parts;
@@ -239,15 +285,157 @@ function drawVial(x, y, kind) {
 function drawParts() {
   for (const p of state.parts) {
     if (p.hp <= 0) continue;
-    const dmgFrac = p.initialHp ? (p.initialHp - p.hp) / p.initialHp : 0;
     if (!p.initialHp) p.initialHp = p.hp;
+    const dmgFrac = (p.initialHp - p.hp) / p.initialHp;
+
+    // Base rectangle
     ctx.fillStyle = p.color;
     ctx.fillRect(p.x, p.y, p.w, p.h);
     ctx.strokeStyle = '#0a0f1a';
     ctx.lineWidth = 2;
     ctx.strokeRect(p.x, p.y, p.w, p.h);
+
+    // ── Sub-type flourishes to suggest real instrument anatomy ──
+    if (p.sub === 'cabinet' && p.kind === 'astral') {
+      // Thermo cabinet: red accent strip on the left edge
+      ctx.fillStyle = '#dc2626';
+      ctx.fillRect(p.x, p.y, 6, p.h);
+      // Front-panel recess (darker rectangle)
+      ctx.fillStyle = 'rgba(0,0,0,0.05)';
+      ctx.fillRect(p.x + 15, p.y + 15, p.w - 30, p.h - 30);
+      // "thermo SCIENTIFIC" wordmark (red, two weights)
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'italic 13px sans-serif';
+      ctx.fillStyle = '#dc2626';
+      ctx.fillText('thermo', p.x + p.w / 2 - 22, p.y + 22);
+      ctx.font = 'bold 11px sans-serif';
+      ctx.fillStyle = '#334155';
+      ctx.fillText('SCIENTIFIC', p.x + p.w / 2 + 22, p.y + 22);
+      // Status LEDs
+      ctx.fillStyle = '#22c55e';
+      ctx.beginPath(); ctx.arc(p.x + p.w - 14, p.y + p.h - 14, 3, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#fbbf24';
+      ctx.beginPath(); ctx.arc(p.x + p.w - 24, p.y + p.h - 14, 3, 0, Math.PI*2); ctx.fill();
+    } else if (p.sub === 'source' && p.kind === 'astral') {
+      // Ion source tower — taper it toward the top (trapezoid)
+      ctx.fillStyle = '#0a0f1a';
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + p.w, p.y + 5);
+      ctx.lineTo(p.x + p.w, p.y + p.h); ctx.lineTo(p.x, p.y + p.h);
+      ctx.closePath(); ctx.stroke();
+      // Red cone nozzle at top
+      ctx.fillStyle = '#991b1b';
+      ctx.beginPath();
+      ctx.moveTo(p.x + p.w / 2 - 8, p.y);
+      ctx.lineTo(p.x + p.w / 2 + 8, p.y);
+      ctx.lineTo(p.x + p.w / 2, p.y - 14);
+      ctx.closePath(); ctx.fill();
+      // Vertical spray text
+      ctx.save();
+      ctx.translate(p.x + p.w / 2, p.y + p.h / 2);
+      ctx.rotate(-Math.PI/2);
+      ctx.font = 'bold 9px sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.fillText('ESI', 0, 3);
+      ctx.restore();
+    } else if (p.sub === 'orbitrap') {
+      // Orbitrap — cylindrical shading (gradient horizontal)
+      const g = ctx.createLinearGradient(p.x, p.y, p.x, p.y + p.h);
+      g.addColorStop(0, '#64748b');
+      g.addColorStop(0.5, '#1e293b');
+      g.addColorStop(1, '#64748b');
+      ctx.fillStyle = g;
+      ctx.fillRect(p.x + 2, p.y + 2, p.w - 4, p.h - 4);
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Orbitrap', p.x + p.w / 2, p.y + p.h / 2);
+    } else if (p.sub === 'display') {
+      // LCD display — greenish text
+      ctx.fillStyle = '#064e3b';
+      ctx.fillRect(p.x + 4, p.y + 4, p.w - 8, p.h - 8);
+      ctx.font = '9px monospace';
+      ctx.fillStyle = '#22c55e';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(p.kind === 'astral' ? 'ASTRAL' : 'timsTOF HT', p.x + p.w / 2, p.y + p.h / 2 - 6);
+      ctx.fillText(dmgFrac > 0.4 ? 'ERR' : 'READY', p.x + p.w / 2, p.y + p.h / 2 + 6);
+    } else if (p.sub === 'cabinet' && p.kind === 'bruker') {
+      // Bruker cabinet: blue accent on left edge, Bruker wordmark
+      ctx.fillStyle = '#2563eb';
+      ctx.fillRect(p.x, p.y, 6, p.h);
+      // Subtle panel division lines
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(p.x + 12, p.y + p.h / 2);
+      ctx.lineTo(p.x + p.w - 12, p.y + p.h / 2);
+      ctx.stroke();
+      // Bruker wordmark (blue on dark)
+      ctx.font = 'italic bold 16px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#60a5fa';
+      ctx.fillText('Bruker', p.x + p.w / 2, p.y + 25);
+      // Status LEDs
+      ctx.fillStyle = '#22c55e';
+      ctx.beginPath(); ctx.arc(p.x + p.w - 12, p.y + p.h - 12, 3, 0, Math.PI*2); ctx.fill();
+    } else if (p.sub === 'stripe') {
+      // Blue accent stripe with timsTOF HT wordmark
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('timsTOF HT', p.x + p.w / 2, p.y + p.h / 2);
+    } else if (p.sub === 'captive_spray') {
+      // Horizontal cylinder — the iconic Bruker CaptiveSpray nozzle
+      const g = ctx.createLinearGradient(p.x, p.y, p.x, p.y + p.h);
+      g.addColorStop(0, '#cbd5e1');
+      g.addColorStop(0.5, '#64748b');
+      g.addColorStop(1, '#cbd5e1');
+      ctx.fillStyle = g;
+      ctx.fillRect(p.x, p.y + 2, p.w, p.h - 4);
+      // Needle tip sticking out the left
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(p.x - 6, p.y + p.h / 2 - 2, 6, 4);
+      // Blue LED indicator
+      ctx.fillStyle = '#60a5fa';
+      ctx.beginPath();
+      ctx.arc(p.x + p.w - 6, p.y + p.h / 2, 2, 0, Math.PI*2);
+      ctx.fill();
+    } else if (p.sub === 'tof_tube') {
+      // TOF reflector — with vertical grill lines
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      for (let yy = p.y + 6; yy < p.y + p.h - 6; yy += 4) {
+        ctx.beginPath();
+        ctx.moveTo(p.x + 4, yy);
+        ctx.lineTo(p.x + p.w - 4, yy);
+        ctx.stroke();
+      }
+      ctx.font = 'bold 9px sans-serif';
+      ctx.fillStyle = '#cbd5e1';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('TOF', p.x + p.w / 2, p.y + p.h / 2);
+    } else if (p.sub === 'crate') {
+      // Wooden crate — X-brace
+      ctx.strokeStyle = '#78350f';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(p.x + 4, p.y + 4);
+      ctx.lineTo(p.x + p.w - 4, p.y + p.h - 4);
+      ctx.moveTo(p.x + p.w - 4, p.y + 4);
+      ctx.lineTo(p.x + 4, p.y + p.h - 4);
+      ctx.stroke();
+    }
+
+    // Damage cracks, always on top of the styled base
     if (dmgFrac > 0) {
-      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(p.x + p.w * 0.2, p.y);
@@ -260,7 +448,9 @@ function drawParts() {
       }
       ctx.stroke();
     }
-    if (p.label) {
+
+    // Fallback label for parts with no sub style
+    if (p.label && !['cabinet', 'source', 'orbitrap', 'display', 'stripe', 'captive_spray', 'tof_tube'].includes(p.sub)) {
       ctx.font = 'bold 12px sans-serif';
       ctx.fillStyle = '#0a0f1a';
       ctx.textAlign = 'center';
