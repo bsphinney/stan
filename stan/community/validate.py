@@ -136,6 +136,47 @@ def validate_submission(
         elif direction == "min" and value < threshold:
             result.flags.append(f"{metric_name}={value} unusually low (<{threshold})")
 
+    # Flag sample-type mismatches. Now that we support multi-standard
+    # cohorts, the concern is not "non-HeLa in a HeLa benchmark" but
+    # rather "filename says one standard, sample_type field says another".
+    # For example, filename contains K562 but sample_type is "hela" →
+    # the auto-detection may have failed or the user overrode it wrongly.
+    run_name = metrics.get("run_name", "")
+    sample_type = metrics.get("sample_type", "hela")
+    _SAMPLE_TYPE_PATTERNS: list[tuple[str, str]] = [
+        ("k562", "k562"),
+        ("hek293", "hek293"),
+        ("hek-293", "hek293"),
+        ("hek_293", "hek293"),
+        ("jurkat", "jurkat"),
+        ("a549", "a549"),
+        ("u2os", "u2os"),
+        ("mcf7", "mcf7"),
+        ("nih3t3", "nih3t3"),
+        ("yeast", "yeast"),
+        ("ecoli", "ecoli"),
+        ("e.coli", "ecoli"),
+        ("e_coli", "ecoli"),
+    ]
+    if run_name:
+        import re as _re
+        detected_type = "hela"
+        for pattern, st in _SAMPLE_TYPE_PATTERNS:
+            if _re.search(pattern, run_name, _re.IGNORECASE):
+                detected_type = st
+                break
+        if detected_type != "hela" and sample_type == "hela":
+            result.flags.append(
+                f"run_name contains '{detected_type}' but sample_type is 'hela' — "
+                f"possible mismatch. If this is a {detected_type} run, set sample_type "
+                f"accordingly so it lands in the correct benchmark cohort."
+            )
+        elif detected_type == "hela" and sample_type not in ("hela", ""):
+            result.flags.append(
+                f"sample_type is '{sample_type}' but run_name doesn't contain a "
+                f"matching cell-line keyword — verify the sample type is correct."
+            )
+
     if result.rejected_gates:
         logger.warning("Submission rejected: %s", result.rejected_gates)
     if result.flags:

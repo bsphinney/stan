@@ -57,6 +57,7 @@ from stan.metrics.window_drift import (
     WindowDriftMetric,
     _classify_drift,
     _extract_sub_windows,
+    score_drift,
 )
 
 logger = logging.getLogger(__name__)
@@ -294,10 +295,22 @@ def detect_feature_drift(
         inside_any_global / float(mzs.size) if mzs.size else 0.0
     )
 
-    drift_class = _classify_drift(n_severe, severe_frac)
+    # v0.2.205: classify from whole-cloud metrics (spread + centroid
+    # + coverage) instead of per-window severity counters. Keeps the
+    # run-level verdict in lockstep with what the dashboard cloud
+    # shows — wider/offset/low-coverage clouds always score worse
+    # than tight ones, independent of how many individual slices
+    # tripped the severity flag.
+    _, drift_class = score_drift(
+        p90_abs_drift=p90_abs,
+        median_abs_drift=med_abs,
+        global_coverage=global_coverage,
+    )
     logger.info(
-        "feature-drift %s: class=%s n_severe=%d frac=%.3f total_z2=%d",
-        d_path.name, drift_class, n_severe, severe_frac, int(mzs.size),
+        "feature-drift %s: class=%s p90=%.4f |med|=%.4f cov=%.3f "
+        "(n_severe=%d frac=%.3f)",
+        d_path.name, drift_class, p90_abs, med_abs, global_coverage,
+        n_severe, severe_frac,
     )
     # Reference reads SEVERE_COUNT_DRIFTED / SEVERE_COUNT_WARN /
     # SEVERE_INT_FRAC_DRIFTED / SEVERE_INT_FRAC_WARN to keep the

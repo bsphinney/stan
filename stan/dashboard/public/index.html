@@ -282,36 +282,32 @@
     //   p90≥0.10 → 100 (catastrophically drifted)
     // Convention matches PEG: 0 = healthy, 100 = worst.
     //
-    // v0.2.193: floor to classifier verdict so the number + color can
-    // never disagree with drift_class. p90 alone misses severity-count
-    // and severity-intensity-fraction signals — e.g. 21144 has p90=0.044
-    // (raw score 44) but 3 severely-drifted windows → classifier calls
-    // it drifted. Under the old formula the badge would render amber
-    // at 44; under the floor it becomes 70 (red) so the badge reads
-    // the same story the classifier tells.
+    // v0.2.205: drift score is the SAME formula the backend uses to
+    // derive drift_class (see stan.metrics.window_drift.score_drift).
+    // Coverage of z=2 peptide features is the dominant component —
+    // a run that misses most of its +2s is broken regardless of
+    // ridge spread, because bottom-up proteomics is +2-dominated.
+    //
+    // Problem indicators: PEG, Drift → higher = worse.
+    // Performance grade: IPS → higher = better.
+    //
+    // Class thresholds (same cuts as the backend):
+    //   <40 ok (green), 40-69 warn (amber), ≥70 drifted (red).
     function driftScore(run) {
       const p90 = Number(run?.drift_p90_abs_im);
-      const cls = run?.drift_class;
-      if (!isFinite(p90)) return null;
-      // v0.2.195: HIGHER = WORSE, consistent with PEG (same as the
-      // original intent — I briefly flipped to higher=better but
-      // Brett pointed out that would diverge from PEG, which can't
-      // be flipped because PEG is intrinsically a contamination
-      // COUNT. IPS remains the one "higher = better" outlier — it's
-      // a performance grade, a different kind of metric.
-      //
-      // Problem indicators: PEG, Drift. Higher score → worse.
-      // Performance grade: IPS. Higher score → better.
-      //
-      // Clamp score into each class's colour lane:
-      //   ok      → 0-39   (green)
-      //   warn    → 40-69  (amber)
-      //   drifted → 70-100 (red)
-      const base = Math.round(Math.max(0, Math.min(100, p90 * 1000)));
-      if (cls === 'ok')      return Math.min(base, 39);
-      if (cls === 'warn')    return Math.min(69, Math.max(base, 40));
-      if (cls === 'drifted') return Math.max(base, 70);
-      return base;
+      const medSigned = Number(run?.drift_median_im);
+      const cov = Number(run?.drift_coverage);
+      if (!isFinite(p90) || !isFinite(medSigned) || !isFinite(cov)) return null;
+      const medAbs = Math.abs(medSigned);
+      const spread   = 30 * Math.min(p90    / 0.08, 1);
+      const centroid = 20 * Math.min(medAbs / 0.06, 1);
+      let coverage;
+      if      (cov >= 0.60) coverage = 0;
+      else if (cov >= 0.50) coverage = 15 * (0.60 - cov) / 0.10;
+      else if (cov >= 0.40) coverage = 15 + 30 * (0.50 - cov) / 0.10;
+      else                  coverage = 45 +  5 * Math.max(0, 0.40 - cov) / 0.40;
+      const raw = spread + centroid + coverage;
+      return Math.round(Math.max(0, Math.min(100, raw)));
     }
 
     function DriftBadge({ run, source="runs" }) {

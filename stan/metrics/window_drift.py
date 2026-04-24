@@ -250,12 +250,101 @@ def _classify_drift(n_severe: int, severe_int_frac: float) -> str:
     drift. Global MS1 coverage is no longer part of classification
     because Bruker MS1 has ~50% of intensity outside DIA windows by
     design (DIA windows apply to MS2 precursor isolation).
+
+    DEPRECATED as of v0.2.205 — replaced by ``score_drift`` which
+    derives the verdict from the same whole-cloud metrics (p90, median,
+    coverage) that drive the badge on the dashboard. Retained only for
+    callers that still want the old per-window severity verdict.
     """
     if n_severe >= SEVERE_COUNT_DRIFTED or severe_int_frac >= SEVERE_INT_FRAC_DRIFTED:
         return "drifted"
     if n_severe >= SEVERE_COUNT_WARN or severe_int_frac >= SEVERE_INT_FRAC_WARN:
         return "warn"
     return "ok"
+
+
+def score_drift(
+    p90_abs_drift: float,
+    median_abs_drift: float,
+    global_coverage: float,
+) -> tuple[float, str]:
+    """Compute the whole-cloud drift score (0-100, higher=worse) + class.
+
+    v0.2.205: replaces ``_classify_drift`` for run-level verdicts.
+    The old per-window severity classifier produced counter-intuitive
+    results — file A with a cleaner cloud could still be called
+    "drifted" because a handful of narrow m/z slices tripped the
+    severity flag, while file B with a visibly worse cloud (lower
+    coverage, wider ridge, larger centroid shift) escaped with "warn"
+    because its drift was spread evenly instead of concentrated.
+
+    The new score is driven by the three metrics the user actually
+    sees on the dashboard cloud:
+
+      p90_abs_drift      — how wide the ridge is (1/K0 spread)
+      |median_abs_drift| — how far the centroid has walked
+      global_coverage    — fraction of features inside any window
+
+    Charge-2 priority (v0.2.205): when the score is computed via the
+    feature-based detector (``detect_feature_drift``), all three
+    metrics are derived from z=2 peptide features only — +1 solvent
+    and +3 contributions are filtered at ``_query_z2_features``.
+    Bottom-up proteomics is dominated by +2 precursors, so the score
+    reflects the signal the user actually cares about. The MS1-mode
+    fallback in ``detect_window_drift`` doesn't have per-peak charge
+    assignment and uses all MS1 ions — it's a less charge-selective
+    classifier and should only fire when no ``.features`` file is
+    available.
+
+    Weights (tuned against TIMS DIAwinFallen test files — Brett's
+    reference set 21151/21155/21156/21158/21159):
+
+      spread   = 30 × min(p90        / 0.08, 1)
+      centroid = 20 × min(|median|   / 0.06, 1)
+      coverage = piecewise 0-50 (see below)
+
+    Coverage dominates because a run that misses most of its z=2
+    features (e.g. 21158 at 41% coverage) is broken regardless of
+    ridge spread — the whole run loses quantitation on >half the
+    peptides. Piecewise ramp:
+
+      cov ≥ 0.60                    → 0         (healthy)
+      0.50 ≤ cov < 0.60             → 15 ×  (0.60 - cov) / 0.10     (0  → 15)
+      0.40 ≤ cov < 0.50             → 15 + 30 × (0.50 - cov) / 0.10 (15 → 45)
+      cov < 0.40                    → 45 + 5  ×  (0.40 - cov) / 0.40 (45 → 50)
+
+    Class thresholds:
+      <40 ok, 40-69 warn, ≥70 drifted.
+
+    Keeps the number on the badge and the class in agreement by
+    construction — the verdict is derivable from the score alone.
+    """
+    p90 = max(0.0, float(p90_abs_drift))
+    med = abs(float(median_abs_drift))
+    cov = max(0.0, min(1.0, float(global_coverage)))
+
+    spread_component = 30.0 * min(p90 / 0.08, 1.0)
+    centroid_component = 20.0 * min(med / 0.06, 1.0)
+
+    if cov >= 0.60:
+        coverage_component = 0.0
+    elif cov >= 0.50:
+        coverage_component = 15.0 * (0.60 - cov) / 0.10
+    elif cov >= 0.40:
+        coverage_component = 15.0 + 30.0 * (0.50 - cov) / 0.10
+    else:
+        coverage_component = 45.0 + 5.0 * max(0.0, 0.40 - cov) / 0.40
+
+    score = spread_component + centroid_component + coverage_component
+    score = max(0.0, min(100.0, score))
+
+    if score >= 70.0:
+        drift_class = "drifted"
+    elif score >= 40.0:
+        drift_class = "warn"
+    else:
+        drift_class = "ok"
+    return score, drift_class
 
 
 def detect_window_drift(
@@ -514,6 +603,15 @@ def detect_window_drift(
     except Exception:
         logger.debug("drift cloud sampling failed", exc_info=True)
 
+    # v0.2.205: classify from whole-cloud metrics (spread + centroid
+    # + coverage) so the badge score and class always match what the
+    # user sees on the dashboard cloud. Per-window severity counters
+    # remain in the result for drill-down but no longer drive the class.
+    _, drift_class = score_drift(
+        p90_abs_drift=p90_abs,
+        median_abs_drift=med_abs,
+        global_coverage=coverage,
+    )
     return DriftResult(
         # v0.2.182: n_windows counts EVALUATED windows (peptide-zone
         # ones) — that's the count that matters for classification.
@@ -526,7 +624,7 @@ def detect_window_drift(
         p90_abs_drift_im=round(p90_abs, 4),
         n_severely_drifted=n_severe,
         severe_intensity_fraction=round(severe_int_frac, 4),
-        drift_class=_classify_drift(n_severe, severe_int_frac),
+        drift_class=drift_class,
         per_window=per_window,
         cloud_mz=cloud_mz,
         cloud_im=cloud_im,
