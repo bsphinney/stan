@@ -1195,23 +1195,35 @@
       //           when a 4DFF .features file exists — it labels ions by
       //           real charge state instead of the old zone heuristic.
       //           Falls back to the legacy SVG cloud otherwise.
+      // v0.2.204: default to "cloud" view when a .features file exists.
+      //           Probe the features endpoint on mount; flip the tab only
+      //           once (userTouchedView) so the user's manual toggle stays
+      //           put if they switched back to "summary" deliberately.
       const [view, setView] = useState("summary");
       const [cloud, setCloud] = useState(null);
       const [features, setFeatures] = useState(null);
+      const [userTouchedView, setUserTouchedView] = useState(false);
       const runId = payload?.run_id;
       const source = payload?.source || "runs";
 
+      // Probe features on runId change so we can auto-switch to cloud.
+      useEffect(() => {
+        if (!runId) return;
+        if (features && features._run_id === runId) return;
+        fetch(API + `/api/runs/${encodeURIComponent(runId)}/features-by-charge?source=${source}`)
+          .then(r => r.json())
+          .then(d => {
+            setFeatures({ ...d, _run_id: runId });
+            if (!userTouchedView && d && d.has_features) {
+              setView("cloud");
+            }
+          })
+          .catch(() => setFeatures({ _run_id: runId, has_features: false,
+                                     reason: "network error fetching features" }));
+      }, [runId, source]);
+
       useEffect(() => {
         if (view !== "cloud" || !runId) return;
-        // Fetch the Ziggy-style features (cheap if the .features file
-        // doesn't exist — the endpoint just returns has_features=false).
-        if (!features || features._run_id !== runId) {
-          fetch(API + `/api/runs/${encodeURIComponent(runId)}/features-by-charge?source=${source}`)
-            .then(r => r.json())
-            .then(d => setFeatures({ ...d, _run_id: runId }))
-            .catch(() => setFeatures({ _run_id: runId, has_features: false,
-                                       reason: "network error fetching features" }));
-        }
         // Keep the legacy SVG cloud payload around as a fallback.
         if (!cloud || cloud._run_id !== runId) {
           fetch(API + `/api/runs/${encodeURIComponent(runId)}/drift-cloud?source=${source}`)
@@ -1221,10 +1233,12 @@
         }
       }, [view, runId, source]);
 
+      const pickView = (k) => { setUserTouchedView(true); setView(k); };
+
       const toggle = (
         <div style={{display:'inline-flex', gap:'0.3rem', marginBottom:'0.5rem'}}>
           {[['summary', 'Window summary'], ['cloud', 'Ion cloud']].map(([k, lab]) => (
-            <button key={k} onClick={() => setView(k)} style={{
+            <button key={k} onClick={() => pickView(k)} style={{
               padding:'0.2rem 0.55rem', fontSize:'0.75rem',
               background: view === k ? 'var(--accent)' : 'var(--bg)',
               color: view === k ? '#000' : 'var(--text)',
