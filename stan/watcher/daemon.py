@@ -1057,6 +1057,20 @@ class InstrumentWatcher:
             except Exception:
                 logger.debug("LC system detect failed for %s", raw_path.name, exc_info=True)
 
+            # v0.2.223: copy operator-set column metadata from
+            # instruments.yml onto every QC row. The setup wizard
+            # already collects column_vendor + column_model on first
+            # install (see stan/setup.py::_pick_column), but pre-fix
+            # the watcher never read them back into the metrics dict
+            # so every runs row landed with NULL columns. Brett's
+            # `stan set-column` keeps these fresh between installs.
+            cv = self._config.get("column_vendor")
+            cm = self._config.get("column_model")
+            if cv:
+                metrics["column_vendor"] = cv
+            if cm:
+                metrics["column_model"] = cm
+
             # Resolve acquisition mode string for threshold lookup
             acq_mode = "dia" if is_dia(mode) else "dda"
 

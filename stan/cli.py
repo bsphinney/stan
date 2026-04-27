@@ -3863,12 +3863,23 @@ def derive_cirt_panel(
         0.9, "--min-presence",
         help="Fraction of cohort runs the peptide must appear in.",
     ),
+    max_days: int = typer.Option(
+        0, "--max-days",
+        help="Limit cohort to runs in the last N days. 0 = all-time. "
+             "Useful when an instrument's history spans column changes; "
+             "RT scale shifts across changes make stable anchors hard "
+             "to find from the full history.",
+    ),
     auto: bool = typer.Option(
         False, "--auto",
         help="Derive panels for every (family, spd) cohort with enough "
              "good DIA runs and write the result to "
              "~/.stan/cirt_panels_auto.yml. Loaded at runtime by "
-             "get_panel(), so backfill-cirt picks them up immediately.",
+             "get_panel(), so backfill-cirt picks them up immediately. "
+             "When a cohort can't derive its own panel, falls back to "
+             "borrowing peptides from a same-vendor neighbour cohort "
+             "(Lumos peptides reused on Exploris with locally-derived "
+             "RTs) so every cohort gets at least an approximate panel.",
     ),
 ) -> None:
     """Print or save an empirical cIRT panel.
@@ -3920,12 +3931,19 @@ def derive_cirt_panel(
         # that meet the minimum-cohort threshold.
         with sqlite3.connect(str(db_path)) as con:
             con.row_factory = sqlite3.Row
-            rows = con.execute(
-                "SELECT run_name, instrument, spd FROM runs "
-                "WHERE n_precursors > ? AND mode = 'DIA' AND spd IS NOT NULL "
-                "ORDER BY instrument, spd",
-                (min_precursors,),
-            ).fetchall()
+            sql = (
+                "SELECT run_name, instrument, spd, run_date FROM runs "
+                "WHERE n_precursors > ? AND mode = 'DIA' AND spd IS NOT NULL"
+            )
+            params: list = [min_precursors]
+            if max_days and max_days > 0:
+                # Use ISO date math — run_date is stored as ISO8601
+                from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                cutoff = (_dt.now(_tz.utc) - _td(days=max_days)).isoformat()
+                sql += " AND run_date >= ?"
+                params.append(cutoff)
+            sql += " ORDER BY instrument, spd"
+            rows = con.execute(sql, params).fetchall()
 
         from collections import defaultdict
         cohorts: dict[tuple[str, int], list[Path]] = defaultdict(list)
@@ -3946,9 +3964,13 @@ def derive_cirt_panel(
         if max_cv <= 5.0:
             cv_ladder.extend([8.0, 12.0, 20.0])
 
+        from stan.metrics.cirt import derive_rts_for_peptides
+
         out_panels: list[dict] = []
         derived = 0
         skipped = []
+        # First pass — derive each cohort's own panel.
+        own_panels: dict[tuple[str, int], list[tuple[str, float]]] = {}
         for (fam, sp), reports in sorted(cohorts.items()):
             if len(reports) < min_runs:
                 skipped.append((fam, sp, len(reports)))
@@ -3963,24 +3985,78 @@ def derive_cirt_panel(
                 if panel:
                     tried_cv = cv
                     break
-            if not panel:
-                skipped.append((fam, sp, f"{len(reports)} runs but no stable anchors (tried CV up to {cv_ladder[-1]:.0f}%)"))
+            if panel:
+                own_panels[(fam, sp)] = panel
+                out_panels.append({
+                    "family": fam, "spd": sp,
+                    "n_runs": len(reports),
+                    "max_cv_pct": tried_cv,
+                    "source": "self",
+                    "peptides": [
+                        {"seq": seq, "rt": round(rt, 2)} for seq, rt in panel
+                    ],
+                })
+                derived += 1
+                cv_note = "" if tried_cv == max_cv else f" [dim](relaxed CV→{tried_cv:.0f}%)[/dim]"
+                console.print(
+                    f"[green]✓[/green] ({fam}, SPD={sp}): "
+                    f"{len(panel)} anchors from {len(reports)} runs{cv_note}"
+                )
                 continue
-            out_panels.append({
-                "family": fam,
-                "spd": sp,
-                "n_runs": len(reports),
-                "max_cv_pct": tried_cv,
-                "peptides": [
-                    {"seq": seq, "rt": round(rt, 2)} for seq, rt in panel
-                ],
-            })
-            derived += 1
-            cv_note = "" if tried_cv == max_cv else f" [dim](relaxed CV→{tried_cv:.0f}%)[/dim]"
-            console.print(
-                f"[green]✓[/green] ({fam}, SPD={sp}): "
-                f"{len(panel)} anchors from {len(reports)} runs{cv_note}"
-            )
+
+            # v0.2.223: borrow fallback. If this cohort can't derive
+            # its own panel (e.g. Exploris with 26 months of drift),
+            # borrow peptide sequences from a same-vendor neighbour
+            # cohort and re-anchor RTs locally. Vendor families that
+            # share Orbitrap chemistry: Lumos, Exploris, Astral,
+            # Eclipse, Orbitrap. timsTOF is its own family.
+            ORBITRAP_FAMILY = {"Lumos", "Exploris", "Astral", "Eclipse", "Orbitrap"}
+            BRUKER_FAMILY = {"timsTOF"}
+            if fam in ORBITRAP_FAMILY:
+                neighbour_set = ORBITRAP_FAMILY
+            elif fam in BRUKER_FAMILY:
+                neighbour_set = BRUKER_FAMILY
+            else:
+                neighbour_set = {fam}
+
+            borrowed: list[tuple[str, float]] = []
+            borrowed_from: tuple[str, int] | None = None
+            # Sort neighbour panels by size descending (try richest first)
+            for (n_fam, n_sp), n_panel in sorted(
+                own_panels.items(),
+                key=lambda kv: -len(kv[1]),
+            ):
+                if n_fam not in neighbour_set:
+                    continue
+                if (n_fam, n_sp) == (fam, sp):
+                    continue
+                seqs = [s for s, _ in n_panel]
+                local = derive_rts_for_peptides(
+                    reports, seqs,
+                    min_presence=min(min_presence, 0.5),
+                )
+                if local:
+                    borrowed = local[:n_anchors]
+                    borrowed_from = (n_fam, n_sp)
+                    break
+
+            if borrowed and borrowed_from is not None:
+                out_panels.append({
+                    "family": fam, "spd": sp,
+                    "n_runs": len(reports),
+                    "source": f"borrowed:{borrowed_from[0]}/SPD{borrowed_from[1]}",
+                    "peptides": [
+                        {"seq": seq, "rt": round(rt, 2)} for seq, rt in borrowed
+                    ],
+                })
+                derived += 1
+                console.print(
+                    f"[cyan]↪[/cyan] ({fam}, SPD={sp}): {len(borrowed)} "
+                    f"anchors borrowed from {borrowed_from[0]}/SPD={borrowed_from[1]}"
+                )
+                continue
+
+            skipped.append((fam, sp, f"{len(reports)} runs but no stable anchors (tried CV up to {cv_ladder[-1]:.0f}%)"))
 
         out_path = user_dir / "cirt_panels_auto.yml"
         out_path.write_text(_yaml.safe_dump(out_panels, sort_keys=False), encoding="utf-8")
@@ -4882,6 +4958,110 @@ def _test_extract_pipeline(
         steps['cirt'] = {'ok': False, 'why': f'{type(e).__name__}: {e}'}
 
     return steps
+
+
+@app.command("set-column")
+def set_column(
+    instrument: Optional[str] = typer.Option(
+        None, "--instrument",
+        help="Instrument name (matches instruments.yml). If omitted "
+             "and only one instrument is configured, that one is used.",
+    ),
+    vendor: str = typer.Option(..., "--vendor", help="Column vendor (e.g. IonOpticks, PepMap)."),
+    model: str = typer.Option(..., "--model", help="Column model (e.g. Aurora 25cm)."),
+    backfill: bool = typer.Option(
+        True, "--backfill / --no-backfill",
+        help="Also UPDATE existing runs rows on this instrument that "
+             "have NULL column_vendor/column_model so the dashboard + "
+             "community submissions match the new column.",
+    ),
+) -> None:
+    """Update the LC column metadata for an instrument.
+
+    Writes ``column_vendor`` + ``column_model`` to the instrument's
+    block in ``~/.stan/instruments.yml`` and (by default) backfills
+    every existing runs row that's missing the column metadata. Use
+    after replacing or first installing a column. The watcher reads
+    the values from instruments.yml on next ingest, so future QC
+    rows will have the correct column tagged.
+
+    Maintenance events: this command also writes a column_change
+    event to maintenance_events so the dashboard's event feed shows
+    the column swap.
+    """
+    import sqlite3
+    import yaml as _yaml
+    from datetime import datetime, timezone
+    from stan.config import resolve_config_path
+    from stan.db import get_db_path, init_db, insert_maintenance_event
+
+    cfg_path = resolve_config_path("instruments.yml")
+    if not cfg_path or not cfg_path.exists():
+        console.print(f"[red]instruments.yml not found at {cfg_path}[/red]")
+        raise typer.Exit(2)
+
+    cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+    instruments = cfg.get("instruments", []) or []
+    if not instruments:
+        console.print("[red]No instruments configured in instruments.yml[/red]")
+        raise typer.Exit(2)
+
+    if instrument is None:
+        if len(instruments) == 1:
+            instrument = instruments[0].get("name")
+        else:
+            names = [i.get("name") for i in instruments]
+            console.print(
+                f"[yellow]--instrument required (have: {names})[/yellow]"
+            )
+            raise typer.Exit(2)
+
+    target = next(
+        (i for i in instruments if i.get("name") == instrument), None,
+    )
+    if target is None:
+        console.print(f"[red]Instrument {instrument!r} not in instruments.yml[/red]")
+        raise typer.Exit(2)
+
+    # Update YAML
+    target["column_vendor"] = vendor
+    target["column_model"] = model
+    cfg_path.write_text(_yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+    console.print(
+        f"[green]✓[/green] {instrument}: column_vendor={vendor}  column_model={model}"
+    )
+    console.print(f"[dim]wrote {cfg_path}[/dim]")
+
+    # Maintenance event so the column-change shows on the dashboard
+    init_db()
+    db = get_db_path()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    try:
+        insert_maintenance_event(
+            instrument=instrument,
+            event_type="column_change",
+            event_date=now_iso,
+            column_vendor=vendor,
+            column_model=model,
+            note=f"set via stan set-column",
+        )
+        console.print("[dim]✓ maintenance_events: column_change recorded[/dim]")
+    except Exception as e:
+        console.print(f"[yellow]Could not log maintenance event: {e}[/yellow]")
+
+    if backfill:
+        with sqlite3.connect(str(db)) as con:
+            cur = con.execute(
+                "UPDATE runs SET column_vendor = ?, column_model = ? "
+                "WHERE instrument = ? "
+                "AND (column_vendor IS NULL OR column_vendor = '') "
+                "AND (column_model IS NULL OR column_model = '')",
+                (vendor, model, instrument),
+            )
+            console.print(
+                f"[green]✓[/green] Backfilled {cur.rowcount} runs row(s) "
+                f"on {instrument} with NULL column metadata."
+            )
 
 
 @app.command("test")

@@ -36,6 +36,55 @@ logger = logging.getLogger(__name__)
 
 # ── Panel selection ────────────────────────────────────────────────
 
+def derive_rts_for_peptides(
+    report_paths: list[Path],
+    peptide_seqs: list[str],
+    min_presence: float = 0.5,
+    q_value_max: float = 0.01,
+) -> list[tuple[str, float]]:
+    """Compute median RT for a fixed peptide set across a cohort.
+
+    Used by the cross-instrument fallback: when a cohort can't derive
+    its own panel (e.g. Exploris with 89 runs spanning months of RT
+    drift), borrow peptide sequences from a neighbour cohort that
+    DID derive successfully (e.g. Lumos), and re-anchor those
+    peptides to this cohort's local RT scale. The peptide identity
+    is portable across Thermo Orbitrap instruments — only the RT
+    scale isn't.
+
+    Returns peptides RT-sorted, dropping any not present in
+    ``min_presence`` fraction of the cohort.
+    """
+    if not report_paths or not peptide_seqs:
+        return []
+    seq_set = set(peptide_seqs)
+    seq_rts: dict[str, list[float]] = defaultdict(list)
+    for path in report_paths:
+        try:
+            df = pl.read_parquet(
+                str(path), columns=["Stripped.Sequence", "RT", "Q.Value"],
+            )
+        except Exception:
+            continue
+        df = df.filter(pl.col("Q.Value") < q_value_max)
+        df = df.filter(pl.col("Stripped.Sequence").is_in(list(seq_set)))
+        g = df.group_by("Stripped.Sequence").agg(pl.col("RT").median().alias("rt"))
+        for row in g.iter_rows(named=True):
+            seq_rts[row["Stripped.Sequence"]].append(row["rt"])
+
+    if not seq_rts:
+        return []
+    min_n = max(1, int(min_presence * len(report_paths)))
+    out: list[tuple[str, float]] = []
+    for seq in peptide_seqs:
+        rts = seq_rts.get(seq, [])
+        if len(rts) < min_n:
+            continue
+        out.append((seq, round(sum(rts) / len(rts), 3)))
+    out.sort(key=lambda x: x[1])
+    return out
+
+
 def derive_panel_from_cohort(
     report_paths: list[Path],
     n_anchors: int = 10,

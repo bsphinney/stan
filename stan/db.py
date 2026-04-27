@@ -509,6 +509,12 @@ def insert_run(
         "dynamic_range_log10": metrics.get("dynamic_range_log10"),
         # LC system (from detect_lc_system on the raw file)
         "lc_system": metrics.get("lc_system") or "",
+        # Column metadata (from instruments.yml — set by stan setup
+        # or `stan set-column`). v0.2.223: previously the schema had
+        # the columns but insert_run never wrote them — every QC row
+        # came in with NULL column metadata.
+        "column_vendor": metrics.get("column_vendor"),
+        "column_model": metrics.get("column_model"),
         # Search-engine provenance — recorded at search time.
         # The metrics dict should include these from the search-engine
         # wrapper (diann.py / sage.py). submit.py reads them later
