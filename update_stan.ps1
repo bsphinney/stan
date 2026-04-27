@@ -603,6 +603,7 @@ if ($backfillAlreadyRunning) {
         "echo === stan install-4dff === && stan install-4dff && " +
         "echo === stan fix-spds      === && stan fix-spds && " +
         "echo === stan backfill-metrics === && stan backfill-metrics && " +
+        "echo === stan derive-cirt-panel --auto === && stan derive-cirt-panel --auto && " +
         "echo === stan backfill-cirt    === && stan backfill-cirt && " +
         "echo === stan backfill-tic --force --push === && " +
         "stan backfill-tic --force --push && " +

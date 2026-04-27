@@ -443,21 +443,40 @@ def _extract_lc_from_raw_binary(raw_path: Path) -> dict:
     try:
         import shutil as _sh
         import subprocess
-        # 'strings' is a Unix utility; not available on Windows
-        if not _sh.which("strings"):
-            return result
-        proc = subprocess.run(
-            ["strings", str(raw_path)],
-            capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            return result
+        # v0.2.218: Windows instrument PCs have no `strings` utility.
+        # Fall back to a pure-Python ASCII string extractor so the LC
+        # system can be identified everywhere this code runs (the
+        # production Lumos / Exploris installs were always going down
+        # this branch and getting empty results pre-fix).
+        text_blob = ""
+        if _sh.which("strings"):
+            proc = subprocess.run(
+                ["strings", str(raw_path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if proc.returncode == 0:
+                text_blob = proc.stdout
+        if not text_blob:
+            # Pure-Python fallback. Scan the first ~50 MB which contains
+            # the InstrumentMethod XML — DriverId entries always live in
+            # the file header, not the spectrum data, so a partial read
+            # is sufficient and avoids loading 5 GB into memory.
+            import re as _re
+            CHUNK = 50 * 1024 * 1024
+            try:
+                with open(raw_path, "rb") as f:
+                    raw_bytes = f.read(CHUNK)
+                # ASCII printable run extractor (≥4 chars, like Unix strings)
+                for m in _re.finditer(rb"[\x20-\x7e]{4,}", raw_bytes):
+                    text_blob += m.group().decode("ascii", "ignore") + "\n"
+            except OSError:
+                return result
 
         # Extract all DriverId values
         import re
-        drivers = set(re.findall(r'DriverId value="([^"]+)"', proc.stdout))
+        drivers = set(re.findall(r'DriverId value="([^"]+)"', text_blob))
         # Also catch DriverId="..." variant
-        drivers.update(re.findall(r'DriverId="([^"]+)"', proc.stdout))
+        drivers.update(re.findall(r'DriverId="([^"]+)"', text_blob))
 
         if not drivers:
             return result

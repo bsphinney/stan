@@ -413,28 +413,42 @@ def extract_tic_from_report(report_path: Path, n_bins: int = 128) -> TICTrace | 
         rt_array = df["RT"].to_list()
         signal_array = df[signal_col].to_list()
 
-        # v0.2.212: switch from sum-per-bin to mean-per-bin. The sum
-        # approach made every Thermo + identified-TIC submission sawtooth
-        # because the precursor density per bin varies and Ms1.Apex.Area
-        # values are highly variable across precursors — so bins where a
-        # bright peptide happened to land got an outsized contribution.
-        # The same fix landed for the Bruker .d frame-based extractor in
-        # v0.2.147 with the same rationale: mean-per-bin matches the
-        # chart's "intensity at this RT" semantics and produces the
-        # smooth chromatogram users see in DIA-NN's own QC plots.
-        bin_sum = [0.0] * n_bins
-        bin_count = [0] * n_bins
+        # v0.2.218: identified-TIC is fundamentally jaggy because each
+        # precursor is a discrete event and bright outliers dominate
+        # mean-per-bin (v0.2.212 fix wasn't enough — Brett's audit
+        # showed 58-74% sign-changes on every Thermo run). Two fixes
+        # combined:
+        #   1. Use MEDIAN per bin instead of mean — robust to single
+        #      bright peptides skewing a bin. This is the same logic
+        #      used by DIA-NN's own QC plots.
+        #   2. Smooth with a 3-point moving average after binning to
+        #      remove residual high-frequency jaggedness while keeping
+        #      the overall chromatogram shape intact.
+        bin_values: list[list[float]] = [[] for _ in range(n_bins)]
         for rt_val, sig_val in zip(rt_array, signal_array):
             if sig_val is None or sig_val <= 0:
                 continue
             bin_idx = int((rt_val - rt_min_val) / bin_width)
             bin_idx = max(0, min(n_bins - 1, bin_idx))
-            bin_sum[bin_idx] += float(sig_val)
-            bin_count[bin_idx] += 1
-        binned_signal = [
-            bin_sum[i] / bin_count[i] if bin_count[i] > 0 else 0.0
-            for i in range(n_bins)
-        ]
+            bin_values[bin_idx].append(float(sig_val))
+
+        def _median(vs: list[float]) -> float:
+            if not vs:
+                return 0.0
+            s = sorted(vs)
+            mid = len(s) // 2
+            return s[mid] if len(s) % 2 else 0.5 * (s[mid - 1] + s[mid])
+
+        binned_signal = [_median(bv) for bv in bin_values]
+
+        # 3-point moving average — removes residual sign-flip noise
+        # without flattening the elution profile.
+        smoothed = [0.0] * n_bins
+        for i in range(n_bins):
+            window = binned_signal[max(0, i - 1):min(n_bins, i + 2)]
+            window = [v for v in window if v > 0]
+            smoothed[i] = sum(window) / len(window) if window else 0.0
+        binned_signal = smoothed
 
         run_name = report_path.parent.name
 

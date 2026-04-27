@@ -179,16 +179,65 @@ def extract_anchor_rts(
     return out
 
 
+def _load_auto_panels() -> dict[tuple[str, int], list[tuple[str, float]]]:
+    """Read user-derived panels from ~/.stan/cirt_panels_auto.yml.
+
+    Format (matches the in-code dict):
+
+        - family: Lumos
+          spd: 12
+          peptides:
+            - {seq: DGVLQQPVR, rt: 12.40}
+            ...
+
+    These take precedence over the hard-coded EMPIRICAL_CIRT_PANELS
+    so labs can derive panels for their own cohorts without editing
+    the package. v0.2.218: added so Lumos + Exploris cohorts work
+    out of the box once `stan derive-cirt-panel --auto` has run.
+    """
+    try:
+        import yaml
+        from stan.config import get_user_config_dir
+        path = get_user_config_dir() / "cirt_panels_auto.yml"
+        if not path.exists():
+            return {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+        result: dict[tuple[str, int], list[tuple[str, float]]] = {}
+        for entry in data:
+            fam = entry.get("family")
+            spd = entry.get("spd")
+            peptides = entry.get("peptides") or []
+            if not fam or spd is None or not peptides:
+                continue
+            result[(fam, int(spd))] = [
+                (p["seq"], float(p["rt"])) for p in peptides
+                if "seq" in p and "rt" in p
+            ]
+        return result
+    except Exception:
+        return {}
+
+
 def get_panel(instrument_family: str, spd: int | None) -> list[tuple[str, float]]:
     """Look up a seeded cIRT panel for a given instrument family + SPD.
 
+    Search order:
+      1. User-derived panels in ~/.stan/cirt_panels_auto.yml — these
+         override the in-package defaults so labs can manage their
+         own cohort-specific panels without forking the codebase.
+      2. EMPIRICAL_CIRT_PANELS (hard-coded UC Davis panels).
+
     Returns an empty list if no panel is seeded. Callers should
-    trigger empirical derivation via `derive_panel_from_cohort()`
-    when an empty panel is returned and there's a cohort available.
+    trigger empirical derivation via ``stan derive-cirt-panel``
+    or ``stan derive-cirt-panel --auto`` when an empty panel is
+    returned and there's a cohort available.
     """
     if instrument_family is None or spd is None:
         return []
     key = (instrument_family, int(spd))
+    auto = _load_auto_panels()
+    if key in auto:
+        return list(auto[key])
     return list(EMPIRICAL_CIRT_PANELS.get(key, []))
 
 

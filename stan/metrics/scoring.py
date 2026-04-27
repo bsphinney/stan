@@ -396,9 +396,23 @@ def detect_lc_system(raw_path) -> str | None:
                 pass
         return "custom"
 
-    # Thermo .raw: we don't have a reliable signal without opening the
-    # .raw header (fisher_py). Return None and let the caller fall
-    # back to its own inference (e.g., column_vendor substring match).
+    # Thermo .raw: scan the embedded InstrumentMethod XML for the
+    # LC DriverId. v0.2.218: previously this returned None and every
+    # Thermo row got empty lc_system. The trfp helper does the actual
+    # binary scan + classification (Evosep / Vanquish / EASY-nLC /
+    # Dionex UltiMate 3000). Lower-case the result to match the
+    # community schema convention ("evosep" not "Evosep One").
+    if path.suffix.lower() == ".raw" and path.is_file():
+        try:
+            from stan.tools.trfp import _extract_lc_from_raw_binary
+            info = _extract_lc_from_raw_binary(path)
+            sys_name = (info.get("lc_system") or "").lower()
+            if "evosep" in sys_name:
+                return "evosep"
+            if sys_name:
+                return "custom"
+        except Exception:
+            pass
     return None
 
 

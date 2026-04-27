@@ -3820,26 +3820,49 @@ def backfill_cirt(
 
 @app.command("derive-cirt-panel")
 def derive_cirt_panel(
-    instrument_family: str = typer.Option(
-        ..., "--family", help="timsTOF | Astral | Exploris | Lumos | Eclipse | Orbitrap",
+    instrument_family: Optional[str] = typer.Option(
+        None, "--family",
+        help="timsTOF | Astral | Exploris | Lumos | Eclipse | Orbitrap. "
+             "Required unless --auto.",
     ),
-    spd: int = typer.Option(..., "--spd", help="Samples per day."),
+    spd: Optional[int] = typer.Option(
+        None, "--spd",
+        help="Samples per day. Required unless --auto.",
+    ),
     min_precursors: int = typer.Option(
         10000, "--min-precursors",
         help="Minimum n_precursors to consider a run 'good'.",
     ),
+    min_runs: int = typer.Option(
+        5, "--min-runs",
+        help="Minimum cohort size before deriving a panel.",
+    ),
     n_anchors: int = typer.Option(
         10, "--n-anchors", help="Target panel size.",
     ),
+    auto: bool = typer.Option(
+        False, "--auto",
+        help="Derive panels for every (family, spd) cohort with enough "
+             "good DIA runs and write the result to "
+             "~/.stan/cirt_panels_auto.yml. Loaded at runtime by "
+             "get_panel(), so backfill-cirt picks them up immediately.",
+    ),
 ) -> None:
-    """Print an empirical cIRT panel for an (instrument_family, spd) cohort.
+    """Print or save an empirical cIRT panel.
 
-    Scans every run in the local DB matching the filters, loads each
-    report.parquet from ~/.stan/baseline_output, and runs the empirical
-    selection algorithm. Output is pasteable into
+    Without --auto: prints a single (family, spd) panel pasteable into
     stan/metrics/cirt.py::EMPIRICAL_CIRT_PANELS.
+
+    With --auto: scans the local DB for every (family, spd) cohort
+    that has at least min_runs good DIA runs (≥ min_precursors), loads
+    each run's report.parquet from ~/.stan/baseline_output/, derives a
+    panel via the empirical algorithm (peptides at 1% FDR in ≥90% of
+    runs, low RT CV, evenly spread), and writes everything to
+    ~/.stan/cirt_panels_auto.yml. Run this once after backfill-metrics
+    completes so backfill-cirt has panels for non-TIMS cohorts.
     """
     import sqlite3
+    import yaml as _yaml
 
     from stan.config import get_user_config_dir
     from stan.db import get_db_path, init_db
@@ -3848,7 +3871,88 @@ def derive_cirt_panel(
 
     init_db()
     db_path = get_db_path()
-    output_base = get_user_config_dir() / "baseline_output"
+    user_dir = get_user_config_dir()
+    output_base = user_dir / "baseline_output"
+
+    if auto:
+        out_path = user_dir / "cirt_panels_auto.yml"
+        # If the panels already exist, skip — overnight chain calls
+        # this after every metrics backfill and we don't want to
+        # re-derive every night when the cohorts haven't changed.
+        # Pass --force-auto to override (re-derive after a big run drop).
+        if out_path.exists():
+            try:
+                existing = _yaml.safe_load(out_path.read_text(encoding="utf-8")) or []
+                if existing:
+                    console.print(
+                        f"[dim]cirt_panels_auto.yml exists with "
+                        f"{len(existing)} panels — skipping. Delete the "
+                        f"file or pass --family/--spd to re-derive.[/dim]"
+                    )
+                    return
+            except Exception:
+                pass
+
+        # Scan every (family, spd) cohort and derive panels for any
+        # that meet the minimum-cohort threshold.
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT run_name, instrument, spd FROM runs "
+                "WHERE n_precursors > ? AND mode = 'DIA' AND spd IS NOT NULL "
+                "ORDER BY instrument, spd",
+                (min_precursors,),
+            ).fetchall()
+
+        from collections import defaultdict
+        cohorts: dict[tuple[str, int], list[Path]] = defaultdict(list)
+        for row in rows:
+            fam = _instrument_family(row["instrument"] or "")
+            if not fam or row["spd"] is None:
+                continue
+            stem = Path(row["run_name"]).stem
+            report = output_base / stem / "report.parquet"
+            if report.exists():
+                cohorts[(fam, int(row["spd"]))].append(report)
+
+        out_panels: list[dict] = []
+        derived = 0
+        skipped = []
+        for (fam, sp), reports in sorted(cohorts.items()):
+            if len(reports) < min_runs:
+                skipped.append((fam, sp, len(reports)))
+                continue
+            panel = derive_panel_from_cohort(reports, n_anchors=n_anchors)
+            if not panel:
+                skipped.append((fam, sp, f"{len(reports)} runs but no stable anchors"))
+                continue
+            out_panels.append({
+                "family": fam,
+                "spd": sp,
+                "n_runs": len(reports),
+                "peptides": [
+                    {"seq": seq, "rt": round(rt, 2)} for seq, rt in panel
+                ],
+            })
+            derived += 1
+            console.print(
+                f"[green]✓[/green] ({fam}, SPD={sp}): "
+                f"{len(panel)} anchors from {len(reports)} runs"
+            )
+
+        out_path = user_dir / "cirt_panels_auto.yml"
+        out_path.write_text(_yaml.safe_dump(out_panels, sort_keys=False), encoding="utf-8")
+        console.print(f"\n[bold]Wrote {derived} panels[/bold] → {out_path}")
+        if skipped:
+            console.print("[dim]Skipped cohorts (too few runs or unstable):[/dim]")
+            for fam, sp, why in skipped:
+                console.print(f"  [dim]({fam}, SPD={sp}): {why}[/dim]")
+        return
+
+    # Single-cohort mode (legacy behavior)
+    if not instrument_family or spd is None:
+        console.print("[red]--family and --spd are required (or use --auto)[/red]")
+        raise typer.Exit(2)
 
     with sqlite3.connect(str(db_path)) as con:
         con.row_factory = sqlite3.Row
@@ -3869,8 +3973,8 @@ def derive_cirt_panel(
 
     console.print(f"[bold]Cohort: {len(cohort_reports)} reports[/bold] "
                   f"({instrument_family}, SPD={spd}, >{min_precursors} precursors)")
-    if len(cohort_reports) < 5:
-        console.print("[yellow]Not enough runs — need at least 5.[/yellow]")
+    if len(cohort_reports) < min_runs:
+        console.print(f"[yellow]Not enough runs — need at least {min_runs}.[/yellow]")
         return
 
     panel = derive_panel_from_cohort(cohort_reports, n_anchors=n_anchors)
