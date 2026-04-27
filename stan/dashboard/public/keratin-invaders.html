@@ -462,6 +462,21 @@ function step() {
     }
   }
 
+  // High-score submission: fire once on game-over via postMessage to
+  // the parent arcade.html, which relays to the HF Space leaderboard.
+  if (state.gameOver && !state._submitted) {
+    state._submitted = true;
+    try {
+      window.parent.postMessage({
+        type: 'arcade-score',
+        game: 'keratin_invaders',
+        score: state.score,
+        won: false,  // game-over here means contamination breach
+        level: state.level,
+      }, '*');
+    } catch (_) {}
+  }
+
   // Particles
   for (const pt of state.particles) {
     pt.x += pt.vx;

@@ -154,7 +154,25 @@ const state = {
   here: 'office',
   inv: [],
   dead: false,
+  turns: 0,
 };
+
+// Score = (100 base) − (turns) + (50 grue-defeated bonus). Lower-turn
+// wins beat slow ones. Submitted to the community arcade leaderboard
+// when the player wins.
+function submitScore() {
+  const base = 100;
+  const score = Math.max(1, base - state.turns + (flags.grue_defeated ? 50 : 0));
+  try {
+    window.parent.postMessage({
+      type: 'arcade-score',
+      game: 'mzork',
+      score: score,
+      won: true,
+      turns: state.turns,
+    }, '*');
+  } catch (_) {}
+}
 
 // ── IO ───────────────────────────────────────────────────────
 const log = document.getElementById('log');
@@ -201,6 +219,10 @@ function handle(raw) {
   const cmd = raw.trim().toLowerCase();
   echo("> " + raw, 'cmd');
   if (!cmd) return;
+  // Count turns for scoring. Restart and quit don't count.
+  if (cmd !== 'restart' && cmd !== 'quit' && !flags.won && !state.dead) {
+    state.turns += 1;
+  }
   if (state.dead) {
     echo("You are dead. Type RESTART to begin again.", 'err');
     if (cmd === 'restart') restart();
@@ -324,6 +346,7 @@ function use(tokens) {
   if (item === 'usb' && state.here === 'server') {
     if (state.inv.includes('library')) {
       flags.won = true;
+      submitScore();
       echo("You insert the USB. The Hive terminal accepts the DIA-NN license. You upload the master library.", 'win');
       echo("", 'win');
       echo("*** YOU HAVE WON ***", 'win');
@@ -338,6 +361,7 @@ function use(tokens) {
   if (item === 'library' && state.here === 'server') {
     if (state.inv.includes('usb')) {
       flags.won = true;
+      submitScore();
       echo("You present the library. The Hive terminal accepts the DIA-NN license. You publish the canonical library.", 'win');
       echo("*** YOU HAVE WON ***", 'win');
       echo("Drift becomes quantifiable. PEG becomes tractable. Brett's core finally gets a decent espresso machine.", 'win');

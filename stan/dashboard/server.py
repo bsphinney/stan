@@ -100,6 +100,27 @@ async def api_version() -> dict:
     return {"version": __version__}
 
 
+@app.get("/api/community/identity")
+async def api_community_identity() -> dict:
+    """Return this lab's community submission identity for arcade scoring.
+
+    The arcade leaderboard tags every score with the lab's display_name
+    so other STAN users can see who holds the high score. Loads from
+    the local community.yml, falling back to "anonymous" so games still
+    work for labs that haven't claimed a name yet.
+    """
+    try:
+        from stan.config import load_community
+        cfg = load_community() or {}
+        name = (cfg.get("display_name") or "").strip()
+        return {
+            "display_name": name or "anonymous",
+            "claimed": bool(name),
+        }
+    except Exception:
+        return {"display_name": "anonymous", "claimed": False}
+
+
 @app.get("/api/runs")
 async def api_runs(
     instrument: str | None = None,

@@ -4444,35 +4444,70 @@ def test_latest_runs(
     db = get_db_path()
 
     # Fields by category. NULL/0.0 in any of these = broken for v1.0.
-    REQ_CORE = ['instrument', 'mode', 'spd', 'amount_ng']
+    # The set mirrors the community submission parquet schema so that
+    # every column required to render dashboard graphs (precursor /
+    # peptide / protein leaderboard, IPS, PEG, drift, mass accuracy,
+    # peak capacity, dynamic range, TIC overlay, cIRT) is verified.
+    REQ_CORE = [
+        'instrument', 'mode', 'spd', 'gradient_length_min', 'amount_ng',
+    ]
     REQ_ENGINE = ['diann_version', 'search_engine']
     REQ_LC = ['lc_system', 'column_vendor', 'column_model']
     REQ_COUNTS = ['n_precursors', 'n_peptides', 'n_proteins']
-    REQ_QUANT = ['median_cv_precursor', 'median_fragments_per_precursor']
+    REQ_QUANT = [
+        'median_cv_precursor',
+        'median_fragments_per_precursor',
+        'missed_cleavage_rate',
+    ]
     REQ_MASS = ['median_mass_acc_ms1_ppm', 'median_mass_acc_ms2_ppm']
-    REQ_CHROM = ['fwhm_rt_min', 'peak_capacity', 'dynamic_range_log10']
+    REQ_CHROM = [
+        'fwhm_rt_min',
+        'peak_capacity',
+        'dynamic_range_log10',
+        'median_peak_width_sec',
+        'median_points_across_peak',
+    ]
+    REQ_SIGNAL = ['ms1_signal', 'ms2_signal']
     REQ_IPS = ['ips_score']
     REQ_PEG = ['peg_score', 'peg_class', 'peg_n_ions_detected', 'peg_intensity_pct']
     REQ_DRIFT = ['drift_class', 'drift_coverage', 'drift_median_im', 'drift_p90_abs_im']
 
     ALL_FIELDS = (
         REQ_CORE + REQ_ENGINE + REQ_LC + REQ_COUNTS + REQ_QUANT
-        + REQ_MASS + REQ_CHROM + REQ_IPS + REQ_PEG + REQ_DRIFT
+        + REQ_MASS + REQ_CHROM + REQ_SIGNAL + REQ_IPS + REQ_PEG + REQ_DRIFT
     )
 
+    # Fields where NULL is semantically valid (no replicates, column
+    # absent, etc.). The pre-v0.2.212 silent 0.0 was the actual bug —
+    # for these fields, NULL is the correct "not applicable" signal,
+    # 0.0 is broken (legacy default).
+    NULL_OK = {
+        'median_cv_precursor',           # no replicates available
+        'median_fragments_per_precursor',  # n_frag_extracted absent
+        'missed_cleavage_rate',          # depends on Missed.Cleavages col
+    }
+
     def is_populated(value, field: str) -> bool:
-        """Field-aware presence check."""
+        """Field-aware presence check.
+
+        - NULL → broken, except when the field is in NULL_OK
+          (semantically nullable, e.g. CV without replicates).
+        - 0.0/0 → broken for fields where 0 is meaningless or legacy
+          default.
+        - Empty string → broken for lc_system + display-style fields.
+        """
         if value is None:
+            return field in NULL_OK
+        if field in ('lc_system', 'column_vendor', 'column_model') and value == '':
             return False
-        if field in ('lc_system',) and value == '':
-            return False
-        # 0.0 is broken for these fields (used to be the default)
+        # 0.0 is broken for these fields (used to be the legacy default)
         if field in (
             'median_cv_precursor', 'median_fragments_per_precursor',
-            'amount_ng', 'spd',
+            'amount_ng', 'spd', 'gradient_length_min',
+            'peak_capacity', 'dynamic_range_log10',
+            'ms1_signal', 'ms2_signal',
         ) and (value == 0 or value == 0.0):
             return False
-        # drift NULL is expected on Thermo — don't penalize
         return True
 
     def sawtooth_pct(intensity: list[float]) -> float | None:

@@ -544,16 +544,34 @@ function step() {
   state.particles = state.particles.filter(p => p.life > 0);
 
   const liveParts = state.parts.filter(p => p.hp > 0 && (p.kind === 'astral' || p.kind === 'bruker'));
-  if (liveParts.length === 0 && state.projectiles.length === 0 && state.parts.length > 0) {
+  const cleared = liveParts.length === 0 && state.projectiles.length === 0 && state.parts.length > 0;
+  const exhausted = state.shotsLeft <= 0 && state.projectiles.length === 0;
+  if (cleared) {
     if (!state.message.startsWith('Level')) {
       state.message = `Level ${state.level} cleared! +${50 * state.shotsLeft} bonus for unused vials.`;
       state.score += 50 * state.shotsLeft;
       msgEl.className = 'win';
       nextBtn.style.display = 'inline-block';
     }
-  } else if (state.shotsLeft <= 0 && state.projectiles.length === 0) {
+  } else if (exhausted) {
     state.message = `Out of vials! ${liveParts.length} instruments still standing. Click Reset.`;
     msgEl.className = 'lose';
+  }
+
+  // Submit a high-score event on level-cleared OR exhaustion.
+  // Fires once per level/run; new levels reset state._submittedLevel
+  // so subsequent levels can submit improved scores.
+  if ((cleared || exhausted) && state._submittedLevel !== state.level) {
+    state._submittedLevel = state.level;
+    try {
+      window.parent.postMessage({
+        type: 'arcade-score',
+        game: 'angry_specs',
+        score: state.score,
+        won: cleared,
+        level: state.level,
+      }, '*');
+    } catch (_) {}
   }
 
   updateHud();

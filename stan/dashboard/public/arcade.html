@@ -12,22 +12,75 @@
   }
   #menu {
     display: flex; flex-direction: column; align-items: center;
-    justify-content: flex-start; padding: 30px;
-    height: calc(100% - 60px); overflow: hidden;
+    justify-content: flex-start; padding: 20px;
+    height: calc(100% - 40px); overflow-y: auto;
   }
-  h1 {
-    color: #fbbf24; margin: 0 0 4px 0; font-size: 28px;
-  }
+  h1 { color: #fbbf24; margin: 0 0 4px 0; font-size: 26px; }
   .subtitle {
-    color: #94a3b8; margin-bottom: 24px; font-style: italic; font-size: 13px;
+    color: #94a3b8; margin-bottom: 18px; font-style: italic; font-size: 13px;
+  }
+  .identity-bar {
+    margin-bottom: 18px; padding: 8px 14px; font-size: 12px; color: #94a3b8;
+    background: rgba(34, 197, 94, 0.05);
+    border: 1px solid rgba(34, 197, 94, 0.25);
+    border-radius: 6px;
+  }
+  .identity-bar b { color: #22c55e; }
+  .identity-bar.anon { background: rgba(234, 179, 8, 0.05); border-color: rgba(234,179,8,0.3); }
+  .identity-bar.anon b { color: #fbbf24; }
+  .leaderboard-wrap {
+    background: #0f172a; border: 1px solid #334155;
+    border-radius: 10px; padding: 16px;
+    width: 100%; max-width: 940px; box-sizing: border-box;
+    margin-bottom: 22px;
+  }
+  .leaderboard-wrap h2 {
+    margin: 0 0 12px 0; color: #fbbf24; font-size: 16px;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .leaderboard-wrap h2 .refresh {
+    font-size: 11px; color: #64748b; cursor: pointer;
+    background: none; border: 1px solid #334155; padding: 3px 8px;
+    border-radius: 4px;
+  }
+  .leaderboard-wrap h2 .refresh:hover { color: #94a3b8; border-color: #475569; }
+  .lb-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+  }
+  .lb-game { background: #1e293b; border-radius: 6px; padding: 12px; }
+  .lb-game .lbg-title {
+    color: #f472b6; font-size: 13px; font-weight: bold;
+    margin-bottom: 6px; display: flex; justify-content: space-between;
+  }
+  .lb-game ol {
+    list-style: none; padding: 0; margin: 0; counter-reset: rank;
+    font-size: 12px;
+  }
+  .lb-game li {
+    display: flex; justify-content: space-between; gap: 6px;
+    padding: 3px 0; border-bottom: 1px dashed #334155;
+    counter-increment: rank;
+  }
+  .lb-game li:last-child { border-bottom: none; }
+  .lb-game li::before {
+    content: counter(rank) '.';
+    color: #64748b; min-width: 18px;
+  }
+  .lb-game li .lab { color: #cbd5e1; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .lb-game li .score { color: #fbbf24; font-weight: bold; font-variant-numeric: tabular-nums; }
+  .lb-game li.you .lab { color: #22c55e; }
+  .lb-game .empty {
+    color: #64748b; font-style: italic; font-size: 11px;
   }
   .games {
     display: flex; gap: 24px; flex-wrap: wrap; justify-content: center;
-    max-width: 900px;
+    max-width: 940px;
   }
   .game-card {
     background: #1e293b; border: 1px solid #334155;
-    border-radius: 10px; padding: 20px; width: 320px;
+    border-radius: 10px; padding: 18px; width: 280px;
     cursor: pointer; transition: transform 0.15s, box-shadow 0.15s;
   }
   .game-card:hover {
@@ -35,10 +88,8 @@
     box-shadow: 0 6px 20px rgba(251, 191, 36, 0.15);
     border-color: #fbbf24;
   }
-  .game-card h2 {
-    margin: 0 0 8px 0; color: #fbbf24; font-size: 20px;
-  }
-  .game-card p { color: #cbd5e1; font-size: 13px; line-height: 1.5; margin: 6px 0; }
+  .game-card h2 { margin: 0 0 6px 0; color: #fbbf24; font-size: 18px; }
+  .game-card p { color: #cbd5e1; font-size: 12px; line-height: 1.5; margin: 4px 0; }
   .badge {
     display: inline-block; background: #334155; color: #94a3b8;
     font-size: 10px; padding: 2px 8px; border-radius: 8px; margin-right: 4px;
@@ -56,7 +107,7 @@
   }
   #backBtn:hover { background: #334155; }
   .footer {
-    margin-top: 30px; color: #64748b; font-size: 11px; text-align: center;
+    margin-top: 22px; color: #64748b; font-size: 11px; text-align: center;
   }
 </style>
 </head>
@@ -65,36 +116,131 @@
 <div id="menu">
   <h1>🎮 STAN Arcade</h1>
   <div class="subtitle">workstation-friendly distractions for the proteomics life</div>
+
+  <div id="identityBar" class="identity-bar">Loading lab identity…</div>
+
+  <div class="leaderboard-wrap">
+    <h2>
+      <span>🏆 Community high scores</span>
+      <button class="refresh" onclick="loadLeaderboard()">refresh</button>
+    </h2>
+    <div id="lbGrid" class="lb-grid">
+      <div class="lb-game"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+
   <div class="games">
     <div class="game-card" onclick="launch('keratin-invaders.html')">
       <h2>💇 Keratin Invaders</h2>
       <p><span class="badge">ARCADE</span><span class="badge">KEYBOARD</span></p>
-      <p>Filter the hair before it ruins your digest. Descending rows of hippies (K1/K10), dogs (KRT86), and cats (KRT77 — toughest) march toward your clean bench, shedding hair strands. Cats have 3× the HP because cat hair is forever.</p>
-      <p style="color:#f472b6;font-size:12px;">←→ or mouse · SPACE or click to vacuum</p>
+      <p>Filter the hair before it ruins your digest. Hippies (K1/K10), dogs (KRT86), cats (KRT77 — toughest). Cats have 3× the HP because cat hair is forever.</p>
+      <p style="color:#f472b6;font-size:12px;">←→ or mouse · SPACE or click</p>
     </div>
     <div class="game-card" onclick="launch('angry-specs.html')">
       <h2>🧪 Angry Mass Specs</h2>
       <p><span class="badge">PHYSICS</span><span class="badge">MOUSE</span></p>
-      <p>Slingshot a scientist's worst samples at a Thermo Astral and a Bruker timsTOF HT. Each instrument has multi-part destructible anatomy. HeLa vials, PEG clouds, gradient bombs, DIA-NN bolts.</p>
-      <p style="color:#f472b6;font-size:12px;">click + drag from scientist, release to fire</p>
+      <p>Slingshot HeLa, PEG, gradient bombs, DIA-NN bolts, Affi-tips at a Thermo Astral and a Bruker timsTOF HT.</p>
+      <p style="color:#f472b6;font-size:12px;">click + drag from scientist</p>
     </div>
     <div class="game-card" onclick="launch('mzork.html')">
       <h2>&gt;_ m/zork</h2>
       <p><span class="badge">TEXT</span><span class="badge">ADVENTURE</span></p>
-      <p>A Zork parody set in a proteomics core at 11:47 PM. Recover the missing master DIA-NN library. Beware the grue — it smells of PEG. Featuring a drift canary, an Astral ion source, a dark chamber, and multiple win paths.</p>
+      <p>A Zork parody set in a proteomics core at 11:47 PM. Recover the master DIA-NN library. Beware the PEG-smelling grue.</p>
       <p style="color:#22c55e;font-size:12px;">type LOOK, GO NORTH, HELP</p>
     </div>
   </div>
+
   <div class="footer">
     Built for Brett's labs. No actual instruments were harmed.
   </div>
 </div>
-<iframe id="gameFrame"></iframe>
+<iframe id="gameFrame" allow="autoplay"></iframe>
 <script>
+// Relay points for arcade leaderboard. The endpoints are documented in
+// docs/RELAY_ARCADE_API.md and added on the brettsp/stan HF Space.
+const RELAY = 'https://brettsp-stan.hf.space';
+const GAMES = [
+  { id: 'keratin_invaders', title: '💇 Keratin Invaders' },
+  { id: 'angry_specs',      title: '🧪 Angry Mass Specs' },
+  { id: 'mzork',            title: '>_ m/zork' },
+];
+
+let LAB_NAME = 'anonymous';
+let LAB_CLAIMED = false;
+
+async function loadIdentity() {
+  const bar = document.getElementById('identityBar');
+  try {
+    const r = await fetch('/api/community/identity');
+    const d = await r.json();
+    LAB_NAME = d.display_name || 'anonymous';
+    LAB_CLAIMED = !!d.claimed;
+    if (LAB_CLAIMED) {
+      bar.innerHTML = `Playing as <b>${LAB_NAME}</b> · scores submit to the community leaderboard automatically.`;
+    } else {
+      bar.classList.add('anon');
+      bar.innerHTML = `Playing as <b>anonymous</b> · run <code>stan claim-name</code> to put your lab name on the leaderboard.`;
+    }
+  } catch (e) {
+    bar.classList.add('anon');
+    bar.innerHTML = `Could not load identity (offline?). Scores will not submit.`;
+    LAB_NAME = 'anonymous';
+  }
+}
+
+async function loadLeaderboard() {
+  const grid = document.getElementById('lbGrid');
+  grid.innerHTML = '';
+  for (const g of GAMES) {
+    const cell = document.createElement('div');
+    cell.className = 'lb-game';
+    cell.innerHTML = `<div class="lbg-title"><span>${g.title}</span><span style="color:#64748b;font-weight:normal;">top 5</span></div>`;
+    const list = document.createElement('ol');
+    cell.appendChild(list);
+    grid.appendChild(cell);
+    try {
+      const r = await fetch(`${RELAY}/api/arcade/leaderboard?game=${g.id}&limit=5`);
+      if (!r.ok) {
+        list.innerHTML = `<div class="empty">Leaderboard endpoint not deployed yet (${r.status}).</div>`;
+        continue;
+      }
+      const d = await r.json();
+      const rows = d.scores || d.leaderboard || [];
+      if (!rows.length) {
+        list.innerHTML = `<div class="empty">No scores yet — be the first.</div>`;
+        continue;
+      }
+      for (const row of rows) {
+        const li = document.createElement('li');
+        const isMe = (row.display_name || '').toLowerCase() === LAB_NAME.toLowerCase();
+        if (isMe) li.className = 'you';
+        li.innerHTML = `<span class="lab">${(row.display_name || 'anonymous').slice(0, 28)}</span>` +
+                       `<span class="score">${formatScore(g.id, row.score)}</span>`;
+        list.appendChild(li);
+      }
+    } catch (e) {
+      list.innerHTML = `<div class="empty">Offline.</div>`;
+    }
+  }
+}
+
+function formatScore(game, score) {
+  if (score == null) return '—';
+  if (game === 'mzork') {
+    // m/zork score has a "won" suffix
+    if (typeof score === 'object') return `${score.score} (${score.won ? 'won' : 'lost'})`;
+  }
+  return String(score);
+}
+
 function launch(url) {
   document.getElementById('menu').style.display = 'none';
   const f = document.getElementById('gameFrame');
-  f.src = url;
+  // Pass identity to the game iframe via URL params so it can submit
+  // scores tagged with the lab's pseudonym. RELAY is constant, hardcoded
+  // in the games to avoid a second fetch round-trip on game over.
+  const sep = url.includes('?') ? '&' : '?';
+  f.src = `${url}${sep}lab=${encodeURIComponent(LAB_NAME)}`;
   f.style.display = 'block';
   document.getElementById('backBtn').style.display = 'block';
 }
@@ -104,7 +250,35 @@ function backToMenu() {
   f.src = 'about:blank';
   f.style.display = 'none';
   document.getElementById('backBtn').style.display = 'none';
+  // Refresh leaderboard in case a game submitted a fresh score
+  loadLeaderboard();
 }
+
+// Listen for high-score submission events from game iframes via postMessage.
+// Each game posts {type:'arcade-score', game, score, won} when the game
+// ends. arcade.html relays it to the HF Space.
+window.addEventListener('message', async (e) => {
+  if (!e.data || e.data.type !== 'arcade-score') return;
+  if (LAB_NAME === 'anonymous') return;  // skip submission for unclaimed labs
+  try {
+    await fetch(`${RELAY}/api/arcade/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        game: e.data.game,
+        score: e.data.score,
+        won: e.data.won || false,
+        display_name: LAB_NAME,
+        ts: new Date().toISOString(),
+      }),
+    });
+  } catch (_) {
+    // Relay endpoint may not exist yet. Fail silently.
+  }
+});
+
+// Bootstrap
+loadIdentity().then(loadLeaderboard);
 </script>
 </body>
 </html>
