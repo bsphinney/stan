@@ -4851,10 +4851,30 @@
       const stale = ageSec > 30 * 60;
       const last = s.last_run || {};
 
+      // v0.2.235: surface watcher crashes from status.json so a
+      // dead/crashing watcher is visible at a glance instead of
+      // requiring a manual log dive on the instrument PC.
+      const crashes = Number(s.watcher_crashes_24h || 0);
+      const crashBadge = crashes > 0 ? (
+        <span title={s.last_watcher_crash || ''}
+              style={{
+                display: 'inline-block',
+                marginLeft: '0.5rem',
+                padding: '1px 7px',
+                fontSize: '11px',
+                background: '#fef2f2',
+                color: '#b91c1c',
+                border: '1px solid #fca5a5',
+                borderRadius: '6px',
+              }}>
+          ⚠ {crashes} watcher crash{crashes === 1 ? '' : 'es'} (24h)
+        </span>
+      ) : null;
+
       return (
         <>
           <tr style={{ cursor: 'pointer' }} onClick={() => onToggle(host.name)}>
-            <td>{expanded ? '▾' : '▸'} {host.name}</td>
+            <td>{expanded ? '▾' : '▸'} {host.name}{crashBadge}</td>
             <td style={{ color: stale ? '#c77' : '#6b6' }}>{formatHeartbeat(hbIso)}</td>
             <td>{s.stan_version || '—'}</td>
             <td style={{ textAlign: 'right' }}>{s.n_runs ?? '—'}</td>

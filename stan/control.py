@@ -114,6 +114,43 @@ def _action_status(args: dict) -> dict:
     except Exception:
         pass
 
+    # v0.2.235: scan recent watch logs for crash markers so the
+    # dashboard + fleet view can flag unhealthy watchers without
+    # requiring Brett to grep instrument PCs by hand. Counts
+    # ALERT[watcher_crash] entries in the last 24h, surfaces the
+    # most recent crash line. Cheap — only scans logs newer than
+    # 24h modtime.
+    try:
+        from pathlib import Path as _P
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        log_dir = _P.home() / "STAN" / "logs"
+        if log_dir.is_dir():
+            cutoff_ts = (_dt.now(_tz.utc) - _td(hours=24)).timestamp()
+            crash_count = 0
+            latest_crash: str | None = None
+            latest_crash_ts: float = 0.0
+            for log in log_dir.glob("watch_*.log"):
+                try:
+                    if log.stat().st_mtime < cutoff_ts:
+                        continue
+                    with open(log, encoding="utf-8", errors="replace") as fh:
+                        for line in fh:
+                            if "ALERT[watcher_crash]" in line:
+                                crash_count += 1
+                                if log.stat().st_mtime > latest_crash_ts:
+                                    latest_crash_ts = log.stat().st_mtime
+                                    latest_crash = line.strip()[:300]
+                except Exception:
+                    continue
+            status["watcher_crashes_24h"] = crash_count
+            if latest_crash:
+                status["last_watcher_crash"] = latest_crash
+                status["last_watcher_crash_ts"] = _dt.fromtimestamp(
+                    latest_crash_ts, tz=_tz.utc,
+                ).isoformat()
+    except Exception:
+        pass
+
     return status
 
 
