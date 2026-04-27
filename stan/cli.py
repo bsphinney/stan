@@ -3912,7 +3912,16 @@ def derive_cirt_panel(
              "When a cohort can't derive its own panel, falls back to "
              "borrowing peptides from a same-vendor neighbour cohort "
              "(Lumos peptides reused on Exploris with locally-derived "
-             "RTs) so every cohort gets at least an approximate panel.",
+             "RTs) so every cohort gets at least an approximate panel. "
+             "Skips silently when the YAML already exists; pass "
+             "--force-auto to re-derive (e.g. after the CV-as-diagnostic "
+             "logic change in v0.2.224 made old panels stale).",
+    ),
+    force_auto: bool = typer.Option(
+        False, "--force-auto",
+        help="Re-derive auto panels even when ~/.stan/cirt_panels_auto.yml "
+             "already exists. Use after upgrading to a STAN version that "
+             "changes panel selection logic.",
     ),
 ) -> None:
     """Print or save an empirical cIRT panel.
@@ -3946,15 +3955,16 @@ def derive_cirt_panel(
         # If the panels already exist, skip — overnight chain calls
         # this after every metrics backfill and we don't want to
         # re-derive every night when the cohorts haven't changed.
-        # Pass --force-auto to override (re-derive after a big run drop).
-        if out_path.exists():
+        # Pass --force-auto to override (e.g. after upgrading to a
+        # STAN version that changes panel-selection logic).
+        if out_path.exists() and not force_auto:
             try:
                 existing = _yaml.safe_load(out_path.read_text(encoding="utf-8")) or []
                 if existing:
                     console.print(
                         f"[dim]cirt_panels_auto.yml exists with "
-                        f"{len(existing)} panels — skipping. Delete the "
-                        f"file or pass --family/--spd to re-derive.[/dim]"
+                        f"{len(existing)} panels — skipping. Pass "
+                        f"[bold]--force-auto[/bold] to re-derive.[/dim]"
                     )
                     return
             except Exception:
