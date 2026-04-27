@@ -320,11 +320,28 @@ def verify() -> None:
 
 
 @app.command()
-def init() -> None:
+def init(
+    reconfigure_fleet: bool = typer.Option(
+        False, "--reconfigure-fleet",
+        help="Re-run only the fleet-sync wizard. Skip the config-file copy.",
+    ),
+) -> None:
     """Initialize STAN config directory (~/.stan/).
 
-    Copies default config files from the package. Does not overwrite existing files.
+    Copies default config files from the package. Does not overwrite existing
+    files. Also walks the operator through the fleet-sync wizard so godmode
+    knows where to read this instrument's mirrored QC data.
+
+    Use ``--reconfigure-fleet`` to update only the fleet config later
+    (e.g. when the network drive path changes or the lab joins the
+    HF-Space relay).
     """
+    from stan.fleet_setup import run_fleet_wizard
+
+    if reconfigure_fleet:
+        run_fleet_wizard(force=True)
+        return
+
     user_dir = get_user_config_dir()
     user_dir.mkdir(parents=True, exist_ok=True)
 
@@ -342,6 +359,11 @@ def init() -> None:
             console.print(f"  [green]created[/green] {dst}")
         else:
             console.print(f"  [red]missing[/red] source: {src}")
+
+    # v0.2.216: prompt once for the fleet-sync root so godmode knows
+    # where to read this lab's mirrored QC. Skips silently if a
+    # fleet.yml already exists with a non-"none" mode.
+    run_fleet_wizard(force=False)
 
     console.print()
     console.print(f"Config directory: [bold]{user_dir}[/bold]")
