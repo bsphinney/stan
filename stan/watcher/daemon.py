@@ -168,6 +168,37 @@ class _AcquisitionHandler(FileSystemEventHandler):
                 self._on_event("already_tracked", path, "")
 
 
+def _model_from_raw(raw_path: Path) -> str | None:
+    """Return the instrument model string from a single raw file.
+
+    Bruker .d → analysis.tdf GlobalMetadata.InstrumentName
+    (e.g. "timsTOF HT"). Thermo .raw → trfp.extract_metadata()
+    instrument_model (e.g. "Orbitrap Fusion Lumos"). Returns
+    None if the file can't be read or the field isn't present.
+    """
+    try:
+        if raw_path.is_dir() and raw_path.suffix == ".d":
+            tdf = raw_path / "analysis.tdf"
+            if tdf.exists():
+                import sqlite3 as _sq
+                with _sq.connect(str(tdf)) as con:
+                    row = con.execute(
+                        "SELECT Value FROM GlobalMetadata WHERE Key='InstrumentName'"
+                    ).fetchone()
+                    if row and row[0]:
+                        return str(row[0]).strip()
+        elif raw_path.is_file() and raw_path.suffix == ".raw":
+            from stan.tools.trfp import extract_metadata
+            meta = extract_metadata(raw_path)
+            model = getattr(meta, "instrument_model", None) or \
+                    (isinstance(meta, dict) and meta.get("instrument_model"))
+            if model:
+                return str(model).strip()
+    except Exception:
+        logger.debug("Could not read model from %s", raw_path, exc_info=True)
+    return None
+
+
 def _resolve_instrument_name(config: dict) -> str:
     """Return a human-readable instrument name from a watcher config.
 
@@ -177,6 +208,12 @@ def _resolve_instrument_name(config: dict) -> str:
     when operators left the default in place, which then showed up in
     the dashboard + mirror as a meaningless identifier.
 
+    v0.2.229: when name resolves to "auto" because the watch_dir was
+    empty/unreadable at watcher startup, _store_run will re-resolve
+    from the actual raw file at ingest time (which we definitionally
+    have in hand). So this startup-time resolver is now a fast-path
+    only; "auto" is no longer the final answer.
+
     Resolution order:
       1. Explicit name in yaml (anything other than "auto"/empty/
          "unknown") — use verbatim.
@@ -184,9 +221,8 @@ def _resolve_instrument_name(config: dict) -> str:
          (e.g. "timsTOF HT").
       3. First `.raw` under watch_dir → fisher_py or TRFP metadata's
          instrument_model field (e.g. "Orbitrap Fusion Lumos").
-      4. Fall back to the literal "auto" so the operator sees the
-         same surprising value in the dashboard that prompts them to
-         rename.
+      4. Fall back to the literal "auto" — _store_run re-resolves at
+         ingest time before writing to the runs row.
     """
     configured = (config.get("name") or "").strip()
     if configured and configured.lower() not in ("auto", "unknown", ""):
@@ -293,13 +329,55 @@ class InstrumentWatcher:
         self._config = instrument_config
         # v0.2.190: resolve "auto" to a real vendor metadata name so
         # rows don't get stamped with a placeholder.
+        original_name = instrument_config.get("name")
         resolved_name = _resolve_instrument_name(instrument_config)
-        if resolved_name != instrument_config.get("name"):
+        if resolved_name != original_name:
             logger.info(
                 "Auto-resolved instrument name '%s' → '%s' from raw metadata",
-                instrument_config.get("name"), resolved_name,
+                original_name, resolved_name,
             )
             instrument_config["name"] = resolved_name
+            # v0.2.229: when "auto" resolves to a real model, also
+            # merge any pre-existing "auto" rows on this DB into the
+            # resolved name. Fixes the "two-cards on the dashboard"
+            # issue where 14 Lumos runs landed as "auto" during a
+            # window where _resolve_instrument_name returned "auto"
+            # (empty watch_dir on first startup, etc.) and stayed
+            # under that label even after later runs got the model.
+            was_auto = (
+                isinstance(original_name, str)
+                and original_name.strip().lower() in ("auto", "unknown", "")
+            )
+            if was_auto and resolved_name and resolved_name.lower() not in ("auto", "unknown"):
+                try:
+                    import sqlite3
+                    from stan.db import get_db_path, init_db
+                    init_db()
+                    db = get_db_path()
+                    with sqlite3.connect(str(db)) as con:
+                        merged_total = 0
+                        for table in ("runs", "sample_health"):
+                            for alias in ("auto", "unknown"):
+                                try:
+                                    r = con.execute(
+                                        f"UPDATE {table} SET instrument = ? "
+                                        f"WHERE instrument = ?",
+                                        (resolved_name, alias),
+                                    )
+                                    merged_total += r.rowcount
+                                except sqlite3.OperationalError:
+                                    pass
+                        con.commit()
+                        if merged_total:
+                            logger.info(
+                                "Merged %d 'auto'/'unknown' rows into '%s'",
+                                merged_total, resolved_name,
+                            )
+                except Exception:
+                    logger.debug(
+                        "auto→resolved merge failed for %s",
+                        resolved_name, exc_info=True,
+                    )
         self._name = resolved_name
         self._watch_dir = instrument_config.get("watch_dir", "")
         self._trackers: dict[str, StabilityTracker] = {}
@@ -1095,8 +1173,21 @@ class InstrumentWatcher:
                 except Exception:
                     raw_mtime = None
 
+            # v0.2.229: never let "auto"/"unknown"/"" leak into the
+            # runs row — re-resolve from the raw file in hand if the
+            # config name didn't yield a real model. This eliminates
+            # the "two cards on the dashboard" issue Brett saw on
+            # the Lumos: 14 recent runs landed as "auto" while older
+            # runs (resolved successfully at startup) had the proper
+            # model name.
+            inst_name = (self._config.get("name") or "").strip()
+            if not inst_name or inst_name.lower() in ("auto", "unknown"):
+                resolved = _model_from_raw(raw_path)
+                if resolved:
+                    inst_name = resolved
+
             run_id = insert_run(
-                instrument=self._config.get("name", "unknown"),
+                instrument=inst_name or "unknown",
                 run_name=raw_path.name,
                 raw_path=str(raw_path),
                 mode=mode.value,
