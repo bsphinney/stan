@@ -57,7 +57,7 @@
     <button onclick="resetGame()">Reset</button>
   </div>
   <canvas id="game" width="900" height="600"></canvas>
-  <div id="msg">← → or mouse to move HEPA · SPACE or click to suck up hair</div>
+  <div id="msg">← → or mouse to move HEPA · SPACE or click to fire — bullets kill invaders AND mid-air hairs</div>
 </div>
 <script>
 const W = 900, H = 600;
@@ -433,6 +433,30 @@ function step() {
       }
     }
   }
+
+  // v0.2.236: bullets also vaporize falling hairs. Without this,
+  // there's no defensive option once a hair has shed — the only
+  // way to stop incoming hairs was to kill the shedder before
+  // it dropped. Now you can shoot mid-air strands too. +2 score
+  // per neutralized hair so it's lower-value than killing a
+  // shedder but still worth the shot.
+  const HAIR_HIT_RADIUS = 6;
+  for (const b of state.bullets) {
+    if (b.y < -10) continue;
+    for (const h of state.hairs) {
+      if (h.y > H + 10) continue;
+      const dx = b.x - h.x;
+      const dy = b.y - h.y;
+      if (dx*dx + dy*dy < HAIR_HIT_RADIUS * HAIR_HIT_RADIUS) {
+        b.y = -100;
+        h.y = H + 100;
+        state.score += 2;
+        spawnParticles(h.x, h.y, h.color, 6);
+        break;
+      }
+    }
+  }
+
   state.bullets = state.bullets.filter(b => b.y > -10);
 
   // Hair × player

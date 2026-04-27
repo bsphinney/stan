@@ -235,14 +235,48 @@ def _resolve_instrument_name(config: dict) -> str:
     # v0.2.233: try _model_from_raw on every .d / .raw in watch_dir
     # until one yields a model. Same code path as _store_run's per-row
     # resolution, so what works at ingest also works at startup.
+    # v0.2.236: use rglob so files in subdirectories (Lumos organizes
+    # raw files under E:\Data\<project>\file.raw) are found. Limited
+    # to ~50 candidates so a deep tree doesn't stall startup.
+    # Verbose INFO-level logging so the synced watch log records
+    # which candidates we tried and what _model_from_raw returned —
+    # otherwise a Lumos with no top-level .raw files looks identical
+    # to a Lumos where extract_metadata is silently failing.
     try:
-        for candidate in list(watch.glob("*.d")) + list(watch.glob("*.raw")):
-            try:
-                model = _model_from_raw(candidate)
-            except Exception:
-                model = None
-            if model and model.lower() not in ("auto", "unknown", ""):
-                return str(model).strip()
+        candidates_seen = 0
+        candidates_tried = 0
+        last_model_attempt: str | None = None
+        for pattern in ("*.d", "*.raw"):
+            for candidate in watch.rglob(pattern):
+                candidates_seen += 1
+                if candidates_seen > 50:
+                    break
+                candidates_tried += 1
+                try:
+                    model = _model_from_raw(candidate)
+                except Exception as e:
+                    model = None
+                    last_model_attempt = (
+                        f"{candidate.name}: {type(e).__name__}: {e}"
+                    )
+                if model and model.lower() not in ("auto", "unknown", ""):
+                    logger.info(
+                        "auto-name resolved from %s → %r",
+                        candidate.name, model.strip(),
+                    )
+                    return str(model).strip()
+                if model is None:
+                    last_model_attempt = (
+                        f"{candidate.name}: _model_from_raw returned None"
+                    )
+            if candidates_seen > 50:
+                break
+        logger.info(
+            "auto-name resolution: %d candidates seen, %d tried, "
+            "no model resolved (last attempt: %s)",
+            candidates_seen, candidates_tried,
+            last_model_attempt or "no candidates found",
+        )
     except Exception:
         logger.debug("auto-name candidate scan failed", exc_info=True)
 
