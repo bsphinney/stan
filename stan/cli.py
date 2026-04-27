@@ -2418,6 +2418,9 @@ def backfill_metrics(
         # readiness audit can see "this row was last touched by stan
         # X" and decide whether to keep or re-extract.
         "stan_version",
+        # v0.2.225: column metadata pulled from instruments.yml so a
+        # single backfill-metrics pass populates historical rows.
+        "column_vendor", "column_model",
     ]
     if only:
         requested = {f.strip() for f in only.split(",") if f.strip()}
@@ -2573,6 +2576,34 @@ def backfill_metrics(
             _stan_ver = "unknown"
         metrics["stan_version"] = _stan_ver
 
+        # v0.2.225: pull column metadata from instruments.yml so the
+        # backfill stamps it on existing NULL rows. Brett's setup
+        # already captured column_vendor + column_model per instrument
+        # at install time — pre-fix only the live watcher path read
+        # those values into the runs row, so historical rows came in
+        # with NULL columns. Lazy-load the YAML once per backfill.
+        if not hasattr(_backfill_tic_impl, "_yml_cache"):
+            try:
+                import yaml as _y
+                from stan.config import resolve_config_path
+                _yml_path = resolve_config_path("instruments.yml")
+                _yml = _y.safe_load(_yml_path.read_text(encoding="utf-8")) or {}
+                _backfill_tic_impl._yml_cache = {
+                    inst.get("name"): (
+                        inst.get("column_vendor"),
+                        inst.get("column_model"),
+                    )
+                    for inst in (_yml.get("instruments") or [])
+                    if inst.get("name")
+                }
+            except Exception:
+                _backfill_tic_impl._yml_cache = {}
+        cv, cm = _backfill_tic_impl._yml_cache.get(instrument, (None, None))
+        if cv:
+            metrics["column_vendor"] = cv
+        if cm:
+            metrics["column_model"] = cm
+
         # v0.2.213: detect LC system from raw file when DB has empty
         # string (legacy default) or NULL. Live watcher started doing
         # this in v0.2.212 but existing rows from before the fix need
@@ -2609,7 +2640,9 @@ def backfill_metrics(
                 if force and old_val is not None and old_val != 0:
                     skipped_fields.append((field, "extractor returned null"))
                 continue
-            gap = (old_val is None or old_val == 0)
+            # Empty-string is a gap for text columns (column_vendor,
+            # column_model, search_engine, diann_version, stan_version).
+            gap = (old_val is None or old_val == 0 or old_val == "")
             if force or gap:
                 updates[field] = new_val
 
