@@ -452,6 +452,16 @@ class InstrumentWatcher:
     def __init__(self, instrument_config: dict) -> None:
         import collections
         self._config = instrument_config
+        # v0.2.234: pull watch_dir + name BEFORE the merge/persist
+        # calls. Pre-fix, _watch_dir was set further down in __init__
+        # so _persist_resolved_name's comparison
+        #   str(blk.get("watch_dir") or "") != str(self._watch_dir or "")
+        # evaluated against "" and skipped every block, never writing
+        # the resolved name back to instruments.yml. (Exploris audit
+        # 2026-04-27: log showed the resolution succeeded but yaml
+        # never updated.)
+        self._watch_dir = instrument_config.get("watch_dir", "")
+
         # v0.2.190: resolve "auto" to a real vendor metadata name so
         # rows don't get stamped with a placeholder.
         original_name = instrument_config.get("name")
@@ -471,14 +481,8 @@ class InstrumentWatcher:
         # where instruments.yml says "auto" and resolution at startup
         # also returns "auto" (e.g. watch_dir empty on first boot)
         # while older rows had landed with the proper model name.
-        # By reading the raw file referenced by each placeholder row,
-        # we get the right model regardless of config drift. Also
-        # persist the resolved name back to instruments.yml on disk
-        # so the dashboard's "duplicate cards" banner suggests the
-        # right merge target instead of the placeholder.
         self._merge_placeholder_runs()
         self._persist_resolved_name(original_name, resolved_name)
-        self._watch_dir = instrument_config.get("watch_dir", "")
         self._trackers: dict[str, StabilityTracker] = {}
         # Parallel map of tracker path → "qc" | "monitor". Written by
         # the handler, consumed by _on_acquisition_complete to decide
