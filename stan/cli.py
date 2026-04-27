@@ -3956,14 +3956,12 @@ def derive_cirt_panel(
             if report.exists():
                 cohorts[(fam, int(row["spd"]))].append(report)
 
-        # CV-relaxation ladder: long-timespan cohorts (months of runs
-        # across column changes) won't have peptides with RT CV<5%.
-        # Walk up the ladder until at least one stable anchor is found,
-        # so labs with old data still get usable panels — just looser.
-        cv_ladder = [max_cv]
-        if max_cv <= 5.0:
-            cv_ladder.extend([8.0, 12.0, 20.0])
-
+        # v0.2.224: Brett's correction — CV is a diagnostic, not a
+        # filter. Pick peptides that are highly present + spread across
+        # the gradient; their RT CV across the cohort goes into the
+        # output as info but doesn't reject candidates. If a peptide
+        # is moving around between runs, that's exactly the signal
+        # cIRT is meant to surface, not throw away.
         from stan.metrics.cirt import derive_rts_for_peptides
 
         out_panels: list[dict] = []
@@ -3975,32 +3973,24 @@ def derive_cirt_panel(
             if len(reports) < min_runs:
                 skipped.append((fam, sp, len(reports)))
                 continue
-            panel: list = []
-            tried_cv: float = max_cv
-            for cv in cv_ladder:
-                panel = derive_panel_from_cohort(
-                    reports, n_anchors=n_anchors,
-                    max_cv_pct=cv, min_presence=min_presence,
-                )
-                if panel:
-                    tried_cv = cv
-                    break
+            panel = derive_panel_from_cohort(
+                reports, n_anchors=n_anchors,
+                min_presence=min_presence,
+            )
             if panel:
                 own_panels[(fam, sp)] = panel
                 out_panels.append({
                     "family": fam, "spd": sp,
                     "n_runs": len(reports),
-                    "max_cv_pct": tried_cv,
                     "source": "self",
                     "peptides": [
                         {"seq": seq, "rt": round(rt, 2)} for seq, rt in panel
                     ],
                 })
                 derived += 1
-                cv_note = "" if tried_cv == max_cv else f" [dim](relaxed CV→{tried_cv:.0f}%)[/dim]"
                 console.print(
                     f"[green]✓[/green] ({fam}, SPD={sp}): "
-                    f"{len(panel)} anchors from {len(reports)} runs{cv_note}"
+                    f"{len(panel)} anchors from {len(reports)} runs"
                 )
                 continue
 

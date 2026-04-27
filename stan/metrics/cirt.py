@@ -89,7 +89,7 @@ def derive_panel_from_cohort(
     report_paths: list[Path],
     n_anchors: int = 10,
     min_presence: float = 0.9,
-    max_cv_pct: float = 5.0,
+    max_cv_pct: float | None = None,
     min_len: int = 9,
     max_len: int = 18,
     q_value_max: float = 0.01,
@@ -99,24 +99,28 @@ def derive_panel_from_cohort(
     A cohort is a set of runs expected to have the same absolute RT
     scale — typically all runs at one (instrument_family, spd).
 
-    Selection criteria:
-    - Peptide present at 1% FDR in ≥ min_presence fraction of runs.
-    - Median RT CV across runs < max_cv_pct%.
-    - Tryptic C-terminus (K or R).
-    - Length in [min_len, max_len].
-    - Spread across the gradient (RT-binned).
+    Selection criteria (v0.2.224 — Brett's correction):
 
-    Args:
-        report_paths: DIA-NN report.parquet paths for the cohort.
-        n_anchors: Target panel size.
-        min_presence: Fraction of runs the peptide must appear in.
-        max_cv_pct: Reject peptides with higher RT CV.
-        min_len/max_len: Length bounds for the peptide.
-        q_value_max: FDR cutoff (per DIA-NN Q.Value column).
+      1. Peptide present at 1% FDR in ≥ ``min_presence`` of runs.
+         This is the PRIMARY filter — anchors must be reliably
+         detected across the cohort or they're useless as a frame
+         of reference.
+      2. Tryptic C-terminus (K or R), length in [min_len, max_len].
+      3. Spread evenly across the gradient — pick N candidates
+         whose RTs land closest to N evenly-spaced targets between
+         the cohort's RT min and max.
 
-    Returns:
-        List of (peptide_sequence, reference_rt_min) tuples, RT-sorted.
-        Empty list if no cohort or no stable anchors.
+    RT CV across the cohort is REPORTED but no longer used as a
+    rejection filter. The whole point of cIRT is to detect when
+    today's run's RTs deviate from the panel reference; if we
+    pre-filter to only low-CV peptides we discard the diagnostic
+    signal we want to track. ``max_cv_pct``, when provided, only
+    breaks ties between candidates landing in the same RT bin
+    (lower-CV preferred) — never rejects a high-presence peptide.
+
+    Returns peptides RT-sorted. Empty list when no peptides hit
+    the presence threshold (e.g. an empty cohort, or all peptides
+    detected sporadically).
     """
     if not report_paths:
         return []
@@ -142,7 +146,8 @@ def derive_panel_from_cohort(
 
     min_present_n = max(1, int(min_presence * len(report_paths)))
 
-    # Filter to stable candidates
+    # Build candidate set: high presence + tryptic + length only.
+    # CV is computed and stored per-candidate but does NOT exclude.
     candidates: list[tuple[str, float, float]] = []  # (seq, mean_rt, cv)
     for seq, rts in seq_rts.items():
         if len(rts) < min_present_n:
@@ -156,8 +161,7 @@ def derive_panel_from_cohort(
             continue
         sd = (sum((r - m) ** 2 for r in rts) / len(rts)) ** 0.5
         cv = 100 * sd / m
-        if cv < max_cv_pct:
-            candidates.append((seq, m, cv))
+        candidates.append((seq, m, cv))
 
     if not candidates:
         return []
@@ -168,15 +172,21 @@ def derive_panel_from_cohort(
         # Degenerate: all anchors at the same RT
         return [(s, r) for s, r, _ in candidates[:n_anchors]]
 
-    # Pick anchors spread evenly across the gradient
+    # Pick anchors spread evenly across the gradient. Within each
+    # RT-bin neighbourhood, prefer the lowest-CV candidate so the
+    # panel still leans toward stable peptides where possible.
     picks: list[tuple[str, float]] = []
+    used: set[str] = set()
     for i in range(n_anchors):
         target = rt_min + (i + 0.5) * (rt_max - rt_min) / n_anchors
-        remaining = [c for c in candidates if c[0] not in {p[0] for p in picks}]
+        remaining = [c for c in candidates if c[0] not in used]
         if not remaining:
             break
-        best = min(remaining, key=lambda c: abs(c[1] - target))
+        # Sort by RT-distance, break ties on CV (lower = better).
+        remaining.sort(key=lambda c: (abs(c[1] - target), c[2]))
+        best = remaining[0]
         picks.append((best[0], round(best[1], 3)))
+        used.add(best[0])
 
     return sorted(picks, key=lambda x: x[1])
 
