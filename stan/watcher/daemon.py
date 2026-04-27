@@ -1022,6 +1022,18 @@ class InstrumentWatcher:
                 metrics["spd"] = self._resolve_spd(raw_path)
                 metrics["ips_score"] = compute_ips_dda(metrics)
 
+            # v0.2.212: populate lc_system from raw metadata so the live
+            # path matches baseline. Pre-fix this column was always blank
+            # because daemon._store_run never called detect_lc_system,
+            # only baseline.py did.
+            try:
+                from stan.metrics.scoring import detect_lc_system
+                lc_sys = detect_lc_system(raw_path)
+                if lc_sys:
+                    metrics["lc_system"] = lc_sys
+            except Exception:
+                logger.debug("LC system detect failed for %s", raw_path.name, exc_info=True)
+
             # Resolve acquisition mode string for threshold lookup
             acq_mode = "dia" if is_dia(mode) else "dda"
 
@@ -1068,6 +1080,33 @@ class InstrumentWatcher:
             # just means empty peg/drift columns.
             if run_id:
                 self._run_peg_and_drift(raw_path, run_id, table="runs")
+
+                # v0.2.212: extract + persist the TIC trace as part of
+                # the live ingest path. Pre-fix the live watcher never
+                # stored the TIC and we relied on `stan backfill-tic`
+                # running periodically to fill in the gaps. That created
+                # a window where the latest QC row had no tic_traces
+                # child until backfill ran, and on TIMS the latest row
+                # ended up empty because the chain had finished.
+                try:
+                    from stan.metrics.tic import (
+                        extract_tic_bruker, extract_tic_thermo,
+                        downsample_trace,
+                    )
+                    from stan.db import insert_tic_trace
+                    trace = None
+                    if raw_path.is_dir() and raw_path.suffix.lower() == ".d":
+                        trace = extract_tic_bruker(raw_path)
+                    elif raw_path.is_file() and raw_path.suffix.lower() == ".raw":
+                        trace = extract_tic_thermo(raw_path)
+                    if trace and trace.rt_min and trace.intensity:
+                        trace = downsample_trace(trace, n_bins=128)
+                        insert_tic_trace(run_id, trace.rt_min, trace.intensity)
+                except Exception:
+                    logger.debug(
+                        "TIC extraction failed for %s",
+                        raw_path.name, exc_info=True,
+                    )
 
             if decision.result.value == "fail":
                 from stan.gating.queue import write_hold_flag

@@ -4414,3 +4414,262 @@ def poll_commands_cmd() -> None:
 
     n = poll_once()
     console.print(f"Processed {n} command(s).")
+
+
+@app.command("test")
+def test_latest_runs(
+    n: int = typer.Option(5, "--n", help="Number of recent runs to test."),
+    instrument: Optional[str] = typer.Option(
+        None, "--instrument",
+        help="Filter to a specific instrument name (default: all in DB).",
+    ),
+) -> None:
+    """Audit the N most recent QC runs against the v1.0 community schema.
+
+    Reports per-run which metadata fields are populated and which are
+    NULL/0.0. Counts child-table rows (tic_traces, drift_window_centroids,
+    peg_ion_hits, irt_anchor_rts). Flags TIC sawtooth via first-difference
+    sign-change ratio. Writes a JSONL log to ~/STAN/logs/ and syncs to
+    the Hive mirror so failures can be diagnosed remotely.
+
+    Run on every instrument before flipping STAN to v1.0 + wiping the
+    community dataset — green across the board means re-population will
+    succeed; reds tell you what's still broken.
+    """
+    import sqlite3
+    import json as _json
+    from datetime import datetime as _dt
+    from stan.db import get_db_path
+
+    db = get_db_path()
+
+    # Fields by category. NULL/0.0 in any of these = broken for v1.0.
+    REQ_CORE = ['instrument', 'mode', 'spd', 'amount_ng']
+    REQ_ENGINE = ['diann_version', 'search_engine']
+    REQ_LC = ['lc_system', 'column_vendor', 'column_model']
+    REQ_COUNTS = ['n_precursors', 'n_peptides', 'n_proteins']
+    REQ_QUANT = ['median_cv_precursor', 'median_fragments_per_precursor']
+    REQ_MASS = ['median_mass_acc_ms1_ppm', 'median_mass_acc_ms2_ppm']
+    REQ_CHROM = ['fwhm_rt_min', 'peak_capacity', 'dynamic_range_log10']
+    REQ_IPS = ['ips_score']
+    REQ_PEG = ['peg_score', 'peg_class', 'peg_n_ions_detected', 'peg_intensity_pct']
+    REQ_DRIFT = ['drift_class', 'drift_coverage', 'drift_median_im', 'drift_p90_abs_im']
+
+    ALL_FIELDS = (
+        REQ_CORE + REQ_ENGINE + REQ_LC + REQ_COUNTS + REQ_QUANT
+        + REQ_MASS + REQ_CHROM + REQ_IPS + REQ_PEG + REQ_DRIFT
+    )
+
+    def is_populated(value, field: str) -> bool:
+        """Field-aware presence check."""
+        if value is None:
+            return False
+        if field in ('lc_system',) and value == '':
+            return False
+        # 0.0 is broken for these fields (used to be the default)
+        if field in (
+            'median_cv_precursor', 'median_fragments_per_precursor',
+            'amount_ng', 'spd',
+        ) and (value == 0 or value == 0.0):
+            return False
+        # drift NULL is expected on Thermo — don't penalize
+        return True
+
+    def sawtooth_pct(intensity: list[float]) -> float | None:
+        if not intensity or len(intensity) < 6:
+            return None
+        diffs = [intensity[i + 1] - intensity[i] for i in range(len(intensity) - 1)]
+        sc = sum(1 for i in range(len(diffs) - 1) if diffs[i] * diffs[i + 1] < 0)
+        return 100.0 * sc / max(1, len(diffs) - 1)
+
+    log_dir = Path.home() / 'STAN' / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"test_{_dt.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    fh = log_path.open('w', encoding='utf-8')
+
+    def jsonl(rec: dict) -> None:
+        fh.write(_json.dumps(rec, default=str) + '\n')
+
+    jsonl({
+        'event': 'start',
+        'ts': _dt.utcnow().isoformat() + 'Z',
+        'n': n,
+        'instrument_filter': instrument,
+    })
+
+    with sqlite3.connect(str(db)) as con:
+        con.row_factory = sqlite3.Row
+
+        if instrument:
+            insts = [(instrument,)]
+        else:
+            insts = con.execute(
+                'SELECT DISTINCT instrument FROM runs ORDER BY instrument'
+            ).fetchall()
+            insts = [(r[0],) for r in insts]
+
+        # Aggregate counters per field across all instruments
+        broken_per_field: dict[str, int] = {f: 0 for f in ALL_FIELDS}
+        total_runs = 0
+
+        for (inst_name,) in insts:
+            console.print(f'\n[bold cyan]══ {inst_name} ══[/bold cyan]')
+            rows = con.execute(
+                'SELECT * FROM runs WHERE instrument=? ORDER BY run_date DESC LIMIT ?',
+                (inst_name, n),
+            ).fetchall()
+            if not rows:
+                console.print(f'  [yellow]no runs found[/yellow]')
+                continue
+
+            inst_summary = {f: 0 for f in ALL_FIELDS}
+            inst_total = 0
+            inst_thermo = '.raw' in (rows[0]['raw_path'] or '').lower()
+
+            for row in rows:
+                d = dict(row)
+                run_id = d['id']
+                run_name = d['run_name']
+                run_date = (d.get('run_date') or '')[:19]
+                inst_total += 1
+                total_runs += 1
+
+                # Field-presence audit
+                missing: list[str] = []
+                for f in ALL_FIELDS:
+                    # skip drift on Thermo (Bruker-only metric)
+                    if inst_thermo and f in REQ_DRIFT:
+                        continue
+                    if not is_populated(d.get(f), f):
+                        missing.append(f)
+                        broken_per_field[f] += 1
+                        inst_summary[f] += 1
+
+                # Child tables
+                tic_n = con.execute(
+                    'SELECT COUNT(*) FROM tic_traces WHERE run_id=?', (run_id,),
+                ).fetchone()[0]
+                drift_n = con.execute(
+                    'SELECT COUNT(*) FROM drift_window_centroids WHERE run_id=?',
+                    (run_id,),
+                ).fetchone()[0]
+                peg_n = con.execute(
+                    'SELECT COUNT(*) FROM peg_ion_hits WHERE run_id=?', (run_id,),
+                ).fetchone()[0]
+                irt_n = con.execute(
+                    'SELECT COUNT(*) FROM irt_anchor_rts WHERE run_id=?', (run_id,),
+                ).fetchone()[0]
+
+                # TIC shape check
+                tic_pct = None
+                if tic_n:
+                    tic_row = con.execute(
+                        'SELECT intensity FROM tic_traces WHERE run_id=? LIMIT 1',
+                        (run_id,),
+                    ).fetchone()
+                    if tic_row:
+                        try:
+                            inten = _json.loads(tic_row[0])
+                            tic_pct = sawtooth_pct(inten)
+                        except Exception:
+                            pass
+
+                # Console block per run
+                ok_count = sum(
+                    1 for f in ALL_FIELDS
+                    if not (inst_thermo and f in REQ_DRIFT)
+                    and is_populated(d.get(f), f)
+                )
+                applicable = (
+                    len(ALL_FIELDS) - (len(REQ_DRIFT) if inst_thermo else 0)
+                )
+                console.print(
+                    f'  [bold]{run_name[:55]}[/bold]  ({run_date})'
+                )
+                console.print(
+                    f'    fields populated: {ok_count}/{applicable}  ·  '
+                    f'tic={tic_n}{"" if tic_pct is None else f" ({tic_pct:.0f}% noise)"}  '
+                    f'drift_pts={drift_n}  peg_hits={peg_n}  irt={irt_n}'
+                )
+                if missing:
+                    console.print(
+                        f'    [red]missing:[/red] {", ".join(missing)}'
+                    )
+
+                jsonl({
+                    'event': 'run',
+                    'instrument': inst_name,
+                    'run_id': run_id,
+                    'run_name': run_name,
+                    'run_date': d.get('run_date'),
+                    'mode': d.get('mode'),
+                    'thermo': inst_thermo,
+                    'fields_ok': ok_count,
+                    'fields_applicable': applicable,
+                    'missing': missing,
+                    'children': {
+                        'tic_traces': tic_n,
+                        'drift_centroids': drift_n,
+                        'peg_hits': peg_n,
+                        'irt_anchors': irt_n,
+                    },
+                    'tic_sawtooth_pct': tic_pct,
+                })
+
+            # Per-instrument summary
+            console.print(f'  [dim]── {inst_name} summary ──[/dim]')
+            problem_fields = [
+                (f, inst_summary[f]) for f in ALL_FIELDS
+                if inst_summary[f] > 0
+            ]
+            if problem_fields:
+                console.print(
+                    '    [red]broken in {}/{}:[/red] {}'.format(
+                        max(c for _, c in problem_fields), inst_total,
+                        ', '.join(f'{f}({c})' for f, c in problem_fields),
+                    )
+                )
+            else:
+                console.print('    [green]all required fields populated ✓[/green]')
+
+            jsonl({
+                'event': 'instrument_summary',
+                'instrument': inst_name,
+                'n_runs_tested': inst_total,
+                'thermo': inst_thermo,
+                'broken_per_field': {
+                    f: c for f, c in inst_summary.items() if c > 0
+                },
+            })
+
+    # Global summary
+    console.print('\n[bold yellow]══ GLOBAL ══[/bold yellow]')
+    sorted_broken = sorted(
+        ((f, c) for f, c in broken_per_field.items() if c > 0),
+        key=lambda x: -x[1],
+    )
+    if sorted_broken:
+        console.print(f'  total runs tested: {total_runs}')
+        console.print('  fields with at least one failure (worst first):')
+        for f, c in sorted_broken:
+            console.print(f'    [red]✗[/red] {f:<35s} {c}/{total_runs}')
+    else:
+        console.print('  [green]every required field populated on every run ✓[/green]')
+
+    jsonl({
+        'event': 'end',
+        'ts': _dt.utcnow().isoformat() + 'Z',
+        'total_runs': total_runs,
+        'broken_per_field': {f: c for f, c in broken_per_field.items() if c > 0},
+    })
+    fh.close()
+
+    console.print(f'\n[dim]log: {log_path}[/dim]')
+
+    # Sync log to Hive so the result is remotely visible.
+    try:
+        from stan.config import sync_to_hive_mirror
+        sync_to_hive_mirror(include_reports=False)
+        console.print('[dim]synced to Hive mirror.[/dim]')
+    except Exception:
+        logger.debug('sync to Hive mirror failed', exc_info=True)

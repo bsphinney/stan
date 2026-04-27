@@ -413,13 +413,28 @@ def extract_tic_from_report(report_path: Path, n_bins: int = 128) -> TICTrace | 
         rt_array = df["RT"].to_list()
         signal_array = df[signal_col].to_list()
 
-        binned_signal = [0.0] * n_bins
+        # v0.2.212: switch from sum-per-bin to mean-per-bin. The sum
+        # approach made every Thermo + identified-TIC submission sawtooth
+        # because the precursor density per bin varies and Ms1.Apex.Area
+        # values are highly variable across precursors — so bins where a
+        # bright peptide happened to land got an outsized contribution.
+        # The same fix landed for the Bruker .d frame-based extractor in
+        # v0.2.147 with the same rationale: mean-per-bin matches the
+        # chart's "intensity at this RT" semantics and produces the
+        # smooth chromatogram users see in DIA-NN's own QC plots.
+        bin_sum = [0.0] * n_bins
+        bin_count = [0] * n_bins
         for rt_val, sig_val in zip(rt_array, signal_array):
             if sig_val is None or sig_val <= 0:
                 continue
             bin_idx = int((rt_val - rt_min_val) / bin_width)
             bin_idx = max(0, min(n_bins - 1, bin_idx))
-            binned_signal[bin_idx] += float(sig_val)
+            bin_sum[bin_idx] += float(sig_val)
+            bin_count[bin_idx] += 1
+        binned_signal = [
+            bin_sum[i] / bin_count[i] if bin_count[i] > 0 else 0.0
+            for i in range(n_bins)
+        ]
 
         run_name = report_path.parent.name
 

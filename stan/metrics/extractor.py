@@ -503,9 +503,13 @@ def extract_dia_metrics(
     else:
         logger.debug("Fragment.Info/Fragment.Quant.Corrected not in report — skipping fragment metrics")
 
-    # CV across replicates (if multiple files)
+    # CV across replicates (if multiple files). Single-injection QC runs
+    # (the common case for STAN) have no replicates and CV is undefined —
+    # write None / NULL rather than 0.0 so the dashboard and community
+    # schema can distinguish "no replicate available" from "replicate had
+    # zero variance" (which would be suspicious in itself).
     n_files = filt["File.Name"].n_unique()
-    median_cv: float = 0.0
+    median_cv: float | None = None
     if n_files > 1:
         cv_df = (
             filt.group_by(["Precursor.Id", "File.Name"])
@@ -518,7 +522,7 @@ def extract_dia_metrics(
             .with_columns((pl.col("sd") / pl.col("mean") * 100).alias("cv"))
             .filter(pl.col("cv").is_not_null())
         )
-        median_cv = float(cv_df["cv"].median()) if cv_df.height > 0 else 0.0
+        median_cv = float(cv_df["cv"].median()) if cv_df.height > 0 else None
 
     # Charge state distribution
     charge = (
@@ -624,7 +628,7 @@ def extract_dia_metrics(
         "n_proteins": filt.filter(pl.col("PG.Q.Value") <= q_cutoff)[
             "Protein.Group"
         ].n_unique() if "PG.Q.Value" in filt.columns and "Protein.Group" in filt.columns else 0,
-        "median_fragments_per_precursor": float(filt["n_frag_extracted"].median()) if "n_frag_extracted" in filt.columns else 0.0,
+        "median_fragments_per_precursor": float(filt["n_frag_extracted"].median()) if "n_frag_extracted" in filt.columns else None,
         "pct_fragments_quantified": (
             float(total_frag_quantified / total_frag_extracted)
             if total_frag_extracted > 0
@@ -645,10 +649,28 @@ def extract_dia_metrics(
         "dynamic_range_log10": dyn_range,
         "peak_capacity": peak_cap,
         "median_precursor_intensity": median_intensity,
+        # v0.2.212: search-engine provenance recorded at extract time so
+        # the live watcher path doesn't have to remember to populate it.
+        # Required for community submissions — relay rejects null versions.
+        "search_engine": "diann",
+        "diann_version": _detect_engine_version(),
         **rt_deciles,
         **c2a,
         **stats,
     }
+
+
+def _detect_engine_version() -> str:
+    """Best-effort lookup of the installed DIA-NN binary's version.
+
+    Returns "unknown" if detection fails — never raises, never returns
+    None (NULL diann_version is what we're trying to eliminate).
+    """
+    try:
+        from stan.search.version_detect import detect_diann_version
+        return detect_diann_version() or "unknown"
+    except Exception:
+        return "unknown"
 
 
 def extract_dda_metrics(
@@ -757,6 +779,9 @@ def extract_dda_metrics(
         "pct_delta_mass_lt5ppm": pct_lt5ppm,
         "median_peak_width_sec": median_peak_width_sec,
         "median_points_across_peak": median_points_across_peak,
+        # v0.2.212: DDA QC searches with Sage on STAN.
+        "search_engine": "sage",
+        "diann_version": None,  # not applicable to DDA
     }
 
 
@@ -783,9 +808,9 @@ def _empty_dia_metrics() -> dict:
         "n_precursors": 0,
         "n_peptides": 0,
         "n_proteins": 0,
-        "median_fragments_per_precursor": 0.0,
+        "median_fragments_per_precursor": None,
         "pct_fragments_quantified": 0.0,
-        "median_cv_precursor": 0.0,
+        "median_cv_precursor": None,
         "missed_cleavage_rate": 0.0,
         "missed_cleavage_rate_2plus": 0.0,
         "pct_charge_1": 0.0,
@@ -811,6 +836,8 @@ def _empty_dia_metrics() -> dict:
         "ms1_signal": None,
         "ms2_signal": None,
         "normalisation_factor": None,
+        "search_engine": "diann",
+        "diann_version": _detect_engine_version(),
     }
 
 
