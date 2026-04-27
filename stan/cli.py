@@ -2414,6 +2414,10 @@ def backfill_metrics(
         "median_fragments_per_precursor", "median_cv_precursor",
         "diann_version", "search_engine",
         "gradient_length_min",
+        # v0.2.219: re-stamp the row's producing version so the v1.0
+        # readiness audit can see "this row was last touched by stan
+        # X" and decide whether to keep or re-extract.
+        "stan_version",
     ]
     if only:
         requested = {f.strip() for f in only.split(",") if f.strip()}
@@ -2559,6 +2563,15 @@ def backfill_metrics(
                 console.print(f"  [red]Extract error: {run_name}: {e}[/red]")
             errors += 1
             continue
+
+        # v0.2.219: stamp the row with the current stan version so
+        # downstream queries can find "rows extracted by stan X+" for
+        # the v1.0 wipe-and-repopulate readiness check.
+        try:
+            from stan import __version__ as _stan_ver
+        except Exception:
+            _stan_ver = "unknown"
+        metrics["stan_version"] = _stan_ver
 
         # v0.2.213: detect LC system from raw file when DB has empty
         # string (legacy default) or NULL. Live watcher started doing
@@ -4649,6 +4662,11 @@ def _test_extract_pipeline(
             except Exception:
                 pass
             m['gradient_length_min'] = grad
+            try:
+                from stan import __version__ as _sv
+            except Exception:
+                _sv = 'unknown'
+            m['stan_version'] = _sv
             steps['metrics'] = {
                 'ok': True,
                 'fields': {k: m.get(k) for k in (
@@ -4828,6 +4846,9 @@ def test_latest_runs(
     # peak capacity, dynamic range, TIC overlay, cIRT) is verified.
     REQ_CORE = [
         'instrument', 'mode', 'spd', 'gradient_length_min', 'amount_ng',
+        # v0.2.219: row's producing stan version. NULL = legacy row,
+        # likely needs re-extraction before v1.0 community submission.
+        'stan_version',
     ]
     REQ_ENGINE = ['diann_version', 'search_engine']
     REQ_LC = ['lc_system', 'column_vendor', 'column_model']

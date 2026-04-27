@@ -328,6 +328,11 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("drift_median_im", "ALTER TABLE runs ADD COLUMN drift_median_im REAL"),
         ("drift_p90_abs_im", "ALTER TABLE runs ADD COLUMN drift_p90_abs_im REAL"),
         ("drift_class", "ALTER TABLE runs ADD COLUMN drift_class TEXT"),
+        # Stan version that produced the metrics on this row (added
+        # v0.2.219). Updated on every insert + backfill-metrics + test
+        # --extract write so we can identify rows that need re-extraction
+        # ahead of the v1.0 community wipe-and-repopulate.
+        ("stan_version", "ALTER TABLE runs ADD COLUMN stan_version TEXT"),
     ]
 
     # sample_health migrations — independent from runs so new columns
@@ -454,6 +459,13 @@ def insert_run(
     run_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
+    # v0.2.219: stamp the producing stan version on every row so we
+    # can identify stale data ahead of the v1.0 community wipe.
+    try:
+        from stan import __version__ as _stan_version
+    except Exception:
+        _stan_version = "unknown"
+
     row = {
         "id": run_id,
         "instrument": instrument,
@@ -461,6 +473,7 @@ def insert_run(
         "run_date": run_date or now,
         "raw_path": raw_path,
         "mode": mode,
+        "stan_version": _stan_version,
         # DIA
         "n_precursors": metrics.get("n_precursors"),
         "n_peptides": metrics.get("n_peptides"),
