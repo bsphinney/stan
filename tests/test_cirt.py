@@ -101,25 +101,31 @@ def test_extract_anchor_rts_collapses_charges(tmp_path):
 
 
 def test_derive_panel_from_cohort(tmp_path):
-    """A small synthetic cohort should yield tryptic peptides only."""
-    # 5 runs, 3 stable peptides + 1 noisy one + 1 non-tryptic
+    """A small synthetic cohort should yield tryptic peptides spanning RT.
+
+    v0.2.224: CV is no longer a hard filter (it's the diagnostic
+    signal cIRT exists to track). High-CV peptides are kept; only
+    presence + tryptic + length + spread matter for inclusion.
+    Non-tryptic and short/long peptides are still excluded.
+    """
     reports = []
     for i, drift in enumerate([0.0, 0.05, -0.03, 0.02, -0.01]):
         rows = [
             ("STABLEAAAAR",   5.0 + drift, 0.001),
             ("STABLEBBBBK",  15.0 + drift, 0.001),
             ("STABLECCCCK",  25.0 + drift, 0.001),
-            ("NOISYDDDDK",   10.0 + drift * 20, 0.001),  # huge CV
+            ("NOISYDDDDK",   10.0 + drift * 20, 0.001),  # high CV — kept
             ("NONTRYPTICAA",  8.0 + drift, 0.001),       # doesn't end in K/R
         ]
         reports.append(_write_report(tmp_path / f"r{i}.parquet", rows))
 
-    panel = derive_panel_from_cohort(reports, n_anchors=5, max_cv_pct=3.0)
+    panel = derive_panel_from_cohort(reports, n_anchors=5)
     seqs = {s for s, _ in panel}
     assert "STABLEAAAAR" in seqs
     assert "STABLEBBBBK" in seqs
     assert "STABLECCCCK" in seqs
-    assert "NOISYDDDDK" not in seqs, "high-CV peptide should be rejected"
+    # CV is now diagnostic, not a filter — noisy peptides are valid anchors
+    assert "NOISYDDDDK" in seqs, "high-CV peptides are now kept (CV is diagnostic)"
     assert "NONTRYPTICAA" not in seqs, "non-tryptic should be rejected"
 
 
