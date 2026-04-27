@@ -4855,6 +4855,29 @@ def _test_extract_pipeline(
             except Exception:
                 _sv = 'unknown'
             m['stan_version'] = _sv
+
+            # v0.2.227: pull column_vendor + column_model from
+            # instruments.yml so the test --extract pipeline tags
+            # the runs row the same way backfill-metrics does. Setup
+            # already captured these at install time; the test was
+            # extracting metrics but never reading them.
+            try:
+                import yaml as _y
+                from stan.config import resolve_config_path
+                _yml_path = resolve_config_path('instruments.yml')
+                _yml = _y.safe_load(_yml_path.read_text(encoding='utf-8')) or {}
+                for inst_block in (_yml.get('instruments') or []):
+                    if inst_block.get('name') == instrument:
+                        cv = inst_block.get('column_vendor')
+                        cm = inst_block.get('column_model')
+                        if cv:
+                            m['column_vendor'] = cv
+                        if cm:
+                            m['column_model'] = cm
+                        break
+            except Exception:
+                pass
+
             steps['metrics'] = {
                 'ok': True,
                 'fields': {k: m.get(k) for k in (
