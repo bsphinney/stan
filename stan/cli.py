@@ -3853,6 +3853,16 @@ def derive_cirt_panel(
     n_anchors: int = typer.Option(
         10, "--n-anchors", help="Target panel size.",
     ),
+    max_cv: float = typer.Option(
+        5.0, "--max-cv",
+        help="Maximum RT CV percent for an anchor candidate. Default 5 is "
+             "tight; for long-timespan cohorts (months of runs across "
+             "column changes) try 10-15 to find any stable anchors at all.",
+    ),
+    min_presence: float = typer.Option(
+        0.9, "--min-presence",
+        help="Fraction of cohort runs the peptide must appear in.",
+    ),
     auto: bool = typer.Option(
         False, "--auto",
         help="Derive panels for every (family, spd) cohort with enough "
@@ -3928,6 +3938,14 @@ def derive_cirt_panel(
             if report.exists():
                 cohorts[(fam, int(row["spd"]))].append(report)
 
+        # CV-relaxation ladder: long-timespan cohorts (months of runs
+        # across column changes) won't have peptides with RT CV<5%.
+        # Walk up the ladder until at least one stable anchor is found,
+        # so labs with old data still get usable panels — just looser.
+        cv_ladder = [max_cv]
+        if max_cv <= 5.0:
+            cv_ladder.extend([8.0, 12.0, 20.0])
+
         out_panels: list[dict] = []
         derived = 0
         skipped = []
@@ -3935,22 +3953,33 @@ def derive_cirt_panel(
             if len(reports) < min_runs:
                 skipped.append((fam, sp, len(reports)))
                 continue
-            panel = derive_panel_from_cohort(reports, n_anchors=n_anchors)
+            panel: list = []
+            tried_cv: float = max_cv
+            for cv in cv_ladder:
+                panel = derive_panel_from_cohort(
+                    reports, n_anchors=n_anchors,
+                    max_cv_pct=cv, min_presence=min_presence,
+                )
+                if panel:
+                    tried_cv = cv
+                    break
             if not panel:
-                skipped.append((fam, sp, f"{len(reports)} runs but no stable anchors"))
+                skipped.append((fam, sp, f"{len(reports)} runs but no stable anchors (tried CV up to {cv_ladder[-1]:.0f}%)"))
                 continue
             out_panels.append({
                 "family": fam,
                 "spd": sp,
                 "n_runs": len(reports),
+                "max_cv_pct": tried_cv,
                 "peptides": [
                     {"seq": seq, "rt": round(rt, 2)} for seq, rt in panel
                 ],
             })
             derived += 1
+            cv_note = "" if tried_cv == max_cv else f" [dim](relaxed CV→{tried_cv:.0f}%)[/dim]"
             console.print(
                 f"[green]✓[/green] ({fam}, SPD={sp}): "
-                f"{len(panel)} anchors from {len(reports)} runs"
+                f"{len(panel)} anchors from {len(reports)} runs{cv_note}"
             )
 
         out_path = user_dir / "cirt_panels_auto.yml"
@@ -3990,9 +4019,16 @@ def derive_cirt_panel(
         console.print(f"[yellow]Not enough runs — need at least {min_runs}.[/yellow]")
         return
 
-    panel = derive_panel_from_cohort(cohort_reports, n_anchors=n_anchors)
+    panel = derive_panel_from_cohort(
+        cohort_reports, n_anchors=n_anchors,
+        max_cv_pct=max_cv, min_presence=min_presence,
+    )
     if not panel:
-        console.print("[yellow]No stable anchors found with current thresholds.[/yellow]")
+        console.print(
+            "[yellow]No stable anchors found at current thresholds. "
+            f"Try [bold]--max-cv 12[/bold] or [bold]--max-cv 20[/bold] "
+            f"if this cohort spans many months of runs.[/yellow]"
+        )
         return
 
     console.print()
@@ -4625,6 +4661,49 @@ def _test_extract_pipeline(
     is_bruker = raw_path is not None and raw_path.is_dir() and raw_path.suffix == '.d'
     is_thermo = raw_path is not None and raw_path.is_file() and raw_path.suffix == '.raw'
     is_dia = 'dia' in (mode or '').lower()
+
+    # ── 0. Auto-search when report.parquet is missing ─────────
+    # v0.2.221: TIMS audit revealed all 5 latest QC files had no
+    # search output — the watcher's dispatch had silently broken on
+    # 4/20. Rather than leave the test failing every step downstream,
+    # try to actually run DIA-NN (DIA) or Sage (DDA) here. Slow but
+    # gets us to a real verdict on the metrics+cIRT steps. Skipped
+    # automatically if the search binary isn't on PATH.
+    search_step: dict = {'ok': True, 'skipped': 'report exists'}
+    if (report_path is not None
+            and not report_path.exists()
+            and raw_path is not None
+            and raw_path.exists()):
+        try:
+            output_dir = report_path.parent
+            if is_dia:
+                from stan.search.local import run_diann_local
+                vendor = 'bruker' if is_bruker else 'thermo'
+                produced = run_diann_local(
+                    raw_path=raw_path, output_dir=output_dir,
+                    vendor=vendor, timeout_sec=1500,
+                )
+                if produced and produced.exists():
+                    search_step = {'ok': True, 'engine': 'diann', 'produced': str(produced.name)}
+                else:
+                    search_step = {'ok': False, 'engine': 'diann',
+                                   'why': 'run_diann_local returned no parquet'}
+            else:
+                from stan.search.local import run_sage_local
+                produced = run_sage_local(
+                    raw_path=raw_path, output_dir=output_dir,
+                    timeout_sec=1500,
+                )
+                if produced and produced.exists():
+                    search_step = {'ok': True, 'engine': 'sage', 'produced': str(produced.name)}
+                else:
+                    search_step = {'ok': False, 'engine': 'sage',
+                                   'why': 'run_sage_local returned no parquet'}
+        except FileNotFoundError as e:
+            search_step = {'ok': False, 'why': f'search binary not on PATH: {e}'}
+        except Exception as e:
+            search_step = {'ok': False, 'why': f'{type(e).__name__}: {e}'}
+    steps['search'] = search_step
 
     # ── 1. Metrics + LC system ───────────────────────────────
     try:
