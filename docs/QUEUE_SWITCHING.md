@@ -1,4 +1,9 @@
-# Auto-Queue Switching Logic
+# Auto-Queue Switching Logic (inherited from DE-LIMP)
+
+> **Note**: This document describes DE-LIMP's auto-queue switching, kept here
+> as reference because STAN reuses the same Hive partitions and may grow an
+> equivalent. STAN itself does not auto-switch partitions today — see
+> `stan/search/dispatcher.py` for the current SLURM submission path.
 
 ## Overview
 

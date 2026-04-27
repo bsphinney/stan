@@ -44,7 +44,7 @@ stan dashboard                        # serve dashboard at http://localhost:8421
 pytest tests/ -v                      # run all tests
 pytest tests/test_metrics.py -v       # run a single test file
 pytest tests/ -k "not integration"    # skip tests requiring Hive/SLURM
-pytest tests/ -k "test_grs"           # run a single test by name
+pytest tests/ -k "test_ips"           # run a single test by name
 ruff check stan/                      # lint
 ruff check stan/ --fix                # lint with auto-fix
 ```
@@ -77,7 +77,7 @@ detector.py → reads .d/analysis.tdf or .raw metadata → DIA or DDA?
 
 **Data flow**: watcher detects new raw files → auto-detects DIA/DDA mode → submits SLURM search job (DIA-NN or Sage) → extracts QC metrics from search results → evaluates pass/fail thresholds → stores in SQLite + optionally submits to community benchmark.
 
-**Key modules**: `watcher/` (file monitoring + mode detection), `search/` (SLURM job builders for DIA-NN and Sage), `metrics/` (metric extraction + GRS scoring), `gating/` (threshold evaluation + HOLD flag), `community/` (HF Dataset submission/fetch), `dashboard/` (FastAPI + React UI).
+**Key modules**: `watcher/` (file monitoring + mode detection), `search/` (DIA-NN/Sage local subprocess + SLURM dispatcher), `metrics/` (metric extraction + IPS scoring), `gating/` (threshold evaluation + HOLD flag), `community/` (HF Dataset submission/fetch), `dashboard/` (FastAPI + single-file React UI in public/index.html).
 
 **Three external repos**: GitHub (code), HF Space (public dashboard), HF Dataset (community benchmark data).
 
@@ -194,7 +194,7 @@ It is **not** a fork or module of DE-LIMP. It is a separate Python application t
 1. Watches raw data directories for new acquisitions (`.d` for Bruker, `.raw` for Thermo)
 2. Auto-detects acquisition mode (DIA/DDA) from raw file metadata
 3. Submits standardized search jobs to Hive (SLURM) — DIA-NN for DIA, Sage for DDA
-4. Computes QC metrics from search results (precursors, peptides, CV, GRS, iRT deviation)
+4. Computes QC metrics from search results (precursors, peptides, CV, IPS, iRT deviation)
 5. Evaluates pass/warn/fail against per-instrument thresholds
 6. Writes a HOLD flag if a run fails (gating sample queue)
 7. Stores all metrics in SQLite on Hive for longitudinal tracking
@@ -214,18 +214,17 @@ stan/
 ├── STAN_MASTER_SPEC.md          ← authoritative design document, read before coding
 ├── pyproject.toml
 ├── README.md
-├── config/
-│   ├── instruments.yml          # instrument watch dirs (user-edited, hot-reloaded)
-│   ├── thresholds.yml           # QC pass/fail thresholds per instrument model
-│   └── community.yml            # HF token, display name, submission prefs
 ├── stan/
 │   ├── cli.py                   # `stan` CLI (typer)
 │   ├── watcher/                 # watchdog daemon, file stability, mode detection
-│   ├── search/                  # DIA-NN + Sage SLURM job builders
-│   ├── metrics/                 # metric extraction, GRS, iRT, scoring
+│   ├── search/                  # DIA-NN + Sage job builders (local subprocess + SLURM dispatcher)
+│   ├── metrics/                 # metric extraction, IPS, iRT, drift, PEG, features
 │   ├── gating/                  # threshold evaluation, HOLD flag, queue control
-│   ├── community/               # HF Dataset submit/fetch/validate + consolidate.py
-│   └── dashboard/               # FastAPI backend + React frontend
+│   ├── community/               # HF Dataset submit/fetch/validate
+│   └── dashboard/               # FastAPI backend + single-file React UI in public/index.html
+
+# Runtime YAMLs live under ~/.stan/ (instruments.yml, thresholds.yml,
+# community.yml, fleet.yml). They are not checked into the repo.
 ├── .github/workflows/
 │   ├── ci.yml
 │   └── consolidate_benchmark.yml
@@ -263,7 +262,7 @@ promote proteins to primary metric status anywhere in the UI, API, or docs.
 All community benchmark submissions use the **community-standardized search** with
 pinned FASTA + library from the HF Dataset repo. This is what makes cross-lab
 comparisons valid. The frozen parameters are defined in:
-- DIA: `stan/search/community_params.py` → `COMMUNITY_DIANN_PARAMS`
+- DIA: `stan/search/community_params.py` → `COMMUNITY_DIANN_PARAMS_FROZEN`
 - DDA: `stan/search/community_params.py` → `COMMUNITY_SAGE_PARAMS`
 
 Do not change these without updating the version tag and migrating old submissions.
@@ -340,14 +339,22 @@ The real-time watcher did this pre-v0.2.188 and left 58 timsTOF
 runs NULL despite their filenames containing `60spd` — the XML
 lookup would have caught them all.
 
-### GRS score (0–100)
+### IPS score (0–100)
 
-Gradient Reproducibility Score — a single composite number for LC health:
+Instrument Performance Score — a cohort-calibrated depth score:
 ```
-GRS = 40 × shape_r_scaled + 25 × auc_scaled + 20 × peak_rt_scaled + 15 × carryover_scaled
+DIA: IPS = 0.50 × s_precursors + 0.30 × s_peptides + 0.20 × s_proteins
+DDA: IPS = 0.50 × s_psms       + 0.30 × s_peptides + 0.20 × s_proteins
 ```
-Stored in SQLite for every run. Shown as a badge on the dashboard. This is the number
-a core facility staff member quotes when telling a PI about run quality.
+Each `s_*` is a piecewise-linear percentile against an
+`(instrument_family, SPD_bucket)` reference cohort. Stored as
+`runs.ips_score` in SQLite, included in every community submission,
+and shown as the IPS badge on the dashboard. Implementation:
+`stan/metrics/chromatography.py`. Full rationale: `docs/ips_metric.md`.
+
+The previous GRS (Gradient Reproducibility Score) was retired — it
+required components (TIC reference, blank carryover) that STAN does
+not collect, so it was replaced by IPS.
 
 ### Privacy — hard rules
 
@@ -502,18 +509,18 @@ If `/Volumes/proteomics-grp/STAN/` isn't mounted (uncommon, but happens after re
 
 ## Development Workflow
 
-### Test fixtures (for development without real instruments)
+### Test fixtures
 
-Use the test fixtures in `tests/fixtures/`:
-- `tests/fixtures/mock_d/` — minimal valid `.d` directory structure with tiny `analysis.tdf`
-- `tests/fixtures/mock_raw/` — placeholder `.raw` file for path-based tests
-- `tests/fixtures/report.parquet` — small real DIA-NN report for metric extraction tests
-- `tests/fixtures/sage_results/` — small Sage output for DDA metric extraction tests
+`tests/fixtures/` is intentionally empty. Mock `.d` / `.raw` paths and
+search-output samples are constructed by `tests/conftest.py` per-test —
+add new fixture builders there rather than committing binary artifacts.
 
 ### Adding a new instrument model
 
-1. Add entry to `config/thresholds.yml` with model-specific thresholds
-2. Add model to `config/instruments.yml` example
+1. Add entry to `~/.stan/thresholds.yml` (or the in-tree fallback in
+   `stan/config/thresholds.yml` if you ship a default) with
+   model-specific thresholds
+2. Add model to `~/.stan/instruments.yml` example
 3. Add model to the `instrument_model` enum in the community submission schema
 4. Update the reference range table in `STAN_MASTER_SPEC.md` appendix
 
@@ -522,7 +529,7 @@ Use the test fixtures in `tests/fixtures/`:
 1. Implement extraction in `stan/metrics/extractor.py`
 2. Add column to SQLite schema in `stan/dashboard/server.py` (with migration)
 3. Add field to the HF Dataset parquet schema in `stan/community/submit.py`
-4. Add to the dashboard UI in `stan/dashboard/src/`
+4. Add to the dashboard UI in `stan/dashboard/public/index.html`
 5. Update `STAN_MASTER_SPEC.md` metric tables
 
 ---
@@ -784,8 +791,10 @@ SVG fallback still works from its own code path.
 Before implementing any new feature or metric, read the actual extractor functions
 (`stan/metrics/extractor.py`) and search engine output schemas to confirm what columns
 and values are available. Do not assume a field exists because it "should" be there.
-The GRS score was designed with components (TIC reference, carryover from blanks) that
-could never actually be computed from the data STAN collects. This wasted time.
+The original GRS score (now retired in favor of IPS) was designed with components
+(TIC reference, blank carryover) that STAN could never actually measure. Don't repeat
+that mistake — confirm every input field exists in the extractor before specifying
+a composite metric.
 
 **Verify end-to-end before shipping:** trace the data path from raw file → search →
 extraction → DB → dashboard to confirm every value is actually populated.
@@ -891,9 +900,10 @@ pytest tests/ -k "not integration"     # skip tests requiring Hive connection
 Tests that require Hive SLURM or real instrument files are marked `@pytest.mark.integration`
 and skipped in CI. They can be run manually on Hive.
 
-Mock fixtures live in `tests/fixtures/`. When adding a test that parses DIA-NN or Sage
-output, add a small real output file to fixtures rather than generating synthetic data —
-synthetic data won't catch format changes between tool versions.
+When adding a test that parses DIA-NN or Sage output, add a small real
+output file under `tests/fixtures/` (currently empty — commit artifacts
+as you need them) rather than generating synthetic data. Synthetic data
+won't catch format changes between tool versions.
 
 ---
 

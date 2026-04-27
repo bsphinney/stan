@@ -1,6 +1,9 @@
 # Spec — Today's Runs TIC Overlay + cIRT RT Drift Markers
 
-> **Status**: Planning. Not yet implemented.
+> **Status**: Partially shipped. References to **GRS** below are historical —
+> GRS was retired and replaced by **IPS** (depth-only, see `docs/ips_metric.md`).
+> iRT deviation is no longer planned to feed the composite score; it stays as a
+> standalone gate / chart annotation.
 > **Owner**: Brett (decisions), Claude (implementation)
 > **Target version**: v0.2.104 (after multi-charge detector; can ship independently)
 > **Estimated effort**: 4–6 days across all phases

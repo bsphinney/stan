@@ -321,10 +321,10 @@ def compute_irt_deviation(
         {"max_deviation_min", "median_deviation_min", "n_irt_found"}
 
     When fewer than `min_peptides` anchors are detected at 1% FDR,
-    max/median return None (distinct from "zero deviation") so GRS
-    scoring can skip the metric cleanly. The n_irt_found field still
-    reports the actual count so operators can see why the metric
-    was skipped.
+    max/median return None (distinct from "zero deviation") so the
+    gating layer can skip the metric cleanly. The n_irt_found field
+    still reports the actual count so operators can see why the
+    metric was skipped.
     """
     null_result = {
         "max_deviation_min": None,

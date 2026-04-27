@@ -6,8 +6,26 @@
 > **GitHub**: `bsphinney/stan`  
 > **HF Space**: `brettsp/stan`  
 > **HF Dataset**: `brettsp/stan-benchmark`  
-> **Status**: Ready for Claude Code implementation  
+> **Status**: Original v0.1 design doc, partially superseded by shipped code
 > **Date**: April 2026
+
+> **⚠ Drift notice (2026-04-27):** STAN has shipped well past v0.1. Sections of
+> this spec describe abandoned or superseded designs. Authoritative current
+> behavior lives in the code and these docs:
+>
+> - **Scoring**: GRS retired; replaced by **IPS** — see `docs/ips_metric.md`
+>   and `stan/metrics/chromatography.py:compute_ips_dia/dda`.
+> - **Cohort key**: `gradient_bucket` retired; replaced by `spd_bucket` — see
+>   `stan/metrics/scoring.py`.
+> - **Hive submission**: not paramiko — uses subprocess `ssh` with
+>   ControlMaster (see `stan/control.py`, `CLAUDE.md` "Hive rules of engagement").
+> - **DDA**: Sage with built-in LDA (Percolator was dropped).
+> - **Submission**: client → HF Space relay (no client HF token), not direct
+>   to HF Dataset (see `stan/community/submit.py`).
+> - **SQLite + parquet schemas**: regenerate from `stan/db.py` and
+>   `stan/community/submit.py` — schemas below are stale.
+>
+> Treat the rest as historical context; verify against the code before acting.
 
 ---
 
@@ -59,7 +77,7 @@ acquisition completing.
 - Community HeLa benchmark (crowdsourced, HF Dataset, open CC BY 4.0)
 - Instrument health fingerprint radar (dual-mode DDA+DIA diagnostic)
 - Peptide recovery ratio (DIA vs DDA efficiency on same instrument)
-- Gradient Reproducibility Score (0–100 single-number LC health)
+- Instrument Performance Score (IPS, 0–100 cohort-calibrated depth)
 - Column aging detection via longitudinal TIC trend analysis
 - Plain-English failure diagnosis (templated, no AI call required for basic alerts)
 
@@ -149,7 +167,7 @@ performance against the global proteomics community.
 - Multi-instrument monitoring (timsTOF + Orbitrap in one dashboard)
 - DIA and DDA mode intelligence — right search engine, right metrics, separate leaderboards
 - Run & Done gating — pause sample queue automatically on QC failure
-- Gradient Reproducibility Score (GRS) — single 0–100 LC health number
+- Instrument Performance Score (IPS) — single 0–100 cohort-calibrated depth score
 - Longitudinal instrument health database (SQLite)
 - Community HeLa benchmark — compare against labs worldwide (HF Dataset, CC BY 4.0)
 - Instrument health fingerprint — dual-mode DDA+DIA radar diagnostic
@@ -299,7 +317,7 @@ labs worldwide. **No raw files. No patient data. Metrics only.**
 Each row is one QC submission containing:
 - Instrument model, vendor, acquisition mode
 - LC conditions (column, gradient length, flow rate, amount injected)
-- QC metrics: precursor count, peptide count, median CV, fragment depth, GRS score
+- QC metrics: precursor count, peptide count, protein count, IPS score
 - Community score (percentile within cohort)
 
 ## Primary metrics
@@ -358,7 +376,7 @@ schema = pa.schema([
     pa.field("n_psms", pa.int32()),
     pa.field("median_cv_precursor", pa.float32()),
     pa.field("median_fragments_per_precursor", pa.float32()),
-    pa.field("grs_score", pa.int32()),
+    pa.field("ips_score", pa.int32()),
     pa.field("missed_cleavage_rate", pa.float32()),
     pa.field("community_score", pa.float32()),
     pa.field("cohort_id", pa.string()),
@@ -482,7 +500,7 @@ dependencies = [
     "huggingface_hub>=0.22",
     "rich>=13.0",
     "typer>=0.12",
-    "paramiko>=3.0",       # SSH to Hive for SLURM submission
+    # SSH to Hive uses subprocess + ControlMaster (no paramiko)
 ]
 
 [project.optional-dependencies]
@@ -553,11 +571,11 @@ stan/
 │   ├── search/
 │   │   ├── dispatcher.py        # routes to DIA-NN or Sage based on mode
 │   │   ├── diann.py             # DIA-NN SLURM job builder
-│   │   ├── sage.py              # Sage SLURM job builder + Percolator
+│   │   ├── sage.py              # Sage SLURM job builder (built-in LDA, Percolator dropped)
 │   │   └── community_params.py  # frozen community search parameters
 │   ├── metrics/
 │   │   ├── extractor.py         # extract_community_metrics() from report.parquet
-│   │   ├── chromatography.py    # TIC, iRT, GRS score, fill time
+│   │   ├── chromatography.py    # TIC, iRT, IPS, peak shape, fill time
 │   │   └── scoring.py           # community score, percentile rank
 │   ├── gating/
 │   │   ├── evaluator.py         # apply thresholds, produce pass/warn/fail
@@ -797,7 +815,7 @@ COMMUNITY_SAGE_PARAMS = {
 }
 # Sage reads .d natively (ddaPASEF, confirmed working)
 # Sage reads mzML for Thermo DDA (ThermoRawFileParser conversion required)
-# Percolator optional — Sage built-in LDA is sufficient for QC-level FDR
+# Sage built-in LDA only — Percolator was evaluated and dropped
 ```
 
 ---
@@ -806,7 +824,7 @@ COMMUNITY_SAGE_PARAMS = {
 
 ### `stan/metrics/extractor.py`
 
-All metrics extracted from `report.parquet` (DIA) or Sage `.pin` / Percolator output (DDA).
+All metrics extracted from `report.parquet` (DIA) or Sage `results.sage.parquet` (DDA, built-in LDA).
 Uses Polars for speed. Never loads entire file into memory — predicate pushdown via Arrow.
 
 #### DIA metrics (from `report.parquet`)
@@ -871,7 +889,7 @@ def extract_dia_metrics(report_path: str, q_cutoff: float = 0.01) -> dict:
     }
 ```
 
-#### DDA metrics (from Sage + Percolator output)
+#### DDA metrics (from Sage built-in LDA output)
 
 ```python
 def extract_dda_metrics(percolator_psms_path: str, gradient_min: int) -> dict:
@@ -898,19 +916,16 @@ def extract_dda_metrics(percolator_psms_path: str, gradient_min: int) -> dict:
 ### `stan/metrics/chromatography.py`
 
 ```python
-def compute_grs(tic_data: dict) -> int:
-    """
-    Gradient Reproducibility Score — 0 to 100 composite.
-
-    GRS = 40 × shape_r_scaled
-        + 25 × auc_scaled        (1 - |z-score| / 3, clamped 0–1)
-        + 20 × peak_rt_scaled
-        + 15 × carryover_scaled
-
-    Stored in SQLite for longitudinal tracking.
-    A score of 90+ = excellent, 70–89 = good, 50–69 = watch, <50 = investigate.
-    """
-    ...
+# IPS replaces the original GRS design — see docs/ips_metric.md.
+# Implementation: stan/metrics/chromatography.py:compute_ips_dia/dda.
+#
+# DIA: IPS = 0.50 × s_precursors + 0.30 × s_peptides + 0.20 × s_proteins
+# DDA: IPS = 0.50 × s_psms       + 0.30 × s_peptides + 0.20 × s_proteins
+#
+# Each s_* is a piecewise-linear percentile of the metric vs the
+# (instrument_family, SPD_bucket) reference cohort (p10/p50/p90).
+# Stored in SQLite as runs.ips_score INTEGER.
+# A score of 90+ = excellent, 80–89 = good, 60–79 = marginal, <60 = investigate.
 
 def compute_irt_deviation(report_path: str, irt_library: dict) -> dict:
     """
@@ -971,7 +986,7 @@ thresholds:
       median_cv_precursor_max: 20.0
       missed_cleavage_rate_max: 0.20
       pct_charge_1_max: 0.30
-      grs_score_min: 50
+      ips_score_min: 50
       irt_max_deviation_max: 5.0
     dda:
       n_psms_min: 10000
@@ -984,7 +999,7 @@ thresholds:
       median_cv_precursor_max: 15.0
       missed_cleavage_rate_max: 0.15
       pct_charge_1_max: 0.10
-      grs_score_min: 65
+      ips_score_min: 65
       irt_max_deviation_max: 3.0
     dda:
       n_psms_min: 30000
@@ -994,7 +1009,7 @@ thresholds:
     dia:
       n_precursors_min: 12000
       median_cv_precursor_max: 10.0
-      grs_score_min: 70
+      ips_score_min: 70
 
   "Exploris 480":
     dia:
@@ -1015,8 +1030,8 @@ DIAGNOSIS_TEMPLATES = {
         "Low ID count with normal chromatography suggests a search/library issue. "
         "Check spectral library version, FASTA, or DIA window scheme."
     ),
-    ("n_precursors", "grs_score"): (
-        "Low IDs with poor GRS score — likely LC or source problem. "
+    ("n_precursors", "ips_score"): (
+        "Low IDs with poor IPS score — likely LC or source problem. "
         "Check column condition, trap column, spray stability."
     ),
     ("missed_cleavage_rate",): (
@@ -1066,8 +1081,8 @@ Hot-reloads `instruments.yml` without restart.
 
 ### Key views
 
-1. **Live runs** — per-instrument status cards, GRS badge, pass/fail gate, last run time
-2. **Run history** — scrollable table, sortable by any metric, colored GRS pills
+1. **Live runs** — per-instrument status cards, IPS badge, pass/fail gate, last run time
+2. **Run history** — scrollable table, sortable by any metric, colored IPS pills
 3. **Trend charts** — protein/precursor/CV over time per instrument, LOESS trendline
 4. **Instrument config** — edit `instruments.yml` via form OR raw YAML editor, live preview
 5. **Community benchmark** — DDA / DIA / Both tabs (see §10–12)
@@ -1119,12 +1134,19 @@ CREATE TABLE runs (
     pct_charge_2    REAL,
     pct_charge_3    REAL,
 
+    -- Composite score
+    ips_score        INTEGER,        -- IPS (see docs/ips_metric.md)
+
     -- Chromatography
-    grs_score        INTEGER,
     tic_auc          REAL,
     peak_rt_min      REAL,
     irt_max_deviation_min REAL,
     ms2_fill_time_median_ms REAL,
+
+    -- NOTE: live schema in stan/db.py has many more columns
+    -- (spd, gradient_length_min, column_vendor/model, sample_fingerprint,
+    --  diann_version, search_engine, mass accuracy, peak width, etc.).
+    -- Regenerate from stan/db.py if you need an authoritative list.
 
     -- Gate result
     gate_result      TEXT,         -- "pass" | "warn" | "fail"
@@ -1165,26 +1187,35 @@ Protein count             ← contextual only, do not use for ranking
 
 ### DIA community composite score
 
+The shipped IPS replaces the original 4-component design:
+
 ```
-DIA_Score =
-  40 × percentile_rank(n_precursors)                    # primary
-+ 25 × percentile_rank(n_peptides)                      # depth
-+ 20 × (100 - percentile_rank(median_cv_precursor))     # lower CV = better
-+ 15 × percentile_rank(grs_score)                       # LC health
+IPS = 0.50 × s_precursors + 0.30 × s_peptides + 0.20 × s_proteins
 ```
 
+Each `s_*` is a piecewise-linear percentile against the
+`(instrument_family, SPD_bucket)` reference cohort (p10/p50/p90).
+See `docs/ips_metric.md` for the rationale on dropping CV and the
+LC-health component (those metrics either weren't reliably collected
+across labs or were confounded by sample / instrument family).
+
 Score of 75 = better than 75% of comparable submissions in your cohort.
-Computed nightly within cohort (instrument_family × gradient_bucket × amount_bucket).
+Computed nightly within cohort `instrument_family × spd_bucket × amount_bucket`.
 
 ### Cohort bucketing
 
+The shipped design buckets by **SPD (samples per day)**, not gradient
+minutes — operators set SPD on the LC and that's what determines
+loading window, points-across-peak, and identification depth. Gradient
+length is derivable but not the cohort key.
+
 ```python
-def gradient_bucket(min: int) -> str:
-    if min <= 30:  return "ultra-short"
-    if min <= 45:  return "short"
-    if min <= 75:  return "standard-1h"   # most submissions
-    if min <= 120: return "long-2h"
-    return "extended"
+# stan/metrics/scoring.py
+def spd_bucket(spd: int) -> str:
+    # SPD-first bucketing; thresholds match the ones used in the
+    # shipped scoring module. See stan/metrics/scoring.py for the
+    # authoritative implementation.
+    ...
 
 def amount_bucket(ng: float) -> str:
     if ng <= 100:  return "low"
@@ -1202,7 +1233,7 @@ def amount_bucket(ng: float) -> str:
 ### Overview
 
 Track A benchmarks DDA instrument performance using PSM count at 1% FDR as the
-primary metric. Uses Sage + Percolator with frozen community parameters.
+primary metric. Uses Sage with built-in LDA and frozen community parameters.
 
 ### Why PSMs not peptides for DDA
 
@@ -1403,12 +1434,12 @@ institution_type: "core_facility"   # "core_facility" | "academic_lab" | "indust
 | File stability | Custom `StabilityTracker` | Vendor-specific logic needed |
 | Acquisition mode detection | `sqlite3` (tdf) + subprocess (raw) | Native, no extra deps |
 | DIA search | DIA-NN 2.3 via SLURM | Gold standard for DIA |
-| DDA search | Sage + Percolator via SLURM | Rust-native, fast, open, excellent FDR |
+| DDA search | Sage (built-in LDA) via SLURM | Rust-native, fast, open, no Percolator dependency |
 | Metrics extraction | Polars + PyArrow | Fast, memory-efficient parquet reads |
 | Local database | SQLite | Zero-config, portable, sufficient scale |
 | API backend | FastAPI | Fast, async, auto-docs |
 | Frontend | React + Tailwind | Component-based, fast build |
-| HPC interface | `paramiko` (SSH) + SLURM | Matches existing DE-LIMP HPC pattern |
+| HPC interface | subprocess `ssh` + ControlMaster + SLURM | Avoids paramiko dependency, matches DE-LIMP shell pattern |
 | Community dataset | HF Datasets (Parquet) | Free, versioned, public, no server |
 | Nightly consolidation | GitHub Actions | Free CI, no server needed |
 | CLI | Typer | Clean, typed, auto-help |
@@ -1429,15 +1460,15 @@ institution_type: "core_facility"   # "core_facility" | "academic_lab" | "indust
 - [ ] `watchdog` daemon for `.d` and `.raw` files
 - [ ] Bruker acquisition mode detection from `analysis.tdf`
 - [ ] Thermo acquisition mode detection from `.raw` metadata
-- [ ] DIA-NN SLURM job builder + submission via paramiko
-- [ ] Sage SLURM job builder + submission via paramiko
+- [ ] DIA-NN SLURM job builder + submission via subprocess ssh
+- [ ] Sage SLURM job builder + submission via subprocess ssh
 - [ ] Poll SLURM job completion, retrieve output
 
 ### Phase 2 — Metrics + gating (P0, ~1 week)
-- [ ] `extract_dia_metrics()` from `report.parquet` (Polars)
-- [ ] `extract_dda_metrics()` from Percolator output
-- [ ] `compute_grs()` — Gradient Reproducibility Score
-- [ ] `compute_irt_deviation()` — iRT RT stability
+- [x] `extract_dia_metrics()` from `report.parquet` (Polars) — shipped
+- [x] `extract_dda_metrics()` from Sage output (built-in LDA, no Percolator) — shipped
+- [x] `compute_ips_dia/dda()` — Instrument Performance Score (replaces planned GRS)
+- [x] `compute_irt_deviation()` — iRT RT stability — shipped
 - [ ] `evaluate_gates()` — thresholds.yml, pass/warn/fail
 - [ ] `write_hold_flag()` — queue pause mechanism
 - [ ] Write all metrics to SQLite

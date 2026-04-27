@@ -37,11 +37,11 @@ DIAGNOSIS_TEMPLATES: dict[tuple[str, ...], str] = {
         "Check spectral library version, FASTA, or DIA window scheme."
     ),
     ("n_precursors", "ips_score"): (
-        "Low IDs with poor GRS score — likely LC or source problem. "
+        "Low IDs with poor IPS score — likely LC or source problem. "
         "Check column condition, trap column, spray stability."
     ),
     ("n_psms", "ips_score"): (
-        "Low PSMs with poor GRS score — likely LC or source problem. "
+        "Low PSMs with poor IPS score — likely LC or source problem. "
         "Check column condition, trap column, spray stability."
     ),
     ("missed_cleavage_rate",): (

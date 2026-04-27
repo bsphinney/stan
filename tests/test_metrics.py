@@ -237,12 +237,12 @@ def test_broad_cohort_id():
 # ── Community Scores ──────────────────────────────────────────────────
 
 def test_dia_score_with_percentiles():
-    metrics = {"n_precursors": 15000, "n_peptides": 10000, "median_cv_precursor": 8.0, "grs_score": 85}
+    metrics = {"n_precursors": 15000, "n_peptides": 10000, "median_cv_precursor": 8.0, "ips_score": 85}
     cohort = {
         "n_precursors": [5000, 8000, 10000, 12000, 15000, 18000, 20000],
         "n_peptides": [3000, 5000, 7000, 10000, 12000, 14000],
         "median_cv_precursor": [4.0, 6.0, 8.0, 10.0, 15.0, 20.0],
-        "grs_score": [40, 55, 65, 75, 85, 90, 95],
+        "ips_score": [40, 55, 65, 75, 85, 90, 95],
     }
     score = compute_dia_score(metrics, cohort)
     assert 0 <= score <= 100
@@ -262,6 +262,6 @@ def test_dda_score_with_percentiles():
 
 def test_score_empty_cohort():
     """With no cohort data, scores should default to middle (50)."""
-    metrics = {"n_precursors": 10000, "n_peptides": 8000, "median_cv_precursor": 10, "grs_score": 70}
+    metrics = {"n_precursors": 10000, "n_peptides": 8000, "median_cv_precursor": 10, "ips_score": 70}
     score = compute_dia_score(metrics, {})
     assert 40 <= score <= 60  # should be around 50 with default percentile
