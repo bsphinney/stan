@@ -2379,12 +2379,19 @@ def backfill_metrics(
     for inst in inst_list:
         vendor_map[inst.get("name", "")] = inst.get("vendor", "")
 
-    # Fields we want to fill
+    # Fields we want to fill. Extended in v0.2.213 with the metadata
+    # the v1.0 community schema requires (engine version, gradient,
+    # column metadata) so backfill-metrics retroactively populates
+    # everything stan-test audits as missing.
     ALL_METRIC_FIELDS = [
         "dynamic_range_log10", "ms1_signal", "ms2_signal",
         "median_mass_acc_ms1_ppm", "median_mass_acc_ms2_ppm",
         "median_peak_width_sec", "median_points_across_peak",
         "fwhm_rt_min", "peak_capacity", "ips_score",
+        "missed_cleavage_rate",
+        "median_fragments_per_precursor", "median_cv_precursor",
+        "diann_version", "search_engine",
+        "gradient_length_min",
     ]
     if only:
         requested = {f.strip() for f in only.split(",") if f.strip()}
@@ -2489,6 +2496,19 @@ def backfill_metrics(
             elif lname.endswith(".raw"):
                 vendor = "thermo"
 
+        # v0.2.213: pass gradient_min so peak_capacity computes during
+        # backfill. Use stored gradient_length_min when present, else
+        # snap from spd via the same Evosep table the live watcher uses.
+        existing_grad = row["gradient_length_min"]
+        existing_spd = row["spd"]
+        derived_grad = existing_grad
+        if not derived_grad and existing_spd:
+            _SPD_TO_GRAD = {200: 6, 100: 11, 60: 21, 40: 30, 30: 44, 15: 88}
+            for s, g in _SPD_TO_GRAD.items():
+                if int(existing_spd) >= s:
+                    derived_grad = g
+                    break
+
         # Re-extract metrics
         try:
             is_dia = "dia" in mode.lower() if mode else True
@@ -2497,13 +2517,19 @@ def backfill_metrics(
                     str(report_path),
                     raw_path=raw_path,
                     vendor=vendor or None,
+                    gradient_min=derived_grad,
                 )
                 metrics["instrument_family"] = instrument
-                metrics["spd"] = row["spd"]
+                metrics["spd"] = existing_spd
+                metrics["gradient_length_min"] = derived_grad
                 new_ips = compute_ips_dia(metrics)
             else:
-                metrics = extract_dda_metrics(str(report_path))
+                metrics = extract_dda_metrics(
+                    str(report_path),
+                    gradient_min=derived_grad or 60,
+                )
                 metrics["instrument_family"] = instrument
+                metrics["gradient_length_min"] = derived_grad
                 new_ips = compute_ips_dda(metrics)
             metrics["ips_score"] = new_ips
         except Exception as e:
@@ -2511,6 +2537,20 @@ def backfill_metrics(
                 console.print(f"  [red]Extract error: {run_name}: {e}[/red]")
             errors += 1
             continue
+
+        # v0.2.213: detect LC system from raw file when DB has empty
+        # string (legacy default) or NULL. Live watcher started doing
+        # this in v0.2.212 but existing rows from before the fix need
+        # this backfill pass to populate.
+        existing_lc = (row["lc_system"] or "").strip() if "lc_system" in row.keys() else ""
+        if not existing_lc and raw_path:
+            try:
+                from stan.metrics.scoring import detect_lc_system
+                lc_sys = detect_lc_system(Path(raw_path))
+                if lc_sys:
+                    metrics["lc_system"] = lc_sys
+            except Exception:
+                pass
 
         # Build UPDATE set.
         # - Gap-fill mode (default): only write when old is NULL/zero
@@ -2520,6 +2560,9 @@ def backfill_metrics(
         #   stale values from a prior version.
         updates: dict = {}
         skipped_fields: list[tuple[str, str]] = []  # (field, reason) for diag
+        # Special-case lc_system: empty string is a "gap" too, not just NULL.
+        if metrics.get("lc_system") and not existing_lc:
+            updates["lc_system"] = metrics["lc_system"]
         for field in METRIC_FIELDS:
             old_val = row[field]
             new_val = metrics.get(field)

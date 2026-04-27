@@ -1004,22 +1004,45 @@ class InstrumentWatcher:
         from stan.gating.evaluator import evaluate_gates
         from stan.metrics.extractor import extract_dda_metrics, extract_dia_metrics
 
+        # v0.2.213: resolve SPD + gradient up-front so the extractor
+        # can compute peak_capacity. Pre-fix the extractor was called
+        # without gradient_min and TIMS rows always had peak_capacity
+        # NULL because instruments.yml only set the Evosep SPD, not a
+        # per-run gradient length.
+        resolved_spd = self._resolve_spd(raw_path)
+        gradient_min = self._config.get("gradient_length_min")
+        if not gradient_min and resolved_spd:
+            # Snap SPD → typical Evosep gradient length so peak_capacity
+            # can be computed for any TIMS / Whisper / Vanquish-Neo run
+            # whose config didn't pin a gradient.
+            _SPD_TO_GRAD = {200: 6, 100: 11, 60: 21, 40: 30, 30: 44, 15: 88}
+            for s, g in _SPD_TO_GRAD.items():
+                if resolved_spd >= s:
+                    gradient_min = g
+                    break
+
         try:
             if is_dia(mode):
                 metrics = extract_dia_metrics(
                     str(result_path),
                     raw_path=raw_path,
                     vendor=self._config.get("vendor"),
+                    gradient_min=gradient_min,
                 )
                 from stan.metrics.chromatography import compute_ips_dia
                 metrics["instrument_family"] = self._config.get("family") or self._config.get("vendor_family")
-                metrics["spd"] = self._resolve_spd(raw_path)
+                metrics["spd"] = resolved_spd
+                metrics["gradient_length_min"] = gradient_min
                 metrics["ips_score"] = compute_ips_dia(metrics)
             else:
-                metrics = extract_dda_metrics(str(result_path))
+                metrics = extract_dda_metrics(
+                    str(result_path),
+                    gradient_min=gradient_min or 60,
+                )
                 from stan.metrics.chromatography import compute_ips_dda
                 metrics["instrument_family"] = self._config.get("family") or self._config.get("vendor_family")
-                metrics["spd"] = self._resolve_spd(raw_path)
+                metrics["spd"] = resolved_spd
+                metrics["gradient_length_min"] = gradient_min
                 metrics["ips_score"] = compute_ips_dda(metrics)
 
             # v0.2.212: populate lc_system from raw metadata so the live
@@ -1069,7 +1092,7 @@ class InstrumentWatcher:
                 diagnosis=decision.diagnosis,
                 amount_ng=self._config.get("hela_amount_ng", 50.0),
                 spd=metrics.get("spd"),
-                gradient_length_min=self._config.get("gradient_length_min"),
+                gradient_length_min=gradient_min,
                 run_date=raw_mtime,
             )
 
