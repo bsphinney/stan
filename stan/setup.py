@@ -325,6 +325,35 @@ def run_setup() -> None:
             run_baseline()
             console.print()
 
+            # v0.2.230: after a successful baseline, auto-run
+            # `stan test --n 5` so the operator gets immediate
+            # confirmation that every metadata field expected by the
+            # v1.0 community schema is actually populated. If the
+            # audit comes back red, the operator finds out NOW
+            # rather than during their first community submission.
+            console.print()
+            console.print("[bold]Verifying setup with stan test on the baselined runs...[/bold]")
+            try:
+                import sqlite3
+                from stan.db import get_db_path
+                with sqlite3.connect(str(get_db_path())) as _con:
+                    n_runs = _con.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
+                if n_runs == 0:
+                    console.print(
+                        "[yellow]No runs in the DB yet — skipping verification. "
+                        "Re-run [cyan]stan test --n 5[/cyan] after the first "
+                        "live ingest.[/yellow]"
+                    )
+                else:
+                    from stan.cli import test_latest_runs as _test_cmd
+                    _test_cmd(n=5, instrument=None, extract=False)
+            except Exception as _e:
+                console.print(
+                    f"[yellow]Verification skipped ({type(_e).__name__}). "
+                    f"Run [cyan]stan test --n 5[/cyan] manually.[/yellow]"
+                )
+            console.print()
+
     # Offer to start the watcher + dashboard right now
     start_now = Confirm.ask(
         "[bold]Start STAN now?[/bold] (watcher + dashboard)",
