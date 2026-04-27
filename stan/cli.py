@@ -2581,28 +2581,50 @@ def backfill_metrics(
         # already captured column_vendor + column_model per instrument
         # at install time — pre-fix only the live watcher path read
         # those values into the runs row, so historical rows came in
-        # with NULL columns. Lazy-load the YAML once per backfill.
+        # with NULL columns.
+        # v0.2.228: keyed-lookup-on-name was wrong — instruments.yml
+        # uses config NAME ("auto"), DB stores MODEL ("Orbitrap
+        # Exploris 480"). Same pattern as the test --extract fix:
+        # prefer name/alias match, else fall back to first block with
+        # column data (each PC is typically one instrument).
         if not hasattr(_backfill_tic_impl, "_yml_cache"):
             try:
                 import yaml as _y
                 from stan.config import resolve_config_path
                 _yml_path = resolve_config_path("instruments.yml")
                 _yml = _y.safe_load(_yml_path.read_text(encoding="utf-8")) or {}
-                _backfill_tic_impl._yml_cache = {
-                    inst.get("name"): (
-                        inst.get("column_vendor"),
-                        inst.get("column_model"),
-                    )
-                    for inst in (_yml.get("instruments") or [])
-                    if inst.get("name")
-                }
+                _backfill_tic_impl._yml_blocks = list(_yml.get("instruments") or [])
+                # Pre-build name+alias index
+                _backfill_tic_impl._yml_by_name = {}
+                for blk in _backfill_tic_impl._yml_blocks:
+                    n = blk.get("name")
+                    if n:
+                        _backfill_tic_impl._yml_by_name[n] = blk
+                    for a in (blk.get("aliases") or []):
+                        _backfill_tic_impl._yml_by_name[a] = blk
+                # Fallback block with any column data
+                _backfill_tic_impl._yml_first_with_col = next(
+                    (b for b in _backfill_tic_impl._yml_blocks
+                     if b.get("column_vendor") or b.get("column_model")),
+                    None,
+                )
+                _backfill_tic_impl._yml_cache = True
             except Exception:
-                _backfill_tic_impl._yml_cache = {}
-        cv, cm = _backfill_tic_impl._yml_cache.get(instrument, (None, None))
-        if cv:
-            metrics["column_vendor"] = cv
-        if cm:
-            metrics["column_model"] = cm
+                _backfill_tic_impl._yml_blocks = []
+                _backfill_tic_impl._yml_by_name = {}
+                _backfill_tic_impl._yml_first_with_col = None
+                _backfill_tic_impl._yml_cache = True
+        chosen = (
+            _backfill_tic_impl._yml_by_name.get(instrument)
+            or _backfill_tic_impl._yml_first_with_col
+        )
+        if chosen is not None:
+            cv = chosen.get("column_vendor")
+            cm = chosen.get("column_model")
+            if cv:
+                metrics["column_vendor"] = cv
+            if cm:
+                metrics["column_model"] = cm
 
         # v0.2.213: detect LC system from raw file when DB has empty
         # string (legacy default) or NULL. Live watcher started doing
@@ -4856,25 +4878,40 @@ def _test_extract_pipeline(
                 _sv = 'unknown'
             m['stan_version'] = _sv
 
-            # v0.2.227: pull column_vendor + column_model from
-            # instruments.yml so the test --extract pipeline tags
-            # the runs row the same way backfill-metrics does. Setup
-            # already captured these at install time; the test was
-            # extracting metrics but never reading them.
+            # v0.2.228: pull column_vendor + column_model from
+            # instruments.yml. v0.2.227 keyed lookup on instrument
+            # NAME (e.g. "auto") but the audit's `instrument` value
+            # is the MODEL (e.g. "Orbitrap Exploris 480") so the
+            # match never fired. Strategy: prefer name match, then
+            # alias match, else fall back to first entry that has
+            # column data (each PC typically has one instrument).
             try:
                 import yaml as _y
                 from stan.config import resolve_config_path
                 _yml_path = resolve_config_path('instruments.yml')
                 _yml = _y.safe_load(_yml_path.read_text(encoding='utf-8')) or {}
-                for inst_block in (_yml.get('instruments') or []):
-                    if inst_block.get('name') == instrument:
-                        cv = inst_block.get('column_vendor')
-                        cm = inst_block.get('column_model')
-                        if cv:
-                            m['column_vendor'] = cv
-                        if cm:
-                            m['column_model'] = cm
+                blocks = _yml.get('instruments') or []
+                chosen = None
+                for inst_block in blocks:
+                    aliases = inst_block.get('aliases') or []
+                    if (
+                        inst_block.get('name') == instrument
+                        or instrument in aliases
+                    ):
+                        chosen = inst_block
                         break
+                if chosen is None:
+                    for inst_block in blocks:
+                        if inst_block.get('column_vendor') or inst_block.get('column_model'):
+                            chosen = inst_block
+                            break
+                if chosen is not None:
+                    cv = chosen.get('column_vendor')
+                    cm = chosen.get('column_model')
+                    if cv:
+                        m['column_vendor'] = cv
+                    if cm:
+                        m['column_model'] = cm
             except Exception:
                 pass
 
