@@ -4175,12 +4175,22 @@ def submit_all(
         False, "--dry-run",
         help="Show what would be submitted without actually POSTing.",
     ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Re-submit runs even if submitted_to_benchmark=1. Use after "
+             "the community dataset is wiped (v1.0 cutover) so every "
+             "row gets a fresh push to the relay.",
+    ),
 ) -> None:
     """Submit all un-submitted QC runs to the community benchmark.
 
     Walks the local runs table, finds rows where submitted_to_benchmark=0
     and the run looks like a valid QC file, and calls submit_to_benchmark()
     for each. Skips blanks, test files, and runs that fail validation.
+
+    With ``--force``, ALL rows that pass validation are submitted —
+    use this after the community dataset is wiped (v1.0 cutover)
+    so every run gets a fresh push.
 
     Use after stan backfill-metrics to ensure metrics are populated
     before submission.
@@ -4227,11 +4237,14 @@ def submit_all(
 
     with sqlite3.connect(str(db_path)) as con:
         con.row_factory = sqlite3.Row
-        candidates = con.execute(
-            "SELECT * FROM runs WHERE submitted_to_benchmark = 0 "
-            "OR submitted_to_benchmark IS NULL "
-            "ORDER BY run_date ASC"
-        ).fetchall()
+        if force:
+            base_sql = "SELECT * FROM runs "
+        else:
+            base_sql = (
+                "SELECT * FROM runs WHERE submitted_to_benchmark = 0 "
+                "OR submitted_to_benchmark IS NULL "
+            )
+        candidates = con.execute(base_sql + "ORDER BY run_date ASC").fetchall()
 
     console.print(f"[bold]{len(candidates)} un-submitted runs found[/bold]")
     _log({"event": "candidates", "count": len(candidates)})
