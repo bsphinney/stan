@@ -4825,16 +4825,35 @@ def test_latest_runs(
         # of each instrument before auditing. This is the "fast pass":
         # 5 runs × 6 steps × ~30 s each ≈ 15 min per instrument vs.
         # hours of full DB backfill, and produces the same audit signal.
+        # v0.2.217: filter to HeLa QC runs only — the runs table can
+        # contain non-QC samples (e.g. YWyle on the Lumos) that were
+        # ingested before qc_filter was tightened, and the test should
+        # not run the pipeline on real-sample acquisitions.
         if extract:
             from stan.config import get_user_config_dir
+            from stan.watcher.qc_filter import is_qc_file, compile_qc_pattern
+            qc_pattern = compile_qc_pattern()
             output_base = get_user_config_dir() / 'baseline_output'
             for (inst_name,) in insts:
                 console.print(f'\n[bold magenta]── extracting on {inst_name} ──[/bold magenta]')
-                rows = con.execute(
+                # Pull more rows than n and keep only QC ones, since
+                # the latest N rows by date may include non-QC samples.
+                candidate_rows = con.execute(
                     'SELECT id, run_name, raw_path, mode, spd, gradient_length_min '
                     'FROM runs WHERE instrument=? ORDER BY run_date DESC LIMIT ?',
-                    (inst_name, n),
+                    (inst_name, n * 5),  # over-fetch and filter
                 ).fetchall()
+                rows = []
+                for r in candidate_rows:
+                    rn = r['run_name'] or ''
+                    if is_qc_file(Path(rn), qc_pattern):
+                        rows.append(r)
+                        if len(rows) >= n:
+                            break
+                if not rows:
+                    console.print(
+                        f'  [yellow]no QC runs found in latest {n*5} rows[/yellow]'
+                    )
                 for r in rows:
                     raw_path = Path(r['raw_path']) if r['raw_path'] else None
                     stem = Path(r['run_name']).stem if r['run_name'] else ''
@@ -4869,14 +4888,29 @@ def test_latest_runs(
                         'steps': steps,
                     })
 
+        # Reuse the same QC filter for the audit loop so non-QC samples
+        # (real research runs that landed in the DB) aren't graded
+        # against the QC schema.
+        from stan.watcher.qc_filter import is_qc_file as _is_qc, compile_qc_pattern as _qc_compile
+        _qc_pat = _qc_compile()
+
         for (inst_name,) in insts:
             console.print(f'\n[bold cyan]══ {inst_name} ══[/bold cyan]')
-            rows = con.execute(
+            candidates = con.execute(
                 'SELECT * FROM runs WHERE instrument=? ORDER BY run_date DESC LIMIT ?',
-                (inst_name, n),
+                (inst_name, n * 5),
             ).fetchall()
+            rows = []
+            for r in candidates:
+                rn = r['run_name'] or ''
+                if _is_qc(Path(rn), _qc_pat):
+                    rows.append(r)
+                    if len(rows) >= n:
+                        break
             if not rows:
-                console.print(f'  [yellow]no runs found[/yellow]')
+                console.print(
+                    f'  [yellow]no QC runs found in latest {n*5} rows[/yellow]'
+                )
                 continue
 
             inst_summary = {f: 0 for f in ALL_FIELDS}
