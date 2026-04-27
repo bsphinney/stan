@@ -232,8 +232,24 @@ def _resolve_instrument_name(config: dict) -> str:
     if not watch.exists():
         return "auto"
 
+    # v0.2.233: try _model_from_raw on every .d / .raw in watch_dir
+    # until one yields a model. Same code path as _store_run's per-row
+    # resolution, so what works at ingest also works at startup.
     try:
-        # Bruker .d — read the first one we find.
+        for candidate in list(watch.glob("*.d")) + list(watch.glob("*.raw")):
+            try:
+                model = _model_from_raw(candidate)
+            except Exception:
+                model = None
+            if model and model.lower() not in ("auto", "unknown", ""):
+                return str(model).strip()
+    except Exception:
+        logger.debug("auto-name candidate scan failed", exc_info=True)
+
+    # Legacy paths kept as a final fallback in case _model_from_raw
+    # itself can't open the files (e.g. fisher_py missing — falls
+    # back to the trfp .NET wrapper here).
+    try:
         for d in watch.glob("*.d"):
             tdf = d / "analysis.tdf"
             if not tdf.exists():
