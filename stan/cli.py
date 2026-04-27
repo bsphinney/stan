@@ -4459,12 +4459,221 @@ def poll_commands_cmd() -> None:
     console.print(f"Processed {n} command(s).")
 
 
+def _test_extract_pipeline(
+    run_id: str,
+    run_name: str,
+    raw_path: Optional[Path],
+    report_path: Optional[Path],
+    spd: Optional[int],
+    gradient_min: Optional[int],
+    instrument: str,
+    mode: str,
+    db_path: Path,
+) -> dict:
+    """Run the full extraction pipeline on one existing run and return
+    a per-step pass/fail dict. Used by `stan test --extract` to verify
+    that v0.2.214 fixes work on the 5 latest runs of each instrument
+    BEFORE the operator commits to a full DB-wide backfill.
+
+    Each step writes its result to the runs row (or its child tables)
+    so a follow-up audit reflects what extraction would produce. Steps
+    that depend on each other (drift needs 4DFF features) are ordered
+    accordingly. Failures don't propagate — every step is best-effort
+    and logged independently.
+    """
+    import sqlite3
+    steps: dict = {}
+    is_bruker = raw_path is not None and raw_path.is_dir() and raw_path.suffix == '.d'
+    is_thermo = raw_path is not None and raw_path.is_file() and raw_path.suffix == '.raw'
+    is_dia = 'dia' in (mode or '').lower()
+
+    # ── 1. Metrics + LC system ───────────────────────────────
+    try:
+        if not report_path or not report_path.exists():
+            steps['metrics'] = {'ok': False, 'why': f'report.parquet missing at {report_path}'}
+        else:
+            from stan.metrics.extractor import extract_dia_metrics, extract_dda_metrics
+            from stan.metrics.scoring import detect_lc_system
+            from stan.metrics.chromatography import compute_ips_dia, compute_ips_dda
+
+            # Snap gradient from spd if not pinned
+            grad = gradient_min
+            if not grad and spd:
+                _SPD_TO_GRAD = {200: 6, 100: 11, 60: 21, 40: 30, 30: 44, 15: 88}
+                for s, g in _SPD_TO_GRAD.items():
+                    if int(spd) >= s:
+                        grad = g
+                        break
+
+            vendor = 'bruker' if is_bruker else ('thermo' if is_thermo else None)
+            if is_dia:
+                m = extract_dia_metrics(
+                    str(report_path), raw_path=raw_path, vendor=vendor,
+                    gradient_min=grad,
+                )
+                m['ips_score'] = compute_ips_dia(m)
+            else:
+                m = extract_dda_metrics(str(report_path), gradient_min=grad or 60)
+                m['ips_score'] = compute_ips_dda(m)
+            try:
+                if raw_path:
+                    lc = detect_lc_system(raw_path)
+                    if lc:
+                        m['lc_system'] = lc
+            except Exception:
+                pass
+            m['gradient_length_min'] = grad
+            steps['metrics'] = {
+                'ok': True,
+                'fields': {k: m.get(k) for k in (
+                    'diann_version', 'search_engine', 'lc_system',
+                    'peak_capacity', 'dynamic_range_log10',
+                    'median_fragments_per_precursor',
+                    'median_peak_width_sec', 'median_points_across_peak',
+                )},
+            }
+            # UPDATE runs row
+            cols = [k for k in m.keys() if k not in ('instrument_family',)]
+            with sqlite3.connect(str(db_path)) as con:
+                # Discover which columns exist
+                runs_cols = {r[1] for r in con.execute('PRAGMA table_info(runs)').fetchall()}
+                writable = {k: v for k, v in m.items() if k in runs_cols}
+                if writable:
+                    set_clause = ', '.join(f'{k} = ?' for k in writable)
+                    con.execute(
+                        f'UPDATE runs SET {set_clause} WHERE id = ?',
+                        list(writable.values()) + [run_id],
+                    )
+    except Exception as e:
+        steps['metrics'] = {'ok': False, 'why': f'{type(e).__name__}: {e}'}
+
+    # ── 2. TIC ───────────────────────────────────────────────
+    try:
+        from stan.metrics.tic import (
+            extract_tic_bruker, extract_tic_thermo,
+            extract_tic_from_report, downsample_trace,
+        )
+        from stan.db import insert_tic_trace
+        trace = None
+        src = None
+        if report_path and report_path.exists():
+            trace = extract_tic_from_report(report_path, n_bins=128)
+            if trace:
+                src = 'report'
+        if trace is None and is_bruker and raw_path:
+            trace = extract_tic_bruker(raw_path)
+            if trace:
+                src = 'bruker'
+        if trace is None and is_thermo and raw_path and raw_path.exists():
+            trace = extract_tic_thermo(raw_path)
+            if trace:
+                src = 'thermo'
+        if trace is None:
+            steps['tic'] = {'ok': False, 'why': 'no extractor produced a trace'}
+        else:
+            trace = downsample_trace(trace, n_bins=128)
+            insert_tic_trace(run_id, trace.rt_min, trace.intensity, db_path=db_path)
+            # sawtooth check on the resulting trace
+            it = trace.intensity
+            diffs = [it[i + 1] - it[i] for i in range(len(it) - 1)]
+            sc = sum(1 for i in range(len(diffs) - 1) if diffs[i] * diffs[i + 1] < 0)
+            pct = 100 * sc / max(1, len(diffs) - 1)
+            steps['tic'] = {
+                'ok': True, 'src': src,
+                'n_points': len(it), 'sawtooth_pct': round(pct, 1),
+            }
+    except Exception as e:
+        steps['tic'] = {'ok': False, 'why': f'{type(e).__name__}: {e}'}
+
+    # ── 3. PEG (both vendors) ────────────────────────────────
+    try:
+        from stan.metrics.peg import detect_peg_in_spectra
+        from stan.metrics.peg_io import read_ms1_any
+        from stan.db import update_peg_result
+        if not raw_path or not raw_path.exists():
+            steps['peg'] = {'ok': False, 'why': 'raw path missing'}
+        else:
+            spectra = list(read_ms1_any(raw_path))
+            peg = detect_peg_in_spectra(spectra)
+            update_peg_result(
+                run_id=run_id, peg_score=peg.peg_score,
+                peg_n_ions_detected=peg.n_ions_detected,
+                peg_intensity_pct=peg.intensity_pct,
+                peg_class=peg.peg_class, db_path=db_path,
+            )
+            steps['peg'] = {
+                'ok': True, 'score': round(peg.peg_score, 1),
+                'n_ions': peg.n_ions_detected, 'class': peg.peg_class,
+            }
+    except Exception as e:
+        steps['peg'] = {'ok': False, 'why': f'{type(e).__name__}: {e}'}
+
+    # ── 4. Drift (Bruker only — orbitraps have no ion mobility) ──
+    if not is_bruker:
+        steps['drift'] = {'ok': True, 'skipped': 'no ion mobility'}
+    else:
+        try:
+            from stan.metrics.window_drift import detect_drift_best
+            from stan.db import update_drift_result
+            r = detect_drift_best(raw_path)
+            update_drift_result(
+                run_id=run_id,
+                drift_class=r.drift_class,
+                drift_coverage=r.global_coverage,
+                drift_median_im=r.median_drift_im,
+                drift_p90_abs_im=r.p90_abs_drift_im,
+                db_path=db_path,
+            )
+            steps['drift'] = {
+                'ok': True, 'class': r.drift_class,
+                'coverage': r.global_coverage,
+                'p90': r.p90_abs_drift_im,
+            }
+        except Exception as e:
+            steps['drift'] = {'ok': False, 'why': f'{type(e).__name__}: {e}'}
+
+    # ── 5. cIRT ──────────────────────────────────────────────
+    try:
+        from stan.metrics.cirt import extract_anchor_rts, get_panel
+        from stan.community.submit import _instrument_family
+        from stan.db import insert_irt_anchor_rts
+        family = _instrument_family(instrument or '')
+        panel = get_panel(family, spd)
+        if not panel:
+            steps['cirt'] = {'ok': False, 'why': f'no panel for ({family}, spd={spd})'}
+        elif not report_path or not report_path.exists():
+            steps['cirt'] = {'ok': False, 'why': 'report.parquet missing'}
+        else:
+            observed = extract_anchor_rts(report_path, panel)
+            if not observed:
+                steps['cirt'] = {
+                    'ok': False, 'panel_size': len(panel),
+                    'why': 'no panel anchors found in report',
+                }
+            else:
+                n = insert_irt_anchor_rts(run_id, observed, panel, db_path=db_path)
+                steps['cirt'] = {
+                    'ok': True, 'panel_size': len(panel), 'n_anchors': n,
+                }
+    except Exception as e:
+        steps['cirt'] = {'ok': False, 'why': f'{type(e).__name__}: {e}'}
+
+    return steps
+
+
 @app.command("test")
 def test_latest_runs(
     n: int = typer.Option(5, "--n", help="Number of recent runs to test."),
     instrument: Optional[str] = typer.Option(
         None, "--instrument",
         help="Filter to a specific instrument name (default: all in DB).",
+    ),
+    extract: bool = typer.Option(
+        False, "--extract",
+        help="Re-run the full extraction pipeline (metrics, lc, TIC, "
+             "PEG, drift, cIRT) on the N latest runs before auditing. "
+             "Use this to verify v1.0 readiness before committing to a "
+             "full DB-wide backfill.",
     ),
 ) -> None:
     """Audit the N most recent QC runs against the v1.0 community schema.
@@ -4589,6 +4798,54 @@ def test_latest_runs(
         # Aggregate counters per field across all instruments
         broken_per_field: dict[str, int] = {f: 0 for f in ALL_FIELDS}
         total_runs = 0
+
+        # When --extract: run the full pipeline on the latest N runs
+        # of each instrument before auditing. This is the "fast pass":
+        # 5 runs × 6 steps × ~30 s each ≈ 15 min per instrument vs.
+        # hours of full DB backfill, and produces the same audit signal.
+        if extract:
+            from stan.config import get_user_config_dir
+            output_base = get_user_config_dir() / 'baseline_output'
+            for (inst_name,) in insts:
+                console.print(f'\n[bold magenta]── extracting on {inst_name} ──[/bold magenta]')
+                rows = con.execute(
+                    'SELECT id, run_name, raw_path, mode, spd, gradient_length_min '
+                    'FROM runs WHERE instrument=? ORDER BY run_date DESC LIMIT ?',
+                    (inst_name, n),
+                ).fetchall()
+                for r in rows:
+                    raw_path = Path(r['raw_path']) if r['raw_path'] else None
+                    stem = Path(r['run_name']).stem if r['run_name'] else ''
+                    report_path = (output_base / stem / 'report.parquet') if stem else None
+                    console.print(f'  [bold]{r["run_name"][:50]}[/bold]')
+                    steps = _test_extract_pipeline(
+                        run_id=r['id'], run_name=r['run_name'],
+                        raw_path=raw_path, report_path=report_path,
+                        spd=r['spd'], gradient_min=r['gradient_length_min'],
+                        instrument=inst_name, mode=r['mode'] or '',
+                        db_path=db,
+                    )
+                    for step_name, result in steps.items():
+                        ok = result.get('ok', False)
+                        marker = '✓' if ok else ('skip' if result.get('skipped') else '✗')
+                        color = 'green' if ok else ('dim' if result.get('skipped') else 'red')
+                        detail_pairs = [
+                            f'{k}={v}' for k, v in result.items()
+                            if k not in ('ok', 'why', 'skipped', 'fields')
+                        ]
+                        detail = '  '.join(detail_pairs) if detail_pairs else ''
+                        why = result.get('why') or result.get('skipped', '')
+                        line = f'    [{color}]{marker}[/{color}] {step_name:<8s} {detail}'
+                        if why and not ok:
+                            line += f'  [dim]({why})[/dim]'
+                        console.print(line)
+                    jsonl({
+                        'event': 'extract',
+                        'instrument': inst_name,
+                        'run_id': r['id'],
+                        'run_name': r['run_name'],
+                        'steps': steps,
+                    })
 
         for (inst_name,) in insts:
             console.print(f'\n[bold cyan]══ {inst_name} ══[/bold cyan]')
