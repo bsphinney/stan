@@ -5189,3 +5189,127 @@ def test_latest_runs(
         console.print('[dim]synced to Hive mirror.[/dim]')
     except Exception:
         logger.debug('sync to Hive mirror failed', exc_info=True)
+
+
+def _parse_version_tuple(v: str | None) -> tuple[int, ...] | None:
+    """Parse "0.2.219" -> (0, 2, 219). NULL or unparseable -> None.
+
+    Used for sorting/comparison in stan list-stale. Tolerant of stray
+    leading "v" prefixes and short forms like "0.2".
+    """
+    if not v:
+        return None
+    s = v.strip().lstrip("v")
+    parts = s.split(".")
+    out: list[int] = []
+    for p in parts:
+        # Strip any non-digit suffix (e.g. "0.2.5rc1" -> 0.2.5)
+        digits = ""
+        for ch in p:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if not digits:
+            return None
+        out.append(int(digits))
+    return tuple(out)
+
+
+@app.command("list-stale")
+def list_stale(
+    before: str = typer.Option(
+        ...,
+        "--before",
+        help="Cutoff version. Rows with stan_version NULL or < cutoff "
+             "are reported as stale. e.g. --before 1.0.0",
+    ),
+    instrument: Optional[str] = typer.Option(
+        None, "--instrument",
+        help="Filter to a specific instrument name.",
+    ),
+    detail: bool = typer.Option(
+        False, "--detail",
+        help="Show every stale run_name (default: summary only).",
+    ),
+) -> None:
+    """List rows produced by an old STAN version.
+
+    Useful before the v1.0 community wipe-and-repopulate to see which
+    rows still need ``stan backfill-metrics --force`` to refresh their
+    extraction. NULL stan_version is always treated as stale.
+
+    Example workflow:
+
+        stan list-stale --before 1.0.0           # quick count
+        stan list-stale --before 1.0.0 --detail  # every run_name
+        stan backfill-metrics --force            # refresh stale rows
+        stan list-stale --before 1.0.0           # confirm zero stale
+    """
+    import sqlite3
+    from collections import Counter
+    from stan.db import get_db_path
+
+    cutoff = _parse_version_tuple(before)
+    if cutoff is None:
+        console.print(f"[red]Could not parse --before {before!r}[/red]")
+        raise typer.Exit(2)
+
+    db = get_db_path()
+    where = ""
+    params: list = []
+    if instrument:
+        where = " WHERE instrument = ?"
+        params.append(instrument)
+
+    with sqlite3.connect(str(db)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            f"SELECT id, instrument, run_name, run_date, stan_version "
+            f"FROM runs{where} ORDER BY instrument, run_date DESC",
+            params,
+        ).fetchall()
+
+    if not rows:
+        console.print("No runs in DB.")
+        return
+
+    by_instrument: dict[str, list[sqlite3.Row]] = {}
+    for r in rows:
+        v = _parse_version_tuple(r["stan_version"])
+        is_stale = v is None or v < cutoff
+        if is_stale:
+            by_instrument.setdefault(r["instrument"], []).append(r)
+
+    total_stale = sum(len(v) for v in by_instrument.values())
+    total_rows = len(rows)
+    console.print(
+        f"[bold]Stale rows (stan_version < {before} or NULL):[/bold] "
+        f"{total_stale} / {total_rows}"
+    )
+
+    for inst_name in sorted(by_instrument.keys()):
+        stale_rows = by_instrument[inst_name]
+        # Tally versions present
+        versions = Counter(
+            (r["stan_version"] or "NULL") for r in stale_rows
+        )
+        console.print()
+        console.print(f"[cyan]{inst_name}[/cyan]: {len(stale_rows)} stale")
+        for v, n in versions.most_common():
+            console.print(f"  [dim]{v:<12s}[/dim] {n}")
+        if detail:
+            for r in stale_rows:
+                rd = (r["run_date"] or "")[:19]
+                v = r["stan_version"] or "NULL"
+                console.print(
+                    f"    [dim]{v:<10s}[/dim] {rd}  {r['run_name'][:60]}"
+                )
+
+    if total_stale == 0:
+        console.print("[green]✓ no stale rows — DB is at or above cutoff[/green]")
+    else:
+        console.print(
+            f"\n[dim]Run [bold]stan backfill-metrics --force[/bold] "
+            f"to refresh stale rows.[/dim]"
+        )
