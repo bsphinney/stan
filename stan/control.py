@@ -886,6 +886,107 @@ def _action_export_db_snapshot(args: dict) -> dict:
 
 # ── Whitelist ───────────────────────────────────────────────────────────
 
+def _action_v1_prep(args: dict) -> dict:
+    """Kick off the v1.0 readiness chain on this instrument.
+
+    Spawns a detached subprocess that runs (in order):
+
+      stan derive-cirt-panel --auto --force-auto
+      stan backfill-metrics --force
+      stan backfill-tic --force --push
+      stan backfill-cirt
+      stan backfill-window-drift --force   (Bruker only — no-op on Thermo)
+
+    Optional (default skipped — pass {submit: true} to enable):
+      stan submit-all --force
+
+    Returns immediately with the spawned PID + log path. The chain
+    runs in the background; monitor via the synced log file at
+    ~/STAN/logs/v1_prep_<ts>.log on the Hive mirror. Idempotent —
+    safe to re-run.
+
+    args:
+      submit: bool      — if true, also runs submit-all --force at end
+      timeout_min: int  — per-step timeout (default 60)
+    """
+    import os
+    import platform
+    import subprocess
+    from datetime import datetime
+    from pathlib import Path
+
+    submit = bool(args.get("submit", False))
+    timeout_min = int(args.get("timeout_min", 60))
+
+    log_dir = Path.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"v1_prep_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    steps = [
+        ["stan", "derive-cirt-panel", "--auto", "--force-auto"],
+        ["stan", "backfill-metrics", "--force"],
+        ["stan", "backfill-tic", "--force", "--push"],
+        ["stan", "backfill-cirt"],
+        ["stan", "backfill-window-drift", "--force"],
+    ]
+    if submit:
+        steps.append(["stan", "submit-all", "--force"])
+
+    # Build a one-liner shell script that runs each step and appends
+    # to the log file. Detach so the action returns fast.
+    if platform.system() == "Windows":
+        # cmd.exe chain: each step writes its own header + runs;
+        # `>>` appends to the log file.
+        chain_lines = []
+        for s in steps:
+            chain_lines.append(
+                f'echo === {" ".join(s)} === >> "{log_path}"'
+            )
+            chain_lines.append(
+                f'{" ".join(s)} >> "{log_path}" 2>&1'
+            )
+        chain_lines.append(f'echo === DONE === >> "{log_path}"')
+        chain_cmd = " && ".join(chain_lines)
+        proc = subprocess.Popen(
+            ["cmd.exe", "/c", chain_cmd],
+            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                          | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            close_fds=True,
+        )
+    else:
+        chain_lines = []
+        for s in steps:
+            chain_lines.append(
+                f'echo === {" ".join(s)} === >> "{log_path}"'
+            )
+            chain_lines.append(
+                f'{" ".join(s)} >> "{log_path}" 2>&1'
+            )
+        chain_lines.append(f'echo === DONE === >> "{log_path}"')
+        proc = subprocess.Popen(
+            ["bash", "-c", " && ".join(chain_lines)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+    return {
+        "status": "started",
+        "pid": proc.pid,
+        "log_path": str(log_path),
+        "steps": [" ".join(s) for s in steps],
+        "estimated_min": timeout_min * len(steps),
+        "monitor": (
+            "Tail the log file via stan send-command tail_log "
+            f"--arg name=v1_prep_{log_path.stem.split('_', 2)[2]} "
+            "--arg n=200 — or just open the synced "
+            f"<host>/logs/{log_path.name} in the Hive mirror."
+        ),
+    }
+
+
 COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "ping":                _action_ping,
     "status":              _action_status,
@@ -906,6 +1007,10 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     # Narrowly-scoped instrument-name merge: only UPDATEs the
     # `instrument` column in runs + sample_health. No DELETE.
     "fix_instrument_names": _action_fix_instrument_names,
+    # v0.2.238: v1.0 prep chain — spawn detached subprocess running
+    # the full re-extract + (optional) re-submit. Returns the spawned
+    # PID + log path immediately. Operator monitors via synced log.
+    "v1_prep":             _action_v1_prep,
 }
 
 
