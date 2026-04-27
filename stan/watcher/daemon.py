@@ -324,6 +324,115 @@ class InstrumentWatcher:
 
         return None
 
+    def _merge_placeholder_runs(self) -> None:
+        """Resolve 'auto'/'unknown'/'' rows in runs + sample_health
+        from each row's own raw_path and rewrite the instrument
+        column to the actual vendor model.
+
+        Runs once at watcher startup. Idempotent — no-op when no
+        placeholder rows remain.
+        """
+        try:
+            import sqlite3
+            from stan.db import get_db_path, init_db
+            init_db()
+            db = get_db_path()
+            if not db.exists():
+                return
+            placeholders = ("auto", "unknown", "")
+            merged_total = 0
+            with sqlite3.connect(str(db)) as con:
+                con.row_factory = sqlite3.Row
+                for table in ("runs", "sample_health"):
+                    try:
+                        rows = con.execute(
+                            f"SELECT id, raw_path, instrument FROM {table} "
+                            f"WHERE instrument IN ('auto', 'unknown', '') "
+                            f"OR instrument IS NULL"
+                        ).fetchall()
+                    except sqlite3.OperationalError:
+                        continue
+                    for r in rows:
+                        rp = r["raw_path"]
+                        if not rp:
+                            continue
+                        try:
+                            model = _model_from_raw(Path(rp))
+                        except Exception:
+                            model = None
+                        # Fallback: if we can't read the file (e.g.
+                        # raw was archived off-disk), use this
+                        # watcher's resolved name as the next-best
+                        # guess for rows that came from this watch_dir.
+                        if not model and self._name and self._name.lower() not in placeholders:
+                            try:
+                                if self._watch_dir and rp.lower().startswith(
+                                    str(self._watch_dir).lower()
+                                ):
+                                    model = self._name
+                            except Exception:
+                                pass
+                        if model and model.lower() not in placeholders:
+                            con.execute(
+                                f"UPDATE {table} SET instrument = ? WHERE id = ?",
+                                (model, r["id"]),
+                            )
+                            merged_total += 1
+                con.commit()
+            if merged_total:
+                logger.info(
+                    "Resolved %d placeholder instrument rows from raw_path metadata",
+                    merged_total,
+                )
+        except Exception:
+            logger.debug("_merge_placeholder_runs failed", exc_info=True)
+
+    def _persist_resolved_name(
+        self, original_name, resolved_name,
+    ) -> None:
+        """Write the resolved instrument name back to instruments.yml
+        on disk if the config currently has a placeholder.
+        """
+        if not isinstance(original_name, str):
+            return
+        if original_name.strip().lower() not in ("auto", "unknown", ""):
+            return
+        if not resolved_name or resolved_name.lower() in ("auto", "unknown"):
+            return
+        try:
+            import yaml as _y
+            from stan.config import resolve_config_path
+            yml_path = resolve_config_path("instruments.yml")
+            if not yml_path or not yml_path.exists():
+                return
+            doc = _y.safe_load(yml_path.read_text(encoding="utf-8")) or {}
+            blocks = doc.get("instruments") or []
+            changed = False
+            for blk in blocks:
+                if not isinstance(blk, dict):
+                    continue
+                if str(blk.get("watch_dir") or "") != str(self._watch_dir or ""):
+                    continue
+                if (blk.get("name") or "").strip().lower() in ("auto", "unknown", ""):
+                    blk["name"] = resolved_name
+                    changed = True
+                    aliases = list(blk.get("aliases") or [])
+                    for ph in ("auto", "unknown"):
+                        if ph not in aliases:
+                            aliases.append(ph)
+                    blk["aliases"] = aliases
+            if changed:
+                yml_path.write_text(_y.safe_dump(doc, sort_keys=False), encoding="utf-8")
+                logger.info(
+                    "Persisted resolved name '%s' back to %s",
+                    resolved_name, yml_path,
+                )
+        except Exception:
+            logger.debug(
+                "Could not persist resolved name to instruments.yml",
+                exc_info=True,
+            )
+
     def __init__(self, instrument_config: dict) -> None:
         import collections
         self._config = instrument_config
@@ -1331,124 +1440,6 @@ class WatcherDaemon:
     def _signal_handler(self, signum: int, frame) -> None:
         logger.info("Received signal %d — shutting down", signum)
         self.stop()
-
-    def _merge_placeholder_runs(self) -> None:
-        """Resolve 'auto'/'unknown'/'' rows in runs + sample_health
-        from each row's own raw_path and rewrite the instrument
-        column to the actual vendor model.
-
-        Runs once at watcher startup. Idempotent — no-op when no
-        placeholder rows remain.
-        """
-        try:
-            import sqlite3
-            from stan.db import get_db_path, init_db
-            init_db()
-            db = get_db_path()
-            if not db.exists():
-                return
-            placeholders = ("auto", "unknown", "")
-            merged_total = 0
-            with sqlite3.connect(str(db)) as con:
-                con.row_factory = sqlite3.Row
-                for table in ("runs", "sample_health"):
-                    try:
-                        rows = con.execute(
-                            f"SELECT id, raw_path, instrument FROM {table} "
-                            f"WHERE instrument IN ('auto', 'unknown', '') "
-                            f"OR instrument IS NULL"
-                        ).fetchall()
-                    except sqlite3.OperationalError:
-                        continue
-                    for r in rows:
-                        rp = r["raw_path"]
-                        if not rp:
-                            continue
-                        try:
-                            model = _model_from_raw(Path(rp))
-                        except Exception:
-                            model = None
-                        # Fallback: if we can't read the file (e.g.
-                        # raw was archived off-disk), use this
-                        # watcher's resolved name as the next-best
-                        # guess for rows that came from this watch_dir.
-                        if not model and self._name and self._name.lower() not in placeholders:
-                            try:
-                                if self._watch_dir and rp.lower().startswith(
-                                    str(self._watch_dir).lower()
-                                ):
-                                    model = self._name
-                            except Exception:
-                                pass
-                        if model and model.lower() not in placeholders:
-                            con.execute(
-                                f"UPDATE {table} SET instrument = ? WHERE id = ?",
-                                (model, r["id"]),
-                            )
-                            merged_total += 1
-                con.commit()
-            if merged_total:
-                logger.info(
-                    "Resolved %d placeholder instrument rows from raw_path metadata",
-                    merged_total,
-                )
-        except Exception:
-            logger.debug("_merge_placeholder_runs failed", exc_info=True)
-
-    def _persist_resolved_name(
-        self, original_name, resolved_name,
-    ) -> None:
-        """Write the resolved instrument name back to instruments.yml
-        on disk if the config currently has a placeholder.
-
-        The dashboard's "duplicate cards" banner uses the YAML
-        canonical name as the merge target — leaving "auto" in the
-        YAML means it suggests merging real model rows INTO "auto",
-        the wrong direction. Persisting fixes that suggestion.
-        """
-        if not isinstance(original_name, str):
-            return
-        if original_name.strip().lower() not in ("auto", "unknown", ""):
-            return
-        if not resolved_name or resolved_name.lower() in ("auto", "unknown"):
-            return
-        try:
-            import yaml as _y
-            from stan.config import resolve_config_path
-            yml_path = resolve_config_path("instruments.yml")
-            if not yml_path or not yml_path.exists():
-                return
-            doc = _y.safe_load(yml_path.read_text(encoding="utf-8")) or {}
-            blocks = doc.get("instruments") or []
-            changed = False
-            for blk in blocks:
-                if not isinstance(blk, dict):
-                    continue
-                # Match the block by watch_dir to avoid touching
-                # unrelated entries.
-                if str(blk.get("watch_dir") or "") != str(self._watch_dir or ""):
-                    continue
-                if (blk.get("name") or "").strip().lower() in ("auto", "unknown", ""):
-                    blk["name"] = resolved_name
-                    changed = True
-                    # Add the placeholder as an alias so existing
-                    # historical references still merge cleanly.
-                    aliases = list(blk.get("aliases") or [])
-                    for ph in ("auto", "unknown"):
-                        if ph not in aliases:
-                            aliases.append(ph)
-                    blk["aliases"] = aliases
-            if changed:
-                yml_path.write_text(_y.safe_dump(doc, sort_keys=False), encoding="utf-8")
-                logger.info(
-                    "Persisted resolved name '%s' back to %s",
-                    resolved_name, yml_path,
-                )
-        except Exception:
-            logger.debug(
-                "Could not persist resolved name to instruments.yml",
-                exc_info=True,
-            )
 
     def _auto_merge_aliases(self, config: dict) -> None:
         """For each instrument with an ``aliases:`` list, rewrite any
