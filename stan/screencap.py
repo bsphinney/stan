@@ -35,6 +35,7 @@ class ScreencapConfig:
     on_acquisition_end: bool = True
     window_titles: list[str] = field(default_factory=list)
     fallback_full_screen: bool = True
+    capture_all_windows: bool = False  # capture every match in window_titles, not just the first
     mask_regions: list[dict] = field(default_factory=list)  # [{x, y, w, h}, ...]
     quality: int = 80  # JPEG quality 1-95
     max_dimension: int = 1280  # downsize so longest side <= this
@@ -74,7 +75,8 @@ def load_screencap_config(path: Path | None = None) -> ScreencapConfig:
     # Build kwargs, only setting recognised keys.
     kwargs: dict[str, Any] = {}
 
-    bool_keys = ("enabled", "on_acquisition_end", "fallback_full_screen")
+    bool_keys = ("enabled", "on_acquisition_end", "fallback_full_screen",
+                 "capture_all_windows")
     int_keys = ("heartbeat_min", "quality", "max_dimension",
                 "local_retention_days", "mirror_retention_hours")
 
@@ -240,12 +242,15 @@ def _save_frame(
     date_str = now.strftime("%Y%m%d")
     time_str = now.strftime("%H%M%S")
 
+    def _safe(s: str) -> str:
+        return "".join(c if c.isalnum() or c in "-_." else "_" for c in s)
+
+    title_suffix = f"_{_safe(window_title)}" if window_title else ""
     if run_name is not None:
-        # Sanitise run_name for use in a filename.
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in run_name)
-        filename = f"{time_str}{_RUNEND_MARKER}{safe}.jpg"
+        safe_run = _safe(run_name)
+        filename = f"{time_str}{_RUNEND_MARKER}{safe_run}{title_suffix}.jpg"
     else:
-        filename = f"{time_str}.jpg"
+        filename = f"{time_str}{title_suffix}.jpg"
 
     dest_dir = local_dir / date_str
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -320,45 +325,69 @@ def capture_now(
         logger.debug("screencap disabled — skipping capture_now")
         return None
 
-    shot = None
-    captured_title: str | None = None
+    def _save(shot, title: str | None) -> Path | None:
+        try:
+            image = _mss_to_pil(shot)
+        except Exception as exc:
+            logger.warning("mss → PIL conversion failed: %s", exc)
+            return None
+        if _is_screen_locked(image):
+            logger.debug("Screen appears locked (luminance < 5) — skipping save")
+            return None
+        return _save_frame(
+            image,
+            config.local_dir,
+            run_name,
+            config.quality,
+            config.max_dimension,
+            mask_regions=list(config.mask_regions),
+            window_title=title,
+        )
 
-    # Try window-by-title first.
-    for title in config.window_titles:
-        shot = _grab_window(title)
-        if shot is not None:
-            captured_title = title
-            logger.debug("Captured window: %r", title)
-            break
+    saved_paths: list[Path] = []
 
-    # Fall back to full screen.
-    if shot is None and config.fallback_full_screen:
-        shot = _grab_fullscreen()
-        logger.debug("Captured full screen")
+    if config.capture_all_windows and config.window_titles:
+        # Capture every matching window as a separate frame.
+        for title in config.window_titles:
+            shot = _grab_window(title)
+            if shot is None:
+                logger.debug("No window matched %r — skipping", title)
+                continue
+            p = _save(shot, title)
+            if p is not None:
+                saved_paths.append(p)
+        # If nothing matched at all, optionally fall back to full screen.
+        if not saved_paths and config.fallback_full_screen:
+            shot = _grab_fullscreen()
+            if shot is not None:
+                p = _save(shot, None)
+                if p is not None:
+                    saved_paths.append(p)
+    else:
+        # Original behaviour: first matching window, fall back to full screen.
+        shot = None
+        captured_title: str | None = None
+        for title in config.window_titles:
+            shot = _grab_window(title)
+            if shot is not None:
+                captured_title = title
+                logger.debug("Captured window: %r", title)
+                break
+        if shot is None and config.fallback_full_screen:
+            shot = _grab_fullscreen()
+            logger.debug("Captured full screen")
+        if shot is None:
+            logger.warning("No screen capture source available")
+            return None
+        p = _save(shot, captured_title)
+        if p is not None:
+            saved_paths.append(p)
 
-    if shot is None:
-        logger.warning("No screen capture source available")
+    if not saved_paths:
         return None
-
-    try:
-        image = _mss_to_pil(shot)
-    except Exception as exc:
-        logger.warning("mss → PIL conversion failed: %s", exc)
-        return None
-
-    if _is_screen_locked(image):
-        logger.debug("Screen appears locked (luminance < 5) — skipping save")
-        return None
-
-    return _save_frame(
-        image,
-        config.local_dir,
-        run_name,
-        config.quality,
-        config.max_dimension,
-        mask_regions=list(config.mask_regions),
-        window_title=captured_title,
-    )
+    if len(saved_paths) > 1:
+        logger.info("capture_now: saved %d frames", len(saved_paths))
+    return saved_paths[0]
 
 
 def run_daemon(config: ScreencapConfig, *, stop_event: threading.Event | None = None) -> None:
