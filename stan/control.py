@@ -1182,6 +1182,49 @@ def _action_stop_screencap(args: dict) -> dict:
     return {"status": "stopped", "pid": pid}
 
 
+def _action_screencap_list_windows(args: dict) -> dict:
+    """Return every top-level window pygetwindow can see, with geometry.
+
+    Used to debug `capture_all_windows` mismatches — confirms which window
+    titles actually exist on the host, plus whether each has valid
+    geometry (some Win32 windows return left/top/width/height=0 which
+    makes mss capture nothing useful).
+
+    Returns:
+        {"windows": [{"title": str, "left": int, "top": int,
+                      "width": int, "height": int, "visible": bool}, ...]}
+    """
+    try:
+        import pygetwindow as gw  # type: ignore[import-untyped]
+    except ImportError as e:
+        return {"error": f"pygetwindow not installed: {e}"}
+
+    out: list[dict] = []
+    try:
+        windows = gw.getAllWindows()
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"getAllWindows failed: {e}"}
+
+    for w in windows:
+        try:
+            title = getattr(w, "title", "") or ""
+            if not title.strip():
+                continue
+            entry = {
+                "title": title,
+                "left": int(getattr(w, "left", 0) or 0),
+                "top": int(getattr(w, "top", 0) or 0),
+                "width": int(getattr(w, "width", 0) or 0),
+                "height": int(getattr(w, "height", 0) or 0),
+                "visible": bool(getattr(w, "visible", True)),
+            }
+            out.append(entry)
+        except Exception:  # noqa: BLE001
+            continue
+
+    return {"windows": out, "total": len(out)}
+
+
 def _action_screencap_status(args: dict) -> dict:
     """Report screencap daemon state, config summary, and recent capture counts.
 
@@ -1644,6 +1687,8 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "start_screencap":   _action_start_screencap,
     "stop_screencap":    _action_stop_screencap,
     "screencap_status":  _action_screencap_status,
+    # v0.2.250+: list every window pygetwindow sees (debug capture_all).
+    "screencap_list_windows": _action_screencap_list_windows,
     # v0.2.244+: one-click setup writes a default screencap.yml.
     "screencap_install": _action_screencap_install,
     # v0.2.247+: force an immediate sync_to_hive_mirror.
