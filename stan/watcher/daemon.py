@@ -1046,6 +1046,19 @@ class InstrumentWatcher:
                 "acquisition_mode": mode.value if mode != AcquisitionMode.UNKNOWN else None,
             })
 
+        # Phase 3.5 (v0.2.242): fire screencap on_acquisition_end after
+        # dispatch. Wrapped in try/except — a screencap failure must NEVER
+        # block or crash the watcher's main loop.
+        try:
+            from stan import screencap
+            cap_cfg = screencap.load_screencap_config()
+            if cap_cfg.enabled and cap_cfg.on_acquisition_end:
+                cap_path = screencap.on_acquisition_end(path, cap_cfg)
+                if cap_path:
+                    logger.info("watcher: screencap saved: %s", cap_path)
+        except Exception as e:
+            logger.warning("watcher: screencap on_acquisition_end failed: %s", e)
+
     def _run_peg_and_drift(self, d_path: Path, row_id: str, table: str) -> None:
         """Compute PEG score + DIA window drift for a Bruker .d and
         write both to the given row's table.

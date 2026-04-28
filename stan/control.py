@@ -1007,6 +1007,251 @@ def _action_v1_prep(args: dict) -> dict:
     }
 
 
+def _action_screencap_now(args: dict) -> dict:
+    """Capture one screenshot immediately, regardless of daemon state.
+
+    Overrides config.enabled — this is an explicit one-shot triggered by
+    remote command. Returns path and timestamp, or an error dict.
+
+    Args (all optional):
+        run_name: str — if set, saved with _runend_ marker in filename.
+    """
+    from stan.screencap import ScreencapConfig, capture_now, load_screencap_config
+
+    run_name_raw = args.get("run_name")
+    run_name: str | None = None
+    if run_name_raw is not None:
+        run_name = _sanitize_str_arg(run_name_raw)
+        if run_name is None:
+            return {"error": "invalid arg", "field": "run_name"}
+
+    try:
+        cfg = load_screencap_config()
+    except Exception as e:
+        return {"error": f"failed to load screencap config: {e}"}
+
+    # Force enabled=True for this one-shot call; leave everything else intact.
+    cfg_enabled = ScreencapConfig(
+        enabled=True,
+        heartbeat_min=cfg.heartbeat_min,
+        on_acquisition_end=cfg.on_acquisition_end,
+        window_titles=cfg.window_titles,
+        fallback_full_screen=cfg.fallback_full_screen,
+        mask_regions=cfg.mask_regions,
+        quality=cfg.quality,
+        max_dimension=cfg.max_dimension,
+        local_dir=cfg.local_dir,
+        mirror_dir=cfg.mirror_dir,
+        local_retention_days=cfg.local_retention_days,
+        mirror_retention_hours=cfg.mirror_retention_hours,
+    )
+
+    try:
+        saved = capture_now(cfg_enabled, run_name=run_name)
+    except Exception as e:
+        return {"error": f"no interactive display: {e}"}
+
+    if saved is None:
+        return {"error": "screen locked or capture failed"}
+
+    from datetime import datetime, timezone
+    return {
+        "path": str(saved),
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _action_start_screencap(args: dict) -> dict:
+    """Start the screencap heartbeat daemon as a detached background process.
+
+    Refuses if:
+    - config.enabled is False (operator must edit screencap.yml first)
+    - A daemon PID file already exists with a live process
+
+    Returns immediately with the spawned PID and log path.
+    """
+    from stan.screencap import load_screencap_config
+
+    try:
+        cfg = load_screencap_config()
+    except Exception as e:
+        return {"error": f"failed to load screencap config: {e}"}
+
+    if not cfg.enabled:
+        import platform as _plat
+        if _plat.system() == "Windows":
+            cfg_path = Path.home() / "STAN" / "screencap.yml"
+        else:
+            cfg_path = Path.home() / ".stan" / "screencap.yml"
+        return {
+            "error": "screencap is disabled in config",
+            "hint": f"set 'enabled: true' in {cfg_path} to enable",
+            "config_path": str(cfg_path),
+        }
+
+    pid_file = Path.home() / "STAN" / "screencap_daemon.pid"
+    if pid_file.exists():
+        try:
+            existing_pid = int(pid_file.read_text(encoding="utf-8").strip())
+            # Check if process is alive
+            try:
+                os.kill(existing_pid, 0)
+                return {
+                    "error": "screencap daemon already running",
+                    "pid": existing_pid,
+                    "pid_file": str(pid_file),
+                }
+            except (OSError, ProcessLookupError):
+                # Process is dead — stale PID file, clean it up and proceed
+                pid_file.unlink(missing_ok=True)
+        except (ValueError, OSError):
+            pid_file.unlink(missing_ok=True)
+
+    log_dir = Path.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    from datetime import datetime as _dt
+    log_path = log_dir / f"screencap_daemon_{_dt.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    pid = _spawn_detached([["stan", "screencap-daemon"]], log_path)
+
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(pid), encoding="utf-8")
+
+    return {
+        "status": "started",
+        "pid": pid,
+        "log_path": str(log_path),
+        "pid_file": str(pid_file),
+    }
+
+
+def _action_stop_screencap(args: dict) -> dict:
+    """Stop the screencap daemon by sending SIGTERM to its PID.
+
+    Reads ~/STAN/screencap_daemon.pid. Returns not_running if the file is
+    absent. Waits up to 10 s; escalates to SIGKILL if still alive.
+    """
+    import signal
+    import time as _time
+
+    pid_file = Path.home() / "STAN" / "screencap_daemon.pid"
+    if not pid_file.exists():
+        return {"status": "not_running"}
+
+    try:
+        pid = int(pid_file.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError) as e:
+        pid_file.unlink(missing_ok=True)
+        return {"status": "not_running", "note": f"bad PID file: {e}"}
+
+    # Send SIGTERM (Unix) or taskkill (Windows)
+    if platform.system() == "Windows":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid)],
+            capture_output=True,
+        )
+    else:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (OSError, ProcessLookupError):
+            pid_file.unlink(missing_ok=True)
+            return {"status": "not_running", "pid": pid}
+
+    # Wait up to 10 s for the process to exit
+    deadline = _time.time() + 10.0
+    while _time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except (OSError, ProcessLookupError):
+            break
+        _time.sleep(0.25)
+    else:
+        # Escalate to SIGKILL / taskkill /F
+        if platform.system() == "Windows":
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                capture_output=True,
+            )
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+
+    pid_file.unlink(missing_ok=True)
+    return {"status": "stopped", "pid": pid}
+
+
+def _action_screencap_status(args: dict) -> dict:
+    """Report screencap daemon state, config summary, and recent capture counts.
+
+    Returns daemon_running, pid (or null), config summary, recent file
+    count, and total disk usage of the screencaps directory.
+    """
+    from stan.screencap import load_screencap_config
+
+    try:
+        cfg = load_screencap_config()
+    except Exception as e:
+        return {"error": f"failed to load screencap config: {e}"}
+
+    config_summary = {
+        "enabled": cfg.enabled,
+        "heartbeat_min": cfg.heartbeat_min,
+        "on_acquisition_end": cfg.on_acquisition_end,
+        "mask_count": len(cfg.mask_regions),
+        "local_dir": str(cfg.local_dir),
+        "mirror_dir": str(cfg.mirror_dir) if cfg.mirror_dir else None,
+    }
+
+    # Check PID file
+    pid_file = Path.home() / "STAN" / "screencap_daemon.pid"
+    pid: int | None = None
+    daemon_running = False
+
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            try:
+                os.kill(pid, 0)
+                daemon_running = True
+            except (OSError, ProcessLookupError):
+                daemon_running = False
+        except (ValueError, OSError):
+            pass
+
+    # Count recent captures in today's subdir
+    recent_count = 0
+    from datetime import datetime as _dt2
+    today_str = _dt2.now().strftime("%Y%m%d")
+    today_dir = cfg.local_dir / today_str
+    if today_dir.exists():
+        try:
+            recent_count = sum(1 for _ in today_dir.glob("*.jpg"))
+        except Exception:
+            pass
+
+    # Total disk usage of local_dir
+    disk_used_mb = 0.0
+    if cfg.local_dir.exists():
+        try:
+            total_bytes = sum(
+                f.stat().st_size
+                for f in cfg.local_dir.rglob("*.jpg")
+            )
+            disk_used_mb = round(total_bytes / (1024 * 1024), 2)
+        except Exception:
+            pass
+
+    return {
+        "daemon_running": daemon_running,
+        "pid": pid,
+        "config": config_summary,
+        "recent_count": recent_count,
+        "disk_used_mb": disk_used_mb,
+    }
+
+
 def _baseline_in_progress() -> float | None:
     """Return age_sec of baseline_progress.json if it's < 10 min old, else None."""
     import time
@@ -1273,6 +1518,11 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "backfill_window_drift": _action_backfill_window_drift,
     "backfill_tic":          _action_backfill_tic,
     "backfill_features":     _action_backfill_features,
+    # v0.2.242+: Screen capture daemon controls.
+    "screencap_now":     _action_screencap_now,
+    "start_screencap":   _action_start_screencap,
+    "stop_screencap":    _action_stop_screencap,
+    "screencap_status":  _action_screencap_status,
 }
 
 
