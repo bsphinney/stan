@@ -42,9 +42,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import shutil
 import socket
 import sqlite3
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -884,6 +886,65 @@ def _action_export_db_snapshot(args: dict) -> dict:
     return {"snapshot_dir": str(snapshot_dir), "tables": exported}
 
 
+# ── Shared helpers for detached backfill actions ────────────────────────
+
+_SHELL_METACHAR_RE = None  # initialised lazily below
+
+
+def _sanitize_str_arg(value: str) -> str | None:
+    """Return *value* if it contains no shell metacharacters, else None.
+
+    Rejects any string that contains: ; | & $ ` \\n \\r
+    Callers should return ``{"error": "invalid arg"}`` when this returns None.
+    """
+    import re as _re_mod
+    global _SHELL_METACHAR_RE
+    if _SHELL_METACHAR_RE is None:
+        _SHELL_METACHAR_RE = _re_mod.compile(r'[;|&$`\n\r]')
+    if not isinstance(value, str):
+        return None
+    if _SHELL_METACHAR_RE.search(value):
+        return None
+    return value
+
+
+def _spawn_detached(steps: list[list[str]], log_path: "Path") -> int:
+    """Spawn a detached subprocess that runs *steps* sequentially.
+
+    Each step is a list of command tokens (no shell=True). Output from
+    every step is appended to *log_path*.  Returns the spawned PID.
+
+    On Windows, uses ``DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`` via
+    ``cmd.exe /c``.  On Unix, uses ``start_new_session=True`` via
+    ``bash -c``.
+    """
+
+    chain_lines: list[str] = []
+    for s in steps:
+        chain_lines.append(f'echo === {" ".join(s)} === >> "{log_path}"')
+        chain_lines.append(f'{" ".join(s)} >> "{log_path}" 2>&1')
+    chain_lines.append(f'echo === DONE === >> "{log_path}"')
+    chain_cmd = " && ".join(chain_lines)
+
+    if platform.system() == "Windows":
+        proc = subprocess.Popen(
+            ["cmd.exe", "/c", chain_cmd],
+            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+                          | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            close_fds=True,
+        )
+    else:
+        proc = subprocess.Popen(
+            ["bash", "-c", chain_cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    return proc.pid
+
+
 # ── Whitelist ───────────────────────────────────────────────────────────
 
 def _action_v1_prep(args: dict) -> dict:
@@ -909,9 +970,6 @@ def _action_v1_prep(args: dict) -> dict:
       submit: bool      — if true, also runs submit-all --force at end
       timeout_min: int  — per-step timeout (default 60)
     """
-    import os
-    import platform
-    import subprocess
     from datetime import datetime
     from pathlib import Path
 
@@ -932,49 +990,11 @@ def _action_v1_prep(args: dict) -> dict:
     if submit:
         steps.append(["stan", "submit-all", "--force"])
 
-    # Build a one-liner shell script that runs each step and appends
-    # to the log file. Detach so the action returns fast.
-    if platform.system() == "Windows":
-        # cmd.exe chain: each step writes its own header + runs;
-        # `>>` appends to the log file.
-        chain_lines = []
-        for s in steps:
-            chain_lines.append(
-                f'echo === {" ".join(s)} === >> "{log_path}"'
-            )
-            chain_lines.append(
-                f'{" ".join(s)} >> "{log_path}" 2>&1'
-            )
-        chain_lines.append(f'echo === DONE === >> "{log_path}"')
-        chain_cmd = " && ".join(chain_lines)
-        proc = subprocess.Popen(
-            ["cmd.exe", "/c", chain_cmd],
-            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
-                          | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-            close_fds=True,
-        )
-    else:
-        chain_lines = []
-        for s in steps:
-            chain_lines.append(
-                f'echo === {" ".join(s)} === >> "{log_path}"'
-            )
-            chain_lines.append(
-                f'{" ".join(s)} >> "{log_path}" 2>&1'
-            )
-        chain_lines.append(f'echo === DONE === >> "{log_path}"')
-        proc = subprocess.Popen(
-            ["bash", "-c", " && ".join(chain_lines)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
+    pid = _spawn_detached(steps, log_path)
 
     return {
         "status": "started",
-        "pid": proc.pid,
+        "pid": pid,
         "log_path": str(log_path),
         "steps": [" ".join(s) for s in steps],
         "estimated_min": timeout_min * len(steps),
@@ -984,6 +1004,241 @@ def _action_v1_prep(args: dict) -> dict:
             "--arg n=200 — or just open the synced "
             f"<host>/logs/{log_path.name} in the Hive mirror."
         ),
+    }
+
+
+def _baseline_in_progress() -> float | None:
+    """Return age_sec of baseline_progress.json if it's < 10 min old, else None."""
+    import time
+    from stan.config import get_user_config_dir
+    progress_file = get_user_config_dir() / "baseline_progress.json"
+    if progress_file.exists():
+        age_sec = time.time() - progress_file.stat().st_mtime
+        if age_sec < 600:
+            return round(age_sec, 1)
+    return None
+
+
+def _action_backfill_metrics(args: dict) -> dict:
+    """Spawn a detached `stan backfill-metrics` subprocess.
+
+    args:
+      push:     bool — add --push
+      dry_run:  bool — add --dry-run
+      force:    bool — add --force (also bypasses baseline-in-progress gate)
+      only:     str  — add --only=<value>
+    """
+    from datetime import datetime
+    from pathlib import Path
+
+    force = bool(args.get("force", False))
+    age = _baseline_in_progress()
+    if age is not None and not force:
+        return {
+            "error": "baseline in progress — refusing to start backfill_metrics",
+            "baseline_progress_age_sec": age,
+            "hint": "wait for baseline to finish, or retry with args={'force': true}",
+        }
+
+    only = args.get("only")
+    if only is not None and _sanitize_str_arg(only) is None:
+        return {"error": "invalid arg", "field": "only"}
+
+    cmd = ["stan", "backfill-metrics"]
+    if force:
+        cmd.append("--force")
+    if bool(args.get("push", False)):
+        cmd.append("--push")
+    if bool(args.get("dry_run", False)):
+        cmd.append("--dry-run")
+    if only is not None:
+        cmd.append(f"--only={only}")
+
+    log_dir = Path.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"backfill_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    pid = _spawn_detached([cmd], log_path)
+
+    return {
+        "status": "started",
+        "pid": pid,
+        "log_path": str(log_path),
+        "cmd": " ".join(cmd),
+        "monitor": f"tail -f {log_path}",
+    }
+
+
+def _action_backfill_peg(args: dict) -> dict:
+    """Spawn a detached `stan backfill-peg` subprocess.
+
+    args:
+      force:      bool — add --force (also bypasses baseline-in-progress gate)
+      instrument: str  — add --instrument=<value>
+    """
+    from datetime import datetime
+    from pathlib import Path
+
+    force = bool(args.get("force", False))
+    age = _baseline_in_progress()
+    if age is not None and not force:
+        return {
+            "error": "baseline in progress — refusing to start backfill_peg",
+            "baseline_progress_age_sec": age,
+            "hint": "wait for baseline to finish, or retry with args={'force': true}",
+        }
+
+    instrument = args.get("instrument")
+    if instrument is not None and _sanitize_str_arg(instrument) is None:
+        return {"error": "invalid arg", "field": "instrument"}
+
+    cmd = ["stan", "backfill-peg"]
+    if force:
+        cmd.append("--force")
+    if instrument is not None:
+        cmd.append(f"--instrument={instrument}")
+
+    log_dir = Path.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"backfill_peg_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    pid = _spawn_detached([cmd], log_path)
+
+    return {
+        "status": "started",
+        "pid": pid,
+        "log_path": str(log_path),
+        "cmd": " ".join(cmd),
+        "monitor": f"tail -f {log_path}",
+    }
+
+
+def _action_backfill_window_drift(args: dict) -> dict:
+    """Spawn a detached `stan backfill-window-drift` subprocess.
+
+    args:
+      force:      bool — add --force (also bypasses baseline-in-progress gate)
+      instrument: str  — add --instrument=<value>
+    """
+    from datetime import datetime
+    from pathlib import Path
+
+    force = bool(args.get("force", False))
+    age = _baseline_in_progress()
+    if age is not None and not force:
+        return {
+            "error": "baseline in progress — refusing to start backfill_window_drift",
+            "baseline_progress_age_sec": age,
+            "hint": "wait for baseline to finish, or retry with args={'force': true}",
+        }
+
+    instrument = args.get("instrument")
+    if instrument is not None and _sanitize_str_arg(instrument) is None:
+        return {"error": "invalid arg", "field": "instrument"}
+
+    cmd = ["stan", "backfill-window-drift"]
+    if force:
+        cmd.append("--force")
+    if instrument is not None:
+        cmd.append(f"--instrument={instrument}")
+
+    log_dir = Path.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"backfill_window_drift_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    pid = _spawn_detached([cmd], log_path)
+
+    return {
+        "status": "started",
+        "pid": pid,
+        "log_path": str(log_path),
+        "cmd": " ".join(cmd),
+        "monitor": f"tail -f {log_path}",
+    }
+
+
+def _action_backfill_tic(args: dict) -> dict:
+    """Spawn a detached `stan backfill-tic` subprocess.
+
+    args:
+      push:         bool — add --push
+      force:        bool — add --force (also bypasses baseline-in-progress gate)
+      really_force: bool — add --really-force
+    """
+    from datetime import datetime
+    from pathlib import Path
+
+    force = bool(args.get("force", False))
+    age = _baseline_in_progress()
+    if age is not None and not force:
+        return {
+            "error": "baseline in progress — refusing to start backfill_tic",
+            "baseline_progress_age_sec": age,
+            "hint": "wait for baseline to finish, or retry with args={'force': true}",
+        }
+
+    cmd = ["stan", "backfill-tic"]
+    if force:
+        cmd.append("--force")
+    if bool(args.get("push", False)):
+        cmd.append("--push")
+    if bool(args.get("really_force", False)):
+        cmd.append("--really-force")
+
+    log_dir = Path.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"backfill_tic_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    pid = _spawn_detached([cmd], log_path)
+
+    return {
+        "status": "started",
+        "pid": pid,
+        "log_path": str(log_path),
+        "cmd": " ".join(cmd),
+        "monitor": f"tail -f {log_path}",
+    }
+
+
+def _action_backfill_features(args: dict) -> dict:
+    """Spawn a detached `stan backfill-features` subprocess.
+
+    args:
+      limit: int  — add --limit N
+      force: bool — add --force (also bypasses baseline-in-progress gate)
+    """
+    from datetime import datetime
+    from pathlib import Path
+
+    force = bool(args.get("force", False))
+    age = _baseline_in_progress()
+    if age is not None and not force:
+        return {
+            "error": "baseline in progress — refusing to start backfill_features",
+            "baseline_progress_age_sec": age,
+            "hint": "wait for baseline to finish, or retry with args={'force': true}",
+        }
+
+    limit = args.get("limit")
+    if limit is not None:
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            return {"error": "invalid arg", "field": "limit"}
+
+    cmd = ["stan", "backfill-features"]
+    if force:
+        cmd.append("--force")
+    if limit is not None:
+        cmd.extend(["--limit", str(limit)])
+
+    log_dir = Path.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"backfill_features_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    pid = _spawn_detached([cmd], log_path)
+
+    return {
+        "status": "started",
+        "pid": pid,
+        "log_path": str(log_path),
+        "cmd": " ".join(cmd),
+        "monitor": f"tail -f {log_path}",
     }
 
 
@@ -1011,6 +1266,13 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     # the full re-extract + (optional) re-submit. Returns the spawned
     # PID + log path immediately. Operator monitors via synced log.
     "v1_prep":             _action_v1_prep,
+    # v0.2.239+: Detached backfill chain — these spawn a subprocess and
+    # return immediately. Monitor via the synced log file.
+    "backfill_metrics":      _action_backfill_metrics,
+    "backfill_peg":          _action_backfill_peg,
+    "backfill_window_drift": _action_backfill_window_drift,
+    "backfill_tic":          _action_backfill_tic,
+    "backfill_features":     _action_backfill_features,
 }
 
 
