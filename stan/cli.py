@@ -5678,3 +5678,212 @@ def list_stale(
             f"\n[dim]Run [bold]stan backfill-metrics --force[/bold] "
             f"to refresh stale rows.[/dim]"
         )
+
+
+@app.command("screencap-now")
+def screencap_now(
+    out: Optional[Path] = typer.Option(
+        None, "--out", help="Override output directory (default: local_dir from screencap.yml)."
+    ),
+    run_name: Optional[str] = typer.Option(
+        None, "--run-name", help="Tag frame as a run-end capture for this run name."
+    ),
+) -> None:
+    """Capture one screenshot now and print the saved path.
+
+    Reads ~/.stan/screencap.yml (or ~/STAN/screencap.yml on Windows).
+    Requires enabled: true — edit the config and run
+    ``stan screencap-preview`` first to validate mask regions.
+
+    Note: requires an interactive desktop session.
+    """
+    from stan.screencap import capture_now, load_screencap_config
+
+    cfg = load_screencap_config()
+
+    if not cfg.enabled:
+        console.print(
+            "[red]screencap is disabled.[/red]\n"
+            "Edit [bold]~/.stan/screencap.yml[/bold] and set [bold]enabled: true[/bold].\n"
+            "Run [bold]stan screencap-preview[/bold] to validate mask regions first."
+        )
+        raise typer.Exit(1)
+
+    # Override local_dir if --out provided.
+    if out is not None:
+        import dataclasses
+        cfg = dataclasses.replace(cfg, local_dir=out)
+
+    path = capture_now(cfg, run_name=run_name)
+    if path is None:
+        console.print("[yellow]Capture skipped (screen locked or no source available).[/yellow]")
+        raise typer.Exit(1)
+    console.print(f"[green]Saved:[/green] {path}")
+
+
+@app.command("screencap-daemon")
+def screencap_daemon() -> None:
+    """Run the screen capture heartbeat daemon (foreground).
+
+    Captures a screenshot every heartbeat_min minutes as configured in
+    ~/.stan/screencap.yml (or ~/STAN/screencap.yml on Windows).
+
+    Runs in the foreground. Use start_stan_loop.bat or a supervisor
+    script to auto-restart on Windows. On Unix, run under systemd or
+    a process manager.
+
+    Note: requires an interactive desktop session — a locked or headless
+    screen will produce black frames (skipped automatically).
+    """
+    from stan.screencap import load_screencap_config, run_daemon
+
+    cfg = load_screencap_config()
+
+    if not cfg.enabled:
+        console.print(
+            "[red]screencap is disabled.[/red]\n"
+            "Edit [bold]~/.stan/screencap.yml[/bold] and set [bold]enabled: true[/bold].\n"
+            "Run [bold]stan screencap-preview[/bold] to validate mask regions first."
+        )
+        raise typer.Exit(1)
+
+    console.print(
+        f"[bold]screencap-daemon[/bold] starting — "
+        f"heartbeat every [cyan]{cfg.heartbeat_min}[/cyan] min, "
+        f"saving to [cyan]{cfg.local_dir}[/cyan]"
+    )
+    console.print("[dim]Press Ctrl+C to stop.[/dim]")
+    try:
+        run_daemon(cfg)
+    except KeyboardInterrupt:
+        console.print("\n[dim]screencap-daemon stopped.[/dim]")
+
+
+@app.command("screencap-preview")
+def screencap_preview(
+    mask_only: bool = typer.Option(
+        False, "--mask-only",
+        help="Draw mask outlines only (no live capture — uses a blank canvas)."
+    ),
+) -> None:
+    """Capture one frame and open it for visual inspection.
+
+    Always runs even if enabled: false — this is a config-validation tool.
+    Red outlines are drawn over regions that WOULD be masked. Validate
+    that the mask covers personal info before enabling the daemon.
+
+    Opens the preview image with the system default viewer (startfile /
+    open / xdg-open).
+    """
+    import os
+    import platform
+    import subprocess
+    import tempfile
+    from stan.screencap import (
+        _downsize,
+        _grab_fullscreen,
+        _grab_window,
+        _mss_to_pil,
+        load_screencap_config,
+    )
+
+    cfg = load_screencap_config()
+    # Preview always runs regardless of enabled flag.
+
+    image = None
+    if not mask_only:
+        # Try window-by-title first, then full screen.
+        for title in cfg.window_titles:
+            shot = _grab_window(title)
+            if shot is not None:
+                image = _mss_to_pil(shot)
+                console.print(f"Captured window: [cyan]{title}[/cyan]")
+                break
+
+        if image is None and cfg.fallback_full_screen:
+            shot = _grab_fullscreen()
+            if shot is not None:
+                image = _mss_to_pil(shot)
+                console.print("Captured [cyan]full screen[/cyan]")
+
+    if image is None:
+        # --mask-only or capture failed: create a grey canvas.
+        try:
+            from PIL import Image  # type: ignore[import-untyped]
+            image = Image.new("RGB", (1280, 720), color=(128, 128, 128))
+            if mask_only:
+                console.print("[dim]Using grey canvas (--mask-only).[/dim]")
+            else:
+                console.print("[yellow]Live capture failed — using grey canvas.[/yellow]")
+        except ImportError:
+            console.print("[red]Pillow not installed. Run: pip install Pillow[/red]")
+            raise typer.Exit(1)
+
+    image = _downsize(image, cfg.max_dimension)
+
+    # Draw red outlines (not solid black) for preview.
+    if cfg.mask_regions:
+        try:
+            from PIL import ImageDraw  # type: ignore[import-untyped]
+            draw = ImageDraw.Draw(image)
+            for region in cfg.mask_regions:
+                try:
+                    x = int(region["x"])
+                    y = int(region["y"])
+                    w = int(region["w"])
+                    h = int(region["h"])
+                    draw.rectangle((x, y, x + w, y + h), outline="red", width=2)
+                except (KeyError, ValueError, TypeError) as exc:
+                    console.print(f"[yellow]Skipping invalid mask_region {region!r}: {exc}[/yellow]")
+        except ImportError:
+            console.print("[yellow]Pillow ImageDraw not available — skipping mask outlines.[/yellow]")
+        console.print(
+            f"[bold]{len(cfg.mask_regions)}[/bold] mask region(s) shown as [red]red outlines[/red]."
+        )
+    else:
+        console.print("[dim]No mask_regions configured.[/dim]")
+
+    # Save to a temp file and open it.
+    try:
+        with tempfile.NamedTemporaryFile(
+            suffix=".jpg", prefix="stan_preview_", delete=False
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+
+        image.save(str(tmp_path), format="JPEG", quality=cfg.quality)
+        console.print(f"Preview saved to: [cyan]{tmp_path}[/cyan]")
+
+        system = platform.system()
+        try:
+            if system == "Windows":
+                os.startfile(str(tmp_path))  # type: ignore[attr-defined]
+            elif system == "Darwin":
+                subprocess.run(["open", str(tmp_path)], check=False)
+            else:
+                subprocess.run(["xdg-open", str(tmp_path)], check=False)
+        except Exception as exc:
+            console.print(
+                f"[yellow]Could not auto-open preview: {exc}[/yellow]\n"
+                f"Open manually: {tmp_path}"
+            )
+    except Exception as exc:
+        console.print(f"[red]Failed to save preview: {exc}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("backup-now")
+def backup_now() -> None:
+    """Take an immediate atomic snapshot of stan.db to the Hive mirror.
+
+    Useful for troubleshooting when the live mirror DB is corrupt.
+    Runs the same sqlite3 online-backup that the automatic sync uses,
+    and also writes a timestamped snapshot under <mirror>/backups/.
+    """
+    from stan.config import sync_to_hive_mirror
+
+    ok = sync_to_hive_mirror(include_reports=False)
+    if ok:
+        console.print("[green]Snapshot synced.[/green]")
+    else:
+        console.print("[red]Sync failed (no mirror configured?)[/red]")
+        raise typer.Exit(1)

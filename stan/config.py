@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -20,6 +22,72 @@ if _plat.system() == "Windows":
     _USER_CONFIG_DIR = Path.home() / "STAN"
 else:
     _USER_CONFIG_DIR = Path.home() / ".stan"
+
+
+def _backup_sqlite(src: Path, dest: Path) -> None:
+    """Atomic page-level copy of a SQLite DB via the online-backup API.
+
+    Safe during concurrent writes — readers/writers see consistent state.
+    Opens the source read-only so no write lock is acquired. Writes to a
+    sibling temp file then renames atomically so readers never see a partial
+    destination file.
+
+    Args:
+        src: Source SQLite database path.
+        dest: Destination path (will be overwritten atomically).
+
+    Raises:
+        Exception: Propagates any sqlite3 or OS error to the caller.
+    """
+    import sqlite3
+
+    src_uri = f"file:{src}?mode=ro"
+    src_conn = sqlite3.connect(src_uri, uri=True)
+    try:
+        tmp = dest.with_suffix(dest.suffix + ".sync.tmp")
+        if tmp.exists():
+            tmp.unlink()
+        dest_conn = sqlite3.connect(str(tmp))
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+        # os.replace is atomic on POSIX and same-volume NTFS moves.
+        # SMB shares: goes through a server-side rename — atomic enough
+        # for concurrent readers (no reader sees a partial file).
+        os.replace(str(tmp), str(dest))
+    finally:
+        src_conn.close()
+
+
+def _rotate_backups(mirror_dir: Path, src_db: Path, keep: int = 24) -> None:
+    """Keep the last ``keep`` snapshots of stan.db under ``<mirror_dir>/backups/``.
+
+    Each snapshot is named ``stan.db.YYYYMMDD_HHMMSS`` (UTC). Snapshots
+    beyond ``keep`` are deleted oldest-first. Timestamp-based rotation only —
+    no content deduplication (sqlite3 backup shifts page checksums each call).
+
+    Args:
+        mirror_dir: The per-instrument Hive mirror directory.
+        src_db: Path to the source stan.db to snapshot.
+        keep: Number of snapshots to retain (default 24).
+    """
+    backups_dir = mirror_dir / "backups"
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    snap_name = f"stan.db.{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    snap_path = backups_dir / snap_name
+    try:
+        _backup_sqlite(src_db, snap_path)
+    except Exception as e:
+        logger.warning("backup snapshot failed: %s", e)
+        return
+    # Prune oldest beyond keep.
+    snaps = sorted(backups_dir.glob("stan.db.*"))
+    for old in snaps[:-keep]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
 
 
 def sync_to_hive_mirror(include_reports: bool = True) -> bool:
@@ -45,7 +113,19 @@ def sync_to_hive_mirror(include_reports: bool = True) -> bool:
     import shutil
     user_dir = _USER_CONFIG_DIR
     synced = []
-    for fname in ["stan.db", "instruments.yml", "community.yml", "instrument_library.parquet"]:
+    db_synced = False
+    # stan.db uses the sqlite3 online-backup API (atomic, safe during writes).
+    # shutil.copy2 is NOT used for stan.db — it can produce a corrupt
+    # destination if the watcher writes while the copy is in progress.
+    src_db = user_dir / "stan.db"
+    if src_db.exists():
+        try:
+            _backup_sqlite(src_db, hive_dir / "stan.db")
+            synced.append("stan.db")
+            db_synced = True
+        except Exception as e:
+            logger.warning("Could not sync stan.db to Hive (skipping): %s", e)
+    for fname in ["instruments.yml", "community.yml", "instrument_library.parquet"]:
         src = user_dir / fname
         if src.exists():
             try:
@@ -103,6 +183,10 @@ def sync_to_hive_mirror(include_reports: bool = True) -> bool:
                             pass
             if report_count > 0:
                 synced.append(f"{report_count} reports")
+
+    # Rolling backups — only after a successful live stan.db sync.
+    if db_synced:
+        _rotate_backups(mirror_dir=hive_dir, src_db=src_db, keep=24)
 
     if synced:
         logger.info("Synced to Hive mirror: %s", ", ".join(synced))
