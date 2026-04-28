@@ -1,0 +1,31 @@
+# Screen capture daemon — captures the operator's screen on a schedule and
+# at acquisition end so analysts can see what was on screen during a run.
+#
+# IMPORTANT — privacy: the captured image will include whatever windows are
+# visible behind the instrument-control software. Use mask_regions to black
+# out personal info (taskbar, email previews, calendars, etc.) before
+# enabling the daemon. Validate with `stan screencap-preview` first.
+
+enabled: false   # opt in per host
+
+heartbeat_min: 15            # 0 disables heartbeat
+on_acquisition_end: true     # snapshot when a raw file becomes stable
+
+# Window-by-title preference. If empty, always falls back to full screen.
+# Common titles by vendor:
+#   timsControl, HyStar, Tune, Xcalibur, OtofControl
+window_titles: []
+fallback_full_screen: true
+
+# Permanently masked regions (black rectangles drawn before save).
+# Coordinates are screen pixels (full-screen capture) or window pixels
+# (window-by-title capture).
+mask_regions:
+  # Example — taskbar on a 1920x1080 Windows display:
+  # - { x: 0, y: 1040, w: 1920, h: 40 }
+
+quality: 80              # JPEG quality 1-95
+max_dimension: 1280      # longest side after resize
+
+local_retention_days: 7
+mirror_retention_hours: 48
