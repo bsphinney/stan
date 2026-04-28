@@ -156,6 +156,34 @@ def sync_to_hive_mirror(include_reports: bool = True) -> bool:
         if log_count > 0:
             synced.append(f"{log_count} logs")
 
+    # Mirror screencaps — heartbeat + run-end frames captured by the
+    # screencap daemon at ~/STAN/screencaps/<YYYYMMDD>/<HHMMSS>[_runend_<run>].jpg
+    # godmode reads from <mirror>/<host>/screencaps/ and renders the
+    # ScreencapCard.
+    screencaps_src = Path.home() / "STAN" / "screencaps"
+    if screencaps_src.exists() and screencaps_src.is_dir():
+        screencaps_dest = hive_dir / "screencaps"
+        screencaps_dest.mkdir(parents=True, exist_ok=True)
+        cap_count = 0
+        for date_dir in screencaps_src.iterdir():
+            if not date_dir.is_dir():
+                continue
+            dest_date_dir = screencaps_dest / date_dir.name
+            dest_date_dir.mkdir(parents=True, exist_ok=True)
+            for cap in date_dir.iterdir():
+                if not cap.is_file() or not cap.name.endswith(".jpg"):
+                    continue
+                try:
+                    dest_cap = dest_date_dir / cap.name
+                    if (not dest_cap.exists()
+                            or cap.stat().st_mtime > dest_cap.stat().st_mtime):
+                        shutil.copy2(str(cap), str(dest_cap))
+                        cap_count += 1
+                except Exception:
+                    pass
+        if cap_count > 0:
+            synced.append(f"{cap_count} screencaps")
+
     # Mirror baseline_output — small per-run files (not mzML etc.)
     if include_reports:
         baseline_src = user_dir / "baseline_output"
