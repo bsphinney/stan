@@ -1318,6 +1318,7 @@ def _action_screencap_install(args: dict) -> dict:
         "on_acquisition_end: true\n"
         f"window_titles: {titles!r}\n"
         "fallback_full_screen: true\n"
+        "capture_all_windows: true\n"
         "mask_regions: []\n"
         "quality: 80\n"
         "max_dimension: 1280\n"
