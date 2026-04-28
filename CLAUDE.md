@@ -85,124 +85,27 @@ detector.py → reads .d/analysis.tdf or .raw metadata → DIA or DDA?
 
 ## CRITICAL: Always Check Primary Sources
 
-**This is the most important rule in this file.**
+STAN depends on external tools (DIA-NN, Sage, timsrust, ThermoRawFileParser, Percolator)
+whose CLIs, flags, and output formats change between versions. **Never guess, assume, or
+rely on training knowledge** for these tools — fetch primary docs first.
 
-STAN depends on external tools (DIA-NN, Sage, timsrust, ThermoRawFileParser, Percolator) whose
-CLIs, flags, output formats, and behavior change between versions. **Never guess, assume, or
-rely on training knowledge for any flag, parameter name, output column, file format detail,
-or API for these tools.** Always fetch the current documentation from the primary source before
-writing any code that invokes or parses output from these tools.
+**Full reference (tables, gotchas, container paths, CLI flags, version pins):**
+[`docs/external_tools.md`](docs/external_tools.md)
 
-### Primary sources — check these, not your memory
-
-| Tool | Primary source | What to check there |
-|------|---------------|---------------------|
-| **DIA-NN** | https://github.com/vdemichev/DiaNN | CLI flags, output column names, `.parquet` schema, `report.parquet` fields, `--lib` vs `--use-quant`, version changelog |
-| **DIA-NN wiki** | https://github.com/vdemichev/DiaNN/wiki | Detailed parameter documentation, recommended settings |
-| **DIA-NN discussions** | https://github.com/vdemichev/DiaNN/discussions | Known issues, version-specific behavior, community workarounds |
-| **Sage** | https://github.com/lazear/sage | CLI flags, JSON config schema, output file names and columns, `results.sage.parquet` schema, `lfq.parquet` schema |
-| **Sage releases** | https://github.com/lazear/sage/releases | Current version, breaking changes between versions |
-| **Sage wiki/docs** | https://github.com/lazear/sage (README + docs/) | Config JSON format, all valid keys, enzyme syntax |
-| **timsrust** | https://github.com/MannLabs/timsrust | Bruker `.d` file reading, conversion to mzML/MGF |
-| **ThermoRawFileParser** | https://github.com/compomics/ThermoRawFileParser | CLI flags for Thermo `.raw` conversion, output formats |
-| **Percolator** | https://github.com/percolator/percolator | Input `.pin` format, CLI flags, output column names |
-| **Bruker TDF format** | https://github.com/MannLabs/alphatims (schema reference) | `analysis.tdf` SQLite schema, `Frames` table `MsmsType` values |
-| **HuggingFace Hub Python** | https://huggingface.co/docs/huggingface_hub/en/index | API methods, upload/download, dataset operations |
-| **watchdog (Python)** | https://python-watchdog.readthedocs.io/ | Event types, Observer setup, cross-platform behavior |
-| **Polars** | https://docs.pola.rs/ | API methods, lazy vs eager, expression syntax — changes frequently |
-| **FastAPI** | https://fastapi.tiangolo.com/ | Route definitions, async patterns, Pydantic models |
-
-### How to check primary sources in practice
-
-Before writing any code that:
-- Invokes DIA-NN or Sage as a subprocess → fetch the current README/wiki for that tool
-- Parses `report.parquet` columns → verify column names against current DIA-NN docs
-- Parses Sage output → verify column names against current Sage release notes
-- Reads Bruker `.tdf` SQLite → verify table/column names against timsrust or alphatims docs
-- Uses HF Hub API → check current `huggingface_hub` docs, the API changes often
-- Uses Polars expressions → check current Polars docs, syntax changes between minor versions
-
-**Use the `web_fetch` tool to read the raw README.md directly from GitHub:**
-
+Quick `web_fetch` examples:
 ```
-# DIA-NN README
 web_fetch("https://raw.githubusercontent.com/vdemichev/DiaNN/master/README.md")
-
-# Sage README  
 web_fetch("https://raw.githubusercontent.com/lazear/sage/master/README.md")
-
-# Sage CHANGELOG or release notes
-web_fetch("https://github.com/lazear/sage/releases/latest")
-
-# DIA-NN latest release notes
 web_fetch("https://github.com/vdemichev/DiaNN/releases/latest")
+web_fetch("https://github.com/lazear/sage/releases/latest")
 ```
 
-**If a flag, column name, or behavior is not confirmed in the primary source docs, do not
-implement it.** Instead, add a `# TODO: verify flag name against DIA-NN vX.X docs` comment
-and note it in your response so Brett can check manually.
+If a flag/column isn't in the primary source, add `# TODO: verify against vX.X` and tell Brett.
 
-### DIA-NN containers on Hive — CRITICAL
-
-There are TWO DIA-NN containers on Hive with nearly identical names. Only one works
-for Thermo `.raw` files:
-
-| Container | Path | `.raw` support |
-|-----------|------|----------------|
-| `diann_2.3.0.sif` (underscore) | `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif` | **YES** — has .NET bundled, reads `.raw` natively |
-| `diann2.3.0.sif` (no underscore) | `/quobyte/proteomics-grp/apptainers/diann2.3.0.sif` | **NO** — missing .NET, only works for Bruker `.d` |
-
-**Always use the `dia-nn/` directory version with the underscore.** The `apptainers/` version
-will silently skip all `.raw` files and only process the FASTA, producing a predicted library
-instead of an empirical one. The error message ("please install .NET Runtime") is misleading —
-the fix is using the correct container, not installing .NET on the host.
-
-Binary path inside the container: `/diann-2.3.0/diann-linux` (NOT just `diann` on PATH).
-
-Bind mount pattern (from DE-LIMP):
-```bash
-apptainer exec \
-    --bind "${DATA_DIR}:/work/data,${FASTA_DIR}:/work/fasta,${OUT_DIR}:/work/out" \
-    /quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif \
-    /diann-2.3.0/diann-linux \
-    --f /work/data/file.raw \
-    --fasta /work/fasta/database.fasta \
-    --out /work/out/report.parquet \
-    ...
-```
-
-### Current known versions (verify these are still current before use)
-
-- DIA-NN: 2.3.1 (December 2025, preview release channel) — stable: 2.2.0 (May 2025)
-  - Key: `.predicted.speclib` library format, `report.parquet` output, `--lib` for library path
-  - Linux requires .NET SDK 8.0.407+
-  - Source: https://github.com/vdemichev/DiaNN/discussions/1366
-- Sage: actively maintained, check https://github.com/lazear/sage/releases for latest
-  - Key: accepts mzML input, JSON config, outputs `results.sage.parquet` + `lfq.parquet`
-  - Built-in LDA rescoring (Percolator still optional but may be redundant)
-  - Source: https://github.com/lazear/sage
-- Python: 3.10+ required (pyproject.toml)
-- Polars: ≥0.20 (API changed significantly at 0.19→0.20, check docs for current syntax)
-
----
-
-## What STAN Is
-
-STAN is a standalone proteomics QC tool for Bruker timsTOF and Thermo Orbitrap instruments.
-It is **not** a fork or module of DE-LIMP. It is a separate Python application that:
-
-1. Watches raw data directories for new acquisitions (`.d` for Bruker, `.raw` for Thermo)
-2. Auto-detects acquisition mode (DIA/DDA) from raw file metadata
-3. Submits standardized search jobs to Hive (SLURM) — DIA-NN for DIA, Sage for DDA
-4. Computes QC metrics from search results (precursors, peptides, CV, IPS, iRT deviation)
-5. Evaluates pass/warn/fail against per-instrument thresholds
-6. Writes a HOLD flag if a run fails (gating sample queue)
-7. Stores all metrics in SQLite on Hive for longitudinal tracking
-8. Serves a local dashboard (FastAPI + React)
-9. Optionally submits to the community HeLa benchmark (HF Dataset)
-
-The community benchmark uses **precursor count** (DIA) and **PSM count** (DDA) as primary
-metrics — not protein count, which is confounded by FASTA choice and inference settings.
+**The single most-misused fact:** on Hive, DIA-NN container with `.raw` support is
+`/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif` (underscore). The lookalike
+`/quobyte/proteomics-grp/apptainers/diann2.3.0.sif` (no underscore) silently skips `.raw`
+files. Binary inside is `/diann-2.3.0/diann-linux`, not `diann`. Details in `docs/external_tools.md`.
 
 ---
 
@@ -536,227 +439,21 @@ add new fixture builders there rather than committing binary artifacts.
 
 ## Common Mistakes to Avoid
 
-### DIA-NN
+DIA-NN, Sage, ThermoRawFileParser, Polars, HF Hub gotchas + Thermo `.raw` → mzML
+conversion details live in [`docs/external_tools.md`](docs/external_tools.md).
 
-- **Do not assume column names** — DIA-NN column names have changed between versions.
-  Always verify against current docs. Key columns to double-check:
-  `Precursor.Id`, `Stripped.Sequence`, `Protein.Group`, `Q.Value`, `PG.Q.Value`,
-  `Fragment.Info`, `Fragment.Quant.Corrected`, `Precursor.Normalised`, `File.Name`
-- **`File.Name` vs `Run`** — DIA-NN 1.x used `Run`, DIA-NN 2.x uses `File.Name`.
-  Check which version is being targeted before writing column references.
-- **Library format** — DIA-NN 2.x uses `.predicted.speclib` (binary) for predicted
-  libraries and `.parquet` for empirical libraries. Do not assume `.tsv` library format.
-- **Linux requires .NET** — the Linux DIA-NN binary requires .NET SDK 8.0.407+.
-  The SLURM job script must load the correct module or use a container.
-- **`--lib` vs `--use-quant`** — these flags have different behaviors. Check the wiki.
+**STAN-specific reminders that aren't in those docs:**
 
-### Sage
-
-- **Input formats — what needs conversion and what doesn't:**
-
-  | Raw format | Conversion needed? | Notes |
-  |------------|-------------------|-------|
-  | Bruker `.d` (ddaPASEF) | **No** | Sage reads `.d` natively — confirmed working in production at UC Davis |
-  | Thermo `.raw` (DDA) | **Yes** | Sage does not read `.raw` — must convert via ThermoRawFileParser → mzML |
-
-  The Sage release notes label `.d` support as "preliminary/unstable" but it works
-  reliably in practice for ddaPASEF DDA QC runs. Do not add a timsrust/mzML
-  conversion step for Bruker — pass `.d` paths directly to Sage.
-
-  ThermoRawFileParser → mzML is only needed for Thermo DDA (Orbitrap `.raw` files).
-  See the "Thermo `.raw` files — conversion to mzML" section above for confirmed flags.
-
-- **Config is JSON** — Sage uses a JSON config file, not CLI flags for search params.
-  The JSON schema has changed between versions. Always check the current README at
-  https://github.com/lazear/sage before writing or modifying any config file.
-- **Output files** — Sage outputs `results.sage.parquet` (PSMs) and `lfq.parquet`
-  (label-free quant). Column names change between versions — always verify against
-  the current release notes before writing any parsing code.
-- **Built-in LDA vs Percolator** — Sage has built-in LDA rescoring that is
-  comparable to Percolator for most use cases. Check current Sage docs before
-  deciding whether to add a Percolator step. Do not assume Percolator is required —
-  it may add complexity without meaningful benefit for QC-level FDR estimation.
-- **`target_fdr` in config** — this controls Sage's internal FDR. Verify the exact
-  key name in the current JSON schema docs before using.
-
-### Bruker `.d` files
-
-- **`.d` is a directory** — not a single file. Stability detection must check
-  directory total size, not file mtime.
-- **`analysis.tdf`** — SQLite database inside the `.d` directory. The `Frames` table
-  has a `MsmsType` column. Known values: 0=MS1, 8=ddaPASEF, 9=diaPASEF.
-  Verify these values against current Bruker TDF documentation — they could change.
-- **`analysis.tdf_bin`** — binary frame data. Do not try to parse this directly.
-  Use timsrust or alphatims for frame-level data access.
-
-### Thermo `.raw` files — conversion to mzML
-
-This is one of the most nuanced areas of the pipeline. Read this section carefully.
-
-#### The two-track conversion situation
-
-**DIA search (DIA-NN, Track B):**
-DIA-NN 2.1+ has native `.raw` support on Linux — no conversion needed. Pass `.raw`
-directly to DIA-NN with `--f file.raw`. This is confirmed in the DIA-NN 2.1.0 release
-notes: "Built-in support for Thermo .raw on both Windows and Linux."
-
-However, there is a known issue (#1468 on the DIA-NN repo) where native `.raw` reading
-can fail in some Singularity/Apptainer containers. **Always implement mzML conversion
-as a fallback** and make it configurable per-instrument in `instruments.yml`:
-
-```yaml
-- name: "Astral"
-  vendor: "thermo"
-  raw_handling: "native"       # "native" | "convert_mzml"
-  # native = pass .raw directly to DIA-NN 2.1+
-  # convert_mzml = run ThermoRawFileParser first, then pass mzML
-```
-
-**DDA search (Sage, Track A):**
-Sage accepts mzML only — `.raw` conversion is always required, no exceptions.
-Every DDA pipeline on Hive must run ThermoRawFileParser before Sage.
-
-#### ThermoRawFileParser — confirmed CLI flags
-
-Source: https://github.com/compomics/ThermoRawFileParser (latest: v1.4.4, May 2024)
-Requires: .NET 8 runtime on Linux (`dotnet ThermoRawFileParser.dll`)
-Alternative: Mono (`mono ThermoRawFileParser.exe`) — install `mono-complete`
-
-```bash
-# Convert single .raw to indexed mzML (recommended — indexed mzML is faster to seek)
-dotnet ThermoRawFileParser.dll \
-  -i=/path/to/file.raw \
-  -o=/path/to/output_dir/ \
-  -f=2 \
-  -m=0
-
-# Key flags (verified from primary source):
-# -i, --input=VALUE          Input .raw file (required, use -i= format)
-# -d, --input_directory=VALUE  Directory of .raw files (use instead of -i for batches)
-# -o, --output=VALUE         Output directory (use -o= format)
-# -b, --output_file=VALUE    Output file path (use instead of -o for single file)
-# -f, --format=VALUE         Output format:
-#                              0 = MGF
-#                              1 = mzML
-#                              2 = indexed mzML  ← use this for Sage
-#                              3 = Parquet
-#                              4 = no spectra output (metadata only)
-# -m, --metadata=VALUE       Metadata output:
-#                              0 = JSON  ← use this for acquisition mode detection
-#                              1 = TXT
-# -p                         Disable Thermo native peak picking (keep default ON)
-# -g                         gzip compress output (adds .gz extension)
-
-# IMPORTANT: flags use = sign format, not space:
-# CORRECT:   -i=/path/to/file.raw
-# INCORRECT: -i /path/to/file.raw
-```
-
-#### Using ThermoRawFileParser for acquisition mode detection
-
-Before running any search, STAN must know if a `.raw` file is DIA or DDA.
-The JSON metadata output (`-m=0 -f=4`) is the right approach — it produces
-a JSON file with scan-level metadata including filter strings, without
-writing the full spectral data:
-
-```bash
-# Extract metadata only (fast — no spectra written)
-dotnet ThermoRawFileParser.dll \
-  -i=/path/to/file.raw \
-  -b=/path/to/file_metadata.json \
-  -f=4 \
-  -m=0
-```
-
-Parse the resulting JSON for `ScanFilter` strings:
-- Contains `"DIA"` → DIA acquisition → Track B (DIA-NN)
-- Contains `"dd-MS2"` or `"Full ms2"` → DDA → Track A (Sage + conversion)
-
-**Important:** ScanFilter string formats vary across instrument models and firmware
-versions. Always test on real `.raw` files from each specific instrument in the lab.
-Do not hardcode string matching — use pattern matching and log any unrecognized formats.
-
-#### mzML conversion as a SLURM step
-
-On Hive, conversion runs as the first step of the search SLURM job, not as a
-separate job. This avoids job scheduling overhead for what is typically a fast
-operation (a 1h QC run converts in ~2–5 minutes).
-
-```python
-# stan/search/convert.py
-
-def build_thermo_conversion_script(
-    raw_path: Path,
-    output_dir: Path,
-    trfp_dll_path: Path,
-) -> str:
-    """
-    Build bash commands to convert .raw to indexed mzML.
-    trfp_dll_path: path to ThermoRawFileParser.dll on Hive
-    Returns shell command string to embed in SLURM script.
-    """
-    mzml_path = output_dir / (raw_path.stem + ".mzML")
-    return (
-        f"dotnet {trfp_dll_path} "
-        f"-i={raw_path} "
-        f"-o={output_dir}/ "
-        f"-f=2 "
-        f"-m=0\n"
-        f"# Converted: {raw_path.name} → {mzml_path.name}\n"
-    )
-```
-
-Add `trfp_dll_path` to `instruments.yml` and `config/thresholds.yml`:
-
-```yaml
-# In instruments.yml, under each Thermo instrument:
-trfp_path: "/hive/software/ThermoRawFileParser/ThermoRawFileParser.dll"
-raw_handling: "convert_mzml"   # or "native" for DIA-NN 2.1+ direct .raw
-```
-
-#### Storage budget for mzML files
-
-A typical 1h Orbitrap QC run:
-- `.raw` file: ~2–4 GB
-- mzML (uncompressed, indexed): ~3–6 GB (larger than raw due to XML overhead)
-- mzML (gzip, `-g` flag): ~1–2 GB
-
-For a QC-only tool, delete converted mzML files after the search completes.
-Add a cleanup step at the end of the SLURM script:
-
-```bash
-# At end of SLURM job script:
-echo "Cleaning up converted mzML..."
-rm -f "${OUTPUT_DIR}/${RUN_NAME}.mzML"
-```
-
-Make cleanup configurable (`keep_mzml: false` in `instruments.yml`) since some
-users may want to keep mzML files for downstream use.
-
-#### Do NOT use MSConvert
-
-MSConvert (ProteoWizard) is the other common `.raw` conversion tool but requires
-a Windows license for vendor libraries when used on Linux. ThermoRawFileParser is
-fully open-source, Linux-native, and produces equivalent output for proteomics use.
-Do not introduce MSConvert as a dependency.
-
-### Polars
-
-- **API changes frequently** — Polars had major API changes at 0.19→0.20 and continues
-  evolving. Always check https://docs.pola.rs/ for current expression syntax.
-- **`map_elements` vs `apply`** — older versions used `.apply()`, newer versions use
-  `.map_elements()`. Check current docs.
-- **Lazy vs eager** — prefer lazy (`pl.scan_parquet`) for large files, eager
-  (`pl.read_parquet`) for small ones. Always specify `columns=` to limit reads.
-
-### HuggingFace Hub
-
-- **API changes** — `huggingface_hub` Python package API changes frequently.
-  Check https://huggingface.co/docs/huggingface_hub/en/index before any Hub operations.
-- **Rate limits** — the HF Dataset API has rate limits. The nightly consolidation
-  script should batch all reads, not iterate one file at a time in a hot loop.
-- **Upload method** — use `api.upload_file()` for single files, `api.upload_folder()`
-  for directories. Check current docs for correct parameter names.
+- **DIA-NN 2.0 column changes** — extractor must handle both 1.x and 2.0:
+  `File.Name` (full path) replaces `Run` (basename); `Fragment.Info`, `Fragment.Quant.Corrected`,
+  `Missed.Cleavages` may be absent. Always check `if col in df.columns` before access.
+- **Bruker `.d` is a directory**, not a file — stability detection must check total
+  directory size, not file mtime.
+- **`analysis.tdf.Frames.MsmsType`**: 0=MS1, 8=ddaPASEF, 9=diaPASEF (verify against
+  current Bruker docs — could change).
+- **Thermo conversion routing**: DIA-NN 2.1+ reads `.raw` natively (no conversion);
+  Sage always needs ThermoRawFileParser → mzML for `.raw`. `instruments.yml` has
+  `raw_handling: "native" | "convert_mzml"` per Thermo instrument as a fallback toggle.
 
 ---
 
@@ -819,16 +516,6 @@ Instrument PCs run Windows with PowerShell 5.1. When editing `.ps1` files:
 - **No inline ternary `if`** — use separate `if`/`else` blocks
 - **No `Where-Object { }` pipelines** — use explicit `foreach` loops
 - **Use `Join-Path`** instead of string concatenation for paths
-
----
-
-## DIA-NN 2.0 Column Changes
-
-DIA-NN 2.0 changed the report.parquet schema. The extractor must handle both 1.x and 2.0:
-- `File.Name` (full path) → renamed to `Run` (basename only)
-- `Fragment.Info`, `Fragment.Quant.Corrected` → removed
-- `Missed.Cleavages` → may be absent
-- Always check `if col in available` / `if col in filt.columns` before using any column
 
 ---
 
@@ -923,44 +610,12 @@ won't catch format changes between tool versions.
 
 ## Links
 
-| Resource | URL |
-|----------|-----|
-| STAN GitHub | https://github.com/bsphinney/stan |
-| STAN HF Space | https://huggingface.co/spaces/brettsp/stan |
-| STAN HF Dataset | https://huggingface.co/datasets/brettsp/stan-benchmark |
-| DIA-NN GitHub | https://github.com/vdemichev/DiaNN |
-| DIA-NN wiki | https://github.com/vdemichev/DiaNN/wiki |
-| DIA-NN discussions | https://github.com/vdemichev/DiaNN/discussions |
-| DIA-NN releases | https://github.com/vdemichev/DiaNN/releases |
-| Sage GitHub | https://github.com/lazear/sage |
-| Sage releases | https://github.com/lazear/sage/releases |
-| Sage paper | https://pubs.acs.org/doi/10.1021/acs.jproteome.3c00486 |
-| timsrust | https://github.com/MannLabs/timsrust |
-| ThermoRawFileParser | https://github.com/compomics/ThermoRawFileParser |
-| Percolator | https://github.com/percolator/percolator |
-| alphatims (TDF schema) | https://github.com/MannLabs/alphatims |
-| HF Hub Python docs | https://huggingface.co/docs/huggingface_hub/en/index |
-| Polars docs | https://docs.pola.rs/ |
-| FastAPI docs | https://fastapi.tiangolo.com/ |
-| watchdog docs | https://python-watchdog.readthedocs.io/ |
-| DE-LIMP (sibling project) | https://github.com/bsphinney/DE-LIMP |
+External-tool URLs and public Astral HeLa benchmark datasets:
+[`docs/external_tools.md`](docs/external_tools.md). STAN's own repos:
 
-### Public Astral HeLa DIA Datasets (PRIDE/ProteomeXchange)
-
-These are publicly available datasets with Orbitrap Astral HeLa DIA data, useful for
-library building, validation, and benchmarking reference ranges.
-
-| Dataset | PXD ID | Description | Search SW | Notes |
-|---------|--------|-------------|-----------|-------|
-| Searle et al. 2023 | PXD042704 | Astral DIA benchmark, HeLa, multiple gradients | EncyclopeDIA | On Panorama Public, not PRIDE |
-| Stewart et al. 2024 ("Inflection Point") | PXD054015 | Astral HeLa DIA + biofluids/tissues, 200 ng | DIA-NN v1.8.1 lib-free | Best candidate — HeLa + Astral + DIA-NN |
-| "$10 Proteome" 2025 | PXD066701 | Astral + timsTOF Ultra 2 HeLa QC, 200 pg–10 ng | DIA-NN | Has DIA-NN pg_matrix TSVs + zip archives |
-| Stewart et al. 2024 (DDA) | PXD045838 | Astral DDA HeLa, 125 ng | Mascot | DDA only — useful for Track A reference |
-
-Papers:
-- Searle: https://pubs.acs.org/doi/10.1021/acs.jproteome.3c00357
-- Stewart: https://pubs.acs.org/doi/10.1021/acs.jproteome.4c00384
-- Nat Biotech nDIA: https://www.nature.com/articles/s41587-023-02099-7
+- GitHub: https://github.com/bsphinney/stan
+- HF Space: https://huggingface.co/spaces/brettsp/stan
+- HF Dataset: https://huggingface.co/datasets/brettsp/stan-benchmark
 
 ---
 
