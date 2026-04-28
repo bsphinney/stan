@@ -1347,6 +1347,31 @@ def _action_screencap_install(args: dict) -> dict:
     return result
 
 
+def _action_sync_now(args: dict) -> dict:
+    """Force an immediate sync of stan.db, configs, logs, screencaps, and
+    backups to the Hive mirror. Useful when an analyst is waiting for a
+    capture or DB row to appear in godmode and doesn't want to wait for
+    the watcher's ~5-minute periodic sync.
+    """
+    from stan.config import get_hive_mirror_dir, sync_to_hive_mirror
+
+    hive_dir = get_hive_mirror_dir()
+    if hive_dir is None:
+        return {"error": "no Hive mirror configured for this host"}
+
+    include_reports = bool(args.get("include_reports", False))
+    try:
+        ok = sync_to_hive_mirror(include_reports=include_reports)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"sync_to_hive_mirror raised: {e}"}
+
+    return {
+        "ok": bool(ok),
+        "mirror_dir": str(hive_dir),
+        "include_reports": include_reports,
+    }
+
+
 def _baseline_in_progress() -> float | None:
     """Return age_sec of baseline_progress.json if it's < 10 min old, else None."""
     import time
@@ -1620,6 +1645,8 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "screencap_status":  _action_screencap_status,
     # v0.2.244+: one-click setup writes a default screencap.yml.
     "screencap_install": _action_screencap_install,
+    # v0.2.247+: force an immediate sync_to_hive_mirror.
+    "sync_now":          _action_sync_now,
 }
 
 
