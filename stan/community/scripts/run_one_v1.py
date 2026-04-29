@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 
 DIANN_SIF = "/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif"
 DIANN_BIN = "/diann-2.3.0/diann-linux"
-ASSET_CACHE = "/hive/data/stan_community_assets"
+# Brett's writable location on Hive (/hive/data/ is read-only).
+ASSET_CACHE = "/quobyte/proteomics-grp/brett/stan_community_assets"
 
 
 def _resolve_spd_from_name(name: str) -> int | None:
@@ -64,8 +65,12 @@ def run_diann(raw: Path, out_dir: Path, vendor: str) -> Path | None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download frozen FASTA + speclib if needed (writes to ASSET_CACHE)
-    bash_block = build_asset_download_script(vendor, cache_dir=ASSET_CACHE)
+    # Download frozen FASTA + speclib if needed (writes to ASSET_CACHE).
+    # Prefix with `set -euo pipefail` so a download failure aborts the
+    # script loudly instead of silently leaving an empty cache.
+    bash_block = "set -euo pipefail\n" + build_asset_download_script(
+        vendor, cache_dir=ASSET_CACHE,
+    )
     bash_path = out_dir / "_assets.sh"
     bash_path.write_text(bash_block)
     subprocess.run(["bash", str(bash_path)], check=True, timeout=600)
