@@ -193,6 +193,33 @@ def submit_to_benchmark(
         submit_payload["tic_rt_bins"] = tic_rt
         submit_payload["tic_intensity"] = tic_int
 
+    # Library saturation warning — if n_precursors approaches the
+    # community library size, the library is the bottleneck, not the
+    # instrument. Flag the row with library_coverage_pct so the
+    # dashboard + post-1.0 expansion logic can surface saturation
+    # patterns. Warn on the client too so the operator sees it.
+    from stan.search.community_params import (
+        COMMUNITY_LIBRARY_PRECURSOR_COUNT,
+        SATURATION_THRESHOLD_PCT,
+    )
+
+    vendor_for_lib = (run.get("vendor") or "").lower()
+    if "bruker" in vendor_for_lib or instrument_family == "timsTOF":
+        lib_size = COMMUNITY_LIBRARY_PRECURSOR_COUNT.get("bruker", 0)
+    else:
+        lib_size = COMMUNITY_LIBRARY_PRECURSOR_COUNT.get("thermo", 0)
+    n_prec = run.get("n_precursors") or 0
+    if lib_size and n_prec:
+        coverage_pct = round(n_prec / lib_size * 100, 1)
+        submit_payload["library_coverage_pct"] = coverage_pct
+        if coverage_pct >= SATURATION_THRESHOLD_PCT * 100:
+            logger.warning(
+                "Library saturation: run %s identified %d/%d precursors "
+                "(%.1f%% of community library). Consider expanding the "
+                "community library — see post-1.0 brainstorm.",
+                run.get("run_name", "?"), n_prec, lib_size, coverage_pct,
+            )
+
     # Library/FASTA hashes — the validator computed these but the original
     # payload silently dropped them, leaving 100% of historical rows
     # unverifiable. Wire them through so the v1.0 normalizer can stamp

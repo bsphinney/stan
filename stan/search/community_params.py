@@ -90,6 +90,17 @@ COMMUNITY_SPECLIB = {
     },
 }
 
+# Total precursor count in each frozen community library. Used to
+# compute library_coverage_pct on each submission and warn when a lab
+# is saturating the library (n_precursors / library_size > ~0.9 means
+# the library is the bottleneck, not the instrument). Update these
+# alongside SEARCH_PARAMS_VERSION whenever the library is rebuilt.
+COMMUNITY_LIBRARY_PRECURSOR_COUNT = {
+    "bruker": 54_000,    # hela_timstof_202604.parquet
+    "thermo": 170_000,   # hela_orbitrap_202604.parquet
+}
+SATURATION_THRESHOLD_PCT = 0.90
+
 # Local cache directory on Hive for downloaded community assets
 # This gets created by the SLURM job if it doesn't exist
 COMMUNITY_CACHE_DIR = "/hive/data/stan_community_assets"
