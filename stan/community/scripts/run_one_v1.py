@@ -46,6 +46,21 @@ def _resolve_spd_from_name(name: str) -> int | None:
     return None
 
 
+def _gradient_min_for_spd(spd: int | None) -> float | None:
+    """Approx gradient length for an Evosep SPD setting.
+
+    SPD = samples per day, so the per-sample window is roughly
+    1440 / SPD minutes. Real Evosep methods bias slightly shorter
+    (overhead etc.) but this is good enough for peak_capacity
+    computation in extract_dia_metrics. None when SPD unknown.
+    """
+    if not spd or spd <= 0:
+        return None
+    # Evosep duty-cycle approximation: 90% of the wall-clock window
+    # is the actual gradient (the rest is wash/equil).
+    return round(1440.0 / spd * 0.9, 1)
+
+
 def _resolve_instrument(family: str, vendor: str) -> str:
     """Map family + vendor to an instrument_model string."""
     if family == "timsTOF":
@@ -120,12 +135,32 @@ def extract_and_submit(
     from stan.community.submit import submit_to_benchmark
     from stan.metrics.extractor import extract_dia_metrics, extract_dda_metrics
 
+    spd = _resolve_spd_from_name(raw.name)
+    gradient_min = _gradient_min_for_spd(spd)
+
     if mode == "dia":
         metrics = extract_dia_metrics(
-            report, raw_path=raw, vendor=vendor,
+            report,
+            raw_path=raw,
+            vendor=vendor,
+            gradient_min=gradient_min,
         )
     else:
         metrics = extract_dda_metrics(report)
+
+    # Compute the binned identified-TIC trace from the search output.
+    # extract_tic_from_report walks report.parquet and bins
+    # Precursor.Quantity into 128 RT bins. Best-effort — failure is
+    # logged, not fatal.
+    try:
+        from stan.metrics.tic import extract_tic_from_report
+
+        tic = extract_tic_from_report(report, n_bins=128)
+        if tic is not None:
+            metrics["tic_rt_bins"] = list(tic.rt_bins)
+            metrics["tic_intensity"] = list(tic.intensity)
+    except Exception:
+        logger.exception("TIC extraction failed (non-fatal)")
 
     run = dict(metrics)
     run["run_name"] = raw.name
@@ -136,15 +171,22 @@ def extract_and_submit(
     run["run_date"] = datetime.fromtimestamp(
         raw.stat().st_mtime, tz=timezone.utc
     ).isoformat()
-    spd = _resolve_spd_from_name(raw.name)
+    if gradient_min is not None:
+        run["gradient_length_min"] = int(round(gradient_min))
 
     result = submit_to_benchmark(
         run,
         spd=spd,
+        gradient_length_min=int(round(gradient_min)) if gradient_min else None,
         amount_ng=50.0,
         diann_version="2.3.0",
     )
-    return {"submission_id": result.get("submission_id"), "spd": spd, "metrics": metrics}
+    return {
+        "submission_id": result.get("submission_id"),
+        "spd": spd,
+        "gradient_min": gradient_min,
+        "metrics": metrics,
+    }
 
 
 def main() -> None:
