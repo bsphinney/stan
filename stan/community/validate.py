@@ -37,7 +37,6 @@ HARD_GATES: dict[str, float] = {
     "n_precursors_min": 5000,
     "n_peptides_min": 3000,
     "n_proteins_min": 1500,
-    "median_cv_precursor_max": 60.0,
     "pct_charge_1_max": 0.50,
     "missed_cleavage_rate_max": 0.60,
     # DDA
@@ -45,6 +44,14 @@ HARD_GATES: dict[str, float] = {
     "n_peptides_dda_min": 3000,
     "pct_delta_mass_lt5ppm_min": 0.50,
     "ms2_scan_rate_min": 5.0,
+}
+
+# CV requires replicate injections. Single-run cluster re-searches
+# produce CV=None and the consolidator can compute inter-cohort CV
+# post-hoc from multiple submissions. Track CV when available but
+# don't reject submissions that lack it.
+OPTIONAL_GATES: dict[str, float] = {
+    "median_cv_precursor_max": 60.0,
 }
 
 # Soft flags: unusual but not rejected — flagged for review
@@ -96,6 +103,21 @@ def validate_submission(
 
     if asset_hashes is not None:
         _validate_asset_hashes(asset_hashes, mode, result)
+
+    # Apply optional gates first — populate flags only when value present
+    for gate_key, threshold in OPTIONAL_GATES.items():
+        metric_name, direction = _parse_gate_key(gate_key)
+        value = metrics.get(metric_name)
+        if value is None:
+            continue
+        if direction == "max" and value > threshold:
+            result.flags.append(
+                f"{metric_name}={value} above maximum {threshold}"
+            )
+        elif direction == "min" and value < threshold:
+            result.flags.append(
+                f"{metric_name}={value} below minimum {threshold}"
+            )
 
     # Apply hard gates
     for gate_key, threshold in HARD_GATES.items():

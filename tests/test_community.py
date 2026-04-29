@@ -35,18 +35,35 @@ def test_validate_dia_fail_low_precursors():
     assert any("n_precursors" in g for g in result.rejected_gates)
 
 
-def test_validate_dia_fail_high_cv():
-    """DIA with CV above hard gate should be rejected."""
+def test_validate_dia_high_cv_flagged_not_rejected():
+    """High CV is now a soft flag, not a hard rejection. CV moved out
+    of HARD_GATES because cluster re-searches produce single-run
+    submissions with no inter-replicate CV available."""
     metrics = {
         "n_precursors": 15000,
         "n_peptides": 10000,
         "n_proteins": 3000,
-        "median_cv_precursor": 65.0,  # above 60.0 maximum
+        "median_cv_precursor": 65.0,  # above 60.0 — flagged, not rejected
         "pct_charge_1": 0.05,
         "missed_cleavage_rate": 0.10,
     }
     result = validate_submission(metrics, "dia")
-    assert result.is_valid is False
+    assert result.is_valid is True
+    assert any("median_cv_precursor" in f for f in result.flags)
+
+
+def test_validate_dia_missing_cv_accepted():
+    """Cluster re-searches produce CV=None — must not reject."""
+    metrics = {
+        "n_precursors": 15000,
+        "n_peptides": 10000,
+        "n_proteins": 3000,
+        "median_cv_precursor": None,
+        "pct_charge_1": 0.05,
+        "missed_cleavage_rate": 0.10,
+    }
+    result = validate_submission(metrics, "dia")
+    assert result.is_valid is True
 
 
 def test_validate_dda_pass():
