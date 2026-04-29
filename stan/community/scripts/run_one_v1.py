@@ -33,6 +33,45 @@ DIANN_SIF = "/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif"
 DIANN_BIN = "/diann-2.3.0/diann-linux"
 # Brett's writable location on Hive (/hive/data/ is read-only).
 ASSET_CACHE = "/quobyte/proteomics-grp/brett/stan_community_assets"
+# Per-instrument config (instruments.yml) is synced to the mirror by
+# the watcher and contains column_vendor / column_model / lc_system —
+# all needed by the dashboard's Column Comparison panel.
+MIRROR_BASE = "/quobyte/proteomics-grp/STAN"
+FAMILY_TO_HOST = {
+    "timsTOF": "TIMS-10878",
+    "Lumos": "lumosRox",
+    "Exploris": "DESKTOP-FOT3DAA",
+}
+
+
+def _column_metadata_for_family(family: str) -> dict:
+    """Read column + lc_system metadata from the synced instruments.yml.
+
+    Returns ``{column_vendor, column_model, lc_system}``. Empty dict
+    when the host directory or YAML isn't reachable.
+    """
+    host = FAMILY_TO_HOST.get(family, "")
+    if not host:
+        return {}
+    yml_path = Path(MIRROR_BASE) / host / "instruments.yml"
+    if not yml_path.exists():
+        return {}
+    try:
+        import yaml
+
+        cfg = yaml.safe_load(yml_path.read_text())
+        instruments = cfg.get("instruments") or []
+        if not instruments:
+            return {}
+        first = instruments[0]
+        out = {}
+        for k in ("column_vendor", "column_model", "lc_system"):
+            if first.get(k):
+                out[k] = first[k]
+        return out
+    except Exception:
+        logger.exception("Failed to read %s", yml_path)
+        return {}
 
 
 def _resolve_spd_from_name(name: str) -> int | None:
@@ -173,6 +212,9 @@ def extract_and_submit(
     ).isoformat()
     if gradient_min is not None:
         run["gradient_length_min"] = int(round(gradient_min))
+    # Column + LC metadata from the watcher's synced instruments.yml.
+    # Populates the dashboard Column Comparison + LC system panels.
+    run.update(_column_metadata_for_family(family))
 
     result = submit_to_benchmark(
         run,
