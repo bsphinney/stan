@@ -90,6 +90,33 @@ def _resolve_spd_from_name(name: str) -> int | None:
     return None
 
 
+def _resolve_spd_from_report(report: Path) -> int | None:
+    """Derive SPD from the actual gradient length in DIA-NN's report.
+
+    Many older Thermo runs (Lumos, Exploris) were named by gradient
+    minutes (e.g. ``qeP_20191112_HeLa_110m.raw``) instead of SPD, so
+    the filename regex fails. Read RT.max - RT.min from the search
+    output and bucket via ``gradient_min_to_spd``.
+    """
+    try:
+        import polars as pl
+
+        from stan.metrics.scoring import gradient_min_to_spd
+
+        df = pl.read_parquet(report, columns=["RT"])
+        if df.height == 0:
+            return None
+        rt_min = float(df["RT"].min())
+        rt_max = float(df["RT"].max())
+        gradient = rt_max - rt_min
+        if gradient <= 0:
+            return None
+        return gradient_min_to_spd(gradient)
+    except Exception:
+        logger.exception("SPD-from-report failed (non-fatal)")
+        return None
+
+
 def _gradient_min_for_spd(spd: int | None) -> float | None:
     """Approx gradient length for an Evosep SPD setting.
 
@@ -243,6 +270,11 @@ def extract_and_submit(
     from stan.metrics.extractor import extract_dia_metrics, extract_dda_metrics
 
     spd = _resolve_spd_from_name(raw.name)
+    if spd is None:
+        # Filename didn't carry an SPD token — derive from the gradient
+        # length in the search output (RT span). Catches old Thermo
+        # runs named by minutes (qeP_..._110m.raw etc.).
+        spd = _resolve_spd_from_report(report)
     gradient_min = _gradient_min_for_spd(spd)
 
     if mode == "dia":

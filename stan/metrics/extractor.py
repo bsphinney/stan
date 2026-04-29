@@ -565,24 +565,12 @@ def extract_dia_metrics(
             if bruker_pts is not None:
                 median_points_across_peak = bruker_pts
 
-        # Thermo / fallback: cycle-time estimate (will be fixed in v0.2.106)
-        if median_points_across_peak is None and not is_bruker:
-            fc = "Run" if "Run" in filt.columns else (
-                "File.Name" if "File.Name" in filt.columns else None
-            )
-            if "RT" in filt.columns and fc is not None:
-                cycle_times = (
-                    filt.sort([fc, "RT"])
-                    .with_columns(
-                        (pl.col("RT").diff().over(fc) * 60).alias("dt_sec")
-                    )
-                    .filter(pl.col("dt_sec") > 0)
-                    .filter(pl.col("dt_sec") < 10)  # filter outliers (>10s gaps)
-                )
-                if cycle_times.height > 0 and median_peak_width_sec:
-                    median_cycle_sec = float(cycle_times["dt_sec"].median())
-                    if median_cycle_sec > 0:
-                        median_points_across_peak = median_peak_width_sec / median_cycle_sec
+        # Thermo: the cycle-time estimate from precursor RT diffs was
+        # systematically wrong (computed dt_sec from inter-precursor
+        # RT differences, which understates the real per-precursor DIA
+        # cycle time and yielded pts/peak in the hundreds — physically
+        # implausible). Leave NULL until a proper raw-file scan-rate
+        # reader is wired in. Bruker keeps its validated calculation.
 
     elif "RT" in filt.columns and evidence_col and evidence_col in filt.columns:
         # Fallback: use Evidence column (number of scans supporting the ID)
