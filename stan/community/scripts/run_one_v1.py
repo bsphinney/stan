@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 DIANN_SIF = "/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif"
 DIANN_BIN = "/diann-2.3.0/diann-linux"
+# Native Sage binary (DE-LIMP uses this for 7K+ DDA searches).
+SAGE_BIN = (
+    "/quobyte/proteomics-grp/de-limp/cascadia/"
+    "sage-v0.14.7-x86_64-unknown-linux-gnu/sage"
+)
 # Brett's writable location on Hive (/hive/data/ is read-only).
 ASSET_CACHE = "/quobyte/proteomics-grp/brett/stan_community_assets"
 # Per-instrument config (instruments.yml) is synced to the mirror by
@@ -189,6 +194,47 @@ def run_diann(raw: Path, out_dir: Path, vendor: str, family: str = "") -> Path |
     return out_report
 
 
+def run_sage(raw: Path, out_dir: Path, vendor: str) -> Path | None:
+    """Run Sage with frozen community DDA params on a raw file.
+
+    Native Sage binary (no apptainer) — DE-LIMP uses the same one for
+    its 7K+ DDA searches. Bruker .d input is read directly. Thermo
+    .raw is rejected upstream because Sage prefers centroided mzML
+    and we don't have the msconvert pipeline wired in yet.
+    """
+    from stan.search.community_params import build_asset_download_script
+    from stan.search.sage import build_sage_config_json
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Frozen community FASTA download (Sage doesn't need a speclib).
+    bash_block = "set -euo pipefail\n" + build_asset_download_script(
+        vendor, cache_dir=ASSET_CACHE,
+    )
+    bash_path = out_dir / "_assets.sh"
+    bash_path.write_text(bash_block)
+    subprocess.run(["bash", str(bash_path)], check=True, timeout=600)
+
+    config_text = build_sage_config_json(raw, out_dir, vendor)
+    config_path = out_dir / "sage_config.json"
+    config_path.write_text(config_text)
+
+    cmd = [SAGE_BIN, "--write-pin", str(config_path), str(raw)]
+    logger.info("Running Sage: %s", " ".join(cmd))
+    started = time.monotonic()
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10800)
+    elapsed = time.monotonic() - started
+    (out_dir / "sage.stdout.log").write_text(result.stdout)
+    (out_dir / "sage.stderr.log").write_text(result.stderr)
+    logger.info("Sage exit=%d in %.1fs", result.returncode, elapsed)
+
+    out_report = out_dir / "results.sage.parquet"
+    if result.returncode != 0 or not out_report.exists():
+        logger.error("Sage failed — see %s", out_dir / "sage.stderr.log")
+        return None
+    return out_report
+
+
 def extract_and_submit(
     report: Path, raw: Path, mode: str, vendor: str, family: str,
 ) -> dict:
@@ -288,9 +334,14 @@ def main() -> None:
     try:
         if args.mode == "dia":
             report = run_diann(args.raw, args.out_dir, args.vendor, args.family)
-        else:
-            logger.error("DDA via Sage not yet wired in this dispatcher")
-            sys.exit(2)
+        elif args.mode == "dda":
+            if args.vendor != "bruker":
+                logger.error(
+                    "DDA on %s not yet wired — Thermo DDA needs msconvert pre-step",
+                    args.vendor,
+                )
+                sys.exit(2)
+            report = run_sage(args.raw, args.out_dir, args.vendor)
 
         if report is None:
             record.update(status="search_failed")
