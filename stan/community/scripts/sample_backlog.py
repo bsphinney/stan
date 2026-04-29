@@ -48,21 +48,62 @@ QC_ROOTS: dict[str, list[Path]] = {
     ],
 }
 
-# Per-instrument minimum file/dir size. Anything smaller is either an
-# aborted acquisition or a placeholder.
+# Per-instrument minimum file/dir size. We use a low universal floor —
+# file size is a weak filter (Orbitrap DDA is inversely correlated with
+# size because MS2 is centroided; timsTOF DDA isn't). The real
+# "did this run succeed" signal comes from the search, not the bytes
+# on disk. The 200 MB floor only catches obviously-aborted runs (e.g.
+# ``DEL-chekTipClog`` test files at 150 MB or KB-scale placeholders).
 DEFAULT_SIZE_MIN_GB: dict[str, float] = {
-    "Lumos": 0.5,      # Thermo .raw, typical 1-5 GB
-    "timsTOF": 3.0,    # Bruker .d directory, typical 10-30 GB
-    "Exploris": 0.3,   # Thermo .raw, typical 0.5-3 GB
+    "Lumos": 0.2,
+    "timsTOF": 0.2,
+    "Exploris": 0.2,
 }
 
 # HeLa-name match (loose, case-insensitive)
 HELA_PATTERNS = ("hel50", "hela", "hel_", "hel-", "hel0", "_hel")
 
+# Mode disambiguation patterns. Path-based first (most reliable), then
+# filename-based for the flinders flat layout. None of the timsTOF
+# files have explicit "diaPASEF" or "ddaPASEF" tokens — the watcher
+# uses TDF metadata for that — but the directory structure +
+# filename-token heuristic catches >70% of the corpus.
+DDA_PATH_TOKENS = ("/dda/", "/ddapasef/", "/dda-")
+DIA_PATH_TOKENS = ("/dia/", "/diapasef/", "/dia-")
+DDA_NAME_TOKENS = ("dda", "_dd_", "-dd-")
+DIA_NAME_TOKENS = ("dia", "_di_", "-di-")
+
 
 def _is_hela(name: str) -> bool:
     n = name.lower()
     return any(p in n for p in HELA_PATTERNS)
+
+
+def _detect_mode(path: Path) -> str:
+    """Best-effort DIA / DDA detection without reading TDF metadata.
+
+    Path-based first (the hela_qcs/ tree has explicit /dia/ + /dda/
+    subdirs), then filename token. Returns "dia", "dda", or "unknown".
+    For ``unknown`` the watcher's TDF reader would resolve definitively;
+    we can't easily call that from a stdlib-only sampler.
+    """
+    p_lower = str(path).lower()
+    for tok in DDA_PATH_TOKENS:
+        if tok in p_lower:
+            return "dda"
+    for tok in DIA_PATH_TOKENS:
+        if tok in p_lower:
+            return "dia"
+    n_lower = path.name.lower()
+    # Filename: order matters since "dda" and "dia" can both substring-match
+    # weird names. Be strict: check 3-letter token AT WORD BOUNDARIES.
+    import re
+
+    if re.search(r"\bdda\b|[_-]dda[_-]|\bddapasef\b", n_lower):
+        return "dda"
+    if re.search(r"\bdia\b|[_-]dia[_-]|\bdiapasef\b", n_lower):
+        return "dia"
+    return "unknown"
 
 
 def _path_size(p: Path) -> int:
@@ -115,12 +156,16 @@ def enumerate_candidates(
                 "size_bytes": size,
                 "mtime": mtime,
                 "family": family,
+                "mode": _detect_mode(child),
                 "name": name,
             })
             seen.add(name)
+    n_dia = sum(1 for c in cands if c["mode"] == "dia")
+    n_dda = sum(1 for c in cands if c["mode"] == "dda")
+    n_unk = sum(1 for c in cands if c["mode"] == "unknown")
     logger.info(
-        "%s: %d HeLa candidates passing size>=%.1f GB",
-        family, len(cands), size_min_gb,
+        "%s: %d HeLa candidates (size>=%.2f GB) — dia=%d dda=%d unknown=%d",
+        family, len(cands), size_min_gb, n_dia, n_dda, n_unk,
     )
     return cands
 
@@ -131,37 +176,44 @@ def _month_key(mtime: float) -> str:
 
 def stratified_sample(
     candidates: list[dict],
-    per_instrument: int,
+    per_dia: int,
+    per_dda: int,
     seed: int,
 ) -> list[dict]:
-    """Time-stratify by year-month within each family, then sample
-    uniformly across buckets to reach `per_instrument` total per family.
+    """Time-stratify by year-month per (family, mode), sample uniformly
+    across buckets to reach the per-mode quota for each family.
+
+    Unknown-mode rows are grouped with DIA (the dominant mode by ~5x);
+    they'll get re-classified by the watcher / detector when actually
+    searched.
     """
     rng = random.Random(seed)
-    by_family: dict[str, list[dict]] = defaultdict(list)
+    by_family_mode: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for c in candidates:
-        by_family[c["family"]].append(c)
+        bucket_mode = c["mode"] if c["mode"] in ("dia", "dda") else "dia"
+        by_family_mode[(c["family"], bucket_mode)].append(c)
 
     selected: list[dict] = []
-    for family, rows in by_family.items():
+    quotas = {"dia": per_dia, "dda": per_dda}
+    for (family, mode), rows in by_family_mode.items():
         if not rows:
             continue
         buckets: dict[str, list[dict]] = defaultdict(list)
         for r in rows:
             buckets[_month_key(r["mtime"])].append(r)
 
-        # Round-robin pull from buckets (sorted by month) until we hit the cap
         ordered_months = sorted(buckets.keys())
         for m in ordered_months:
             rng.shuffle(buckets[m])
         picked = 0
-        while picked < per_instrument and any(buckets[m] for m in ordered_months):
+        target = quotas[mode]
+        while picked < target and any(buckets[m] for m in ordered_months):
             for m in ordered_months:
                 if not buckets[m]:
                     continue
                 selected.append(buckets[m].pop())
                 picked += 1
-                if picked >= per_instrument:
+                if picked >= target:
                     break
 
     return selected
@@ -169,8 +221,10 @@ def stratified_sample(
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--per-instrument", type=int, default=100,
-                   help="How many files to sample per instrument (default 100).")
+    p.add_argument("--per-instrument-dia", type=int, default=80,
+                   help="How many DIA files to sample per instrument (default 80).")
+    p.add_argument("--per-instrument-dda", type=int, default=20,
+                   help="How many DDA files to sample per instrument (default 20).")
     p.add_argument("--seed", type=int, default=42,
                    help="Random seed for reproducibility.")
     p.add_argument("--out", default="/tmp/v1_sample.json",
@@ -202,21 +256,25 @@ def main() -> None:
         logger.error("No candidates found. Check paths + size filters.")
         sys.exit(1)
 
-    selected = stratified_sample(all_candidates, args.per_instrument, args.seed)
+    selected = stratified_sample(
+        all_candidates, args.per_instrument_dia, args.per_instrument_dda, args.seed
+    )
 
-    by_family = defaultdict(int)
-    by_month = defaultdict(int)
+    by_family_mode: dict[str, int] = defaultdict(int)
+    by_month: dict[str, int] = defaultdict(int)
     total_bytes = 0
     for s in selected:
-        by_family[s["family"]] += 1
+        by_family_mode[f"{s['family']}/{s['mode']}"] += 1
         by_month[_month_key(s["mtime"])] += 1
         total_bytes += s["size_bytes"]
 
     summary = {
         "n_total_candidates": len(all_candidates),
         "n_selected": len(selected),
-        "per_family": dict(by_family),
+        "per_family_mode": dict(sorted(by_family_mode.items())),
         "size_filters_gb": size_mins,
+        "per_instrument_dia": args.per_instrument_dia,
+        "per_instrument_dda": args.per_instrument_dda,
         "total_size_gb": round(total_bytes / 1024**3, 1),
         "month_distribution": dict(sorted(by_month.items())),
         "seed": args.seed,
