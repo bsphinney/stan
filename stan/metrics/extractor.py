@@ -574,7 +574,7 @@ def extract_dia_metrics(
         # a proper raw-file scan-rate reader is wired in.
         if median_points_across_peak is None and not is_bruker:
             stats_path = report_path.with_name("report.stats.tsv")
-            stats_metrics = _extract_stats_metrics(stats_path)
+            stats_metrics = _parse_diann_stats_tsv(stats_path)
             fwhm_scans = stats_metrics.get("fwhm_scans")
             if fwhm_scans is not None and fwhm_scans > 0:
                 median_points_across_peak = float(fwhm_scans) * 2.0
