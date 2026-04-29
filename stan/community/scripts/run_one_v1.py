@@ -78,8 +78,15 @@ def run_diann(raw: Path, out_dir: Path, vendor: str) -> Path | None:
     params = get_community_diann_params(vendor, cache_dir=ASSET_CACHE)
     out_report = out_dir / "report.parquet"
 
+    # Bind every storage tree the job touches into the container.
+    # /quobyte = community assets + most raw files, /nfs = flinders QC,
+    # /tmp = scratch.
     cmd = [
-        "apptainer", "exec", DIANN_SIF, DIANN_BIN,
+        "apptainer", "exec",
+        "--bind", "/quobyte:/quobyte",
+        "--bind", "/nfs:/nfs",
+        "--bind", "/tmp:/tmp",
+        DIANN_SIF, DIANN_BIN,
         "--f", str(raw),
         "--lib", params["lib"],
         "--fasta", params["fasta"],
