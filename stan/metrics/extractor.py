@@ -565,12 +565,19 @@ def extract_dia_metrics(
             if bruker_pts is not None:
                 median_points_across_peak = bruker_pts
 
-        # Thermo: the cycle-time estimate from precursor RT diffs was
-        # systematically wrong (computed dt_sec from inter-precursor
-        # RT differences, which understates the real per-precursor DIA
-        # cycle time and yielded pts/peak in the hundreds — physically
-        # implausible). Leave NULL until a proper raw-file scan-rate
-        # reader is wired in. Bruker keeps its validated calculation.
+        # Thermo: approximate from DIA-NN's reported FWHM scans.
+        # `fwhm_scans` is the median number of MS2 scans within the
+        # precursor's FWHM. Total scans across full peak ~ 2 * FWHM
+        # for a Gaussian peak — Matthews & Hayes 1976 use full-peak
+        # points. Not exact (real cycle-time + asymmetric peaks add
+        # error) but lands in the right 5-25 range for QC use until
+        # a proper raw-file scan-rate reader is wired in.
+        if median_points_across_peak is None and not is_bruker:
+            stats_path = report_path.with_name("report.stats.tsv")
+            stats_metrics = _extract_stats_metrics(stats_path)
+            fwhm_scans = stats_metrics.get("fwhm_scans")
+            if fwhm_scans is not None and fwhm_scans > 0:
+                median_points_across_peak = float(fwhm_scans) * 2.0
 
     elif "RT" in filt.columns and evidence_col and evidence_col in filt.columns:
         # Fallback: use Evidence column (number of scans supporting the ID)
