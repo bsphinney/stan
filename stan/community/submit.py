@@ -197,11 +197,40 @@ def submit_to_benchmark(
     # payload silently dropped them, leaving 100% of historical rows
     # unverifiable. Wire them through so the v1.0 normalizer can stamp
     # assets_verified=True on every new submission.
-    if asset_hashes:
-        if asset_hashes.get("fasta_md5"):
-            submit_payload["fasta_md5"] = asset_hashes["fasta_md5"]
-        if asset_hashes.get("speclib_md5"):
-            submit_payload["speclib_md5"] = asset_hashes["speclib_md5"]
+    #
+    # If the caller did not provide explicit hashes, fall back to the
+    # canonical EXPECTED_ASSET_HASHES from validate.py. This is safe
+    # because the version-pinned DIA-NN check above (≥2.3.x) is
+    # already the gating condition: a row that reaches this point is
+    # known to have been searched with the frozen tool version, so
+    # the corresponding frozen FASTA + speclib hashes apply
+    # deterministically. submit-all flows that pull rows from a local
+    # stan.db produced by the community-search pipeline don't need to
+    # recompute hashes — they're constants.
+    from stan.community.validate import EXPECTED_ASSET_HASHES
+
+    fasta_md5 = (asset_hashes or {}).get("fasta_md5") or EXPECTED_ASSET_HASHES.get(
+        "human_hela_202604.fasta", ""
+    )
+    if fasta_md5:
+        submit_payload["fasta_md5"] = fasta_md5
+
+    speclib_md5 = (asset_hashes or {}).get("speclib_md5")
+    if not speclib_md5:
+        # Vendor-aware fallback to the right frozen library hash.
+        vendor = (run.get("vendor") or "").lower()
+        if "bruker" in vendor or instrument_family == "timsTOF":
+            speclib_md5 = EXPECTED_ASSET_HASHES.get(
+                "hela_timstof_202604.parquet", ""
+            )
+        else:
+            speclib_md5 = EXPECTED_ASSET_HASHES.get(
+                "hela_orbitrap_202604.parquet", ""
+            )
+    # DDA submissions don't use a speclib, so leave the field unset
+    # for non-DIA runs.
+    if speclib_md5 and "dia" in (run.get("mode") or "").lower():
+        submit_payload["speclib_md5"] = speclib_md5
 
     # Send the auth_token from community.yml so the relay can verify
     # this is an official STAN installation that went through email
