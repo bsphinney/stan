@@ -237,7 +237,7 @@ def build_asset_download_script(vendor: str, cache_dir: str | None = None) -> st
     lines.append(f"if [ ! -f {cache}/{fasta_filename} ]; then")
     lines.append(f"  echo 'Downloading community FASTA...'")
     lines.append(
-        f"  huggingface-cli download {HF_DATASET_REPO} "
+        f"  hf download {HF_DATASET_REPO} "
         f"{COMMUNITY_FASTA_HF_PATH} "
         f"--repo-type dataset "
         f"--local-dir {cache}"
@@ -252,7 +252,7 @@ def build_asset_download_script(vendor: str, cache_dir: str | None = None) -> st
         lines.append(f"if [ ! -f {cache}/{speclib_filename} ]; then")
         lines.append(f"  echo 'Downloading community speclib ({vendor})...'")
         lines.append(
-            f"  huggingface-cli download {HF_DATASET_REPO} "
+            f"  hf download {HF_DATASET_REPO} "
             f"{speclib_hf_path} "
             f"--repo-type dataset "
             f"--local-dir {cache}"
