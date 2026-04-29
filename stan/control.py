@@ -1245,6 +1245,9 @@ def _action_screencap_status(args: dict) -> dict:
         "mask_count": len(cfg.mask_regions),
         "local_dir": str(cfg.local_dir),
         "mirror_dir": str(cfg.mirror_dir) if cfg.mirror_dir else None,
+        "capture_all_windows": cfg.capture_all_windows,
+        "fallback_full_screen": cfg.fallback_full_screen,
+        "window_titles": list(cfg.window_titles),
     }
 
     # Check PID file
