@@ -308,15 +308,25 @@ not collect, so it was replaced by IPS.
    - `ssh hive "source /etc/profile.d/modules.sh && source
      /etc/profile.d/hpccf.sh && sbatch ..."`
 
-4. **Partitions + QOS** (summary; see the private guide for detail):
-   | Partition | QOS | Use |
-   |---|---|---|
-   | `high` | `genome-center-grp-high-qos` | Priority CPU; 64-CPU per-user cap |
-   | `gpu-a100` | `genome-center-grp-gpu-a100-qos` | 1 A100, use for Casanovo inference/training |
-   | `low` | `publicgrp-low-qos` | Preemptible, huge capacity. Fine for fast (<30 min) jobs. `Requeue=1` recommended. |
+4. **Partitions + QOS + account** (each row is a valid `sbatch` triple):
+   | Partition | QOS | Account | Use |
+   |---|---|---|---|
+   | `high` | `genome-center-grp-high-qos` | `genome-center-grp` | **Default for STAN community searches.** Priority CPU; 64-CPU per-user cap. |
+   | `high` | `publicgrp-high-qos` | `publicgrp` | Open-access alternative when genome-center is capped. |
+   | `gpu-a100` | `genome-center-grp-gpu-a100-qos` | `genome-center-grp` | 1 A100, use for Casanovo inference/training. |
+   | `low` | `publicgrp-low-qos` | `publicgrp` | Preemptible, huge capacity. Fine for fast (<30 min) jobs. `Requeue=1` recommended. |
+
+   QOS is bound to an account — passing `--qos=genome-center-grp-high-qos`
+   without `--account=genome-center-grp` returns
+   `sbatch: error: Batch job submission failed: Invalid qos specification`.
+   Brett's default account is `publicgrp`, so genome-center jobs MUST set
+   `--account=genome-center-grp` explicitly.
 
    When `high` shows `(QOSGrpCpuLimit)` as the reason, fall back to `low`
-   — different quota, usually works.
+   — different quota, usually works. List allowed combinations with:
+   ```bash
+   sacctmgr -nP list assoc user=brettsp format=account,partition,qos
+   ```
 
 5. **Check queue state** with:
    ```bash
