@@ -218,7 +218,9 @@ def extract_and_submit(
 
         tic = extract_tic_from_report(report, n_bins=128)
         if tic is not None:
-            metrics["tic_rt_bins"] = list(tic.rt_bins)
+            # TICTrace uses ``rt_min`` for the bin centers (in minutes),
+            # not ``rt_bins``.
+            metrics["tic_rt_bins"] = list(tic.rt_min)
             metrics["tic_intensity"] = list(tic.intensity)
     except Exception:
         logger.exception("TIC extraction failed (non-fatal)")
