@@ -231,7 +231,15 @@ def extract_and_submit(
     run["vendor"] = vendor
     run["instrument"] = _resolve_instrument(family, vendor)
     run["diann_version"] = "2.3.0"
-    run["run_date"] = datetime.fromtimestamp(
+    # Real acquisition date from raw-file metadata. Bruker .d reads
+    # GlobalMetadata.AcquisitionDateTime from analysis.tdf; Thermo .raw
+    # reads the file header. Falls back to filesystem mtime only when
+    # both fail (filesystem mtime is wrong for archived/copied files
+    # where the copy date masks the original acquisition date).
+    from stan.watcher.acquisition_date import get_acquisition_date
+
+    acq_date = get_acquisition_date(raw)
+    run["run_date"] = acq_date or datetime.fromtimestamp(
         raw.stat().st_mtime, tz=timezone.utc
     ).isoformat()
     if gradient_min is not None:
