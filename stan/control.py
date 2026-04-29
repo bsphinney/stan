@@ -47,6 +47,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -1394,6 +1395,80 @@ def _action_screencap_install(args: dict) -> dict:
     return result
 
 
+def _action_sync_raw_backlog(args: dict) -> dict:
+    """Walk this instrument's watched dirs and push every raw QC file
+    that isn't already on the Hive SMB mirror.
+
+    Args (all optional):
+        limit: Max number of files to sync this run (smoke test = 10).
+        dry_run: bool — enumerate only, no copies.
+        force: bool — re-sync even if manifest says already synced.
+
+    Spawns a detached subprocess for big jobs (>50 files) so godmode
+    doesn't time out waiting for a multi-hour copy.
+    """
+    from pathlib import Path as _P
+
+    from stan.config import load_instruments
+    from stan.sync.raw import (
+        BRUKER_SUFFIXES, THERMO_SUFFIXES, sync_raw_backlog,
+    )
+
+    limit_raw = args.get("limit")
+    try:
+        limit = int(limit_raw) if limit_raw is not None else None
+    except Exception:
+        return {"error": f"limit must be int, got {limit_raw!r}"}
+    dry_run = bool(args.get("dry_run", False))
+    force = bool(args.get("force", False))
+
+    _, instruments = load_instruments()
+    watched: list[_P] = []
+    for inst in instruments:
+        wd = inst.get("watch_dir") or inst.get("path")
+        if wd:
+            watched.append(_P(wd))
+    if not watched:
+        return {"error": "no watched dirs in instruments.yml"}
+
+    log_dir = _P.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"sync_raw_backlog_{int(time.time())}.jsonl"
+
+    results = sync_raw_backlog(
+        watched_dirs=watched,
+        limit=limit,
+        suffixes=BRUKER_SUFFIXES + THERMO_SUFFIXES,
+        dry_run=dry_run,
+    )
+    if force and not dry_run:
+        # Re-run with force=True for any rows the first pass marked skipped.
+        skipped = [r["source"] for r in results if r.get("status") == "skipped"]
+        if skipped:
+            from stan.sync.raw import sync_raw_file_to_hive
+
+            for src in skipped:
+                results.append(sync_raw_file_to_hive(_P(src), force=True))
+
+    with log_path.open("w", encoding="utf-8") as f:
+        for r in results:
+            f.write(json.dumps(r) + "\n")
+
+    return {
+        "log_path": str(log_path),
+        "n_total": len(results),
+        "n_synced": sum(1 for r in results if r.get("status") == "synced"),
+        "n_skipped": sum(1 for r in results if r.get("status") == "skipped"),
+        "n_failed": sum(1 for r in results if r.get("status") == "failed"),
+        "n_no_mirror": sum(1 for r in results if r.get("status") == "no_mirror"),
+        "n_dry_run": sum(1 for r in results if r.get("status") == "dry_run"),
+        "total_bytes": sum(int(r.get("size_bytes") or 0) for r in results),
+        "limit_applied": limit,
+        "dry_run": dry_run,
+        "force": force,
+    }
+
+
 def _action_sync_now(args: dict) -> dict:
     """Force an immediate sync of stan.db, configs, logs, screencaps, and
     backups to the Hive mirror. Useful when an analyst is waiting for a
@@ -1696,6 +1771,8 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "screencap_install": _action_screencap_install,
     # v0.2.247+: force an immediate sync_to_hive_mirror.
     "sync_now":          _action_sync_now,
+    # v0.2.255+: push raw QC files to the Hive SMB mirror.
+    "sync_raw_backlog":  _action_sync_raw_backlog,
 }
 
 

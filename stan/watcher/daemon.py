@@ -1059,6 +1059,29 @@ class InstrumentWatcher:
         except Exception as e:
             logger.warning("watcher: screencap on_acquisition_end failed: %s", e)
 
+        # v0.2.255: push the raw file to the Hive SMB mirror in a
+        # background thread. Same try/except discipline — a sync
+        # failure must NEVER block the watcher.
+        if self._config.get("sync_raw_to_hive", False):
+            try:
+                import threading
+
+                from stan.sync.raw import sync_raw_file_to_hive
+
+                def _bg_sync(p: Path) -> None:
+                    try:
+                        result = sync_raw_file_to_hive(p)
+                        logger.info("watcher: raw sync %s — %s", result.get("status"), p.name)
+                    except Exception:
+                        logger.exception("watcher: raw sync failed for %s", p.name)
+
+                threading.Thread(
+                    target=_bg_sync, args=(path,), daemon=True,
+                    name=f"sync-raw-{path.stem}",
+                ).start()
+            except Exception as e:
+                logger.warning("watcher: raw sync dispatch failed: %s", e)
+
     def _run_peg_and_drift(self, d_path: Path, row_id: str, table: str) -> None:
         """Compute PEG score + DIA window drift for a Bruker .d and
         write both to the given row's table.

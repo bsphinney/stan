@@ -868,6 +868,81 @@ def sync() -> None:
         console.print("[red]Sync failed.[/red]")
 
 
+@app.command("sync-raw-now")
+def sync_raw_now(path: str) -> None:
+    """Push one .d or .raw to the Hive SMB mirror.
+
+    Use for ad-hoc copies. For batch backlog use `sync-raw-backlog`.
+    """
+    from pathlib import Path as _P
+
+    from stan.sync.raw import sync_raw_file_to_hive
+
+    result = sync_raw_file_to_hive(_P(path))
+    status = result.get("status", "?")
+    if status == "synced":
+        mb = (result.get("size_bytes") or 0) / 1e6
+        elapsed = result.get("elapsed_s") or 0.0
+        console.print(
+            f"[green]Synced[/green] {path} ({mb:.1f} MB in {elapsed:.1f}s) -> "
+            f"{result.get('dest')}"
+        )
+    elif status == "skipped":
+        console.print(f"[yellow]Already on Hive[/yellow]: {path}")
+    elif status == "no_mirror":
+        console.print("[red]No Hive mirror configured for this host.[/red]")
+    else:
+        console.print(f"[red]Failed[/red]: {result.get('error', 'unknown')}")
+
+
+@app.command("sync-raw-backlog")
+def sync_raw_backlog(
+    limit: int = 0,
+    dry_run: bool = False,
+    force: bool = False,
+) -> None:
+    """Walk every watched dir in instruments.yml and sync raw QC files.
+
+    --limit N    cap at N files (smoke test = 10)
+    --dry-run    enumerate only
+    --force      re-sync even if manifest says already synced
+    """
+    from pathlib import Path as _P
+
+    from stan.config import load_instruments
+    from stan.sync.raw import sync_raw_backlog as _sync_backlog
+
+    _, instruments = load_instruments()
+    watched: list[_P] = []
+    for inst in instruments:
+        wd = inst.get("watch_dir") or inst.get("path")
+        if wd:
+            watched.append(_P(wd))
+    if not watched:
+        console.print("[red]No watched dirs in instruments.yml.[/red]")
+        return
+
+    cap = limit if limit > 0 else None
+    console.print(f"Scanning {len(watched)} watched dir(s)... (limit={cap})")
+    results = _sync_backlog(
+        watched_dirs=watched,
+        limit=cap,
+        dry_run=dry_run,
+    )
+
+    n = len(results)
+    n_synced = sum(1 for r in results if r.get("status") == "synced")
+    n_skipped = sum(1 for r in results if r.get("status") == "skipped")
+    n_failed = sum(1 for r in results if r.get("status") == "failed")
+    n_dry = sum(1 for r in results if r.get("status") == "dry_run")
+    total_mb = sum(int(r.get("size_bytes") or 0) for r in results) / 1e6
+
+    console.print(
+        f"Done: {n} candidates ({total_mb:.0f} MB), "
+        f"synced={n_synced}, skipped={n_skipped}, failed={n_failed}, dry={n_dry}"
+    )
+
+
 def _backfill_tic_impl(
     push: bool = False,
     verbose: bool = True,

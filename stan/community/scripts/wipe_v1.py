@@ -116,6 +116,12 @@ def _check_recent_backup() -> str:
 
 
 def _wipe(api, token: str) -> None:
+    """Batch-delete via a single create_commit call to dodge HF's
+    256-commits/hour rate limit. One CommitOperationDelete per file,
+    all flushed in ONE commit.
+    """
+    from huggingface_hub import CommitOperationDelete
+
     backup_ts = _check_recent_backup()
     logger.warning(
         "WIPE: deleting every submissions/*.parquet, benchmark_*.parquet, "
@@ -136,22 +142,19 @@ def _wipe(api, token: str) -> None:
         and not f.startswith("pre-v1-snapshot/")
     ]
 
-    deleted = 0
-    failed = 0
-    for f in targets:
-        try:
-            api.delete_file(
-                path_in_repo=f,
-                repo_id=HF_DATASET_REPO,
-                repo_type="dataset",
-                commit_message=f"wipe: pre-v1 cleanup ({f})",
-            )
-            deleted += 1
-        except Exception:
-            logger.exception("Failed to delete %s", f)
-            failed += 1
+    if not targets:
+        logger.info("Nothing to delete.")
+        return
 
-    logger.info("Wipe complete: deleted=%d failed=%d", deleted, failed)
+    operations = [CommitOperationDelete(path_in_repo=f) for f in targets]
+    logger.info("Submitting batched commit with %d delete ops...", len(operations))
+    api.create_commit(
+        repo_id=HF_DATASET_REPO,
+        repo_type="dataset",
+        operations=operations,
+        commit_message=f"wipe: pre-v1 cleanup ({len(operations)} files)",
+    )
+    logger.info("Wipe complete: deleted %d files in one commit", len(operations))
 
 
 def _init_empty(api, token: str) -> None:
