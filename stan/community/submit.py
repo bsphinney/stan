@@ -184,6 +184,12 @@ def submit_to_benchmark(
         "median_mass_acc_ms2_ppm": run.get("median_mass_acc_ms2_ppm"),
         "peak_capacity": run.get("peak_capacity"),
         "dynamic_range_log10": run.get("dynamic_range_log10"),
+        # Matthews & Hayes 1976 quantitation-quality metric — was in
+        # the relay schema but never shipped by the client, leaving
+        # the dashboard's Throughput vs Quantitation Quality plot
+        # empty even after every other field landed.
+        "median_points_across_peak": run.get("median_points_across_peak"),
+        "median_peak_width_sec": run.get("median_peak_width_sec"),
     }
 
     # Add identified TIC trace if available (128 bins, ~500 bytes)

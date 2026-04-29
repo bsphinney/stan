@@ -111,7 +111,7 @@ def _resolve_instrument(family: str, vendor: str) -> str:
     return family
 
 
-def run_diann(raw: Path, out_dir: Path, vendor: str) -> Path | None:
+def run_diann(raw: Path, out_dir: Path, vendor: str, family: str = "") -> Path | None:
     """Run DIA-NN 2.3.0 with frozen community params via apptainer."""
     from stan.search.community_params import (
         get_community_diann_params, build_asset_download_script,
@@ -279,7 +279,7 @@ def main() -> None:
 
     try:
         if args.mode == "dia":
-            report = run_diann(args.raw, args.out_dir, args.vendor)
+            report = run_diann(args.raw, args.out_dir, args.vendor, args.family)
         else:
             logger.error("DDA via Sage not yet wired in this dispatcher")
             sys.exit(2)
