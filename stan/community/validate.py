@@ -46,20 +46,19 @@ HARD_GATES: dict[str, float] = {
     "ms2_scan_rate_min": 5.0,
 }
 
-# CV requires replicate injections. Single-run cluster re-searches
-# produce CV=None and the consolidator can compute inter-cohort CV
-# post-hoc from multiple submissions. Track CV when available but
-# don't reject submissions that lack it.
-OPTIONAL_GATES: dict[str, float] = {
-    "median_cv_precursor_max": 60.0,
-}
+# CV (median_cv_precursor) was retired as a community-benchmark metric
+# in v0.2.265. It required replicate injections that cluster
+# re-searches don't have, and IPS already captures the cohort-
+# calibrated depth signal CV was approximating. The DB column is
+# kept for backward compatibility with historical local stan.dbs;
+# new community submissions no longer ship it.
+OPTIONAL_GATES: dict[str, float] = {}
 
 # Soft flags: unusual but not rejected — flagged for review
 SOFT_FLAGS: dict[str, tuple[str, float]] = {
     # metric_name: (direction, threshold)
     "n_precursors_high": ("max", 50000),  # suspiciously high
     "n_psms_high": ("max", 200000),
-    "median_cv_precursor_low": ("min", 1.0),  # CV too good to be true
 }
 
 
