@@ -36,8 +36,8 @@ STAN_VENV = "/quobyte/proteomics-grp/brett/stan/.venv"
 
 
 SLURM_TEMPLATE = """#!/bin/bash
-#SBATCH --partition=low
-#SBATCH --qos=publicgrp-low-qos
+#SBATCH --partition={partition}
+#SBATCH --qos={qos}
 #SBATCH --requeue
 #SBATCH --time=02:00:00
 #SBATCH --cpus-per-task=8
@@ -84,6 +84,10 @@ def main() -> None:
                    help="Restrict to one or more modes.")
     p.add_argument("--dry-run", action="store_true",
                    help="Generate scripts but don't sbatch.")
+    p.add_argument("--partition", default="high",
+                   help="SLURM partition (default high; use low for big batches).")
+    p.add_argument("--qos", default="genome-center-grp-high-qos",
+                   help="SLURM QOS for the chosen partition.")
     args = p.parse_args()
 
     manifest = json.loads(args.manifest.read_text())
@@ -124,6 +128,8 @@ def main() -> None:
             vendor=vendor,
             family=family,
             out_dir=out_dir,
+            partition=args.partition,
+            qos=args.qos,
         )
         script_path = JOB_DIR / f"{i:04d}_{run_id}.sh"
         script_path.write_text(script)
