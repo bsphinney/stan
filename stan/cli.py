@@ -1992,7 +1992,13 @@ def baseline_download(
 
 
 @app.command()
-def watch() -> None:
+def watch(
+    no_keep_awake: bool = typer.Option(
+        False,
+        "--no-keep-awake",
+        help="Disable Windows keep-awake (allow screen saver / sleep while watching).",
+    ),
+) -> None:
     """Start the instrument watcher daemon.
 
     Monitors directories configured in instruments.yml for new raw files,
@@ -2078,6 +2084,11 @@ def watch() -> None:
     sync_thread.start()
 
     daemon = WatcherDaemon()
+
+    if not no_keep_awake:
+        from stan.keep_awake import keep_awake
+        keep_awake()  # Windows-only no-op elsewhere
+
     try:
         daemon.run()
     except KeyboardInterrupt:
