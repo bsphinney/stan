@@ -11,7 +11,6 @@ import json
 import logging
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
 
 from stan import __version__
 from stan.community.fingerprint_dedup import compute_submission_fingerprint
@@ -128,9 +127,12 @@ def submit_to_benchmark(
     # installed scoring.py on in-field instrument PCs may be stale (v<=0.2.109
     # signature, no sample_type kwarg). Hotfix: keep the call compatible with
     # both old and new bytecode. Re-enable once all PCs have updated.
+    # v1.0: column_model is preserved as its own payload field but is NOT
+    # folded into cohort_id anymore. Free-form column strings ("10cm x 150um,
+    # 1.5um c18 (evosep)") fragmented historical cohorts — see migrate_v1.py.
+    # Drilldown by column happens client-side via the column_model column.
     cohort_id = compute_cohort_id(
         instrument_family, amount_ng, spd=spd, gradient_min=gradient_length_min,
-        column_model=column_model,
     )
 
     # Compute fingerprint for dedup — same (lab, instrument, run_name, amount, spd)
@@ -147,10 +149,12 @@ def submit_to_benchmark(
     # The relay generates submission_id, submitted_at, community_score, is_flagged
     submit_payload = {
         "stan_version": __version__,
+        "schema_version": SEARCH_PARAMS_VERSION,
         "display_name": display_name,
         "instrument_family": instrument_family,
         "instrument_model": instrument,
-        "acquisition_mode": run.get("mode") or "",
+        # Always lowercase — historical mix of "DIA" / "dia" fragmented cohorts
+        "acquisition_mode": (run.get("mode") or "").lower(),
         "spd": spd or 0,
         "gradient_length_min": gradient_length_min or 0,
         "amount_ng": amount_ng,
@@ -188,6 +192,16 @@ def submit_to_benchmark(
     if tic_rt and tic_int:
         submit_payload["tic_rt_bins"] = tic_rt
         submit_payload["tic_intensity"] = tic_int
+
+    # Library/FASTA hashes — the validator computed these but the original
+    # payload silently dropped them, leaving 100% of historical rows
+    # unverifiable. Wire them through so the v1.0 normalizer can stamp
+    # assets_verified=True on every new submission.
+    if asset_hashes:
+        if asset_hashes.get("fasta_md5"):
+            submit_payload["fasta_md5"] = asset_hashes["fasta_md5"]
+        if asset_hashes.get("speclib_md5"):
+            submit_payload["speclib_md5"] = asset_hashes["speclib_md5"]
 
     # Send the auth_token from community.yml so the relay can verify
     # this is an official STAN installation that went through email

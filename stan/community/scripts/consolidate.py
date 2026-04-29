@@ -21,8 +21,6 @@ import os
 import sys
 
 import polars as pl
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -76,24 +74,43 @@ def main() -> None:
     all_submissions = pl.concat(dfs, how="diagonal_relaxed")
     logger.info("Total submissions: %d", all_submissions.height)
 
-    # 3. Compute cohort percentiles
-    cohort_stats = _compute_cohort_percentiles(all_submissions)
+    # 3. v1.0 normalization — splits into v1 / historical / quarantine.
+    # Shared with migrate_v1.py so the nightly run stays in lockstep with
+    # the one-shot migration.
+    from stan.community.normalize_v1 import normalize
 
-    # 4. Compute community scores
-    scored = _compute_community_scores(all_submissions, cohort_stats)
+    splits = normalize(all_submissions)
 
-    # 5. Separate flagged vs clean
-    flagged = scored.filter(pl.col("is_flagged"))
-    clean = scored.filter(~pl.col("is_flagged"))
+    # Cohort percentiles + community scores are computed against the v1
+    # cohort only — historical rows are reference-only and shouldn't
+    # influence rankings on the official leaderboard.
+    cohort_stats = _compute_cohort_percentiles(splits["v1"])
+    scored_v1 = _compute_community_scores(splits["v1"], cohort_stats)
+
+    # 5. Separate flagged vs clean within v1
+    has_flag = "is_flagged" in scored_v1.columns
+    if has_flag:
+        flagged = scored_v1.filter(pl.col("is_flagged").fill_null(False))
+        clean = scored_v1.filter(~pl.col("is_flagged").fill_null(False))
+    else:
+        flagged = scored_v1.head(0)
+        clean = scored_v1
 
     # 6. Upload results
     _upload_parquet(api, token, clean, "benchmark_latest.parquet")
     if flagged.height > 0:
         _upload_parquet(api, token, flagged, "benchmark_flagged.parquet")
+    if splits["historical"].height > 0:
+        _upload_parquet(api, token, splits["historical"], "benchmark_historical.parquet")
+    if splits["quarantine"].height > 0:
+        _upload_parquet(api, token, splits["quarantine"], "benchmark_quarantine.parquet")
 
     _upload_json(api, token, cohort_stats, "cohort_stats/cohort_percentiles_latest.json")
 
-    logger.info("Consolidation complete. %d clean, %d flagged", clean.height, flagged.height)
+    logger.info(
+        "Consolidation complete. v1 clean=%d flagged=%d, historical=%d, quarantine=%d",
+        clean.height, flagged.height, splits["historical"].height, splits["quarantine"].height,
+    )
 
 
 def _compute_cohort_percentiles(df: pl.DataFrame) -> dict:
