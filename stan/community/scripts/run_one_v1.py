@@ -269,11 +269,40 @@ def extract_and_submit(
     from stan.community.submit import submit_to_benchmark
     from stan.metrics.extractor import extract_dia_metrics, extract_dda_metrics
 
-    spd = _resolve_spd_from_name(raw.name)
+    # Mirror the local watcher's _resolve_spd chain (daemon.py):
+    #   1. validate_spd_from_metadata — Bruker XML / TDF / Thermo trfp
+    #   2. instruments.yml `spd:` cohort default for this host
+    #   3. Filename regex (60spd / 100-spd / etc.)
+    #   4. RT-span fallback unique to the cluster path
+    #   5. None
+    from stan.metrics.scoring import validate_spd_from_metadata
+
+    spd = None
+    try:
+        spd = validate_spd_from_metadata(raw)
+    except Exception:
+        logger.debug("validate_spd_from_metadata failed", exc_info=True)
     if spd is None:
-        # Filename didn't carry an SPD token — derive from the gradient
-        # length in the search output (RT span). Catches old Thermo
-        # runs named by minutes (qeP_..._110m.raw etc.).
+        # Step 2 — instruments.yml on the mirror has a cohort default.
+        col_meta = _column_metadata_for_family(family)
+        host = FAMILY_TO_HOST.get(family, "")
+        if host:
+            yml = Path(MIRROR_BASE) / host / "instruments.yml"
+            if yml.exists():
+                try:
+                    import yaml
+
+                    cfg = yaml.safe_load(yml.read_text()) or {}
+                    instruments = cfg.get("instruments") or []
+                    if instruments and instruments[0].get("spd"):
+                        spd = int(instruments[0]["spd"])
+                except Exception:
+                    logger.debug("instruments.yml spd lookup failed",
+                                 exc_info=True)
+        _ = col_meta  # already merged into run elsewhere
+    if spd is None:
+        spd = _resolve_spd_from_name(raw.name)
+    if spd is None:
         spd = _resolve_spd_from_report(report)
     gradient_min = _gradient_min_for_spd(spd)
 
