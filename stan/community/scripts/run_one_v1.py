@@ -130,6 +130,28 @@ def run_diann(raw: Path, out_dir: Path, vendor: str) -> Path | None:
     subprocess.run(["bash", str(bash_path)], check=True, timeout=600)
 
     params = get_community_diann_params(vendor, cache_dir=ASSET_CACHE)
+
+    # Prefer the per-instrument library subset when available — built
+    # from this instrument's baseline runs against the same community
+    # parent, ~3-9x smaller, so DIA-NN searches finish proportionally
+    # faster. Per-instrument libraries are rebuilt by the watcher as
+    # new high-quality data comes in, so the subset stays current.
+    inst_lib = (
+        Path(MIRROR_BASE) / FAMILY_TO_HOST.get(family, "") / "instrument_library.parquet"
+        if family in FAMILY_TO_HOST else None
+    )
+    if inst_lib and inst_lib.is_file():
+        logger.info(
+            "Using per-instrument library %s (%.1f MB)",
+            inst_lib, inst_lib.stat().st_size / 1e6,
+        )
+        params["lib"] = str(inst_lib)
+    else:
+        logger.info(
+            "No per-instrument library for %s (host=%s); using community library",
+            family, FAMILY_TO_HOST.get(family, "?"),
+        )
+
     out_report = out_dir / "report.parquet"
 
     # Bind every storage tree the job touches into the container.
