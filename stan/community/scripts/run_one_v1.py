@@ -79,6 +79,39 @@ def _column_metadata_for_family(family: str) -> dict:
         return {}
 
 
+def _resolve_amount_ng_from_name(name: str) -> float | None:
+    """Best-effort injection-amount detector from the filename.
+
+    Catches the common patterns used at Brett's lab:
+      ``_50ng_``, ``_50ng-``, ``HeLa_50ng``, ``HeLa50ng``, ``HeL50`` /
+      ``Hel50`` (HeLa-50 token, ng implied by lab convention),
+      ``_1ug_``, ``_1.5ug_``, ``_500ng_``, ``_5ng_``.
+
+    Returns the amount in nanograms, or None when the filename
+    carries no quantitative token. None propagates through the
+    cluster pipeline so the caller can run the search but skip
+    the community submission for manual review.
+    """
+    n = name.lower()
+    # Explicit unit (ng / ug / micrograms)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(ng|ug|μg|micrograms?)", n)
+    if m:
+        amount = float(m.group(1))
+        unit = m.group(2)
+        if unit.startswith("u") or unit.startswith("μ") or unit.startswith("micro"):
+            amount *= 1000.0
+        return amount
+    # HeL50 / Hela50 / HeL_50 / HeL-50 — ng implied
+    m = re.search(r"hel(?:a|_|-)?(\d+)\b", n)
+    if m:
+        amount = float(m.group(1))
+        # Sanity: HeLa-50 means 50ng. Anything > 5000 is probably
+        # a sample identifier, not an amount.
+        if 1.0 <= amount <= 5000.0:
+            return amount
+    return None
+
+
 def _resolve_spd_from_name(name: str) -> int | None:
     """Best-effort SPD extract from filename (matches stan/metrics/scoring)."""
     m = re.search(r"(\d+)\s*spd\b", name, re.IGNORECASE)
@@ -289,6 +322,10 @@ def extract_and_submit(
     #   5. None
     from stan.metrics.scoring import validate_spd_from_metadata
 
+    # Injection amount comes from the filename — manual review queue
+    # if the name carries no token.
+    amount_ng = _resolve_amount_ng_from_name(raw.name)
+
     spd = None
     try:
         spd = validate_spd_from_metadata(raw)
@@ -367,17 +404,71 @@ def extract_and_submit(
     # Populates the dashboard Column Comparison + LC system panels.
     run.update(_column_metadata_for_family(family))
 
+    # Resolve injection amount.
+    # 1. Filename token (HeL50, _50ng_, _1ug_) → trust it.
+    # 2. acquisition_date >= 2020 → assume 50ng (post-2020 lab
+    #    convention: HeLa QCs are always 50 ng).
+    # 3. Pre-2020 with no token → DEFER. Skip the community submit
+    #    and write a manual-review entry; the search output is still
+    #    on disk for Brett to inspect.
+    final_amount_ng: float | None = amount_ng
+    deferred_reason: str | None = None
+    if final_amount_ng is None:
+        try:
+            year = int((acq_date or "")[:4])
+        except ValueError:
+            year = 0
+        if year >= 2020:
+            final_amount_ng = 50.0
+        else:
+            deferred_reason = (
+                f"amount unknown from filename and acquisition year "
+                f"({year or '?'}) is pre-2020 — deferring to manual review"
+            )
+
+    if deferred_reason:
+        # Write a manual-review entry with the search output path so
+        # Brett can sanity-check the row before deciding the amount.
+        review_dir = Path.home() / "STAN" / "logs" / "manual_review"
+        review_dir.mkdir(parents=True, exist_ok=True)
+        review_path = review_dir / f"v1_review_{datetime.now().strftime('%Y%m%d')}.jsonl"
+        with review_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "raw": str(raw),
+                "report": str(report),
+                "spd": spd,
+                "acq_date": acq_date,
+                "reason": deferred_reason,
+                "metrics_summary": {
+                    "n_precursors": metrics.get("n_precursors"),
+                    "n_psms": metrics.get("n_psms"),
+                    "ips_score": metrics.get("ips_score"),
+                },
+            }, default=str) + "\n")
+        logger.info("Deferred to manual review: %s", deferred_reason)
+        return {
+            "submission_id": None,
+            "spd": spd,
+            "gradient_min": gradient_min,
+            "amount_ng": None,
+            "deferred": deferred_reason,
+            "review_log": str(review_path),
+            "metrics": metrics,
+        }
+
     result = submit_to_benchmark(
         run,
         spd=spd,
         gradient_length_min=int(round(gradient_min)) if gradient_min else None,
-        amount_ng=50.0,
+        amount_ng=final_amount_ng,
         diann_version="2.3.0",
     )
     return {
         "submission_id": result.get("submission_id"),
         "spd": spd,
         "gradient_min": gradient_min,
+        "amount_ng": final_amount_ng,
         "metrics": metrics,
     }
 
