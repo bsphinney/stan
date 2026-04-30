@@ -101,9 +101,12 @@ COMMUNITY_LIBRARY_PRECURSOR_COUNT = {
 }
 SATURATION_THRESHOLD_PCT = 0.90
 
-# Local cache directory on Hive for downloaded community assets
-# This gets created by the SLURM job if it doesn't exist
-COMMUNITY_CACHE_DIR = "/hive/data/stan_community_assets"
+# Local cache directory on Hive for downloaded community assets.
+# Must be writable by the SLURM job — /hive/data/ is read-only for
+# brettsp's account, so the default points to a writable location
+# under the proteomics-grp project tree. Override per-call when
+# running with a different account.
+COMMUNITY_CACHE_DIR = "/quobyte/proteomics-grp/brett/stan_community_assets"
 
 # ── DIA-NN parameters (Track B) ──────────────────────────────────────
 # The --lib flag is set dynamically based on instrument vendor.
