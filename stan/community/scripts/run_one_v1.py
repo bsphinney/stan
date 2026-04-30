@@ -255,10 +255,22 @@ def run_sage(raw: Path, out_dir: Path, vendor: str) -> Path | None:
     (out_dir / "sage.stderr.log").write_text(result.stderr)
     logger.info("Sage exit=%d in %.1fs", result.returncode, elapsed)
 
+    # Sage 0.14.x default output is TSV, not parquet. Read the TSV
+    # and re-emit as parquet so downstream extract_dda_metrics
+    # (which expects parquet) finds what it needs.
+    tsv_report = out_dir / "results.sage.tsv"
     out_report = out_dir / "results.sage.parquet"
-    if result.returncode != 0 or not out_report.exists():
+    if result.returncode != 0 or not tsv_report.exists():
         logger.error("Sage failed — see %s", out_dir / "sage.stderr.log")
         return None
+    if not out_report.exists():
+        try:
+            import polars as pl
+
+            pl.read_csv(tsv_report, separator="\t").write_parquet(out_report)
+        except Exception:
+            logger.exception("Failed to convert Sage TSV to parquet")
+            return None
     return out_report
 
 
