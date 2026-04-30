@@ -704,6 +704,12 @@ def extract_dda_metrics(
     n_psms = filt.height
     n_peptides = filt[peptide_col].n_unique() if peptide_col else 0
 
+    # Distinct protein groups from Sage's `proteins` column (semicolon-
+    # separated when one PSM matches multiple proteins; we count
+    # distinct protein-group strings as protein groups for DDA).
+    protein_col = _find_column(df, ["proteins", "protein", "protein_group"])
+    n_proteins = filt[protein_col].n_unique() if protein_col else 0
+
     median_score = float(filt[score_col].median()) if score_col else 0.0
     pct_score_gt30 = (
         float((filt[score_col] > 30).mean()) if score_col else 0.0
@@ -767,6 +773,7 @@ def extract_dda_metrics(
     return {
         "n_psms": n_psms,
         "n_peptides_dda": n_peptides,
+        "n_proteins": n_proteins,
         "median_hyperscore": median_score,
         "pct_hyperscore_gt30": pct_score_gt30,
         "ms2_scan_rate": ms2_scan_rate,

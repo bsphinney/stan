@@ -162,6 +162,10 @@ def submit_to_benchmark(
         "n_peptides": run.get("n_peptides") or 0,
         "n_proteins": run.get("n_proteins") or 0,
         "n_psms": run.get("n_psms") or 0,
+        # DDA path returns the peptide count under n_peptides_dda
+        # (extract_dda_metrics) — fall back to it when DIA-mode
+        # n_peptides is absent so DDA rows aren't stuck at 0.
+        "n_peptides_dda": run.get("n_peptides_dda") or run.get("n_peptides") or 0,
         "median_cv_precursor": run.get("median_cv_precursor") or 0.0,
         "median_fragments_per_precursor": run.get("median_fragments_per_precursor") or 0.0,
         "ips_score": run.get("ips_score") or 0,
