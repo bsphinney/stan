@@ -187,5 +187,7 @@ def test_dda_metrics_carry_into_submit_payload():
     import json as _json
     payload = _json.loads(captured["data"].decode("utf-8"))
     assert payload["n_psms"] == 30000
-    assert payload["n_peptides_dda"] == 18000, "n_peptides_dda missing from payload"
+    # The relay's BenchmarkSubmission has only n_peptides; DDA's
+    # extractor key n_peptides_dda has to map onto it on the wire.
+    assert payload["n_peptides"] == 18000, "n_peptides missing from DDA payload"
     assert payload["n_proteins"] == 4500, "n_proteins missing from payload"

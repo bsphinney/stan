@@ -159,13 +159,13 @@ def submit_to_benchmark(
         "gradient_length_min": gradient_length_min or 0,
         "amount_ng": amount_ng,
         "n_precursors": run.get("n_precursors") or 0,
-        "n_peptides": run.get("n_peptides") or 0,
+        # n_peptides is the relay's single peptide count for both
+        # modes. DIA fills it via extract_dia_metrics. DDA fills it
+        # via extract_dda_metrics' n_peptides_dda key — fall back so
+        # DDA submissions don't ship 0 peptides.
+        "n_peptides": run.get("n_peptides") or run.get("n_peptides_dda") or 0,
         "n_proteins": run.get("n_proteins") or 0,
         "n_psms": run.get("n_psms") or 0,
-        # DDA path returns the peptide count under n_peptides_dda
-        # (extract_dda_metrics) — fall back to it when DIA-mode
-        # n_peptides is absent so DDA rows aren't stuck at 0.
-        "n_peptides_dda": run.get("n_peptides_dda") or run.get("n_peptides") or 0,
         "median_cv_precursor": run.get("median_cv_precursor") or 0.0,
         "median_fragments_per_precursor": run.get("median_fragments_per_precursor") or 0.0,
         "ips_score": run.get("ips_score") or 0,
