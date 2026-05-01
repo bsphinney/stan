@@ -260,6 +260,38 @@ def run_diann(raw: Path, out_dir: Path, vendor: str, family: str = "") -> Path |
 
     out_report = out_dir / "report.parquet"
 
+    # DIA-NN re-tokenizes its CLI on whitespace/dash regardless of argv
+    # boundaries, so any path containing "--" gets fragmented and the
+    # right halves are mis-parsed as flags. v1_smoke 2026-05-01 lost
+    # 109 Bruker .d runs to exactly this — filenames like
+    # "May19--2025_HeL50-Dia_60spd_S1-A2_1_13380.d" produced
+    #     WARNING: skipping /nfs/.../May19 - invalid raw MS data format
+    #     WARNING: unrecognised option [--2025_HeL50-Dia_..._13380.d]
+    # The watcher path solved this years ago via
+    # stan.search.local._sanitize_path_for_diann + an output-dir
+    # rename-back trick. Reuse both — the production-tested fix.
+    from stan.search.local import _sanitize_path_for_diann
+
+    staging_dir = out_dir.parent / "_stan_diann_staging"
+    raw_for_diann = _sanitize_path_for_diann(raw, staging_dir)
+
+    out_dir_for_diann = out_dir
+    out_rename_back = False
+    if "--" in out_dir.name:
+        import hashlib
+        digest = hashlib.md5(str(out_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+        out_dir_for_diann = out_dir.parent / f"_stan_out_{digest}"
+        if out_dir_for_diann.exists():
+            import shutil
+            shutil.rmtree(str(out_dir_for_diann), ignore_errors=True)
+        out_dir_for_diann.mkdir(parents=True, exist_ok=True)
+        out_rename_back = True
+        logger.info(
+            "DIA-NN out_dir contains '--'; routing to staging %s",
+            out_dir_for_diann.name,
+        )
+    out_report_for_diann = out_dir_for_diann / "report.parquet"
+
     # Bind every storage tree the job touches into the container.
     # /quobyte = community assets + most raw files, /nfs = flinders QC,
     # /tmp = scratch.
@@ -269,10 +301,10 @@ def run_diann(raw: Path, out_dir: Path, vendor: str, family: str = "") -> Path |
         "--bind", "/nfs:/nfs",
         "--bind", "/tmp:/tmp",
         DIANN_SIF, DIANN_BIN,
-        "--f", str(raw),
+        "--f", str(raw_for_diann),
         "--lib", params["lib"],
         "--fasta", params["fasta"],
-        "--out", str(out_report),
+        "--out", str(out_report_for_diann),
         "--threads", str(params.get("threads", 8)),
         "--qvalue", str(params["qvalue"]),
         "--min-pep-len", str(params["min-pep-len"]),
@@ -288,6 +320,24 @@ def run_diann(raw: Path, out_dir: Path, vendor: str, family: str = "") -> Path |
     (out_dir / "diann.stdout.log").write_text(result.stdout)
     (out_dir / "diann.stderr.log").write_text(result.stderr)
     logger.info("DIA-NN exit=%d in %.1fs", result.returncode, elapsed)
+
+    if out_rename_back:
+        import shutil
+        try:
+            for item in out_dir_for_diann.iterdir():
+                dest = out_dir / item.name
+                if dest.exists():
+                    if dest.is_dir():
+                        shutil.rmtree(str(dest), ignore_errors=True)
+                    else:
+                        dest.unlink()
+                shutil.move(str(item), str(dest))
+            out_dir_for_diann.rmdir()
+        except Exception:
+            logger.exception(
+                "Could not rename DIA-NN staging output %s -> %s",
+                out_dir_for_diann, out_dir,
+            )
 
     if result.returncode != 0 or not out_report.exists():
         logger.error("DIA-NN failed — see %s", out_dir / "diann.stderr.log")

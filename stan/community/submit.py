@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import urllib.request
 import urllib.error
 
@@ -288,12 +289,37 @@ def submit_to_benchmark(
             data=data,
             headers=headers,
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read())
-            if result.get("status") != "accepted":
-                raise RuntimeError(
-                    f"Relay rejected submission: {result.get('detail', result.get('error', 'unknown'))}"
+
+        # Retry on transient network errors (URLError) only. Hive
+        # compute nodes intermittently fail to resolve hf.space —
+        # v1_smoke 2026-05-01 lost 31 otherwise-good submissions to
+        # "[Errno -5] No address associated with hostname". HTTPErrors
+        # are real rejections (4xx/5xx) and must not be retried.
+        last_err: urllib.error.URLError | None = None
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    result = json.loads(resp.read())
+                break
+            except urllib.error.HTTPError:
+                raise
+            except urllib.error.URLError as e:
+                last_err = e
+                logger.warning(
+                    "Relay reach attempt %d/3 failed: %s", attempt + 1, e,
                 )
+                if attempt < 2:
+                    time.sleep(2 ** attempt)  # 1s, 2s
+        else:
+            logger.error("Failed to reach relay after 3 attempts: %s", last_err)
+            raise RuntimeError(
+                f"Could not reach community relay: {last_err}"
+            ) from last_err
+
+        if result.get("status") != "accepted":
+            raise RuntimeError(
+                f"Relay rejected submission: {result.get('detail', result.get('error', 'unknown'))}"
+            )
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
         logger.error("Relay HTTP %s: %s", e.code, body)
@@ -302,9 +328,6 @@ def submit_to_benchmark(
         except Exception:
             detail = body
         raise RuntimeError(f"Community relay rejected submission: {detail}") from e
-    except urllib.error.URLError as e:
-        logger.error("Failed to reach relay: %s", e)
-        raise RuntimeError(f"Could not reach community relay: {e}") from e
 
     # Get submission_id from relay response
     submission_id = result.get("submission_id", "")
