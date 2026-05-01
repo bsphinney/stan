@@ -381,6 +381,26 @@ def run_sage(raw: Path, out_dir: Path, vendor: str) -> Path | None:
     # the conversion path entirely (Sage reads .d natively).
     trfp_exe = HIVE_TRFP_EXE if vendor == "thermo" else None
 
+    # Detect Thermo MS2 analyzer (OT vs IT) so Sage gets the right
+    # fragment tolerance. Tribrids (Lumos/Eclipse/Ascend) can run
+    # ion-trap MS2 which needs ±0.5 Da, not ±20 ppm. Bruker .d skips
+    # detection (TOF, neither OT nor IT) and Sage uses OT params by
+    # default — same as before for timsTOF.
+    ms2_analyzer = "OT"
+    if vendor == "thermo":
+        try:
+            from stan.tools.trfp import detect_ms2_analyzer
+            ms2_analyzer = detect_ms2_analyzer(raw)
+            logger.info("MS2 analyzer for %s: %s", raw.name, ms2_analyzer)
+        except Exception:
+            logger.warning(
+                "MS2 analyzer detection failed for %s — defaulting to OT",
+                raw.name, exc_info=True,
+            )
+            ms2_analyzer = "OT"
+        if ms2_analyzer == "unknown":
+            ms2_analyzer = "OT"
+
     return run_sage_local(
         raw_path=raw,
         output_dir=out_dir,
@@ -389,6 +409,7 @@ def run_sage(raw: Path, out_dir: Path, vendor: str) -> Path | None:
         trfp_exe=trfp_exe,
         search_mode="community",  # frozen community FASTA from HF
         community_cache_dir=ASSET_CACHE,
+        ms2_analyzer=ms2_analyzer,
     )
 
 

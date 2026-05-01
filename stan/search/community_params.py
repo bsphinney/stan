@@ -192,6 +192,24 @@ COMMUNITY_SAGE_PARAMS: dict = {
     "deisotope": True,
 }
 
+# Tribrid ion-trap MS2 variant. Lumos / Eclipse / Ascend / Tribrid
+# Fusion can acquire DDA MS2 in the ion trap (ITMS) which has
+# fundamentally low-resolution fragment masses (~0.4-0.6 Da). With
+# the OT-only ±20 ppm fragment_tol above, IT-acquired runs return
+# 0 PSMs at 1% FDR. ±0.5 Da is the cross-vendor standard for ITMS
+# (MaxQuant Andromeda, MS-GF+, Comet, Mascot defaults) — tolerates
+# normal calibration drift while still filtering noise. Brett vetted
+# this 2026-05-01.
+#
+# Note: OT-IT cohort is a SEPARATE leaderboard track from OT-OT —
+# different fragment accuracy means PSM counts aren't directly
+# comparable. Submission schema's `ms2_analyzer` field carries the
+# split through to the dashboard.
+COMMUNITY_SAGE_PARAMS_IT: dict = {
+    **COMMUNITY_SAGE_PARAMS,
+    "fragment_tol": {"da": [-0.5, 0.5]},
+}
+
 COMMUNITY_SAGE_SLURM: dict = {
     "partition": "{hive_partition}",
     "account": "{hive_account}",
@@ -202,11 +220,18 @@ COMMUNITY_SAGE_SLURM: dict = {
 }
 
 
-def get_community_sage_params(cache_dir: str | None = None) -> dict:
+def get_community_sage_params(
+    cache_dir: str | None = None,
+    ms2_analyzer: str = "OT",
+) -> dict:
     """Get the full frozen Sage parameters with FASTA path resolved.
 
     Args:
         cache_dir: Override for the local cache directory on Hive.
+        ms2_analyzer: "OT" for orbitrap MS2 (default; ±20 ppm fragment_tol)
+            or "IT" for ion-trap MS2 (±0.5 Da). Tribrid Lumos/Eclipse/
+            Ascend can switch between the two; detect via
+            ``stan.tools.trfp.detect_ms2_analyzer`` before calling.
 
     Returns:
         Complete Sage parameter dict.
@@ -216,7 +241,8 @@ def get_community_sage_params(cache_dir: str | None = None) -> dict:
     cache = cache_dir or COMMUNITY_CACHE_DIR
     fasta_filename = COMMUNITY_FASTA_HF_PATH.split("/")[-1]
 
-    params = copy.deepcopy(COMMUNITY_SAGE_PARAMS)
+    base = COMMUNITY_SAGE_PARAMS_IT if ms2_analyzer == "IT" else COMMUNITY_SAGE_PARAMS
+    params = copy.deepcopy(base)
     params["database"]["fasta"] = f"{cache}/{fasta_filename}"
 
     return params

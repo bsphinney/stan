@@ -521,3 +521,54 @@ def get_acquisition_date(raw_path: Path) -> str | None:
     """
     meta = extract_metadata(raw_path)
     return meta.get("creation_date")
+
+
+def detect_ms2_analyzer(raw_path: Path, max_scans: int = 50) -> str:
+    """Detect Thermo MS2 mass analyzer from per-scan filter strings.
+
+    Tribrid instruments (Lumos, Eclipse, Ascend, Tribrid Fusion) can
+    acquire MS2 in either the orbitrap (FTMS, ~5-20 ppm fragment
+    accuracy) or the ion trap (ITMS, ~0.4-0.6 Da). The community v1.0
+    Sage params freeze ``fragment_tol: ±20 ppm`` which is wrong for
+    ITMS — searches return 0 PSMs at 1% FDR despite the data being
+    fine. Detect once per file before search and route IT-acquired
+    runs to a wider tolerance set.
+
+    Returns "OT" (orbitrap MS2), "IT" (ion-trap MS2), or "unknown"
+    (couldn't read or no MS2 found in first ``max_scans`` scans).
+    Exploris is always OT (no ion trap installed); timsTOF is TOF
+    (this helper returns "unknown" for non-Thermo files).
+    """
+    if raw_path.suffix.lower() != ".raw":
+        return "unknown"
+    try:
+        from fisher_py import RawFile
+    except ImportError:
+        logger.debug("fisher_py not installed — cannot detect MS2 analyzer")
+        return "unknown"
+
+    try:
+        raw = RawFile(str(raw_path))
+    except Exception:
+        logger.debug("Could not open %s with fisher_py", raw_path, exc_info=True)
+        return "unknown"
+
+    try:
+        for scan_num in range(1, max_scans + 1):
+            try:
+                _mzs, _ints, _charge, filter_str = raw.get_scan_from_scan_number(scan_num)
+            except Exception:
+                continue
+            f = (filter_str or "").lower()
+            if "ms2" not in f and "ms3" not in f:
+                continue
+            if "ftms" in f:
+                return "OT"
+            if "itms" in f:
+                return "IT"
+        return "unknown"
+    finally:
+        try:
+            raw.close()
+        except Exception:
+            pass
