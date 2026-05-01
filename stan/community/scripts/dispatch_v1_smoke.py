@@ -52,6 +52,12 @@ set -euo pipefail
 source /etc/profile.d/modules.sh 2>/dev/null || true
 source /etc/profile.d/hpccf.sh   2>/dev/null || true
 
+# dotnet runtime — required for Thermo .raw → mzML via TRFP. Sage 0.14.6
+# parses .raw as XML and dies, so DDA on Lumos/Exploris must convert
+# first. The 8.0.4 module satisfies TRFP's 8.0.x runtime requirement
+# even though the native binary launcher is pinned to 8.0.22.
+module load dotnet-core-sdk/8.0.4 2>/dev/null || true
+
 # Activate STAN venv (must exist; one-time setup on Hive)
 source {stan_venv}/bin/activate
 

@@ -439,7 +439,7 @@ def run_sage_local(
     output_dir: Path,
     vendor: str,
     sage_exe: str = "sage",
-    trfp_exe: str | None = None,
+    trfp_exe: str | list[str] | None = None,
     keep_mzml: bool = False,
     threads: int = 0,
     fasta_path: str | None = None,

@@ -38,6 +38,14 @@ SAGE_BIN = (
 )
 # Brett's writable location on Hive (/hive/data/ is read-only).
 ASSET_CACHE = "/quobyte/proteomics-grp/brett/stan_community_assets"
+# ThermoRawFileParser on Hive is a .NET 8 app; the native launcher
+# pins to host 8.0.22 which Hive's module system doesn't ship.
+# Invoking via `dotnet <dll>` with the dotnet-core-sdk/8.0.4 module
+# loaded works — TRFP only needs a compatible runtime, not the exact
+# host version. Keep this as a list because run_sage_local forwards
+# lists straight to subprocess.
+TRFP_DLL = "/quobyte/proteomics-grp/tools/ThermoRawFileParser/ThermoRawFileParser.dll"
+HIVE_TRFP_EXE = ["dotnet", TRFP_DLL]
 # Per-instrument config (instruments.yml) is synced to the mirror by
 # the watcher and contains column_vendor / column_model / lc_system —
 # all needed by the dashboard's Column Comparison panel.
@@ -315,11 +323,20 @@ def run_sage(raw: Path, out_dir: Path, vendor: str) -> Path | None:
     bash_path.write_text(bash_block)
     subprocess.run(["bash", str(bash_path)], check=True, timeout=600)
 
+    # Thermo .raw → mzML conversion: Sage 0.14.6 (current Hive binary)
+    # parses Thermo .raw as XML and falls over, so we must convert to
+    # mzML via ThermoRawFileParser. On instrument PCs the watcher
+    # auto-installs TRFP; on Hive we pin to the lab-shared dotnet
+    # build at HIVE_TRFP_EXE — set only for thermo so Bruker .d skips
+    # the conversion path entirely (Sage reads .d natively).
+    trfp_exe = HIVE_TRFP_EXE if vendor == "thermo" else None
+
     return run_sage_local(
         raw_path=raw,
         output_dir=out_dir,
         vendor=vendor,
         sage_exe=SAGE_BIN,
+        trfp_exe=trfp_exe,
         search_mode="community",  # frozen community FASTA from HF
         community_cache_dir=ASSET_CACHE,
     )
