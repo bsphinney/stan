@@ -82,33 +82,34 @@ def _column_metadata_for_family(family: str) -> dict:
 def _resolve_amount_ng_from_name(name: str) -> float | None:
     """Best-effort injection-amount detector from the filename.
 
-    Catches the common patterns used at Brett's lab:
-      ``_50ng_``, ``_50ng-``, ``HeLa_50ng``, ``HeLa50ng``, ``HeL50`` /
-      ``Hel50`` (HeLa-50 token, ng implied by lab convention),
-      ``_1ug_``, ``_1.5ug_``, ``_500ng_``, ``_5ng_``.
+    Strict mode: REQUIRES an explicit unit (ng / ug / μg / microgram).
+    Catches: ``_50ng_``, ``HeLa_50ng``, ``HeLa50ng``, ``_1ug_``,
+    ``_1.5ug_``, ``_500ng_``, ``_5ng_``.
 
-    Returns the amount in nanograms, or None when the filename
-    carries no quantitative token. None propagates through the
-    cluster pipeline so the caller can run the search but skip
-    the community submission for manual review.
+    The previous implicit ``hel(?:a|_|-)?\d+`` pattern was REMOVED on
+    2026-04-30 because it was matching replicate numbers as amounts —
+    ``FL20170223_Hela4-cntrl-DIA-mito.raw`` (replicate 4 of 50 ng HeLa)
+    was being stamped as ``amount_ng=4.0`` and polluting the relay's
+    ultra-low-load bucket. There's no reliable way to distinguish a
+    HeLa-N-as-replicate from a HeLa-N-as-load tag without external
+    metadata, so we now require an unambiguous ``ng``/``ug`` token.
+
+    Returns the amount in nanograms, or None when the filename carries
+    no quantitative token. None propagates so the caller can run the
+    search and either default to 50 ng (post-2020 lab convention)
+    or defer to manual review (pre-2020).
     """
     n = name.lower()
-    # Explicit unit (ng / ug / micrograms)
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(ng|ug|μg|micrograms?)", n)
+    # `\b` doesn't fire between "ng" and "_" because both are word chars
+    # in Python regex (`_` is `\w`). Use a negative lookahead instead so
+    # we only require the unit not to be followed by another letter.
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(ng|ug|μg|micrograms?)(?![a-z])", n)
     if m:
         amount = float(m.group(1))
         unit = m.group(2)
         if unit.startswith("u") or unit.startswith("μ") or unit.startswith("micro"):
             amount *= 1000.0
         return amount
-    # HeL50 / Hela50 / HeL_50 / HeL-50 — ng implied
-    m = re.search(r"hel(?:a|_|-)?(\d+)\b", n)
-    if m:
-        amount = float(m.group(1))
-        # Sanity: HeLa-50 means 50ng. Anything > 5000 is probably
-        # a sample identifier, not an amount.
-        if 1.0 <= amount <= 5000.0:
-            return amount
     return None
 
 
@@ -165,9 +166,41 @@ def _gradient_min_for_spd(spd: int | None) -> float | None:
     return round(1440.0 / spd * 0.9, 1)
 
 
-def _resolve_instrument(family: str, vendor: str) -> str:
-    """Map family + vendor to an instrument_model string."""
+def _resolve_instrument(family: str, vendor: str, raw: Path | None = None) -> str:
+    """Map family + vendor (+ raw file metadata) to an instrument_model string.
+
+    For Bruker timsTOF, reads ``analysis.tdf`` ``GlobalMetadata.InstrumentName``
+    so that the same family ("timsTOF") splits into "timsTOF HT", "timsTOF Pro",
+    or "timsTOF Pro 2" by the actual hardware that produced the file. The
+    serial-to-model mapping is the authoritative truth — filenames lie
+    ("...HEpro2..." was written on the HT in our archive). Falls back to
+    "timsTOF HT" (the most common in current data) if metadata is unreachable.
+    """
     if family == "timsTOF":
+        if raw is not None:
+            try:
+                import sqlite3 as _sqlite3
+
+                tdf = raw / "analysis.tdf" if raw.is_dir() else None
+                if tdf and tdf.exists():
+                    with _sqlite3.connect(f"file:{tdf}?mode=ro", uri=True) as con:
+                        row = con.execute(
+                            "SELECT Value FROM GlobalMetadata "
+                            "WHERE Key = 'InstrumentName' LIMIT 1"
+                        ).fetchone()
+                        if row and row[0]:
+                            name = str(row[0]).strip()
+                            # Bruker writes "timsTOF Pro" with a leading
+                            # space sometimes; normalise to canonical form.
+                            for canon in ("timsTOF Pro 2", "timsTOF Pro",
+                                          "timsTOF HT", "timsTOF SCP",
+                                          "timsTOF Ultra", "timsTOF flex"):
+                                if canon.lower() in name.lower():
+                                    return canon
+                            return name
+            except Exception:
+                logger.debug("InstrumentName lookup failed for %s",
+                             raw, exc_info=True)
         return "timsTOF HT"
     if family == "Lumos":
         return "Orbitrap Fusion Lumos"
@@ -255,56 +288,25 @@ def run_diann(raw: Path, out_dir: Path, vendor: str, family: str = "") -> Path |
 
 
 def run_sage(raw: Path, out_dir: Path, vendor: str) -> Path | None:
-    """Run Sage with frozen community DDA params on a raw file.
+    """Run Sage on a raw file via the production-tested watcher path.
 
-    Native Sage binary (no apptainer) — DE-LIMP uses the same one for
-    its 7K+ DDA searches. Bruker .d input is read directly. Thermo
-    .raw is rejected upstream because Sage prefers centroided mzML
-    and we don't have the msconvert pipeline wired in yet.
+    Delegates to ``stan.search.local.run_sage_local`` which has been
+    searching DDA in production on instrument PCs for months — handles
+    both Bruker ``.d`` (direct, no conversion) and Thermo ``.raw`` (auto
+    converts via ThermoRawFileParser first). Don't reimplement; the
+    duplicated path here previously refused Thermo and used the wrong
+    Sage flags. The native ``.d`` support is documented in
+    ``docs/external_tools.md`` and DE-LIMP's ``helpers_dda.R``.
     """
-    from stan.search.community_params import build_asset_download_script
-    from stan.search.sage import build_sage_config_json
+    from stan.search.local import run_sage_local
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # Frozen community FASTA download (Sage doesn't need a speclib).
-    bash_block = "set -euo pipefail\n" + build_asset_download_script(
-        vendor, cache_dir=ASSET_CACHE,
+    return run_sage_local(
+        raw_path=raw,
+        output_dir=out_dir,
+        vendor=vendor,
+        sage_exe=SAGE_BIN,
+        search_mode="community",  # frozen community FASTA from HF
     )
-    bash_path = out_dir / "_assets.sh"
-    bash_path.write_text(bash_block)
-    subprocess.run(["bash", str(bash_path)], check=True, timeout=600)
-
-    config_text = build_sage_config_json(raw, out_dir, vendor)
-    config_path = out_dir / "sage_config.json"
-    config_path.write_text(config_text)
-
-    cmd = [SAGE_BIN, "--write-pin", str(config_path), str(raw)]
-    logger.info("Running Sage: %s", " ".join(cmd))
-    started = time.monotonic()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10800)
-    elapsed = time.monotonic() - started
-    (out_dir / "sage.stdout.log").write_text(result.stdout)
-    (out_dir / "sage.stderr.log").write_text(result.stderr)
-    logger.info("Sage exit=%d in %.1fs", result.returncode, elapsed)
-
-    # Sage 0.14.x default output is TSV, not parquet. Read the TSV
-    # and re-emit as parquet so downstream extract_dda_metrics
-    # (which expects parquet) finds what it needs.
-    tsv_report = out_dir / "results.sage.tsv"
-    out_report = out_dir / "results.sage.parquet"
-    if result.returncode != 0 or not tsv_report.exists():
-        logger.error("Sage failed — see %s", out_dir / "sage.stderr.log")
-        return None
-    if not out_report.exists():
-        try:
-            import polars as pl
-
-            pl.read_csv(tsv_report, separator="\t").write_parquet(out_report)
-        except Exception:
-            logger.exception("Failed to convert Sage TSV to parquet")
-            return None
-    return out_report
 
 
 def extract_and_submit(
@@ -385,7 +387,7 @@ def extract_and_submit(
     run["run_name"] = raw.name
     run["mode"] = mode
     run["vendor"] = vendor
-    run["instrument"] = _resolve_instrument(family, vendor)
+    run["instrument"] = _resolve_instrument(family, vendor, raw)
     run["diann_version"] = "2.3.0"
     # Real acquisition date from raw-file metadata. Bruker .d reads
     # GlobalMetadata.AcquisitionDateTime from analysis.tdf; Thermo .raw
@@ -403,6 +405,44 @@ def extract_and_submit(
     # Column + LC metadata from the watcher's synced instruments.yml.
     # Populates the dashboard Column Comparison + LC system panels.
     run.update(_column_metadata_for_family(family))
+
+    # Empty-search short-circuit. When DIA-NN/Sage produces a parquet
+    # but every count is zero (FDR collapsed to nothing, library
+    # mismatch, corrupt raw, etc.), there's no submission worth
+    # making — the relay's hard gates would reject it as
+    # "n_precursors=0 below 5000" and pollute the JSONL with
+    # error rows that look like infrastructure failures. Mark these
+    # cleanly so the dispatcher tally separates "search produced
+    # nothing" from "relay rejected for legitimate quality reasons".
+    primary_count = (
+        metrics.get("n_precursors") if mode == "dia" else metrics.get("n_psms")
+    ) or 0
+    if primary_count == 0:
+        empty_dir = Path.home() / "STAN" / "logs" / "manual_review"
+        empty_dir.mkdir(parents=True, exist_ok=True)
+        empty_path = empty_dir / f"v1_empty_{datetime.now().strftime('%Y%m%d')}.jsonl"
+        with empty_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "raw": str(raw),
+                "report": str(report),
+                "mode": mode,
+                "metrics_summary": {
+                    "n_precursors": metrics.get("n_precursors"),
+                    "n_psms": metrics.get("n_psms"),
+                    "n_peptides": metrics.get("n_peptides"),
+                },
+            }, default=str) + "\n")
+        logger.info("Empty search result, skipping submit: %s", raw.name)
+        return {
+            "submission_id": None,
+            "spd": spd,
+            "gradient_min": gradient_min,
+            "amount_ng": amount_ng,
+            "search_empty": True,
+            "review_log": str(empty_path),
+            "metrics": metrics,
+        }
 
     # Resolve injection amount.
     # 1. Filename token (HeL50, _50ng_, _1ug_) → trust it.
@@ -499,19 +539,23 @@ def main() -> None:
         if args.mode == "dia":
             report = run_diann(args.raw, args.out_dir, args.vendor, args.family)
         elif args.mode == "dda":
-            if args.vendor != "bruker":
-                logger.error(
-                    "DDA on %s not yet wired — Thermo DDA needs msconvert pre-step",
-                    args.vendor,
-                )
-                sys.exit(2)
+            # Sage handles both Bruker .d (native via timsrust) and
+            # Thermo .raw (auto-converted via ThermoRawFileParser inside
+            # run_sage_local). The previous Thermo refusal was wrong;
+            # docs/external_tools.md and the production watcher both
+            # confirm the path works.
             report = run_sage(args.raw, args.out_dir, args.vendor)
 
         if report is None:
             record.update(status="search_failed")
         else:
             sub = extract_and_submit(report, args.raw, args.mode, args.vendor, args.family)
-            record.update(status="submitted", **sub)
+            if sub.get("search_empty"):
+                record.update(status="search_empty", **sub)
+            elif sub.get("deferred"):
+                record.update(status="deferred", **sub)
+            else:
+                record.update(status="submitted", **sub)
     except Exception as e:
         logger.exception("Fatal error")
         record.update(status="error", error=f"{type(e).__name__}: {e}")
@@ -520,7 +564,7 @@ def main() -> None:
         f.write(json.dumps(record, default=str) + "\n")
 
     logger.info("Done: %s", record.get("status"))
-    if record.get("status") not in ("submitted",):
+    if record.get("status") not in ("submitted", "search_empty", "deferred"):
         sys.exit(1)
 
 

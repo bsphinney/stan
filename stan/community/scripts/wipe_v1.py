@@ -38,9 +38,42 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 HF_DATASET_REPO = "brettsp/stan-benchmark"
+RELAY_URL = "https://brettsp-stan.hf.space"
 BACKUP_ROOT = Path("/tmp/stan_pre_v1_backup")
 LAST_BACKUP_FLAG = BACKUP_ROOT / ".last_backup"
 BACKUP_MAX_AGE_SEC = 86400  # 24h
+
+
+def _refresh_relay_cache() -> None:
+    """Tell the HF Space relay to drop its 5-minute submissions cache.
+
+    Without this, every smoke re-submission within ~5 min of a wipe sees
+    the relay's cached fingerprint set from the *pre-wipe* parquet and
+    rejects everything as "Duplicate submission". Requires ADMIN_SECRET
+    env var (set as a Space secret + locally on the dev box).
+    """
+    import urllib.error
+    import urllib.request
+
+    secret = os.environ.get("ADMIN_SECRET", "")
+    if not secret:
+        logger.warning(
+            "ADMIN_SECRET not set; skipping relay cache refresh. "
+            "Wait 5 min before re-submitting or set ADMIN_SECRET."
+        )
+        return
+    req = urllib.request.Request(
+        f"{RELAY_URL}/api/admin/refresh-cache",
+        method="POST",
+        headers={"X-STAN-Admin": secret},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            logger.info("Relay cache refreshed (%s)", resp.status)
+    except urllib.error.HTTPError as e:
+        logger.warning("Relay refresh failed: HTTP %s %s", e.code, e.reason)
+    except Exception:
+        logger.warning("Relay refresh failed", exc_info=True)
 
 
 def _token() -> str:
@@ -241,8 +274,10 @@ def main() -> None:
         _backup(api, token)
     if args.wipe:
         _wipe(api, token)
+        _refresh_relay_cache()
     if args.init_empty:
         _init_empty(api, token)
+        _refresh_relay_cache()
 
 
 if __name__ == "__main__":

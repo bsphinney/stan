@@ -42,7 +42,6 @@ HARD_GATES: dict[str, float] = {
     # DDA
     "n_psms_min": 5000,
     "n_peptides_dda_min": 3000,
-    "pct_delta_mass_lt5ppm_min": 0.50,
     "ms2_scan_rate_min": 5.0,
 }
 
@@ -59,6 +58,11 @@ SOFT_FLAGS: dict[str, tuple[str, float]] = {
     # metric_name: (direction, threshold)
     "n_precursors_high": ("max", 50000),  # suspiciously high
     "n_psms_high": ("max", 200000),
+    # DDA mass-accuracy hint. Was a hard gate at 0.50 in v0.2.282 and
+    # earlier; demoted to a soft flag on 2026-04-30 because real-world
+    # DDA on older Bruker tunes routinely lands at 0.30–0.45 with no
+    # impact on downstream IDs. Flag for review, don't reject.
+    "pct_delta_mass_lt5ppm_low": ("min", 0.50),
 }
 
 
