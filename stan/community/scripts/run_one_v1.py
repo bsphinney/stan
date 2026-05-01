@@ -299,6 +299,21 @@ def run_sage(raw: Path, out_dir: Path, vendor: str) -> Path | None:
     ``docs/external_tools.md`` and DE-LIMP's ``helpers_dda.R``.
     """
     from stan.search.local import run_sage_local
+    from stan.search.community_params import build_asset_download_script
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Mirror run_diann: ensure the frozen community FASTA is downloaded
+    # to ASSET_CACHE before Sage runs. Without this, Sage reads from a
+    # never-populated cache (output_dir.parent / "_community_assets")
+    # and dies with "No such file or directory" on the FASTA path —
+    # the v1_smoke 2026-04-30 run lost 165 DDA jobs to exactly this.
+    bash_block = "set -euo pipefail\n" + build_asset_download_script(
+        vendor, cache_dir=ASSET_CACHE,
+    )
+    bash_path = out_dir / "_assets.sh"
+    bash_path.write_text(bash_block)
+    subprocess.run(["bash", str(bash_path)], check=True, timeout=600)
 
     return run_sage_local(
         raw_path=raw,
@@ -306,6 +321,7 @@ def run_sage(raw: Path, out_dir: Path, vendor: str) -> Path | None:
         vendor=vendor,
         sage_exe=SAGE_BIN,
         search_mode="community",  # frozen community FASTA from HF
+        community_cache_dir=ASSET_CACHE,
     )
 
 

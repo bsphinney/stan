@@ -12,7 +12,8 @@ USAGE
 Output
 - One SLURM script per file at /tmp/v1_smoke_jobs/<idx>.sh
 - One sbatch submission per script
-- /tmp/v1_smoke_dispatch.jsonl with submitted job IDs
+- {RESULT_BASE}/_dispatch/v1_smoke_dispatch.jsonl with submitted job IDs
+- SLURM stdout/stderr at {RESULT_BASE}/_slurm_logs/<jobid>.out (Quobyte, NOT /tmp — node-local)
 """
 
 from __future__ import annotations
@@ -28,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 JOB_DIR = Path("/tmp/v1_smoke_jobs")
 RESULT_BASE = Path("/quobyte/proteomics-grp/brett/v1_smoke")
-DISPATCH_LOG = Path("/tmp/v1_smoke_dispatch.jsonl")
+SLURM_LOG_DIR = RESULT_BASE / "_slurm_logs"
+DISPATCH_LOG = RESULT_BASE / "_dispatch" / "v1_smoke_dispatch.jsonl"
 
 # Where the latest STAN code lives on Hive (must be pip-installed
 # into a venv that sbatch can `source` from inside the job).
@@ -44,7 +46,7 @@ SLURM_TEMPLATE = """#!/bin/bash
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --job-name=stan-v1-{run_id}
-#SBATCH --output=/tmp/v1_smoke_jobs/%j.out
+#SBATCH --output={slurm_log_dir}/%j.out
 
 set -euo pipefail
 source /etc/profile.d/modules.sh 2>/dev/null || true
@@ -100,6 +102,8 @@ def main() -> None:
     modes_filter = set(args.mode) if args.mode else None
 
     JOB_DIR.mkdir(parents=True, exist_ok=True)
+    SLURM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+    DISPATCH_LOG.parent.mkdir(parents=True, exist_ok=True)
 
     submitted: list[dict] = []
     skipped = 0
@@ -134,6 +138,7 @@ def main() -> None:
             partition=args.partition,
             qos=args.qos,
             account=args.account,
+            slurm_log_dir=SLURM_LOG_DIR,
         )
         script_path = JOB_DIR / f"{i:04d}_{run_id}.sh"
         script_path.write_text(script)

@@ -445,6 +445,7 @@ def run_sage_local(
     fasta_path: str | None = None,
     search_mode: str = "local",
     timeout_sec: int = 1200,
+    community_cache_dir: str | None = None,
 ) -> Path | None:
     """Run Sage locally as a subprocess.
 
@@ -495,7 +496,8 @@ def run_sage_local(
     # Build Sage JSON config
     if search_mode == "community":
         from stan.search.community_params import get_community_sage_params
-        params = get_community_sage_params(cache_dir=str(output_dir.parent / "_community_assets"))
+        cache = community_cache_dir or str(output_dir.parent / "_community_assets")
+        params = get_community_sage_params(cache_dir=cache)
     else:
         if not Path(fasta_path).exists():
             logger.error("FASTA file not found: %s", fasta_path)
