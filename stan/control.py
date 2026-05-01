@@ -1729,6 +1729,53 @@ def _action_backfill_features(args: dict) -> dict:
     }
 
 
+def _action_submit_all(args: dict) -> dict:
+    """Submit every un-submitted QC run to the community benchmark.
+
+    Spawns a detached `stan submit-all` subprocess. The CLI walks the
+    `runs` table for rows with submitted_to_benchmark=0/NULL, validates
+    each one, calls submit_to_benchmark(), and on success flips the
+    flag so re-runs are idempotent. Per-run JSONL log lands at
+    ~/.stan/logs/submit_all_<YYYYMMDD>.jsonl (synced to Hive); a
+    human-readable chain log lands at ~/STAN/logs/submit_all_<ts>.log.
+
+    args:
+      force: bool    — re-submit rows even if submitted_to_benchmark=1
+                       (use after a community-dataset wipe)
+      dry_run: bool  — show what would be submitted without POSTing
+    """
+    from datetime import datetime
+    from pathlib import Path
+
+    force = bool(args.get("force", False))
+    dry_run = bool(args.get("dry_run", False))
+
+    log_dir = Path.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"submit_all_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+    cmd = ["stan", "submit-all"]
+    if force:
+        cmd.append("--force")
+    if dry_run:
+        cmd.append("--dry-run")
+
+    pid = _spawn_detached([cmd], log_path)
+
+    return {
+        "status": "started",
+        "pid": pid,
+        "log_path": str(log_path),
+        "command": " ".join(cmd),
+        "monitor": (
+            "Tail the chain log via stan send-command tail_log "
+            f"--arg name={log_path.stem} --arg n=200 — or open "
+            f"<host>/logs/{log_path.name} on the Hive mirror. "
+            "Per-run results are in ~/.stan/logs/submit_all_<date>.jsonl."
+        ),
+    }
+
+
 COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "ping":                _action_ping,
     "status":              _action_status,
@@ -1773,6 +1820,9 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "sync_now":          _action_sync_now,
     # v0.2.255+: push raw QC files to the Hive SMB mirror.
     "sync_raw_backlog":  _action_sync_raw_backlog,
+    # v0.2.286+: submit every un-submitted run to the community benchmark.
+    # Detached — returns PID + log path immediately. Idempotent.
+    "submit_all":        _action_submit_all,
 }
 
 
