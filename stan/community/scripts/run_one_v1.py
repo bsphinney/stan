@@ -491,6 +491,20 @@ def extract_and_submit(
             year = int((acq_date or "")[:4])
         except ValueError:
             year = 0
+        # Fallback: raw file mtime year. Thermo Lumos .raw often hides
+        # the acquisition date behind ThermoRawFileParser quirks; the
+        # filesystem mtime is what was set when the instrument finished
+        # writing, which is a reliable proxy for acquisition year.
+        # Pre-v0.2.289, post-2024 Lumos files like FL221124_HeL50_…
+        # were getting deferred with "year (?) is pre-2020" because
+        # acq_date was None and we never consulted mtime.
+        if year < 2020:
+            try:
+                mtime_year = datetime.fromtimestamp(raw.stat().st_mtime).year
+                if mtime_year > year:
+                    year = mtime_year
+            except OSError:
+                pass
         if year >= 2020:
             final_amount_ng = 50.0
         else:
