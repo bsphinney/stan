@@ -523,7 +523,7 @@ def get_acquisition_date(raw_path: Path) -> str | None:
     return meta.get("creation_date")
 
 
-def detect_ms2_analyzer(raw_path: Path, max_scans: int = 50) -> str:
+def detect_ms2_analyzer(raw_path: Path, max_scans: int = 200) -> str:
     """Detect Thermo MS2 mass analyzer from per-scan filter strings.
 
     Tribrid instruments (Lumos, Eclipse, Ascend, Tribrid Fusion) can
@@ -534,10 +534,19 @@ def detect_ms2_analyzer(raw_path: Path, max_scans: int = 50) -> str:
     fine. Detect once per file before search and route IT-acquired
     runs to a wider tolerance set.
 
-    Returns "OT" (orbitrap MS2), "IT" (ion-trap MS2), or "unknown"
-    (couldn't read or no MS2 found in first ``max_scans`` scans).
-    Exploris is always OT (no ion trap installed); timsTOF is TOF
-    (this helper returns "unknown" for non-Thermo files).
+    Strategy: walk the first ``max_scans`` and bucket each filter
+    string by ms-level + analyzer. Lumos/Eclipse/Ascend always do
+    MS1 in the orbitrap, so any ITMS filter (regardless of detected
+    ms-level) means MS2 is in the ion trap → return "IT". If we see
+    only FTMS filters across all scans, MS2 is in the orbitrap →
+    return "OT". Tribrid filter strings sometimes elide the explicit
+    "ms2" token (e.g. "FTMS + p NSI d Full ms2 ..." vs the older
+    "FTMS + p NSI sa d Full") so the analyzer-prefix heuristic is
+    more robust than substring-matching "ms2".
+
+    Returns "OT", "IT", or "unknown" (couldn't open the file or
+    fisher_py not installed). Exploris is always OT (no ion trap);
+    Bruker/timsTOF returns "unknown" since this helper is Thermo-only.
     """
     if raw_path.suffix.lower() != ".raw":
         return "unknown"
@@ -554,18 +563,22 @@ def detect_ms2_analyzer(raw_path: Path, max_scans: int = 50) -> str:
         return "unknown"
 
     try:
+        saw_itms = False
+        saw_ftms = False
         for scan_num in range(1, max_scans + 1):
             try:
                 _mzs, _ints, _charge, filter_str = raw.get_scan_from_scan_number(scan_num)
             except Exception:
                 continue
             f = (filter_str or "").lower()
-            if "ms2" not in f and "ms3" not in f:
-                continue
-            if "ftms" in f:
-                return "OT"
             if "itms" in f:
-                return "IT"
+                saw_itms = True
+            elif "ftms" in f:
+                saw_ftms = True
+        if saw_itms:
+            return "IT"
+        if saw_ftms:
+            return "OT"
         return "unknown"
     finally:
         try:
