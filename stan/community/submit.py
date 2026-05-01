@@ -203,24 +203,25 @@ def submit_to_benchmark(
         submit_payload["tic_rt_bins"] = tic_rt
         submit_payload["tic_intensity"] = tic_int
 
-    # Library saturation warning — if n_precursors approaches the
-    # community library size, the library is the bottleneck, not the
-    # instrument. Flag the row with library_coverage_pct so the
+    # Library saturation — DIA only. DDA does not search a spectral
+    # library, so the metric is undefined and the relay's v1.0 schema
+    # only requires it for DIA submissions. Set on DIA so the
     # dashboard + post-1.0 expansion logic can surface saturation
-    # patterns. Warn on the client too so the operator sees it.
-    from stan.search.community_params import (
-        COMMUNITY_LIBRARY_PRECURSOR_COUNT,
-        SATURATION_THRESHOLD_PCT,
-    )
+    # patterns; warn on the client when the run is approaching the
+    # community library's precursor capacity.
+    if mode == "dia":
+        from stan.search.community_params import (
+            COMMUNITY_LIBRARY_PRECURSOR_COUNT,
+            SATURATION_THRESHOLD_PCT,
+        )
 
-    vendor_for_lib = (run.get("vendor") or "").lower()
-    if "bruker" in vendor_for_lib or instrument_family == "timsTOF":
-        lib_size = COMMUNITY_LIBRARY_PRECURSOR_COUNT.get("bruker", 0)
-    else:
-        lib_size = COMMUNITY_LIBRARY_PRECURSOR_COUNT.get("thermo", 0)
-    n_prec = run.get("n_precursors") or 0
-    if lib_size and n_prec:
-        coverage_pct = round(n_prec / lib_size * 100, 1)
+        vendor_for_lib = (run.get("vendor") or "").lower()
+        if "bruker" in vendor_for_lib or instrument_family == "timsTOF":
+            lib_size = COMMUNITY_LIBRARY_PRECURSOR_COUNT.get("bruker", 0)
+        else:
+            lib_size = COMMUNITY_LIBRARY_PRECURSOR_COUNT.get("thermo", 0)
+        n_prec = run.get("n_precursors") or 0
+        coverage_pct = round(n_prec / lib_size * 100, 1) if (lib_size and n_prec) else 0.0
         submit_payload["library_coverage_pct"] = coverage_pct
         if coverage_pct >= SATURATION_THRESHOLD_PCT * 100:
             logger.warning(
