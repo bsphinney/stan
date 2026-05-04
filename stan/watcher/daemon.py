@@ -1308,6 +1308,21 @@ class InstrumentWatcher:
             except Exception:
                 logger.debug("LC system detect failed for %s", raw_path.name, exc_info=True)
 
+            # v0.2.294: stamp ms2_analyzer on every Thermo run at
+            # ingest. This is forward-compat for the OT-OT vs OT-IT
+            # cohort split — the relay schema will read this field
+            # once the leaderboard cards split. Bruker stamps "tof"
+            # for completeness; non-Thermo + non-Bruker stays empty.
+            try:
+                vendor = (self._config.get("vendor") or "").lower()
+                if vendor == "thermo":
+                    from stan.tools.trfp import detect_ms2_analyzer
+                    metrics["ms2_analyzer"] = detect_ms2_analyzer(raw_path)
+                elif vendor == "bruker":
+                    metrics["ms2_analyzer"] = "tof"
+            except Exception:
+                logger.debug("ms2_analyzer detect failed for %s", raw_path.name, exc_info=True)
+
             # v0.2.223: copy operator-set column metadata from
             # instruments.yml onto every QC row. The setup wizard
             # already collects column_vendor + column_model on first

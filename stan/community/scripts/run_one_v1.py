@@ -492,6 +492,20 @@ def extract_and_submit(
     run["mode"] = mode
     run["vendor"] = vendor
     run["instrument"] = _resolve_instrument(family, vendor, raw)
+    # v0.2.294: stamp ms2_analyzer for the relay's forthcoming
+    # OT-OT vs OT-IT cohort split. Re-detecting here is idempotent
+    # and decouples the metric stamp from the search-time decision
+    # in run_sage(). Bruker is always TOF; Thermo runs through the
+    # filter-string detector.
+    if vendor == "thermo":
+        try:
+            from stan.tools.trfp import detect_ms2_analyzer
+            run["ms2_analyzer"] = detect_ms2_analyzer(raw)
+        except Exception:
+            logger.debug("ms2_analyzer detect failed", exc_info=True)
+            run["ms2_analyzer"] = ""
+    elif vendor == "bruker":
+        run["ms2_analyzer"] = "tof"
     run["diann_version"] = "2.3.0"
     # Real acquisition date from raw-file metadata. Bruker .d reads
     # GlobalMetadata.AcquisitionDateTime from analysis.tdf; Thermo .raw

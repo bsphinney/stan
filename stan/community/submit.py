@@ -195,6 +195,13 @@ def submit_to_benchmark(
         # empty even after every other field landed.
         "median_points_across_peak": run.get("median_points_across_peak"),
         "median_peak_width_sec": run.get("median_peak_width_sec"),
+        # MS2 mass analyzer for Thermo runs: "OT" (orbitrap),
+        # "IT" (ion trap, Tribrid Lumos/Eclipse/Ascend), "tof"
+        # (timsTOF), or "" / "unknown". Forward-compat: stamped on
+        # every submission from v0.2.294 onward so the relay can
+        # split the OT-OT vs OT-IT cohort cards once the schema
+        # lands, without backfilling old runs.
+        "ms2_analyzer": run.get("ms2_analyzer") or "",
     }
 
     # Add identified TIC trace if available (128 bins, ~500 bytes)

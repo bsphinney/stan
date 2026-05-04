@@ -333,6 +333,14 @@ def _migrate(con: sqlite3.Connection) -> None:
         # --extract write so we can identify rows that need re-extraction
         # ahead of the v1.0 community wipe-and-repopulate.
         ("stan_version", "ALTER TABLE runs ADD COLUMN stan_version TEXT"),
+        # MS2 mass analyzer for Thermo runs — "OT" (orbitrap),
+        # "IT" (ion trap, Tribrid Lumos/Eclipse/Ascend), or "" /
+        # "tof" / "unknown". Populated at ingest by
+        # stan.tools.trfp.detect_ms2_analyzer. Added pre-1.0 so the
+        # OT-OT vs OT-IT cohort split lands in every submission going
+        # forward — no retroactive backfill needed when the leaderboard
+        # split ships.
+        ("ms2_analyzer", "ALTER TABLE runs ADD COLUMN ms2_analyzer TEXT"),
     ]
 
     # sample_health migrations — independent from runs so new columns
@@ -521,6 +529,11 @@ def insert_run(
         # instead of sniffing the currently-installed binary.
         "diann_version": metrics.get("diann_version"),
         "search_engine": metrics.get("search_engine"),
+        # v0.2.294: MS2 analyzer for OT-OT vs OT-IT cohort split.
+        # Daemon stamps via stan.tools.trfp.detect_ms2_analyzer at
+        # ingest. Empty string when detection failed or non-Thermo/
+        # Bruker.
+        "ms2_analyzer": metrics.get("ms2_analyzer") or "",
         # Run metadata
         "amount_ng": amount_ng,
         "spd": spd,
