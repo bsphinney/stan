@@ -193,21 +193,30 @@ COMMUNITY_SAGE_PARAMS: dict = {
 }
 
 # Tribrid ion-trap MS2 variant. Lumos / Eclipse / Ascend / Tribrid
-# Fusion can acquire DDA MS2 in the ion trap (ITMS) which has
-# fundamentally low-resolution fragment masses (~0.4-0.6 Da). With
-# the OT-only ±20 ppm fragment_tol above, IT-acquired runs return
-# 0 PSMs at 1% FDR. ±0.5 Da is the cross-vendor standard for ITMS
-# (MaxQuant Andromeda, MS-GF+, Comet, Mascot defaults) — tolerates
-# normal calibration drift while still filtering noise. Brett vetted
-# this 2026-05-01.
+# Fusion can acquire DDA MS2 in the ion trap (ITMS).
 #
-# Note: OT-IT cohort is a SEPARATE leaderboard track from OT-OT —
-# different fragment accuracy means PSM counts aren't directly
-# comparable. Submission schema's `ms2_analyzer` field carries the
-# split through to the dashboard.
+# Empirically (Lumos baseline_output 2026-04-15, OT-tight params):
+#   FL280525-HCDIT_60m         → 4684 PSMs (rsq=0.80) ✅
+#   FL150925-HCD-IT_60m        →  740 PSMs (rsq=NaN)
+#   FL050525-HCDIT_60m_2       →    0 PSMs
+#   FL050525-newDualIT-HCDIT   →    0 PSMs
+#
+# So Sage with ±20 ppm fragment_tol DOES return matches on
+# well-calibrated IT data — Sage doesn't refuse low-res spectra at
+# tight tol, it just becomes calibration-sensitive. A naive widen
+# to ±0.5 Da swamps the search with noise (decoys win FDR), which
+# v0.2.291 testing confirmed on FL190525-HCDIT (0 PSMs at ±0.5 Da
+# vs 4684 PSMs at ±20 ppm on a different HCDIT run).
+#
+# Until we run a proper IT parameter sweep (fragment_tol values
+# 0.05/0.1/0.2/0.4 Da × isotope_errors × min_matched_peaks) against
+# both a known-good and a known-zero IT raw, IT keeps the OT
+# defaults. Detection still runs and the ms2_analyzer label still
+# flows through, so the OT-OT vs OT-IT cohort split on the
+# leaderboard works once the relay schema lands. The fragment_tol
+# tuning is the next iteration.
 COMMUNITY_SAGE_PARAMS_IT: dict = {
     **COMMUNITY_SAGE_PARAMS,
-    "fragment_tol": {"da": [-0.5, 0.5]},
 }
 
 COMMUNITY_SAGE_SLURM: dict = {
