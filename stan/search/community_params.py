@@ -41,6 +41,15 @@ def check_diann_version_compatible(version: str | None) -> tuple[bool, str]:
     """Check if a DIA-NN version matches the pinned community version.
 
     Returns (is_compatible, message).
+
+    Match policy: same major.minor passes (Brett 2026-05-05). Patch
+    differences within a minor (2.3.0 vs 2.3.1) are accepted because
+    that's how DIA-NN is typically referenced in the literature
+    ("DIA-NN 2.3" not "DIA-NN 2.3.0"). Patch-version drift IS still
+    relevant for hash-verified asset stamping — see
+    ``is_exact_pinned_diann`` and submit.py's auto-fill gating: rows
+    on a non-exact patch ship without the canonical asset hashes so
+    the relay can mark them ``assets_verified=False``.
     """
     if not version:
         return False, "DIA-NN version could not be detected"
@@ -63,6 +72,25 @@ def check_diann_version_compatible(version: str | None) -> tuple[bool, str]:
         )
 
     return True, f"DIA-NN {version} matches pinned version {required}"
+
+
+def is_exact_pinned_diann(version: str | None) -> bool:
+    """True iff ``version`` matches ``PINNED_TOOL_VERSIONS['diann']`` exactly.
+
+    Used as the gate for auto-filling ``EXPECTED_ASSET_HASHES`` on a
+    submission. The community FASTA + speclib were built against one
+    specific DIA-NN binary; on a non-exact patch (e.g. 2.3.0 → 2.3.1)
+    the search may not actually consume the same canonical assets
+    even though it imports identically-named files. Stamping
+    ``assets_verified=True`` for non-exact patches would silently
+    mislead the leaderboard. ``check_diann_version_compatible`` is
+    deliberately looser (major.minor) so that submission isn't
+    blocked — the relay just won't claim the row used the canonical
+    assets when the patch differs.
+    """
+    if not version:
+        return False
+    return version.strip() == PINNED_TOOL_VERSIONS["diann"]
 
 # HF Dataset repo where frozen community assets live
 HF_DATASET_REPO = "brettsp/stan-benchmark"

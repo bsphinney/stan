@@ -19,7 +19,9 @@ from stan.community.validate import validate_submission
 from stan.config import load_community
 from stan.db import mark_submitted
 from stan.metrics.scoring import compute_cohort_id
-from stan.search.community_params import check_diann_version_compatible
+from stan.search.community_params import (
+    check_diann_version_compatible, is_exact_pinned_diann,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -244,25 +246,30 @@ def submit_to_benchmark(
     # unverifiable. Wire them through so the v1.0 normalizer can stamp
     # assets_verified=True on every new submission.
     #
-    # If the caller did not provide explicit hashes, fall back to the
-    # canonical EXPECTED_ASSET_HASHES from validate.py. This is safe
-    # because the version-pinned DIA-NN check above (≥2.3.x) is
-    # already the gating condition: a row that reaches this point is
-    # known to have been searched with the frozen tool version, so
-    # the corresponding frozen FASTA + speclib hashes apply
-    # deterministically. submit-all flows that pull rows from a local
-    # stan.db produced by the community-search pipeline don't need to
-    # recompute hashes — they're constants.
+    # Gating policy (Brett 2026-05-05):
+    # - Caller-supplied `asset_hashes` always wins — that's a row whose
+    #   producer literally hashed the FASTA + speclib it consumed.
+    # - Otherwise auto-fill from EXPECTED_ASSET_HASHES ONLY when the
+    #   submission's diann_version exactly matches PINNED_TOOL_VERSIONS.
+    #   Same major.minor with a different patch (2.3.0 vs 2.3.1) clears
+    #   check_diann_version_compatible above so the submission ships,
+    #   but we leave fasta_md5 / speclib_md5 unset so the relay can
+    #   mark assets_verified=False on the row. Patch-bumped DIA-NN
+    #   versions sometimes change FDR estimation / RT alignment in
+    #   ways that affect output — claiming the canonical assets were
+    #   used would silently mislead the leaderboard.
     from stan.community.validate import EXPECTED_ASSET_HASHES
 
-    fasta_md5 = (asset_hashes or {}).get("fasta_md5") or EXPECTED_ASSET_HASHES.get(
-        "human_hela_202604.fasta", ""
-    )
+    asset_hash_eligible = is_exact_pinned_diann(diann_version)
+
+    fasta_md5 = (asset_hashes or {}).get("fasta_md5")
+    if not fasta_md5 and asset_hash_eligible:
+        fasta_md5 = EXPECTED_ASSET_HASHES.get("human_hela_202604.fasta", "")
     if fasta_md5:
         submit_payload["fasta_md5"] = fasta_md5
 
     speclib_md5 = (asset_hashes or {}).get("speclib_md5")
-    if not speclib_md5:
+    if not speclib_md5 and asset_hash_eligible:
         # Vendor-aware fallback to the right frozen library hash.
         vendor = (run.get("vendor") or "").lower()
         if "bruker" in vendor or instrument_family == "timsTOF":
