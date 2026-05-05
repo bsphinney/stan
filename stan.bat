@@ -126,29 +126,25 @@ if errorlevel 100 (
 del "%STAN_BAT_NEW%" 2>nul
 :after_self_update
 
-REM ---- Auto-update from GitHub ---------------------------------------
-REM Quiet pip install from the main branch zip on every launch. About
-REM 5s when nothing changed, ~30s when there's a new release. We do
-REM NOT invoke update-stan.bat / update_stan.ps1 here on purpose: that
-REM script is a kitchen-sink installer that also spawns its own
-REM watcher + dashboard + overnight backfill, which would double-
-REM launch everything stan.bat is about to start. This minimal pip
-REM call just upgrades the installed package and lets stan.bat keep
-REM ownership of the dashboard + watcher windows.
-echo [%DATE% %TIME%] Checking for STAN updates...
-set "STAN_VENV_PIP=%STAN_DIR%\venv\Scripts\pip.exe"
-if not exist "%STAN_VENV_PIP%" set "STAN_VENV_PIP=%USERPROFILE%\.stan\venv\Scripts\pip.exe"
-if exist "%STAN_VENV_PIP%" (
-    "%STAN_VENV_PIP%" install --upgrade --quiet --no-input ^
-        "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>nul
-    if errorlevel 1 (
-        echo [%DATE% %TIME%] WARN: pip update failed - continuing with installed version.
-    ) else (
-        for /f "delims=" %%V in ('"%STAN_EXE%" --version 2^>nul') do echo [%DATE% %TIME%] Running %%V
-    )
-) else (
-    echo [%DATE% %TIME%] WARN: pip not found - skipping update check.
-)
+REM ---- Schedule pip update via the supervisor flag --------------------
+REM v0.2.313: write update_pending.flag instead of pip-installing
+REM inline. Pre-fix, an inline pip install --upgrade ran on every
+REM launch — but if a previous stan watch process was still running
+REM (operator clicked stan.bat with the old window still open), pip
+REM would try to overwrite stan.exe while the venv held it open and
+REM leave the package in a half-state. Symptom: ModuleNotFoundError
+REM crash loop in the watcher window. Brett's Exploris 480 hit this
+REM 2026-05-05.
+REM
+REM The supervisor loop below already has a safe pip-install path:
+REM it consumes update_pending.flag BEFORE running stan watch, so
+REM pip runs with no stan.exe handle open. Funnel both fresh-launch
+REM and remote update_stan commands through that same path so there
+REM is exactly one place pip runs and exactly one set of safety
+REM guarantees to maintain.
+echo [%DATE% %TIME%] Scheduling STAN package update on next watcher restart.
+if not exist "%STAN_DIR%" mkdir "%STAN_DIR%" 2>nul
+echo. > "%STAN_DIR%\update_pending.flag"
 echo.
 
 echo [%DATE% %TIME%] Launching STAN dashboard...
@@ -163,10 +159,18 @@ REM Mirrors the proven start_stan_loop.bat flow: a crash triggers a
 REM restart within 5s, and a remote update_stan command writes
 REM update_pending.flag which is consumed here BETWEEN watcher
 REM restarts (so pip never races stan.exe file locks).
+REM
+REM v0.2.313: the flag-handler runs a minimal pip install in-place
+REM (NOT update-stan.bat / update_stan.ps1, which is a kitchen-sink
+REM script that also spawns its own watcher + dashboard + overnight
+REM backfill — those would double-launch everything stan.bat owns).
+REM Both fresh-launch (top-of-stan.bat writes the flag) and remote
+REM update_stan commands now flow through this single safe path:
+REM no stan watch process is alive while pip runs, so file-lock
+REM collisions on stan.exe become impossible.
 set "UPDATE_FLAG=%STAN_DIR%\update_pending.flag"
-set "UPDATER=%~dp0update-stan.bat"
-if not exist "%UPDATER%" set "UPDATER=%USERPROFILE%\Downloads\update-stan.bat"
-if not exist "%UPDATER%" set "UPDATER=%STAN_DIR%\update-stan.bat"
+set "STAN_VENV_PIP=%STAN_DIR%\venv\Scripts\pip.exe"
+if not exist "%STAN_VENV_PIP%" set "STAN_VENV_PIP=%USERPROFILE%\.stan\venv\Scripts\pip.exe"
 
 echo [%DATE% %TIME%] STAN watcher starting (auto-restart on crash).
 echo                  Close this window to stop STAN.
@@ -174,14 +178,20 @@ echo.
 
 :loop
 if exist "%UPDATE_FLAG%" (
-    echo [%DATE% %TIME%] update_pending.flag detected — running updater
-    if exist "%UPDATER%" (
-        call "%UPDATER%"
+    echo [%DATE% %TIME%] update_pending.flag detected — running pip install...
+    if exist "%STAN_VENV_PIP%" (
+        "%STAN_VENV_PIP%" install --upgrade --quiet --no-input ^
+            "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"
+        if errorlevel 1 (
+            echo [%DATE% %TIME%] WARN: pip install failed - continuing with installed version.
+        ) else (
+            for /f "delims=" %%V in ('"%STAN_EXE%" --version 2^>nul') do echo [%DATE% %TIME%] Running %%V
+        )
     ) else (
-        echo    WARN: update-stan.bat not found; skipping update
+        echo    WARN: pip not found at %STAN_VENV_PIP% - skipping update.
     )
     del "%UPDATE_FLAG%" 2>nul
-    echo [%DATE% %TIME%] update complete — relaunching watcher
+    echo [%DATE% %TIME%] update complete — relaunching watcher.
 )
 
 "%STAN_EXE%" watch
