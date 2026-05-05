@@ -1061,6 +1061,26 @@ def _backfill_tic_impl(
                 "SELECT DISTINCT run_id FROM tic_traces"
             ).fetchall()
         }
+        # v0.2.309: rows that have TIC but no BPC. The bp_intensity
+        # column landed in v0.2.300 — pre-migration rows have a TIC
+        # blob but bp_intensity NULL forever unless we re-extract.
+        # Without this set, the dashboard's TIC | BPC toggle stays
+        # hidden on every existing instrument until force=True is
+        # invoked manually. Bruker rows pick up bp_intensity for
+        # free from MaxIntensity in extract_tic_bruker; Thermo rows
+        # don't have BPC plumbing yet so re-extracting them is
+        # benign (the column stays NULL, no harm done).
+        try:
+            have_bpc = {
+                row[0] for row in con.execute(
+                    "SELECT DISTINCT run_id FROM tic_traces "
+                    "WHERE bp_intensity IS NOT NULL"
+                ).fetchall()
+            }
+        except sqlite3.OperationalError:
+            # Pre-v0.2.300 schema without bp_intensity column —
+            # treat every TIC row as missing BPC.
+            have_bpc = set()
 
     # Runs that need TIC or have zero peptides (or both).
     # With force=True, re-extract every run's TIC regardless.
@@ -1072,8 +1092,14 @@ def _backfill_tic_impl(
                    if r["id"] in have_tic  # already has TIC
                    and (not r.get("n_peptides") or r["n_peptides"] == 0)
                    and (r.get("n_precursors") or 0) > 0]  # has search results
+    # v0.2.309: rows with TIC but no BPC, on Bruker only (Thermo
+    # extract_tic_thermo doesn't populate bp_intensity).
+    missing_bpc = [r for r in all_runs
+                   if r["id"] in have_tic
+                   and r["id"] not in have_bpc
+                   and (r.get("raw_path") or "").lower().endswith(".d")]
 
-    missing = missing_tic + missing_pep
+    missing = missing_tic + missing_pep + missing_bpc
     # Deduplicate by run_id (a run could be in both lists)
     seen_ids = set()
     deduped = []

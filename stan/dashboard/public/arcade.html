@@ -168,6 +168,25 @@ const GAMES = [
 let LAB_NAME = 'anonymous';
 let LAB_CLAIMED = false;
 
+// v0.2.309: HTML-escape any string before interpolating into innerHTML.
+// The leaderboard at /api/arcade/leaderboard returns display_name strings
+// controlled by other labs (any lab can claim any name during stan setup).
+// A malicious lab could claim a name like
+// `<img src=x onerror="fetch('/api/fleet/command',{method:'POST',body:'{...}'})">`
+// and trigger the dashboard's CSRF surface from inside any operator's
+// browser the next time they opened the arcade tab. v0.2.307 added the
+// localhost Origin gate to /api/fleet/* (closes most of that), but the
+// XSS surface itself stays — defending in depth means escape every
+// external string at the interpolation site.
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 async function loadIdentity() {
   const bar = document.getElementById('identityBar');
   try {
@@ -176,7 +195,7 @@ async function loadIdentity() {
     LAB_NAME = d.display_name || 'anonymous';
     LAB_CLAIMED = !!d.claimed;
     if (LAB_CLAIMED) {
-      bar.innerHTML = `Playing as <b>${LAB_NAME}</b> · scores submit to the community leaderboard automatically.`;
+      bar.innerHTML = `Playing as <b>${escapeHtml(LAB_NAME)}</b> · scores submit to the community leaderboard automatically.`;
     } else {
       bar.classList.add('anon');
       bar.innerHTML = `Playing as <b>anonymous</b> · run <code>stan claim-name</code> to put your lab name on the leaderboard.`;
@@ -214,7 +233,12 @@ async function loadLeaderboard() {
         const li = document.createElement('li');
         const isMe = (row.display_name || '').toLowerCase() === LAB_NAME.toLowerCase();
         if (isMe) li.className = 'you';
-        li.innerHTML = `<span class="lab">${(row.display_name || 'anonymous').slice(0, 28)}</span>` +
+        // v0.2.309: escapeHtml on display_name — relay-controlled
+        // string from arbitrary other labs. See loadIdentity comment
+        // for the threat model. formatScore returns a number string,
+        // not user-controlled, so it's left raw.
+        const lab = escapeHtml((row.display_name || 'anonymous').slice(0, 28));
+        li.innerHTML = `<span class="lab">${lab}</span>` +
                        `<span class="score">${formatScore(g.id, row.score)}</span>`;
         list.appendChild(li);
       }
