@@ -1059,6 +1059,61 @@ class InstrumentWatcher:
         except Exception as e:
             logger.warning("watcher: screencap on_acquisition_end failed: %s", e)
 
+        # v0.2.299: run 4DFF inline on Bruker .d acquisitions so the
+        # dashboard's per-charge Plotly ion cloud renders by default
+        # for every new QC. Pre-fix the watcher only generated
+        # metrics + drift; .features came from `stan backfill-features`
+        # which had to be invoked manually or via the overnight chain
+        # in update_stan.ps1. Without .features the dashboard fell
+        # back to the legacy SVG cloud — Brett's timsTOF screenshot
+        # 2026-05-05 showed exactly that on a Mar 2026 QC.
+        #
+        # Detached daemon thread because 4DFF takes 1–5 min per .d
+        # and we don't want to block the watcher's main loop. Skipped
+        # for Thermo (no ion mobility), skipped when 4DFF isn't
+        # installed (operator hasn't run `stan install-4dff` yet —
+        # logged once at warning so the gap is visible).
+        vendor = (self._config.get("vendor") or "").lower()
+        if vendor == "bruker":
+            try:
+                import threading
+
+                from stan.metrics.features import (
+                    find_features_file, is_4dff_installed, run_4dff,
+                )
+
+                if find_features_file(path) is not None:
+                    logger.debug(
+                        "watcher: .features already present for %s — skipping 4DFF",
+                        path.name,
+                    )
+                elif not is_4dff_installed():
+                    logger.warning(
+                        "watcher: 4DFF not installed; .features will be missing "
+                        "for %s and the ion cloud will fall back to the legacy "
+                        "SVG view. Fix: run `stan install-4dff`.",
+                        path.name,
+                    )
+                else:
+                    def _bg_4dff(p: Path) -> None:
+                        try:
+                            r = run_4dff(p)
+                            logger.info(
+                                "watcher: 4DFF OK in %.1fs for %s — %s",
+                                r.wall_clock_sec, p.name, r.features_path.name,
+                            )
+                        except Exception:
+                            logger.exception(
+                                "watcher: 4DFF failed for %s", p.name,
+                            )
+
+                    threading.Thread(
+                        target=_bg_4dff, args=(path,), daemon=True,
+                        name=f"4dff-{path.stem}",
+                    ).start()
+            except Exception as e:
+                logger.warning("watcher: 4DFF dispatch failed: %s", e)
+
         # v0.2.255: push the raw file to the Hive SMB mirror in a
         # background thread. Same try/except discipline — a sync
         # failure must NEVER block the watcher.
