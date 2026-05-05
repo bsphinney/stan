@@ -100,6 +100,42 @@ def _action_status(args: dict) -> dict:
                 status["n_maintenance_events"] = con.execute(
                     "SELECT COUNT(*) FROM maintenance_events"
                 ).fetchone()[0]
+
+                # v0.2.307: heartbeat across BOTH tables. `last_run`
+                # only reflects QC-pattern matches; an instrument that
+                # has been acquiring sample/blank files all week shows
+                # "last_run = April 11" while sample_health rows are
+                # landing every 30 minutes. The Lumos Apr-29 → May-5
+                # silent-dark gap had no surface because the operator
+                # was looking at QC-only `last_run`. `last_run_any`
+                # answers "when did the watcher most recently see ANY
+                # acquisition?" — the right liveness signal for
+                # dashboard / heartbeat banners.
+                try:
+                    sh_n = con.execute(
+                        "SELECT COUNT(*) FROM sample_health"
+                    ).fetchone()[0]
+                except sqlite3.OperationalError:
+                    sh_n = 0
+                status["n_sample_health"] = sh_n
+
+                try:
+                    any_row = con.execute(
+                        "SELECT run_name, run_date, source FROM ("
+                        "  SELECT run_name, run_date, 'qc' AS source FROM runs "
+                        "  UNION ALL "
+                        "  SELECT run_name, run_date, 'sample' AS source "
+                        "  FROM sample_health"
+                        ") ORDER BY run_date DESC LIMIT 1"
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    any_row = None
+                if any_row:
+                    status["last_run_any"] = {
+                        "run_name": any_row[0],
+                        "run_date": any_row[1],
+                        "source": any_row[2],
+                    }
         except Exception as e:
             status["db_error"] = str(e)
 

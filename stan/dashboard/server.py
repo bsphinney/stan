@@ -30,12 +30,54 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="STAN Dashboard", version=__version__)
 
+# v0.2.307: tighten CORS + add Origin gate on state-changing requests.
+# Pre-fix the dashboard had `allow_origins=["*"]` and the
+# /api/fleet/command endpoint had zero auth, so any drive-by URL the
+# operator visited while the dashboard was open could `fetch` POST
+# update_stan / apply_config / submit_all and trigger code execution
+# on every instrument PC. Defense:
+#   1) CORS now allows only the dashboard's own localhost origins.
+#   2) A request middleware rejects POST/PUT/DELETE/PATCH whose
+#      Origin header points anywhere other than our own origins.
+#      Missing Origin is allowed — covers operator CLI clients
+#      (curl, requests) which is fine because the listener is
+#      already 127.0.0.1-bound, not externally reachable.
+_DASHBOARD_ORIGINS = (
+    "http://localhost:8421",
+    "http://127.0.0.1:8421",
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(_DASHBOARD_ORIGINS),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _enforce_origin_on_writes(request, call_next):
+    """Reject mutating requests whose Origin isn't our own dashboard.
+
+    Browser CSRF protection. Read-only methods (GET/HEAD/OPTIONS) are
+    not gated — the dashboard exposes no patient data and the cohort
+    aggregates are read-safe. Mutating methods (POST/PUT/DELETE/PATCH)
+    require an Origin header matching one of `_DASHBOARD_ORIGINS`, OR
+    no Origin header at all (CLI client on the same machine).
+    """
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        origin = request.headers.get("origin")
+        if origin and origin not in _DASHBOARD_ORIGINS:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "detail": (
+                        f"Cross-origin request rejected: {origin!r} is not "
+                        f"a STAN dashboard origin."
+                    ),
+                },
+            )
+    return await call_next(request)
 
 # Config watchers — hot-reload on API access
 _instruments_watcher: ConfigWatcher | None = None

