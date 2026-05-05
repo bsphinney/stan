@@ -1049,6 +1049,18 @@ class InstrumentWatcher:
         # Import here to avoid circular imports at module level
         from stan.search.dispatcher import dispatch_search
 
+        # v0.2.312: record every dispatch attempt's outcome to the
+        # dispatch_attempts table so silent search failures are
+        # observable + re-tryable. Pre-fix, when dispatch_search
+        # returned None or raised silently the file was invisible to
+        # STAN's bookkeeping (the catch-up scan only re-tries files
+        # not yet in runs/sample_health, bounded by
+        # startup_catchup_days). Lumos Apr 11 → May 5 silent gap was
+        # caused by exactly this. Recording is best-effort + never
+        # blocks the dispatch flow.
+        from stan.db import record_dispatch_attempt
+        run_id_for_attempt: str | None = None
+
         try:
             result_path = dispatch_search(
                 raw_path=path,
@@ -1056,9 +1068,27 @@ class InstrumentWatcher:
                 instrument_config=self._config,
             )
             if result_path is not None:
-                self._store_run(path, mode, result_path)
+                run_id_for_attempt = self._store_run(path, mode, result_path)
+                record_dispatch_attempt(
+                    raw_path=str(path),
+                    status="ok",
+                    last_run_id=run_id_for_attempt,
+                )
+            else:
+                record_dispatch_attempt(
+                    raw_path=str(path),
+                    status="failed",
+                    error="dispatch_search returned None",
+                    error_type="DispatchEmptyResult",
+                )
         except Exception as e:
             logger.exception("Search dispatch failed for %s", path.name)
+            record_dispatch_attempt(
+                raw_path=str(path),
+                status="failed",
+                error=f"{type(e).__name__}: {e}"[:1000],
+                error_type=type(e).__name__,
+            )
             from stan.telemetry import report_error
             report_error(e, {
                 "vendor": self._config.get("vendor"),
@@ -1324,11 +1354,26 @@ class InstrumentWatcher:
 
     def _store_run(
         self, raw_path: Path, mode: AcquisitionMode, result_path: Path
-    ) -> None:
-        """Extract metrics and store in the local database."""
+    ) -> str | None:
+        """Extract metrics and store in the local database.
+
+        Returns the new ``runs.id`` on success, or None if any step
+        in the extract → insert chain raises. The caller (dispatch
+        loop in ``_on_acquisition_complete``) uses the return value
+        to populate ``dispatch_attempts.last_run_id`` so audit-trail
+        queries can correlate dispatch attempts to the rows they
+        produced. v0.2.312.
+        """
         from stan.db import insert_run
         from stan.gating.evaluator import evaluate_gates
         from stan.metrics.extractor import extract_dda_metrics, extract_dia_metrics
+
+        # v0.2.312: hoisted so the return-value contract survives an
+        # exception inside the big try/except below — caller relies
+        # on None-vs-uuid to distinguish "row written" from "row not
+        # written". Pre-fix run_id was only defined inside the try
+        # block; reading it after a raise would NameError.
+        run_id: str | None = None
 
         # v0.2.213: resolve SPD + gradient up-front so the extractor
         # can compute peak_capacity. Pre-fix the extractor was called
@@ -1512,6 +1557,7 @@ class InstrumentWatcher:
 
         except Exception:
             logger.exception("Failed to store run for %s", raw_path.name)
+        return run_id
 
 
 class WatcherDaemon:

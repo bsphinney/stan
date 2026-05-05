@@ -267,6 +267,32 @@ CREATE TABLE IF NOT EXISTS drift_peak_clouds (
 );
 
 CREATE INDEX IF NOT EXISTS idx_drift_cloud_run ON drift_peak_clouds(run_id, source);
+
+-- v0.2.312: dispatch_attempts records every search-dispatch outcome
+-- so silent failures are observable and re-tryable. Pre-fix, when
+-- dispatch_search returned None (DIA-NN crashed silently with no row
+-- written to runs), the file was invisible to STAN's bookkeeping.
+-- The catch-up scan only re-tries files that aren't yet in
+-- runs/sample_health, and is bounded by startup_catchup_days, so a
+-- tried-and-failed file aged out of the retry window forever. The
+-- Lumos lost ~3 weeks of ingests this way (TRFP corruption →
+-- mode-detect crash → no row written → no retry).
+--
+-- Schema is keyed on raw_path so re-attempts on the same file UPDATE
+-- the row rather than appending. status='ok' / 'failed' / 'skipped'.
+-- A future `stan retry-failed` CLI walks this table to re-dispatch.
+CREATE TABLE IF NOT EXISTS dispatch_attempts (
+    raw_path        TEXT PRIMARY KEY,
+    attempted_at    TEXT NOT NULL,         -- ISO 8601
+    status          TEXT NOT NULL,         -- 'ok' | 'failed' | 'skipped'
+    error           TEXT,                  -- error message on failure
+    error_type      TEXT,                  -- exception class name on failure
+    attempt_count   INTEGER NOT NULL DEFAULT 1,
+    last_run_id     TEXT                   -- runs.id when status='ok'
+);
+
+CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_status
+    ON dispatch_attempts(status, attempted_at);
 """
 
 
@@ -487,6 +513,59 @@ def _migrate(con: sqlite3.Connection) -> None:
 # Bump when migrations require ordering or derived-data backfill.
 # Pure ALTER TABLE ADD COLUMN does NOT need a bump.
 SCHEMA_VERSION = 1
+
+
+def record_dispatch_attempt(
+    raw_path: str,
+    status: str,
+    error: str | None = None,
+    error_type: str | None = None,
+    last_run_id: str | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Record a search-dispatch outcome for observability + retry.
+
+    Idempotent on ``raw_path`` — re-attempts UPDATE the existing row
+    and bump ``attempt_count`` rather than appending. ``status`` is
+    one of:
+      - 'ok'      — search produced a result_path and _store_run wrote a row
+      - 'failed'  — dispatch_search raised, returned None, or _store_run errored
+      - 'skipped' — file was deliberately skipped (mode UNKNOWN pre-v0.2.301,
+                    excluded by exclude_pattern, etc.)
+
+    Best-effort: a write failure logs at DEBUG and returns. Never raises
+    so a malfunctioning attempt-recording doesn't take down the watcher's
+    main loop. Added v0.2.312 per the v1.0 audit's C2 finding.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            # ON CONFLICT bumps attempt_count and replaces the outcome.
+            # Past failures stay countable via attempt_count.
+            con.execute(
+                "INSERT INTO dispatch_attempts "
+                "(raw_path, attempted_at, status, error, error_type, "
+                " attempt_count, last_run_id) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?) "
+                "ON CONFLICT(raw_path) DO UPDATE SET "
+                "  attempted_at  = excluded.attempted_at, "
+                "  status        = excluded.status, "
+                "  error         = excluded.error, "
+                "  error_type    = excluded.error_type, "
+                "  attempt_count = dispatch_attempts.attempt_count + 1, "
+                "  last_run_id   = COALESCE(excluded.last_run_id, "
+                "                           dispatch_attempts.last_run_id)",
+                (raw_path, now, status, error, error_type, last_run_id),
+            )
+    except sqlite3.OperationalError as _e:
+        # Pre-v0.2.312 schema without dispatch_attempts table — caller
+        # ran on a DB that hasn't been re-init'd yet. Migration will
+        # run on next watcher start.
+        logger.debug("dispatch_attempts write skipped (schema missing): %s", _e)
+    except Exception as _e:
+        logger.debug("dispatch_attempts write failed: %s", _e)
 
 
 def insert_run(
