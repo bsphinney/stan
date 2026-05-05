@@ -443,6 +443,51 @@ def _migrate(con: sqlite3.Connection) -> None:
         )
         logger.info("Migration: unique index idx_runs_unique created")
 
+    # v0.2.311: stamp PRAGMA user_version so future migrations can be
+    # conditional on DB version, and so a binary that wakes up against
+    # a too-new DB can refuse to start instead of silently mis-reading
+    # newer columns. Today's migrations are all idempotent ALTER TABLE
+    # ADD COLUMN — order doesn't matter — but the moment anyone adds
+    # a derived-data backfill migration, the order assumption breaks
+    # silently. user_version closes that door before it opens.
+    #
+    # Versioning scheme:
+    #   1 = v1.0 baseline (everything in this file as of v0.2.311).
+    # Bump SCHEMA_VERSION + add a migration block guarded by user_version
+    # whenever a future change needs ordering or backfill. Don't bump for
+    # pure ALTER ADD COLUMN — those stay idempotent and the migration list
+    # above handles them.
+    try:
+        current = con.execute("PRAGMA user_version").fetchone()[0]
+        if current < SCHEMA_VERSION:
+            con.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            if current == 0:
+                logger.info(
+                    "Migration: stamped DB at user_version=%d (was unstamped)",
+                    SCHEMA_VERSION,
+                )
+            else:
+                logger.info(
+                    "Migration: bumped user_version %d -> %d",
+                    current, SCHEMA_VERSION,
+                )
+        elif current > SCHEMA_VERSION:
+            # Don't refuse to run yet — would risk breaking the upgrade
+            # flow if anyone has dirty state. v1.1 / v2.0 can flip this
+            # to a hard error after the install base normalises.
+            logger.warning(
+                "DB user_version=%d is newer than this binary expects (%d). "
+                "Future-version columns may be ignored. Upgrade STAN.",
+                current, SCHEMA_VERSION,
+            )
+    except sqlite3.OperationalError as _e:
+        logger.debug("user_version stamp failed: %s", _e)
+
+
+# Bump when migrations require ordering or derived-data backfill.
+# Pure ALTER TABLE ADD COLUMN does NOT need a bump.
+SCHEMA_VERSION = 1
+
 
 def insert_run(
     instrument: str,
