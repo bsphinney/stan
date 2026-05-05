@@ -135,6 +135,59 @@ def doctor() -> None:
         emit(f"  [red]alphatims.bruker import FAILED: {type(e).__name__}: {e}[/red]")
     emit("")
 
+    emit("[bold]ThermoRawFileParser (TRFP)[/bold]")
+    emit("-" * 70)
+    # TRFP mode-detect failures cascade catastrophically — when the
+    # watcher can't read a Thermo .raw, it routes the file to monitor
+    # mode (no search) instead of qc mode (search + DB write). Result
+    # is the runs table silently stops growing while sync_to_hive_mirror
+    # keeps reporting "alive". Lumos lost ~3 weeks of new ingests this
+    # way (Apr 11 → May 5). Diagnose at every doctor run so the failure
+    # surfaces fast.
+    try:
+        from stan.tools.trfp import _tools_dir, _variant
+        trfp_dir = _tools_dir()
+        emit(f"  install dir:      {trfp_dir}")
+        if not trfp_dir.exists():
+            emit("  [yellow]install dir missing — TRFP not installed yet[/yellow]")
+        else:
+            try:
+                v = _variant()
+                exe_name = v.get("exe", "ThermoRawFileParser.exe")
+                exe = trfp_dir / exe_name
+                emit(f"  binary:           {exe}")
+                if exe.exists():
+                    emit(f"  binary size:      {exe.stat().st_size} bytes")
+                    # Probe --help so we catch broken installs before
+                    # the watcher ships them an actual .raw and silently
+                    # downgrades to monitor mode.
+                    import subprocess as _sp
+                    try:
+                        if exe_name.lower().endswith(".dll"):
+                            cmd = ["dotnet", str(exe), "--help"]
+                        else:
+                            cmd = [str(exe), "--help"]
+                        r = _sp.run(cmd, capture_output=True, text=True, timeout=15)
+                        emit(f"  --help exit code: {r.returncode}")
+                        head = (r.stdout or r.stderr or "").splitlines()[:3]
+                        for ln in head:
+                            emit(f"    {ln}")
+                        if r.returncode != 0:
+                            emit("  [red]TRFP --help failed — binary broken or AV-quarantined.[/red]")
+                            emit("  [red]Fix: delete the install dir above and restart stan watch[/red]")
+                            emit("  [red](it auto-redownloads on next run).[/red]")
+                    except FileNotFoundError as _e:
+                        emit(f"  [red]launcher not found: {_e}[/red]")
+                    except Exception as _e:
+                        emit(f"  [red]--help probe failed: {type(_e).__name__}: {_e}[/red]")
+                else:
+                    emit("  [yellow]binary missing — re-run stan watch to auto-install[/yellow]")
+            except Exception as _e:
+                emit(f"  [yellow]variant probe failed: {_e}[/yellow]")
+    except Exception as _e:
+        emit(f"  [yellow]TRFP module import failed: {_e}[/yellow]")
+    emit("")
+
     emit("[bold]STAN config[/bold]")
     emit("-" * 70)
     cfg_dir = get_user_config_dir()
