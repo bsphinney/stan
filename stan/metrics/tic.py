@@ -22,11 +22,21 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TICTrace:
-    """Raw TIC trace data from a single run."""
+    """Raw TIC trace data from a single run.
+
+    ``intensity`` is the per-MS1-frame total ion current. ``bp_intensity``
+    (added v0.2.300) is the matching base-peak chromatogram — Bruker's
+    Frames table has both ``SummedIntensities`` (TIC) and
+    ``MaxIntensity`` (BPC) so we read them in one pass for free. Thermo
+    extraction doesn't populate bp_intensity yet (fisher_py exposes the
+    summed TIC but not the per-spectrum max in the same call) — left
+    as None until that path is added.
+    """
 
     rt_min: list[float]          # retention time in minutes
     intensity: list[float]       # summed intensity per MS1 frame
     run_name: str = ""
+    bp_intensity: list[float] | None = None  # base peak per MS1 frame
 
 
 @dataclass
@@ -78,6 +88,18 @@ def extract_tic_bruker(d_path: Path) -> TICTrace | None:
                     logger.warning("No intensity column found in Frames table")
                     return None
 
+            # v0.2.300: read MaxIntensity in the same query if available so
+            # we get the BPC (base peak chromatogram) for free. Bruker
+            # populates this on every Frame, so on a healthy .d we always
+            # get both. Falls back gracefully when the column is missing
+            # OR when it's the same as tic_col (older schemas where
+            # MaxIntensity is the only intensity column — no point storing
+            # it twice).
+            bp_col = (
+                "MaxIntensity" if "MaxIntensity" in cols and tic_col != "MaxIntensity"
+                else None
+            )
+
             # Filter to MS1 frames
             if "MsMsType" in cols:
                 ms1_filter = "WHERE MsMsType = 0"
@@ -87,8 +109,9 @@ def extract_tic_bruker(d_path: Path) -> TICTrace | None:
                 ms1_filter = ""
                 logger.info("No MsMsType/ScanMode column — using all frames")
 
+            select_cols = f"Time, {tic_col}" + (f", {bp_col}" if bp_col else "")
             rows = con.execute(
-                f"SELECT Time, {tic_col} FROM Frames {ms1_filter} ORDER BY Time"
+                f"SELECT {select_cols} FROM Frames {ms1_filter} ORDER BY Time"
             ).fetchall()
 
     except sqlite3.Error:
@@ -101,11 +124,15 @@ def extract_tic_bruker(d_path: Path) -> TICTrace | None:
 
     rt_min = [r[0] / 60.0 for r in rows]  # Bruker Time is in seconds
     intensity = [float(r[1]) if r[1] is not None else 0.0 for r in rows]
+    bp_intensity: list[float] | None = None
+    if bp_col:
+        bp_intensity = [float(r[2]) if r[2] is not None else 0.0 for r in rows]
 
     return TICTrace(
         rt_min=rt_min,
         intensity=intensity,
         run_name=d_path.stem,
+        bp_intensity=bp_intensity,
     )
 
 
@@ -148,8 +175,10 @@ def downsample_trace(trace: TICTrace, n_bins: int = 128) -> TICTrace:
     bin_centers = [rt_lo + (i + 0.5) * bin_width for i in range(n_bins)]
     bin_sum = [0.0] * n_bins
     bin_count = [0] * n_bins
+    has_bp = trace.bp_intensity is not None and len(trace.bp_intensity) == len(trace.rt_min)
+    bp_sum = [0.0] * n_bins if has_bp else None
 
-    for rt, inten in zip(trace.rt_min, trace.intensity):
+    for i_pt, (rt, inten) in enumerate(zip(trace.rt_min, trace.intensity)):
         idx = int((rt - rt_lo) / bin_width)
         if idx >= n_bins:
             idx = n_bins - 1
@@ -157,6 +186,8 @@ def downsample_trace(trace: TICTrace, n_bins: int = 128) -> TICTrace:
             idx = 0
         bin_sum[idx] += float(inten)
         bin_count[idx] += 1
+        if has_bp and bp_sum is not None:
+            bp_sum[idx] += float(trace.bp_intensity[i_pt])
 
     # Mean per bin — removes the n-frames-per-bin quantization artifact.
     # Empty bins (no frames landed here, e.g. at edges) keep 0.0.
@@ -164,11 +195,18 @@ def downsample_trace(trace: TICTrace, n_bins: int = 128) -> TICTrace:
         bin_sum[i] / bin_count[i] if bin_count[i] else 0.0
         for i in range(n_bins)
     ]
+    bin_bp = None
+    if bp_sum is not None:
+        bin_bp = [
+            bp_sum[i] / bin_count[i] if bin_count[i] else 0.0
+            for i in range(n_bins)
+        ]
 
     return TICTrace(
         rt_min=bin_centers,
         intensity=bin_intensity,
         run_name=trace.run_name,
+        bp_intensity=bin_bp,
     )
 
 

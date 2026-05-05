@@ -949,7 +949,10 @@ class InstrumentWatcher:
                    else extract_tic_thermo(path))
             if tic is not None and health_id:
                 tic = downsample_trace(tic, n_bins=128)
-                insert_health_tic_trace(health_id, tic.rt_min, tic.intensity)
+                insert_health_tic_trace(
+                    health_id, tic.rt_min, tic.intensity,
+                    bp_intensity=tic.bp_intensity,
+                )
         except Exception:
             logger.debug("monitor TIC extraction failed for %s", path.name, exc_info=True)
 
@@ -1472,7 +1475,10 @@ class InstrumentWatcher:
                         trace = extract_tic_thermo(raw_path)
                     if trace and trace.rt_min and trace.intensity:
                         trace = downsample_trace(trace, n_bins=128)
-                        insert_tic_trace(run_id, trace.rt_min, trace.intensity)
+                        insert_tic_trace(
+                            run_id, trace.rt_min, trace.intensity,
+                            bp_intensity=trace.bp_intensity,
+                        )
                 except Exception:
                     logger.debug(
                         "TIC extraction failed for %s",

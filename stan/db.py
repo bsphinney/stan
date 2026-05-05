@@ -375,6 +375,26 @@ def _migrate(con: sqlite3.Connection) -> None:
             con.execute(ddl)
             logger.info("Migration: added column '%s' to runs table", col)
 
+    # tic_traces / health_tic_traces — bp_intensity (BPC) added v0.2.300.
+    # Bruker Frames table already has MaxIntensity per frame so this is
+    # free at extraction time. Stored as a parallel JSON array next to
+    # the existing intensity (TIC) column.
+    for tic_table in ("tic_traces", "health_tic_traces"):
+        try:
+            tic_cols = {row[1] for row in con.execute(
+                f"PRAGMA table_info({tic_table})"
+            ).fetchall()}
+        except sqlite3.OperationalError:
+            continue
+        if tic_cols and "bp_intensity" not in tic_cols:
+            try:
+                con.execute(
+                    f"ALTER TABLE {tic_table} ADD COLUMN bp_intensity TEXT"
+                )
+                logger.info("Migration: added column 'bp_intensity' to %s", tic_table)
+            except sqlite3.OperationalError as e:
+                logger.debug("%s.bp_intensity migration failed: %s", tic_table, e)
+
     # v0.2.208: dedup + unique index on (instrument, run_name, raw_path).
     # Historical inserts used plain INSERT INTO runs with a fresh UUID
     # per call, so any caller that re-ingested the same file (watcher
@@ -846,8 +866,16 @@ def insert_tic_trace(
     rt_min: list[float],
     intensity: list[float],
     db_path: Path | None = None,
+    bp_intensity: list[float] | None = None,
 ) -> None:
-    """Store a TIC trace for a run. Local-only — never uploaded to community."""
+    """Store a TIC trace for a run. Local-only — never uploaded to community.
+
+    ``bp_intensity`` (added v0.2.300) is the parallel base-peak
+    chromatogram. Bruker reads it for free from the Frames table; Thermo
+    leaves it None until the fisher_py path is extended. Stored as a JSON
+    array in the same shape as ``intensity`` so the dashboard can swap
+    arrays at render time without a separate fetch.
+    """
     if db_path is None:
         db_path = get_db_path()
 
@@ -857,16 +885,26 @@ def insert_tic_trace(
         step = n // 500
         rt_min = rt_min[::step]
         intensity = intensity[::step]
+        if bp_intensity is not None:
+            bp_intensity = bp_intensity[::step]
+
+    bp_json = (
+        json.dumps([round(v, 0) for v in bp_intensity])
+        if bp_intensity is not None and len(bp_intensity) == len(rt_min)
+        else None
+    )
 
     with sqlite3.connect(str(db_path)) as con:
         con.execute(
-            "INSERT OR REPLACE INTO tic_traces (run_id, rt_min, intensity, n_frames) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO tic_traces "
+            "(run_id, rt_min, intensity, n_frames, bp_intensity) "
+            "VALUES (?, ?, ?, ?, ?)",
             (
                 run_id,
                 json.dumps([round(r, 3) for r in rt_min]),
                 json.dumps([round(v, 0) for v in intensity]),
                 n,
+                bp_json,
             ),
         )
 
@@ -1199,12 +1237,15 @@ def insert_health_tic_trace(
     rt_min: list[float],
     intensity: list[float],
     db_path: Path | None = None,
+    bp_intensity: list[float] | None = None,
 ) -> None:
     """Store a TIC trace for a sample_health row.
 
     Mirrors `insert_tic_trace` but writes to `health_tic_traces` instead.
     Same downsampling cap (~500 points) so the API + frontend can treat
-    QC and non-QC traces interchangeably.
+    QC and non-QC traces interchangeably. ``bp_intensity`` (added v0.2.300)
+    is the parallel BPC array; populated for Bruker, None for Thermo
+    until that path is added.
     """
     if db_path is None:
         db_path = get_db_path()
@@ -1214,16 +1255,26 @@ def insert_health_tic_trace(
         step = n // 500
         rt_min = rt_min[::step]
         intensity = intensity[::step]
+        if bp_intensity is not None:
+            bp_intensity = bp_intensity[::step]
+
+    bp_json = (
+        json.dumps([round(v, 0) for v in bp_intensity])
+        if bp_intensity is not None and len(bp_intensity) == len(rt_min)
+        else None
+    )
 
     with sqlite3.connect(str(db_path)) as con:
         con.execute(
             "INSERT OR REPLACE INTO health_tic_traces "
-            "(health_id, rt_min, intensity, n_frames) VALUES (?, ?, ?, ?)",
+            "(health_id, rt_min, intensity, n_frames, bp_intensity) "
+            "VALUES (?, ?, ?, ?, ?)",
             (
                 health_id,
                 json.dumps([round(r, 3) for r in rt_min]),
                 json.dumps([round(v, 0) for v in intensity]),
                 n,
+                bp_json,
             ),
         )
 

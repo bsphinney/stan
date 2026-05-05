@@ -3077,6 +3077,20 @@ def backfill_window_drift(
             _log({"event": "skip", "run_id": run["id"],
                   "reason": "raw_path missing on disk", "raw_path": raw})
             continue
+        # v0.2.300: drift is an ion-mobility metric — orbitraps don't
+        # have it. Skip Thermo .raw silently before invoking the
+        # detector so Exploris / Lumos / Astral backfills don't emit
+        # one warning per file ("No .features file for X.raw — run
+        # stan run-4dff" / "alphatims not installed — window drift
+        # detection disabled"). On Thermo this code path is never
+        # going to produce useful drift, and the warning spam confuses
+        # operators who think they need to install something.
+        if raw_path.suffix.lower() == ".raw":
+            n_skip_unknown += 1
+            _log({"event": "skip", "run_id": run["id"],
+                  "reason": "Thermo .raw — drift is ion-mobility-only",
+                  "raw_path": raw})
+            continue
 
         try:
             drift = detect_window_drift(raw_path)

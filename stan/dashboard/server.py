@@ -429,7 +429,7 @@ async def api_today_tic_overview(
         "       r.run_date, r.ips_score, r.gate_result, r.spd, "
         "       r.gradient_length_min, r.n_precursors, r.n_psms, "
         "       r.diagnosis, r.amount_ng, "
-        "       t.rt_min AS tic_rt, t.intensity AS tic_intensity "
+        "       t.rt_min AS tic_rt, t.intensity AS tic_intensity, t.bp_intensity AS tic_bp "
         "FROM runs r "
         "LEFT JOIN tic_traces t ON t.run_id = r.id "
         "WHERE " + " AND ".join(where) +
@@ -455,7 +455,7 @@ async def api_today_tic_overview(
             "SELECT s.id AS run_id, s.run_name, s.instrument, "
             "       s.run_date, s.verdict AS gate_result, "
             "       s.dynamic_range_log10, s.ms1_total_tic, "
-            "       t.rt_min AS tic_rt, t.intensity AS tic_intensity "
+            "       t.rt_min AS tic_rt, t.intensity AS tic_intensity, t.bp_intensity AS tic_bp "
             "FROM sample_health s "
             "LEFT JOIN health_tic_traces t ON t.health_id = s.id "
             "WHERE " + " AND ".join(sh_where) +
@@ -497,6 +497,7 @@ async def api_today_tic_overview(
         d = dict(r)
         tic_rt = d.pop("tic_rt", None)
         tic_int = d.pop("tic_intensity", None)
+        tic_bp = d.pop("tic_bp", None)
         has_tic = tic_rt is not None and tic_int is not None
         tic_payload = None
         if has_tic:
@@ -505,6 +506,15 @@ async def api_today_tic_overview(
                     "rt_min": _json.loads(tic_rt),
                     "intensity": _json.loads(tic_int),
                 }
+                # v0.2.300: per-frame base peak chromatogram (Bruker only
+                # for now — Thermo path doesn't populate it yet). Frontend
+                # toggles the rendered y-array between intensity and
+                # bp_intensity at draw time.
+                if tic_bp:
+                    try:
+                        tic_payload["bp_intensity"] = _json.loads(tic_bp)
+                    except Exception:
+                        pass
                 n_with_tic += 1
             except Exception:
                 has_tic = False
@@ -553,6 +563,7 @@ async def api_today_tic_overview(
         d = dict(r)
         tic_rt = d.pop("tic_rt", None)
         tic_int = d.pop("tic_intensity", None)
+        tic_bp = d.pop("tic_bp", None)
         has_tic = tic_rt is not None and tic_int is not None
         tic_payload = None
         if has_tic:
@@ -561,6 +572,11 @@ async def api_today_tic_overview(
                     "rt_min": _json.loads(tic_rt),
                     "intensity": _json.loads(tic_int),
                 }
+                if tic_bp:
+                    try:
+                        tic_payload["bp_intensity"] = _json.loads(tic_bp)
+                    except Exception:
+                        pass
                 sh_with_tic += 1
             except Exception:
                 has_tic = False
