@@ -26,21 +26,42 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# GitHub release for the version we pin to
-TRFP_VERSION = "v.2.0.0-dev"
-TRFP_BASE_URL = (
-    f"https://github.com/CompOmics/ThermoRawFileParser/releases/download/{TRFP_VERSION}"
+# GitHub releases. Two pins:
+#   Windows: v1.4.5 — last .NET-Framework build. ~3.6 MB zip,
+#       standalone EXE that runs on every Windows since 7 without
+#       any runtime install. v0.2.303 root-caused: v.2.0.0-dev's
+#       Windows EXE is a 152 KB .NET-8 launcher that needs the .NET 8
+#       runtime to be pre-installed; Thermo instrument PCs ship with
+#       .NET Framework 4.x and the launcher fails with
+#       ERROR_INVALID_DATA (0x8007000C) on every mode-detect call —
+#       the Lumos lost weeks of ingests to exactly this.
+#   Linux/Hive: v.2.0.0-dev's net8 DLL — Hive has the dotnet-core-sdk
+#       module loaded, the new build performs better and supports
+#       newer .raw firmware. Keeping the version diverged is OK
+#       because TRFP's mzML output is byte-identical across versions
+#       for the modes STAN uses.
+TRFP_VERSION_WIN = "v1.4.5"
+TRFP_VERSION_LINUX = "v.2.0.0-dev"
+TRFP_BASE_URL_TEMPLATE = (
+    "https://github.com/CompOmics/ThermoRawFileParser/releases/download/{ver}"
 )
 
-# OS → zip filename + how to run
+# Back-compat for any caller that imports TRFP_VERSION directly.
+TRFP_VERSION = TRFP_VERSION_WIN
+
+# OS → zip filename + how to run. Note v1.4.5's zip filename omits the
+# platform suffix (single platform-agnostic .NET-Framework build);
+# v.2.0.0-dev splits into per-platform zips.
 _VARIANTS = {
     "Windows": {
-        "zip": f"ThermoRawFileParser-{TRFP_VERSION}-win.zip",
+        "zip": "ThermoRawFileParser1.4.5.zip",
+        "version": TRFP_VERSION_WIN,
         "exe": "ThermoRawFileParser.exe",
         "needs_dotnet": False,
     },
     "Linux": {
-        "zip": f"ThermoRawFileParser-{TRFP_VERSION}-net8.zip",
+        "zip": f"ThermoRawFileParser-{TRFP_VERSION_LINUX}-net8.zip",
+        "version": TRFP_VERSION_LINUX,
         "exe": "ThermoRawFileParser.dll",
         "needs_dotnet": True,
     },
@@ -80,7 +101,7 @@ def ensure_installed() -> Path:
     if exe_path.exists():
         return exe_path
 
-    url = f"{TRFP_BASE_URL}/{v['zip']}"
+    url = f"{TRFP_BASE_URL_TEMPLATE.format(ver=v['version'])}/{v['zip']}"
     logger.info("Downloading ThermoRawFileParser from %s", url)
 
     import urllib.request
