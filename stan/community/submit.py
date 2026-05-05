@@ -180,8 +180,22 @@ def submit_to_benchmark(
         "column_vendor": run.get("column_vendor") or "",
         "column_model": column_model,
         "lc_system": run.get("lc_system") or "",
-        # Original acquisition date (not submission date)
-        "run_name": run.get("run_name") or "",
+        # v0.2.310: do NOT ship the local raw filename to the
+        # community dataset. Brett 2026-05-05: "we don't need to
+        # ever know the file name for community submissions."
+        # `run_name` is a public column on every per-submission
+        # parquet (huggingface.co/datasets/brettsp/stan-benchmark/
+        # submissions/<id>.parquet) and inevitably leaks operator-
+        # added context — project codes, dates, occasionally PHI —
+        # for zero analytical benefit. The other identity fields
+        # (`submission_id`, `cohort_id`, `fingerprint`) cover every
+        # downstream need (auditability, de-dup, cohort grouping)
+        # without a public filename. Empty string preserves
+        # schema compatibility with relays that mark the field
+        # required; relays that mark it optional ignore it.
+        # The local fingerprint computation above still uses the
+        # real run_name — that's a local hash, never transmitted.
+        "run_name": "",
         "run_date": run.get("run_date") or "",
         # Stats from DIA-NN report.stats.tsv
         "ms1_signal": run.get("ms1_signal"),
