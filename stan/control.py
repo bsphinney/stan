@@ -508,6 +508,65 @@ def _action_update_stan(args: dict) -> dict:
     }
 
 
+def _action_reinstall_trfp(args: dict) -> dict:
+    """Delete and re-download ThermoRawFileParser.
+
+    A corrupted TRFP binary makes every Thermo .raw fail mode-detect
+    in the watcher, which silently falls back to monitor mode and
+    stops growing the runs table. ``stan doctor`` surfaces the
+    problem (binary < 1 MB, ``--help`` exit non-zero) but the fix is
+    "delete the install dir, restart" — annoying to walk an operator
+    through over the phone. This action does it remotely.
+
+    Removes ``<user_config_dir>/tools/ThermoRawFileParser/`` then
+    invokes ``stan.tools.trfp.ensure_installed()`` which fetches a
+    fresh copy from CompOmics' GitHub releases. Returns the fresh
+    binary path + size for verification.
+    """
+    import shutil
+
+    from stan.config import get_user_config_dir
+
+    cfg_dir = get_user_config_dir()
+    trfp_dir = cfg_dir / "tools" / "ThermoRawFileParser"
+
+    removed = False
+    if trfp_dir.exists():
+        try:
+            shutil.rmtree(trfp_dir)
+            removed = True
+        except Exception as e:
+            return {
+                "ok": False,
+                "trfp_dir": str(trfp_dir),
+                "error": f"could not remove dir: {type(e).__name__}: {e}",
+            }
+
+    try:
+        from stan.tools.trfp import ensure_installed
+        new_exe = ensure_installed()
+    except Exception as e:
+        return {
+            "ok": False,
+            "trfp_dir": str(trfp_dir),
+            "removed": removed,
+            "error": f"download failed: {type(e).__name__}: {e}",
+        }
+
+    size_bytes = new_exe.stat().st_size if new_exe.exists() else 0
+    return {
+        "ok": True,
+        "trfp_dir": str(trfp_dir),
+        "removed_old": removed,
+        "new_exe": str(new_exe),
+        "size_bytes": size_bytes,
+        "note": (
+            "TRFP reinstalled. Watcher does not need a restart — "
+            "trfp.run_trfp() resolves the binary path on every call."
+        ),
+    }
+
+
 def _action_restart_watcher(args: dict) -> dict:
     """Ask the running `stan watch` daemon to exit cleanly.
 
@@ -1790,6 +1849,13 @@ COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "apply_config":        _action_apply_config,
     "update_stan":         _action_update_stan,
     "restart_watcher":     _action_restart_watcher,
+    # v0.2.298+: nuke a corrupted ThermoRawFileParser install. The
+    # watcher's mode-detect path silently falls back to monitor mode
+    # when TRFP returns ERROR_INVALID_DATA, so a corrupted binary
+    # (Lumos 2026-05-05: 152 KB stub instead of the real ~7 MB exe)
+    # makes the runs table stop growing while sync_to_hive_mirror
+    # keeps reporting the watcher healthy.
+    "reinstall_trfp":      _action_reinstall_trfp,
     # Retroactive cleanup — only deletes rows matching an instrument's
     # *already-declared* exclude_pattern. Cannot delete arbitrary rows.
     "cleanup_excluded":    _action_cleanup_excluded,
