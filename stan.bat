@@ -86,6 +86,31 @@ echo.
 REM ---- Daily run ------------------------------------------------------
 :run
 
+REM ---- Auto-update from GitHub ---------------------------------------
+REM Quiet pip install from the main branch zip on every launch. About
+REM 5s when nothing changed, ~30s when there's a new release. We do
+REM NOT invoke update-stan.bat / update_stan.ps1 here on purpose: that
+REM script is a kitchen-sink installer that also spawns its own
+REM watcher + dashboard + overnight backfill, which would double-
+REM launch everything stan.bat is about to start. This minimal pip
+REM call just upgrades the installed package and lets stan.bat keep
+REM ownership of the dashboard + watcher windows.
+echo [%DATE% %TIME%] Checking for STAN updates...
+set "STAN_VENV_PIP=%STAN_DIR%\venv\Scripts\pip.exe"
+if not exist "%STAN_VENV_PIP%" set "STAN_VENV_PIP=%USERPROFILE%\.stan\venv\Scripts\pip.exe"
+if exist "%STAN_VENV_PIP%" (
+    "%STAN_VENV_PIP%" install --upgrade --quiet --no-input ^
+        "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip" 2>nul
+    if errorlevel 1 (
+        echo [%DATE% %TIME%] WARN: pip update failed - continuing with installed version.
+    ) else (
+        for /f "delims=" %%V in ('"%STAN_EXE%" --version 2^>nul') do echo [%DATE% %TIME%] Running %%V
+    )
+) else (
+    echo [%DATE% %TIME%] WARN: pip not found - skipping update check.
+)
+echo.
+
 echo [%DATE% %TIME%] Launching STAN dashboard...
 start "STAN Dashboard" cmd /c ""%STAN_EXE%" dashboard"
 
