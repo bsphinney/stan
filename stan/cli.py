@@ -1190,7 +1190,14 @@ def _backfill_tic_impl(
         trace = downsample_trace(trace, n_bins=128)
 
         try:
-            insert_tic_trace(run_id, trace.rt_min, trace.intensity, db_path=db_path)
+            # v0.2.304: forward bp_intensity so backfill-tic populates
+            # the BPC column on Bruker rows. Pre-fix this call dropped
+            # the bp_intensity Bruker reads for free from MaxIntensity,
+            # so backfill-tic --force never produced BPC data and the
+            # dashboard's TIC | BPC toggle stayed hidden.
+            insert_tic_trace(run_id, trace.rt_min, trace.intensity,
+                             db_path=db_path,
+                             bp_intensity=trace.bp_intensity)
             tic_metrics = compute_tic_metrics(trace)
             if tic_metrics.total_auc > 0:
                 with sqlite3.connect(str(db_path)) as con:
@@ -5137,7 +5144,9 @@ def _test_extract_pipeline(
             steps['tic'] = {'ok': False, 'why': 'no extractor produced a trace'}
         else:
             trace = downsample_trace(trace, n_bins=128)
-            insert_tic_trace(run_id, trace.rt_min, trace.intensity, db_path=db_path)
+            insert_tic_trace(run_id, trace.rt_min, trace.intensity,
+                             db_path=db_path,
+                             bp_intensity=trace.bp_intensity)
             # sawtooth check on the resulting trace
             it = trace.intensity
             diffs = [it[i + 1] - it[i] for i in range(len(it) - 1)]
