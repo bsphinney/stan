@@ -86,6 +86,46 @@ echo.
 REM ---- Daily run ------------------------------------------------------
 :run
 
+REM ---- Self-update stan.bat itself from GitHub ------------------------
+REM v0.2.302: pip-install only refreshes the Python package; .bat files
+REM on the desktop stay frozen at whatever was last downloaded. Without
+REM this step, every change to stan.bat (e.g. the auto-update step
+REM added in v0.2.297) requires every operator to re-download the file
+REM by hand — which Brett's timsTOF didn't do, so it stayed on the
+REM v0.2.295 stan.bat that doesn't auto-update at all.
+REM
+REM Strategy: download main/stan.bat to a temp file. Hash both. If
+REM different, copy temp over self, spawn a fresh cmd window with the
+REM new file, and exit cleanly. cmd.exe normally can't overwrite a
+REM running .bat, but Windows allows the copy as long as it's not
+REM exclusively locked (which cmd doesn't do for .bat reads). We
+REM relaunch via "start" + "exit" so the new cmd reads the fresh file
+REM from the start instead of trying to resume mid-script.
+REM
+REM Network failures fall through silently. Hash failures fall through.
+REM Only an actual content diff triggers the replace+relaunch.
+set "STAN_BAT_NEW=%TEMP%\stan_new_%RANDOM%%RANDOM%.bat"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; try { Invoke-WebRequest -Uri ('https://raw.githubusercontent.com/bsphinney/stan/main/stan.bat?t=' + [DateTime]::Now.Ticks) -OutFile '%STAN_BAT_NEW%' -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop; $n = (Get-FileHash -Path '%STAN_BAT_NEW%' -Algorithm SHA256).Hash; $c = (Get-FileHash -Path '%~f0' -Algorithm SHA256).Hash; if ($n -ne $c) { exit 100 } else { exit 0 } } catch { exit 200 }"
+if errorlevel 200 (
+    echo [%DATE% %TIME%] Self-update check skipped: couldn't reach GitHub.
+    if exist "%STAN_BAT_NEW%" del "%STAN_BAT_NEW%" 2>nul
+    goto after_self_update
+)
+if errorlevel 100 (
+    echo [%DATE% %TIME%] Found newer stan.bat on GitHub — refreshing this file.
+    copy /y "%STAN_BAT_NEW%" "%~f0" >nul
+    del "%STAN_BAT_NEW%" 2>nul
+    if errorlevel 1 (
+        echo [%DATE% %TIME%] WARN: couldn't overwrite stan.bat - continuing.
+        goto after_self_update
+    )
+    echo [%DATE% %TIME%] stan.bat refreshed — relaunching with new version.
+    start "" cmd /c "\"%~f0\""
+    exit /b 0
+)
+del "%STAN_BAT_NEW%" 2>nul
+:after_self_update
+
 REM ---- Auto-update from GitHub ---------------------------------------
 REM Quiet pip install from the main branch zip on every launch. About
 REM 5s when nothing changed, ~30s when there's a new release. We do
