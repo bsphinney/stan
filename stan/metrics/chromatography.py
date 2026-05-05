@@ -49,13 +49,33 @@ class Reference:
 # fallback used when the specific SPD bucket has no reference.
 
 IPS_REFERENCES: dict[tuple[str, str], Reference] = {
+    # v0.2.306: re-keyed to the scoring.py spd_bucket vocabulary
+    # ("deep" / "15spd" / "30spd" / "60spd" / "100spd" / "200+spd")
+    # so the IPS reference lookup uses the same buckets that
+    # cohort_id strings carry on every submission. Pre-fix the IPS
+    # lookup used chromatography.py's vocabulary
+    # ("deep" / "medium" / "fast" / "ultra") which never agreed
+    # with cohort_id — every IPS score was being looked up against
+    # a cohort the run wasn't placed into. Mapping from the old
+    # buckets to the new (boundaries don't perfectly align;
+    # acceptable for v1.0):
+    #   "deep"   ≤15 spd  → "deep"   (scoring's <10; UCD's deep
+    #                                  runs are 90-min+ gradients
+    #                                  which sit well below 15 spd)
+    #   "medium" 16-40    → "30spd"  (scoring's 25-39; UCD seed
+    #                                  is mostly Evosep 30 SPD)
+    #   "fast"   41-80    → "60spd"  (scoring's 40-79; UCD seed
+    #                                  is mostly Evosep 60 SPD)
+    #   "ultra"  >80      → "100spd" (scoring's 80-199; UCD seed
+    #                                  is mostly Evosep 100 SPD)
+    # "200+spd" has no seed yet — falls through to family-wide "*".
     ("Exploris 480", "deep"): Reference(
         n=8,
         precursors=(26974, 31698, 35425),
         peptides=(23845, 28545, 32111),
         proteins=(3373, 3993, 4195),
     ),
-    ("Exploris 480", "medium"): Reference(
+    ("Exploris 480", "30spd"): Reference(
         n=46,
         precursors=(19159, 25259, 29874),
         peptides=(17550, 23020, 27081),
@@ -67,25 +87,25 @@ IPS_REFERENCES: dict[tuple[str, str], Reference] = {
         peptides=(29066, 35762, 50551),
         proteins=(3982, 4510, 5509),
     ),
-    ("Lumos", "medium"): Reference(
+    ("Lumos", "30spd"): Reference(
         n=64,
         precursors=(16705, 27251, 37839),
         peptides=(15452, 24847, 33727),
         proteins=(2657, 3614, 4347),
     ),
-    ("timsTOF HT", "fast"): Reference(
+    ("timsTOF HT", "60spd"): Reference(
         n=74,
         precursors=(32305, 42778, 48757),
         peptides=(28864, 38195, 43578),
         proteins=(4300, 4768, 5104),
     ),
-    ("timsTOF HT", "medium"): Reference(
+    ("timsTOF HT", "30spd"): Reference(
         n=30,
         precursors=(36153, 45262, 50142),
         peptides=(32779, 40531, 44574),
         proteins=(4730, 4972, 5160),
     ),
-    ("timsTOF HT", "ultra"): Reference(
+    ("timsTOF HT", "100spd"): Reference(
         n=104,
         precursors=(25203, 37051, 45731),
         peptides=(23722, 33106, 40851),
@@ -157,22 +177,33 @@ _DDA_FALLBACK = Reference(
 
 
 def spd_bucket(spd: int | float | None) -> str:
-    """Bucket samples-per-day into coarse throughput classes.
+    """Bucket samples-per-day into a cohort throughput class.
 
-    deep   ≤15 spd  (long gradient / deep proteome)
-    medium 16-40    (standard)
-    fast   41-80
-    ultra  >80      (short-gradient / high-throughput)
+    v0.2.306: This is now a thin alias to ``scoring.spd_bucket`` so
+    the IPS reference lookup uses the same vocabulary that
+    ``cohort_id`` strings carry on every submission. Pre-fix this
+    file shipped a separate vocabulary
+    ("deep" / "medium" / "fast" / "ultra") that never agreed with
+    scoring's ("200+spd" / "100spd" / "60spd" / "30spd" / "15spd"
+    / "deep") — every IPS score was being looked up against a
+    cohort the run wasn't placed into. Single source of truth now
+    lives in ``stan.metrics.scoring.spd_bucket``.
+
+    Returns one of:
+      "200+spd"  ≥200 SPD (Evosep 500/300/200, Vanquish Neo 180)
+      "100spd"   80-199 SPD (Evosep 100)
+      "60spd"    40-79 SPD (Evosep 60, most popular)
+      "30spd"    25-39 SPD (Evosep 30, Whisper 40)
+      "15spd"    10-24 SPD (Evosep Extended, traditional 1h)
+      "deep"     <10 SPD (long gradient / deep proteome)
+
+    ``None`` and non-positive SPDs default to "30spd" (the most
+    common cohort) so the IPS lookup always finds a key.
     """
+    from stan.metrics.scoring import spd_bucket as _scoring_spd_bucket
     if spd is None or spd <= 0:
-        return "medium"
-    if spd <= 15:
-        return "deep"
-    if spd <= 40:
-        return "medium"
-    if spd <= 80:
-        return "fast"
-    return "ultra"
+        return "30spd"
+    return _scoring_spd_bucket(int(spd))
 
 
 def _get_reference(instrument_family: str | None, spd: int | float | None) -> Reference:
