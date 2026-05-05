@@ -2871,6 +2871,13 @@
     function TodayTicOverlay() {
       const [data, setData] = useState(null);
       const [normalize, setNormalize] = useState(true);
+      // v0.2.301: TIC | BPC toggle. 'intensity' = summed (TIC),
+      // 'bp_intensity' = per-frame max (BPC). Only Bruker timsTOF
+      // populates the BPC column today (extract_tic_bruker reads
+      // MaxIntensity for free from analysis.tdf:Frames). Thermo
+      // traces stay on intensity regardless — TicOverlaySvg falls
+      // back gracefully for traces missing bp_intensity.
+      const [channel, setChannel] = useState('intensity');
       // Which facets to render. 'all' keeps the original 3-panel view,
       // 'qc' / 'sample' / 'blank' drill into a single category so the
       // operator can focus. Brett 2026-04-21: default 3-up panels are
@@ -2977,6 +2984,34 @@
                   }}>{lab}</button>
                 ))}
               </div>
+              {/* TIC | BPC toggle — only rendered when at least one
+                  trace in view has a base-peak array. Bruker timsTOF
+                  runs ingested after v0.2.300 carry it; Thermo runs
+                  don't yet, so the toggle stays hidden for an
+                  Exploris-only day. */}
+              {(() => {
+                const anyBpc =
+                  (facets.qc || []).some(r => r.tic && r.tic.bp_intensity) ||
+                  (facets.sample || []).some(r => r.tic && r.tic.bp_intensity) ||
+                  (facets.blank || []).some(r => r.tic && r.tic.bp_intensity);
+                if (!anyBpc) return null;
+                return (
+                  <div style={{display:'inline-flex', gap:'0.2rem'}} title="Switch the y-axis between summed (TIC) and per-frame max (BPC). BPC is Bruker timsTOF only.">
+                    {[
+                      ['intensity', 'TIC'],
+                      ['bp_intensity', 'BPC'],
+                    ].map(([k, lab]) => (
+                      <button key={k} onClick={() => setChannel(k)} style={{
+                        padding:'0.2rem 0.55rem', fontSize:'0.75rem',
+                        background: channel === k ? 'var(--accent)' : 'var(--bg)',
+                        color: channel === k ? '#000' : 'var(--text)',
+                        border:'1px solid var(--border)', borderRadius:'0.25rem',
+                        cursor:'pointer',
+                      }}>{lab}</button>
+                    ))}
+                  </div>
+                );
+              })()}
               <label style={{display:'inline-flex', alignItems:'center', gap:'0.3rem', fontSize:'0.8rem', color:'var(--muted)'}}>
                 <input type="checkbox" checked={normalize}
                        onChange={e => setNormalize(e.target.checked)} />
@@ -3000,6 +3035,7 @@
               <FacetPanel key={cls}
                           label={label} items={items} withTic={withTic}
                           palette={FACET_PALETTES[cls]} normalize={normalize}
+                          channel={channel}
                           showCirtMarkers={cls === 'qc'} />
             );
           })}
@@ -3010,7 +3046,7 @@
     // One panel within the 3-facet TIC overlay. Renders a TicOverlaySvg
     // (when there are TIC traces) or a one-line stub (when items
     // exist but none have a stored TIC).
-    function FacetPanel({ label, items, withTic, palette, normalize, showCirtMarkers }) {
+    function FacetPanel({ label, items, withTic, palette, normalize, channel='intensity', showCirtMarkers }) {
       if (items.length === 0) return null;
       return (
         <div style={{marginTop:'0.5rem', paddingTop:'0.5rem', borderTop:'1px solid var(--border)'}}>
@@ -3024,7 +3060,8 @@
           </div>
           {withTic.length > 0
             ? <TicOverlaySvg runs={withTic} normalize={normalize}
-                             palette={palette} showCirtMarkers={showCirtMarkers} />
+                             palette={palette} channel={channel}
+                             showCirtMarkers={showCirtMarkers} />
             : <div style={{color:'var(--muted)', fontSize:'0.75rem', padding:'0.4rem 0'}}>
                 No TIC traces yet for these runs.
                 {label !== 'QC' && (
@@ -3051,6 +3088,7 @@
     }
 
     function TicOverlaySvg({ runs, normalize, height=260, palette,
+                              channel='intensity',
                               showCirtMarkers=true }) {
       // v0.2.174: 'all' | 'outliers' | 'recent10' view.
       // - all: every trace (old behavior)
@@ -3068,15 +3106,23 @@
 
       const baseSeries = useMemo(() => runs.map(r => {
         const rt = r.tic?.rt_min || [];
-        const intensity = r.tic?.intensity || [];
-        if (rt.length < 2 || rt.length !== intensity.length) return null;
-        let yvals = intensity.slice();
+        // v0.2.301: channel toggle — switch the y-array between
+        // summed intensity (TIC) and per-frame max (BPC). When the
+        // user asks for BPC but a particular trace doesn't have one
+        // (Thermo run that hasn't been re-extracted yet, or any
+        // pre-v0.2.300 row), gracefully fall back to TIC for that
+        // trace so the overlay isn't suddenly empty.
+        const yArr = (channel === 'bp_intensity' && Array.isArray(r.tic?.bp_intensity))
+          ? r.tic.bp_intensity
+          : (r.tic?.intensity || []);
+        if (rt.length < 2 || rt.length !== yArr.length) return null;
+        let yvals = yArr.slice();
         if (normalize) {
           const mx = Math.max(...yvals);
           if (mx > 0) yvals = yvals.map(v => v / mx);
         }
         return { run: r, rt, y: yvals };
-      }).filter(Boolean), [runs, normalize]);
+      }).filter(Boolean), [runs, normalize, channel]);
 
       // Build a common RT grid and interpolate every trace onto it so
       // we can compute a pointwise median and each trace's deviation

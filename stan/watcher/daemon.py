@@ -1019,13 +1019,23 @@ class InstrumentWatcher:
             )
 
         if mode == AcquisitionMode.UNKNOWN:
+            # v0.2.301: Brett 2026-05-05 — "for QCs where it cannot be
+            # determined if it's DIA or DDA, default to DIA and try
+            # and search it; 99% of the time it will be DIA". Pre-fix
+            # we returned without recording, so a corrupted TRFP / a
+            # transient mode-detect failure silently dropped the run
+            # from the QC pipeline. Now we assume DIA — wrong 1% of
+            # the time but at least the search runs and produces a
+            # row the operator can re-classify if needed.
+            vendor = (self._config.get("vendor") or "").lower()
+            mode = (AcquisitionMode.DIA_PASEF if vendor == "bruker"
+                    else AcquisitionMode.DIA_ORBITRAP)
             logger.warning(
-                "Could not detect acquisition mode for %s — skipping. "
-                "For Thermo instruments, set 'forced_mode: dia' or 'forced_mode: dda' "
-                "in instruments.yml instead of relying on auto-detection.",
-                path.name,
+                "Could not detect acquisition mode for %s — defaulting "
+                "to %s (99%% of QCs are DIA). Set forced_mode in "
+                "instruments.yml if this run is actually DDA.",
+                path.name, mode.value,
             )
-            return
 
         logger.info("Detected mode: %s for %s", mode.value, path.name)
 
