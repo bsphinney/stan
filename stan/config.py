@@ -130,7 +130,21 @@ def sync_to_hive_mirror(include_reports: bool = True) -> bool:
         if src.exists():
             try:
                 dest = hive_dir / fname
-                shutil.copy2(str(src), str(dest))
+                # v0.2.308: redact secrets in YAML files before they
+                # cross to the shared Quobyte mount. Pre-fix
+                # community.yml was copied verbatim, exposing
+                # auth_token / hf_token / etc. to anyone with Quobyte
+                # read access — typically the entire lab group.
+                # Parquet binaries are passed through untouched.
+                if fname.endswith(".yml"):
+                    from stan.control import _redact_secrets
+                    text = src.read_text(encoding="utf-8")
+                    redacted = _redact_secrets(text)
+                    tmp = dest.with_suffix(dest.suffix + ".tmp")
+                    tmp.write_text(redacted, encoding="utf-8")
+                    tmp.replace(dest)
+                else:
+                    shutil.copy2(str(src), str(dest))
                 synced.append(fname)
             except Exception as e:
                 logger.debug("Could not sync %s to Hive: %s", fname, e)

@@ -398,9 +398,40 @@ _EDITABLE_CONFIGS = frozenset({"instruments.yml", "thresholds.yml", "community.y
 _MAX_CONFIG_BYTES = 100_000
 
 
+def _redact_secrets(yaml_text: str) -> str:
+    """Strip secret-bearing keys from a YAML text before mirroring.
+
+    v0.2.308: pre-fix `community.yml` was uploaded verbatim to
+    `<hive>/STAN/<host>/community.yml`, exposing `auth_token`,
+    `hf_token`, etc. to anyone with Quobyte read access. Operators
+    don't expect their mirrored config to contain credentials and
+    most labs share Quobyte access broadly within their group.
+    Redaction happens at the YAML-text level so we preserve
+    formatting/comments — parsing+redumping would also work but
+    drops user comments.
+
+    Matches lines like ``  auth_token: abc123`` (any indent, with or
+    without leading dash) where the key contains ``token``,
+    ``secret``, ``password``, ``api_key``, or ``apikey``
+    (case-insensitive). Replaces the value with ``<REDACTED>``.
+    Returns the redacted text.
+    """
+    import re
+
+    pattern = re.compile(
+        r"^(?P<prefix>[\s\-]*(?:[\w.]*[._-])?"
+        r"(?:token|secret|password|api_key|apikey)[\w.]*)\s*:.*$",
+        re.IGNORECASE | re.MULTILINE,
+    )
+    return pattern.sub(r"\g<prefix>: <REDACTED>", yaml_text)
+
+
 def upload_configs(mirror_dir: Path | None = None) -> int:
     """Copy the current user config YAMLs into `<mirror>/config/` so a
     remote operator can read them without shelling into the instrument.
+
+    Secret-bearing keys (``auth_token``, ``hf_token``, ``password``,
+    etc.) are redacted before upload — see ``_redact_secrets``.
 
     Called from the watcher heartbeat so the mirrored copies stay fresh.
     Returns the number of files copied. Silent no-op if no mirror."""
@@ -421,6 +452,7 @@ def upload_configs(mirror_dir: Path | None = None) -> int:
             continue
         try:
             content = src.read_text(encoding="utf-8")
+            content = _redact_secrets(content)
             dst = out_dir / fname
             tmp = dst.with_suffix(dst.suffix + ".tmp")
             tmp.write_text(content, encoding="utf-8")

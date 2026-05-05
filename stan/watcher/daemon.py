@@ -1027,6 +1027,13 @@ class InstrumentWatcher:
             # from the QC pipeline. Now we assume DIA — wrong 1% of
             # the time but at least the search runs and produces a
             # row the operator can re-classify if needed.
+            #
+            # TODO(v1.1): also stamp a `mode_uncertain` flag on the
+            # row so the dashboard can flag it. The v0.2.308 audit
+            # caught that ddaPASEF runs falling through this path
+            # land as 0-precursor ghosts with no UI hint about why.
+            # Implementation needs: db migration + insert_run kwarg
+            # + dashboard badge — out of scope for the 1.0 audit pass.
             vendor = (self._config.get("vendor") or "").lower()
             mode = (AcquisitionMode.DIA_PASEF if vendor == "bruker"
                     else AcquisitionMode.DIA_ORBITRAP)

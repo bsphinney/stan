@@ -204,6 +204,16 @@ def submit_to_benchmark(
         # split the OT-OT vs OT-IT cohort cards once the schema
         # lands, without backfilling old runs.
         "ms2_analyzer": run.get("ms2_analyzer") or "",
+        # v0.2.308: forward-compat marker — IT submissions are
+        # currently searched with the SAME OT-tuned Sage params
+        # because the IT param sweep hasn't been run yet (see
+        # community_params.COMMUNITY_SAGE_PARAMS_IT comment).
+        # Stamping it_params_tuned=false on every IT row now means
+        # the future v1.1 cohort split can cleanly filter "real
+        # IT-tuned cohort" vs "historical IT-on-OT-params". OT and
+        # tof rows always get True since their params are correct
+        # for their analyzer.
+        "it_params_tuned": (run.get("ms2_analyzer") or "") != "IT",
     }
 
     # Add identified TIC trace if available (128 bins, ~500 bytes)
