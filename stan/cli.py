@@ -2265,6 +2265,49 @@ def watch(
             pass
 
 
+def _detect_tailscale() -> dict | None:
+    """Best-effort probe for a running Tailscale daemon on this host.
+
+    Returns ``{'hostname': str, 'suffix': str, 'ip': str}`` or None if
+    Tailscale isn't installed or isn't currently logged in. Used by
+    `stan dashboard` to auto-configure godmode access without
+    requiring the operator to set env vars or edit stan.bat.
+
+    v0.2.315: added so installing Tailscale on an instrument PC is the
+    only manual step — `stan dashboard` reads the local Tailscale
+    state on startup, expands the bind host + Origin allowlist
+    automatically. Pre-fix the operator had to know their tailnet
+    suffix, set STAN_DASHBOARD_EXTRA_ORIGINS by hand, and add
+    ``--host 0.0.0.0`` to the launch line.
+    """
+    import json
+    import shutil
+    import subprocess
+
+    if not shutil.which("tailscale"):
+        return None
+    try:
+        r = subprocess.run(
+            ["tailscale", "status", "--json"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if r.returncode != 0 or not r.stdout:
+            return None
+        data = json.loads(r.stdout)
+    except Exception:
+        return None
+
+    self_node = data.get("Self") or {}
+    hostname = (self_node.get("HostName") or "").lower()
+    suffix = data.get("MagicDNSSuffix") or ""
+    ips = self_node.get("TailscaleIPs") or []
+    ip = ips[0] if ips else ""
+
+    if not hostname and not ip:
+        return None
+    return {"hostname": hostname, "suffix": suffix, "ip": ip}
+
+
 @app.command()
 def dashboard(
     port: int = typer.Option(8421, "--port", "-p", help="Dashboard port"),
@@ -2273,13 +2316,51 @@ def dashboard(
     """Start the local STAN dashboard.
 
     Serves the QC dashboard at http://localhost:8421.
+
+    v0.2.315: if Tailscale is installed and logged in on this host,
+    the dashboard auto-configures godmode access:
+      - bind expands from 127.0.0.1 to 0.0.0.0 so Tailscale traffic
+        can reach the listener (Windows firewall still gates inbound)
+      - Tailscale URLs are added to the Origin allowlist so godmode
+        action POSTs from a remote browser don't 403
+    Set --host explicitly to override; existing
+    STAN_DASHBOARD_EXTRA_ORIGINS env var entries are preserved.
     """
+    import os
     import uvicorn
 
-    console.print(f"[bold]STAN v{__version__}[/bold] — dashboard")
-    console.print(f"  http://{host}:{port}")
-    console.print(f"  API docs: http://{host}:{port}/docs")
-    console.print()
+    ts = _detect_tailscale()
+    if ts:
+        extra: list[str] = []
+        if ts["hostname"]:
+            extra.append(f"http://{ts['hostname']}:{port}")
+            if ts["suffix"]:
+                extra.append(f"http://{ts['hostname']}.{ts['suffix']}:{port}")
+        if ts["ip"]:
+            extra.append(f"http://{ts['ip']}:{port}")
+
+        existing = os.environ.get("STAN_DASHBOARD_EXTRA_ORIGINS", "")
+        parts = [p.strip() for p in existing.split(",") if p.strip()]
+        for e in extra:
+            if e not in parts:
+                parts.append(e)
+        os.environ["STAN_DASHBOARD_EXTRA_ORIGINS"] = ",".join(parts)
+
+        if host == "127.0.0.1":
+            host = "0.0.0.0"
+
+        console.print(f"[bold]STAN v{__version__}[/bold] — dashboard "
+                      f"[cyan](Tailscale detected)[/cyan]")
+        console.print(f"  Bound to:    {host}:{port}")
+        console.print(f"  Local:       http://localhost:{port}")
+        for u in extra:
+            console.print(f"  Tailscale:   {u}")
+        console.print()
+    else:
+        console.print(f"[bold]STAN v{__version__}[/bold] — dashboard")
+        console.print(f"  http://{host}:{port}")
+        console.print(f"  API docs: http://{host}:{port}/docs")
+        console.print()
 
     uvicorn.run(
         "stan.dashboard.server:app",
