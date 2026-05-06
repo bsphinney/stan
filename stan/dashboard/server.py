@@ -42,10 +42,28 @@ app = FastAPI(title="STAN Dashboard", version=__version__)
 #      Missing Origin is allowed — covers operator CLI clients
 #      (curl, requests) which is fine because the listener is
 #      already 127.0.0.1-bound, not externally reachable.
-_DASHBOARD_ORIGINS = (
+_DASHBOARD_ORIGINS_BASE = (
     "http://localhost:8421",
     "http://127.0.0.1:8421",
 )
+
+# v0.2.314: env-var escape hatch for Tailscale / cloudflared / LAN
+# deployments. When the dashboard is reached at a non-localhost URL
+# (e.g. http://lumosrox.tail-foo-bar.ts.net:8421 over Tailscale, or
+# https://godmode.stan-proteomics.org behind a Cloudflare tunnel),
+# browsers send that URL as the Origin header on POST requests and
+# the v0.2.307 gate would otherwise 403 every godmode action.
+# Set STAN_DASHBOARD_EXTRA_ORIGINS to a comma-separated list, e.g.
+#   set STAN_DASHBOARD_EXTRA_ORIGINS=http://lumosrox.tail-foo-bar.ts.net:8421
+# before launching `stan dashboard`. Multiple origins separated by
+# commas. No wildcards — explicit allowlist remains the security
+# property the gate provides.
+import os as _os
+_extra = [
+    o.strip() for o in (_os.environ.get("STAN_DASHBOARD_EXTRA_ORIGINS") or "").split(",")
+    if o.strip()
+]
+_DASHBOARD_ORIGINS = tuple(_DASHBOARD_ORIGINS_BASE) + tuple(_extra)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(_DASHBOARD_ORIGINS),
