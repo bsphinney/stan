@@ -159,20 +159,58 @@ echo  STEP 7/7  OPTIONAL Hive-side test (requires SSH key)
 echo ===================================================================
 echo.
 
+REM Resolve SSH key with this precedence:
+REM   1. existing local %USERPROFILE%\.ssh\id_ed25519
+REM   2. existing local %USERPROFILE%\.ssh\id_rsa
+REM   3. copy from Quobyte temp drop (only if .bat ran from Quobyte STAN dir)
+REM      Brett uploads the key to /quobyte/proteomics-grp/brett/.tmp_keys/
+REM      with chmod 600 + dir 700 so only his UID can read it. Cleanup
+REM      command after the rollout:
+REM        ssh hive "rm -rf /quobyte/proteomics-grp/brett/.tmp_keys"
 set "SSH_KEY="
 if exist "%USERPROFILE%\.ssh\id_ed25519" set "SSH_KEY=%USERPROFILE%\.ssh\id_ed25519"
 if not defined SSH_KEY if exist "%USERPROFILE%\.ssh\id_rsa" set "SSH_KEY=%USERPROFILE%\.ssh\id_rsa"
 
 if not defined SSH_KEY (
-    echo No SSH key found in %USERPROFILE%\.ssh\
+    REM Try the Quobyte temp drop. %~dp0 is this .bat's directory; if
+    REM it lives at \\quobyte\proteomics-grp\STAN\, then ..\brett\
+    REM resolves to /quobyte/proteomics-grp/brett/. Resolves to nothing
+    REM useful if Brett copied the .bat to a local dir before running.
+    set "QUOBYTE_KEY=%~dp0..\brett\.tmp_keys\id_ed25519"
+    if exist "!QUOBYTE_KEY!" (
+        echo Found Brett's temp key on Quobyte. Copying to local
+        echo %USERPROFILE%\.ssh\ for this and future runs.
+        if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"
+        copy /y "!QUOBYTE_KEY!" "%USERPROFILE%\.ssh\id_ed25519" >nul
+        if errorlevel 1 (
+            echo ERROR: copy failed. Skipping Hive test.
+            goto skip_hive
+        )
+        REM Lock down the local copy. icacls strips inherited perms
+        REM and grants read only to the current user.
+        icacls "%USERPROFILE%\.ssh\id_ed25519" /inheritance:r /grant:r "%USERNAME%:R" >nul
+        set "SSH_KEY=%USERPROFILE%\.ssh\id_ed25519"
+        echo Key installed at %USERPROFILE%\.ssh\id_ed25519
+        echo.
+        echo NOTE: this is Brett's master Hive key. After the
+        echo rollout is done across all instrument PCs, clean up
+        echo the Quobyte copy with:
+        echo   ssh hive "rm -rf /quobyte/proteomics-grp/brett/.tmp_keys"
+        echo.
+    )
+)
+
+if not defined SSH_KEY (
+    echo No SSH key found in %USERPROFILE%\.ssh\ and no Quobyte temp
+    echo drop reachable from %~dp0.
     echo.
-    echo To run the Hive-side test from this PC, copy your private key
-    echo from your Mac one time:
+    echo Either run this .bat directly from the Quobyte STAN share
+    echo (\\^<quobyte^>\proteomics-grp\STAN\test-hive-flow.bat) so it
+    echo can find the temp key, or copy your key from your Mac one
+    echo time:
+    echo   scp ~/.ssh/id_ed25519 ^<this-pc-username^>@^<this-pc-host^>:.ssh/
     echo.
-    echo   On your Mac:
-    echo     scp ~/.ssh/id_ed25519 ^<this-pc-username^>@^<this-pc-host^>:.ssh/
-    echo.
-    echo Then re-run this .bat. Skipping Hive test for now.
+    echo Skipping Hive test.
     goto skip_hive
 )
 
