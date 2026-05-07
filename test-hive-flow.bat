@@ -61,13 +61,40 @@ echo  STEP 1/7  Installing STAN v0.2.318+ from GitHub main
 echo ===================================================================
 echo.
 
-"%STAN_PIP%" install --upgrade --quiet --no-input "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"
+REM Capture the pre-install version so we can verify the upgrade
+REM actually flipped — corrupt `~tan-proteomics` leftovers from a
+REM prior partial upgrade can make pip silently skip without raising
+REM a non-zero exit code. Saw exactly this on the Exploris 480 on
+REM 2026-05-07: pip returned 0, version stayed pinned at v0.2.315.
+for /f "delims=" %%V in ('"%STAN_EXE%" version 2^>nul') do set "VERSION_BEFORE=%%V"
+
+REM --force-reinstall bulldozes through the `~tan-proteomics`
+REM corruption. Drop --quiet so the output is visible if something
+REM goes wrong (e.g. running stan.exe holding a file lock — same
+REM cause as the v0.2.313 Exploris bug).
+"%STAN_PIP%" install --upgrade --force-reinstall "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"
 if errorlevel 1 (
     echo.
-    echo ERROR: pip install failed. Check network + GitHub reachability.
+    echo ERROR: pip install failed. If "Permission denied" or "in use"
+    echo appears above, close any running stan.exe / stan dashboard
+    echo windows and re-run. Otherwise check network reachability.
     echo.
     pause
     exit /b 1
+)
+
+for /f "delims=" %%V in ('"%STAN_EXE%" version 2^>nul') do set "VERSION_AFTER=%%V"
+echo.
+echo Before: !VERSION_BEFORE!
+echo After:  !VERSION_AFTER!
+if "!VERSION_BEFORE!"=="!VERSION_AFTER!" (
+    echo.
+    echo WARNING: version did not change. There may be a stale STAN
+    echo installation that pip can't overwrite. Try closing any
+    echo running stan watch / stan dashboard windows, deleting
+    echo C:\Users\Exploris480\STAN\venv\Lib\site-packages\~tan-proteomics*
+    echo manually, and re-running.
+    echo.
 )
 
 echo.
@@ -205,7 +232,7 @@ if not defined SSH_KEY (
     echo drop reachable from %~dp0.
     echo.
     echo Either run this .bat directly from the Quobyte STAN share
-    echo (\\^<quobyte^>\proteomics-grp\STAN\test-hive-flow.bat) so it
+    echo ^(\\^<quobyte^>\proteomics-grp\STAN\test-hive-flow.bat^) so it
     echo can find the temp key, or copy your key from your Mac one
     echo time:
     echo   scp ~/.ssh/id_ed25519 ^<this-pc-username^>@^<this-pc-host^>:.ssh/
