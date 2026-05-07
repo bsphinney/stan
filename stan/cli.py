@@ -6163,3 +6163,70 @@ def backup_now() -> None:
     else:
         console.print("[red]Sync failed (no mirror configured?)[/red]")
         raise typer.Exit(1)
+
+
+@app.command("hive-process")
+def hive_process_cmd(
+    raw: Path = typer.Argument(..., help="Path to .d directory or .raw file on Hive."),
+    instrument: str = typer.Option(..., "--instrument",
+        help="Canonical instrument model name (e.g. 'timsTOF HT', "
+             "'Orbitrap Fusion Lumos', 'Orbitrap Exploris 480')."),
+    family: str = typer.Option(..., "--family",
+        help="Instrument family for IPS cohort key: timsTOF | Lumos | Exploris."),
+    db: Path = typer.Option(
+        Path("/quobyte/proteomics-grp/STAN/stan.db"), "--db",
+        help="Global Hive-resident stan.db. Defaults to the unified DB."),
+    out_dir: Path = typer.Option(..., "--out-dir",
+        help="Directory for DIA-NN/Sage outputs. Created if absent."),
+    vendor: str = typer.Option("", "--vendor",
+        help="bruker | thermo. Auto-inferred from raw shape when empty."),
+    mode: str = typer.Option("", "--mode",
+        help="Force dia/dda. Empty = auto-detect from raw metadata."),
+    column_vendor: str = typer.Option("", "--column-vendor"),
+    column_model: str = typer.Option("", "--column-model"),
+    amount_ng: float = typer.Option(50.0, "--amount-ng",
+        help="HeLa injection amount stamp."),
+    spd: int = typer.Option(0, "--spd",
+        help="Cohort default if metadata-resolve fails. 0 = no override."),
+    gradient_min: int = typer.Option(0, "--gradient-min",
+        help="Forced gradient length in minutes. 0 = snap from SPD."),
+    force: bool = typer.Option(False, "--force",
+        help="Re-run even when a completed row already exists."),
+) -> None:
+    """Run the full STAN QC pipeline against ONE raw file on Hive.
+
+    Body of each SLURM job in the Hive-side architecture: detect mode,
+    run DIA-NN/Sage, extract metrics, compute IPS, evaluate gates,
+    write to the global DB, persist TIC/BPC + 4DFF features + PEG/drift.
+
+    Designed for SLURM dispatch by ``stan/community/scripts/dispatch_hive.py``.
+    Idempotent: skips raws whose row already exists unless --force.
+    """
+    import json as _json
+    from stan.pipeline.hive_process import process_raw
+
+    result = process_raw(
+        raw_path=raw,
+        instrument=instrument,
+        family=family,
+        db_path=db,
+        out_dir=out_dir,
+        vendor=vendor,
+        forced_mode=mode,
+        column_vendor=column_vendor,
+        column_model=column_model,
+        hela_amount_ng=amount_ng,
+        spd=spd or None,
+        gradient_length_min=gradient_min or None,
+        force=force,
+    )
+
+    # JSONL line on stdout for the dispatcher to tally. Plain ``print``,
+    # NOT ``console.print`` — under SLURM stdout is captured to a file
+    # but rich may still inject ANSI when it can't detect a TTY. JSONL
+    # has to round-trip cleanly for the dispatcher's tally parser.
+    print(_json.dumps(result, default=str), flush=True)
+    # ``search_empty`` exits 0 — the row is written, dashboard shows
+    # the degraded state, retrying won't help.
+    if result.get("status") not in ("ok", "skipped", "search_empty"):
+        raise typer.Exit(1)
