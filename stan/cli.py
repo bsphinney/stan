@@ -6230,3 +6230,61 @@ def hive_process_cmd(
     # the degraded state, retrying won't help.
     if result.get("status") not in ("ok", "skipped", "search_empty"):
         raise typer.Exit(1)
+
+
+@app.command("hive-dispatch")
+def hive_dispatch_cmd(
+    config: Path = typer.Option(
+        Path("/quobyte/proteomics-grp/STAN/dispatch.yml"), "--config",
+        help="Path to the dispatcher YAML."),
+    dry_run: bool = typer.Option(False, "--dry-run",
+        help="Report what would be submitted, don't sbatch."),
+    instrument: str = typer.Option("", "--instrument",
+        help="Substring filter on instrument name (case-insensitive)."),
+    print_default_config: bool = typer.Option(False, "--print-default-config",
+        help="Write a default dispatch.yml template to stdout and exit."),
+) -> None:
+    """Hive-side cron dispatcher: scan watch dirs, submit SLURM jobs.
+
+    Single-pass — exits when done. Designed to run from Hive cron every
+    15 min. Walks each instrument's ``watch_dir``, finds raws not yet in
+    the global stan.db, and submits one SLURM job per raw running
+    ``stan hive-process``. Idempotent; safe to re-run.
+
+    Bootstrap a config:
+      stan hive-dispatch --print-default-config > /quobyte/.../dispatch.yml
+
+    Then add a cron entry on Hive (login node):
+      */15 * * * * /quobyte/.../stan_venv/bin/stan hive-dispatch \\
+          --config /quobyte/proteomics-grp/STAN/dispatch.yml \\
+          >> /quobyte/proteomics-grp/STAN/logs/dispatch.log 2>&1
+    """
+    import sys as _sys
+    from stan.community.scripts.dispatch_hive import (
+        DEFAULT_CONFIG_TEMPLATE, dispatch_all,
+    )
+
+    if print_default_config:
+        _sys.stdout.write(DEFAULT_CONFIG_TEMPLATE)
+        return
+
+    summary = dispatch_all(
+        config_path=config,
+        dry_run=dry_run,
+        instrument_filter=instrument,
+    )
+    totals = summary["totals"]
+    console.print(
+        f"[{'cyan' if dry_run else 'green'}]"
+        f"{'Dry-run' if dry_run else 'Dispatch'}:[/] "
+        f"scanned={totals['scanned']} "
+        f"submitted={totals['submitted']} "
+        f"skipped(processed={totals['skipped_processed']}, "
+        f"pattern={totals['skipped_pattern']}, "
+        f"in_flight={totals['skipped_in_flight']}, "
+        f"max_attempts={totals['skipped_max_attempts']}) "
+        f"failed={totals['submit_failed']} "
+        f"capped={totals['capped']}"
+    )
+    if totals["submit_failed"] > 0:
+        raise typer.Exit(1)
