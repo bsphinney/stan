@@ -3,23 +3,24 @@ REM ===================================================================
 REM  test-hive-flow.bat — install STAN v0.2.318+ and smoke-test the
 REM  new Hive-side CLI surface (stan hive-process + stan hive-dispatch).
 REM
-REM  Hosted at /quobyte/proteomics-grp/STAN/test-hive-flow.bat so any
-REM  instrument PC with the Quobyte client can grab it directly.
+REM  Hosted at /quobyte/proteomics-grp/STAN/test-hive-flow.bat. Copy to
+REM  a local dir before running — Windows MOTW blocks .bat execution
+REM  from UNC paths. After running, the full stdout/stderr transcript
+REM  uploads to /quobyte/proteomics-grp/STAN/test_logs/ via SCP so
+REM  Brett (and Claude reading the Hive mirror from the Mac side) can
+REM  see exactly what happened on each instrument PC without anyone
+REM  copy-pasting from a cmd window.
 REM
-REM  Steps:
-REM    1-6  Local install + smoke test on this PC (no Hive needed).
-REM    7    Optional Hive-side install + dry-run via SSH. Only runs
-REM         if you have an SSH key at %USERPROFILE%\.ssh\. Skips
-REM         gracefully and prints manual instructions otherwise.
+REM  One-time setup per instrument PC (master key from Brett's Mac
+REM  hosted temporarily on Quobyte):
+REM     copy "<quobyte>\proteomics-grp\brett\.tmp_keys\id_ed25519" ^
+REM          "%USERPROFILE%\.ssh\id_ed25519"
+REM     icacls "%USERPROFILE%\.ssh\id_ed25519" /inheritance:r ^
+REM            /grant:r "%USERNAME%:R"
 REM
-REM  SSH key handling: this file does NOT bundle a private key.
-REM  Anyone reading the file would get your Hive credentials; that's
-REM  a hard no even on lab-internal Quobyte. The .bat uses whatever
-REM  key is already at %USERPROFILE%\.ssh\id_ed25519 or id_rsa on
-REM  this instrument PC. If you've never SSH'd from this box to Hive,
-REM  copy your key over once (e.g. via OpenSSH on your Mac:
-REM      scp ~/.ssh/id_ed25519 brettsp@<this-pc>:.ssh/
-REM  ) and re-run.
+REM  After the rollout to all instrument PCs, clean up the Quobyte
+REM  copy of the key:
+REM     ssh hive "rm -rf /quobyte/proteomics-grp/brett/.tmp_keys"
 REM
 REM  Authoring rules per CLAUDE.md: rewrite the whole file when changing
 REM  it, quote every path, no PowerShell concatenation, no inline ternary.
@@ -31,6 +32,105 @@ set "HIVE_USER=brettsp"
 set "HIVE_HOST=hive.hpc.ucdavis.edu"
 set "HIVE_VENV=/quobyte/proteomics-grp/brett/stan_venv"
 set "HIVE_DISPATCH_YML=/quobyte/proteomics-grp/STAN/dispatch.yml"
+set "HIVE_LOG_DIR=/quobyte/proteomics-grp/STAN/test_logs"
+
+REM ----- Outer wrapper: log capture + upload --------------------------
+REM Two-pass invocation. First pass: resolve SSH key, build a local log
+REM path under %TEMP%, then re-invoke self with --inner redirecting all
+REM output to that log. Second pass (--inner): runs the actual smoke
+REM test. After inner exits, outer types the log so Brett sees it on
+REM screen, then scp-uploads to Hive Quobyte if the SSH key is
+REM available.
+
+if "%1"=="--inner" goto inner
+
+REM Resolve SSH key once at the outer level so both step 7 (inside
+REM the inner) and the post-run SCP upload share the same key.
+set "SSH_KEY="
+if exist "%USERPROFILE%\.ssh\id_ed25519" set "SSH_KEY=%USERPROFILE%\.ssh\id_ed25519"
+if not defined SSH_KEY if exist "%USERPROFILE%\.ssh\id_rsa" set "SSH_KEY=%USERPROFILE%\.ssh\id_rsa"
+
+REM Sortable timestamp YYYYMMDD_HHMMSS via PowerShell. Cmd's %DATE% /
+REM %TIME% are locale-specific and contain spaces / colons that break
+REM filenames; PowerShell's Get-Date is universal.
+for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "TS=%%I"
+
+set "LOCAL_LOG_DIR=%TEMP%\test-hive-flow"
+if not exist "%LOCAL_LOG_DIR%" mkdir "%LOCAL_LOG_DIR%"
+set "LOG_NAME=test-hive-flow_%COMPUTERNAME%_!TS!.log"
+set "LOCAL_LOG=%LOCAL_LOG_DIR%\%LOG_NAME%"
+
+echo.
+echo Running test, capturing output to:
+echo   !LOCAL_LOG!
+echo.
+echo Wait for "TEST COMPLETE" before closing this window.
+echo.
+
+call "%~f0" --inner > "!LOCAL_LOG!" 2>&1
+set "INNER_EXIT=!ERRORLEVEL!"
+
+echo.
+echo ===================================================================
+echo  Inner test finished (exit !INNER_EXIT!). Replaying log on screen.
+echo ===================================================================
+type "!LOCAL_LOG!"
+
+echo.
+echo ===================================================================
+echo  Uploading log to Hive Quobyte
+echo ===================================================================
+echo.
+
+if not defined SSH_KEY (
+    echo No SSH key at %USERPROFILE%\.ssh\ - log NOT uploaded.
+    echo Local path: !LOCAL_LOG!
+    echo.
+    echo To enable auto-upload on next run, copy your master key once:
+    echo   copy "^<quobyte^>\proteomics-grp\brett\.tmp_keys\id_ed25519" ^
+"%USERPROFILE%\.ssh\id_ed25519"
+    echo.
+    goto done
+)
+
+where ssh >nul 2>&1
+if errorlevel 1 (
+    echo OpenSSH client not on PATH. Log NOT uploaded.
+    echo Local path: !LOCAL_LOG!
+    goto done
+)
+
+ssh -i "!SSH_KEY!" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new !HIVE_USER!@!HIVE_HOST! "mkdir -p !HIVE_LOG_DIR!"
+if errorlevel 1 (
+    echo SSH connect failed. Log NOT uploaded. Local path: !LOCAL_LOG!
+    goto done
+)
+
+scp -i "!SSH_KEY!" -o BatchMode=yes "!LOCAL_LOG!" !HIVE_USER!@!HIVE_HOST!:!HIVE_LOG_DIR!/!LOG_NAME!
+if errorlevel 1 (
+    echo SCP upload failed. Local path: !LOCAL_LOG!
+    goto done
+)
+
+echo Uploaded to:
+echo   !HIVE_LOG_DIR!/!LOG_NAME!
+echo.
+echo Visible from a Mac with Quobyte mounted at:
+echo   /Volumes/proteomics-grp/STAN/test_logs/!LOG_NAME!
+
+:done
+echo.
+echo ===================================================================
+echo  TEST COMPLETE
+echo ===================================================================
+echo Local log: !LOCAL_LOG!
+echo.
+pause
+exit /b 0
+
+
+REM ----- Inner test pass ----------------------------------------------
+:inner
 
 set "STAN_DIR=%USERPROFILE%\STAN"
 set "STAN_VENV=%STAN_DIR%\venv"
@@ -46,8 +146,6 @@ if not exist "%STAN_VENV%\Scripts\stan.exe" (
     echo   %USERPROFILE%\.stan\venv\Scripts\stan.exe
     echo.
     echo Run stan.bat first to install STAN, then re-run this test.
-    echo.
-    pause
     exit /b 1
 )
 
@@ -57,29 +155,31 @@ set "STAN_PY=%STAN_VENV%\Scripts\python.exe"
 
 echo.
 echo ===================================================================
+echo  Computer: %COMPUTERNAME%   User: %USERNAME%
+echo  STAN venv: %STAN_VENV%
+echo ===================================================================
+
+echo.
+echo ===================================================================
 echo  STEP 1/7  Installing STAN v0.2.318+ from GitHub main
 echo ===================================================================
 echo.
 
-REM Capture the pre-install version so we can verify the upgrade
-REM actually flipped — corrupt `~tan-proteomics` leftovers from a
-REM prior partial upgrade can make pip silently skip without raising
-REM a non-zero exit code. Saw exactly this on the Exploris 480 on
-REM 2026-05-07: pip returned 0, version stayed pinned at v0.2.315.
+REM Pre-install version. Failed silently on the Exploris 480
+REM 2026-05-07 because pip with --quiet hid the lock contention from a
+REM running stan.exe; the version stayed at 0.2.315 with no errorlevel
+REM signal. Now we capture before/after and warn loudly if they match.
 for /f "delims=" %%V in ('"%STAN_EXE%" version 2^>nul') do set "VERSION_BEFORE=%%V"
 
-REM --force-reinstall bulldozes through the `~tan-proteomics`
-REM corruption. Drop --quiet so the output is visible if something
-REM goes wrong (e.g. running stan.exe holding a file lock — same
-REM cause as the v0.2.313 Exploris bug).
+REM --force-reinstall bulldozes ~tan-proteomics corruption left over
+REM from prior partial upgrades. No --quiet so any failure (lock,
+REM permission, network) is visible in the log.
 "%STAN_PIP%" install --upgrade --force-reinstall "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"
 if errorlevel 1 (
     echo.
-    echo ERROR: pip install failed. If "Permission denied" or "in use"
-    echo appears above, close any running stan.exe / stan dashboard
-    echo windows and re-run. Otherwise check network reachability.
-    echo.
-    pause
+    echo ERROR: pip install failed. If the message above mentions
+    echo "Permission denied" or "in use", close any running stan.exe
+    echo / stan dashboard windows and re-run.
     exit /b 1
 )
 
@@ -89,12 +189,9 @@ echo Before: !VERSION_BEFORE!
 echo After:  !VERSION_AFTER!
 if "!VERSION_BEFORE!"=="!VERSION_AFTER!" (
     echo.
-    echo WARNING: version did not change. There may be a stale STAN
-    echo installation that pip can't overwrite. Try closing any
-    echo running stan watch / stan dashboard windows, deleting
-    echo C:\Users\Exploris480\STAN\venv\Lib\site-packages\~tan-proteomics*
-    echo manually, and re-running.
-    echo.
+    echo WARNING: version did not change. Likely cause: a running
+    echo stan.exe process was holding the venv files open. Close
+    echo any stan watch / stan dashboard windows and re-run.
 )
 
 echo.
@@ -140,8 +237,6 @@ type nul > "%TEST_DIR%\watch\lumos\inflight.raw.partial"
 mkdir "%TEST_DIR%\out"
 mkdir "%TEST_DIR%\sbatch_logs"
 
-REM Build a minimal dispatch.yml. qc_pattern + slurm fall back to
-REM defaults inside _load_config so we can omit them here.
 set "TEST_YML=%TEST_DIR%\dispatch.yml"
 > "%TEST_YML%" echo db_path: %TEST_DIR%\test.db
 >> "%TEST_YML%" echo out_root: %TEST_DIR%\out
@@ -173,10 +268,6 @@ echo ===================================================================
 echo  STEP 6/7  Sample rendered SLURM script
 echo ===================================================================
 echo.
-echo This is what would land on Hive for one Bruker .d. Inspect the
-echo #SBATCH headers + argv line — paths, --instrument, --family must
-echo all be quoted correctly.
-echo.
 
 "%STAN_PY%" -c "from pathlib import Path; from stan.community.scripts.dispatch_hive import _render_sbatch, _load_config; cfg = _load_config(Path(r'%TEST_YML%')); inst = cfg['instruments'][0]; raw = Path(r'%TEST_DIR%\watch\timsTOF\HeLa_QC.d'); print(_render_sbatch(raw, inst, cfg))"
 
@@ -186,109 +277,52 @@ echo  STEP 7/7  OPTIONAL Hive-side test (requires SSH key)
 echo ===================================================================
 echo.
 
-REM Resolve SSH key with this precedence:
-REM   1. existing local %USERPROFILE%\.ssh\id_ed25519
-REM   2. existing local %USERPROFILE%\.ssh\id_rsa
-REM   3. copy from Quobyte temp drop (only if .bat ran from Quobyte STAN dir)
-REM      Brett uploads the key to /quobyte/proteomics-grp/brett/.tmp_keys/
-REM      with chmod 600 + dir 700 so only his UID can read it. Cleanup
-REM      command after the rollout:
-REM        ssh hive "rm -rf /quobyte/proteomics-grp/brett/.tmp_keys"
-set "SSH_KEY="
-if exist "%USERPROFILE%\.ssh\id_ed25519" set "SSH_KEY=%USERPROFILE%\.ssh\id_ed25519"
-if not defined SSH_KEY if exist "%USERPROFILE%\.ssh\id_rsa" set "SSH_KEY=%USERPROFILE%\.ssh\id_rsa"
-
 if not defined SSH_KEY (
-    REM Try the Quobyte temp drop. %~dp0 is this .bat's directory; if
-    REM it lives at \\quobyte\proteomics-grp\STAN\, then ..\brett\
-    REM resolves to /quobyte/proteomics-grp/brett/. Resolves to nothing
-    REM useful if Brett copied the .bat to a local dir before running.
-    set "QUOBYTE_KEY=%~dp0..\brett\.tmp_keys\id_ed25519"
-    if exist "!QUOBYTE_KEY!" (
-        echo Found Brett's temp key on Quobyte. Copying to local
-        echo %USERPROFILE%\.ssh\ for this and future runs.
-        if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"
-        copy /y "!QUOBYTE_KEY!" "%USERPROFILE%\.ssh\id_ed25519" >nul
-        if errorlevel 1 (
-            echo ERROR: copy failed. Skipping Hive test.
-            goto skip_hive
-        )
-        REM Lock down the local copy. icacls strips inherited perms
-        REM and grants read only to the current user.
-        icacls "%USERPROFILE%\.ssh\id_ed25519" /inheritance:r /grant:r "%USERNAME%:R" >nul
-        set "SSH_KEY=%USERPROFILE%\.ssh\id_ed25519"
-        echo Key installed at %USERPROFILE%\.ssh\id_ed25519
-        echo.
-        echo NOTE: this is Brett's master Hive key. After the
-        echo rollout is done across all instrument PCs, clean up
-        echo the Quobyte copy with:
-        echo   ssh hive "rm -rf /quobyte/proteomics-grp/brett/.tmp_keys"
-        echo.
-    )
-)
-
-if not defined SSH_KEY (
-    echo No SSH key found in %USERPROFILE%\.ssh\ and no Quobyte temp
-    echo drop reachable from %~dp0.
+    echo No SSH key found in %USERPROFILE%\.ssh\.
     echo.
-    echo Either run this .bat directly from the Quobyte STAN share
-    echo ^(\\^<quobyte^>\proteomics-grp\STAN\test-hive-flow.bat^) so it
-    echo can find the temp key, or copy your key from your Mac one
-    echo time:
-    echo   scp ~/.ssh/id_ed25519 ^<this-pc-username^>@^<this-pc-host^>:.ssh/
+    echo To enable, copy Brett's master key from Quobyte once:
+    echo   copy "^<quobyte^>\proteomics-grp\brett\.tmp_keys\id_ed25519" ^
+"%USERPROFILE%\.ssh\id_ed25519"
+    echo   icacls "%USERPROFILE%\.ssh\id_ed25519" /inheritance:r ^
+/grant:r "%USERNAME%:R"
     echo.
     echo Skipping Hive test.
-    goto skip_hive
+    goto inner_done
 )
 
 where ssh >nul 2>&1
 if errorlevel 1 (
-    echo OpenSSH client not on PATH. Win10+ ships with it; install
-    echo "OpenSSH Client" via Settings -^> Optional Features. Skipping.
-    goto skip_hive
+    echo OpenSSH client not on PATH. Skipping.
+    goto inner_done
 )
 
 echo Found SSH key at %SSH_KEY%
 echo Connecting to %HIVE_USER%@%HIVE_HOST% ...
 echo.
 
-REM Step A: prove we can reach Hive at all.
 ssh -i "%SSH_KEY%" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new %HIVE_USER%@%HIVE_HOST% "echo Connected as $(whoami) on $(hostname); ls -d %HIVE_VENV% 2>/dev/null || echo MISSING_VENV"
 if errorlevel 1 (
     echo.
-    echo SSH failed. Verify your key is authorized in your Hive
-    echo ~/.ssh/authorized_keys file and that the username
-    echo "%HIVE_USER%" matches your account.
-    goto skip_hive
+    echo SSH failed. Verify your key is authorized on Hive.
+    goto inner_done
 )
 
 echo.
 echo --- Updating STAN on the Hive shared venv ---
-echo (this only runs if %HIVE_VENV% already exists; if MISSING_VENV
-echo printed above, create it once with:
-echo    ssh hive
-echo    python3 -m venv %HIVE_VENV%
-echo    %HIVE_VENV%/bin/pip install --upgrade pip
-echo )
-ssh -i "%SSH_KEY%" -o BatchMode=yes %HIVE_USER%@%HIVE_HOST% "if [ -d %HIVE_VENV% ]; then %HIVE_VENV%/bin/pip install --upgrade --quiet --no-input 'stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip' && %HIVE_VENV%/bin/stan version; else echo SKIP: venv missing; fi"
+ssh -i "%SSH_KEY%" -o BatchMode=yes %HIVE_USER%@%HIVE_HOST% "if [ -d %HIVE_VENV% ]; then %HIVE_VENV%/bin/pip install --upgrade --quiet --no-input 'stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip' && %HIVE_VENV%/bin/stan version; else echo SKIP: %HIVE_VENV% missing - create with: python3 -m venv %HIVE_VENV%; fi"
 
 echo.
 echo --- Hive dispatcher --dry-run (real watch dirs) ---
-echo (skips silently if dispatch.yml hasn't been bootstrapped yet)
 ssh -i "%SSH_KEY%" -o BatchMode=yes %HIVE_USER%@%HIVE_HOST% "if [ -f %HIVE_DISPATCH_YML% ]; then %HIVE_VENV%/bin/stan hive-dispatch --config %HIVE_DISPATCH_YML% --dry-run; else echo SKIP: %HIVE_DISPATCH_YML% missing - bootstrap with: %HIVE_VENV%/bin/stan hive-dispatch --print-default-config ^> %HIVE_DISPATCH_YML%; fi"
 
-:skip_hive
+:inner_done
 
 echo.
 echo ===================================================================
-echo  Test complete.
+echo  Inner test complete.
 echo ===================================================================
-echo.
-echo Local checks: scanned=3 submitted=2 in step 5 means the .partial
-echo was correctly skipped. Step 6 SLURM script should have all paths
-echo quoted. If step 7 ran, you saw what the Hive side will actually
-echo dispatch given current /quobyte/.../hela_qcs/ contents.
 echo.
 echo Test fixture: %TEST_DIR%   (delete manually when done)
 echo.
-pause
+
+exit /b 0
