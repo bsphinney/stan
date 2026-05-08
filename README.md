@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="stan/dashboard/public/icons/icon-512.png" alt="STAN" width="180" height="180">
+</p>
+
 # STAN — Standardized proteomic Throughput ANalyzer
 
 > *Know your instrument.*
@@ -8,6 +12,8 @@
 
 **Author**: Brett Stanley Phinney, UC Davis Proteomics Core  
 **License**: STAN Academic License (free for academic/non-profit use; see [LICENSE](LICENSE))
+
+> 📖 **New to STAN?** Start with the [**User Guide**](docs/user_guide.md) for installation, daily use, dashboard tour, and troubleshooting.
 
 STAN watches the directory where your instrument writes raw files, runs a standardized DIA-NN or Sage search on every HeLa QC injection, scores the result against your instrument's historical cohort, and drops a HOLD flag if a run fails — before your sample queue continues. A local web dashboard tracks everything. Community benchmark submission is opt-in.
 
@@ -155,7 +161,7 @@ What ships today vs. what's still planned.
 
 | Component | Status | Notes |
 |---|---|---|
-| CLI (45 commands) | Done | Full list in `docs/user_guide.md`. |
+| CLI (56 commands) | Done | Full list in `docs/user_guide.md`. |
 | Watcher daemon | Done | File-stability detection, hot-reloaded config, recursive monitoring, startup catch-up sweep. |
 | Acquisition mode detection | Done | Bruker via `analysis.tdf.Frames.MsmsType`; Thermo via ThermoRawFileParser metadata + filename token fallback. |
 | Local DIA-NN execution | Done | Default. Subprocess on the instrument PC, community-standard params. |

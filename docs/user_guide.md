@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="../stan/dashboard/public/icons/icon-512.png" alt="STAN" width="160" height="160">
+</p>
+
 # STAN User Guide
 
 > *Know your instrument.*
@@ -306,6 +310,33 @@ If you're on macOS and traffic is getting blocked even though Tailscale is conne
 4. Set it to **Allow incoming connections**
 
 If the Python version isn't listed yet, the firewall may have blocked it silently on first launch. You can also temporarily toggle the firewall off, start `stan dashboard`, let the firewall prompt appear, allow it, then re-enable the firewall.
+
+### Install STAN as a phone app (Add to Home Screen)
+
+Since v0.2.348, STAN's dashboard is a **Progressive Web App (PWA)** — you can pin it to your phone's home screen and it launches full-screen with a STAN icon, just like a native app. No App Store, no Play Store, no install reviewer involved.
+
+**Prerequisites:**
+- Tailscale set up on the phone and on the dashboard host (see the section above)
+- The dashboard reachable from your phone at the Tailscale URL (e.g. `http://lumosrox.tail-xxxx-xx.ts.net:8421`)
+
+**iPhone / iPad (iOS 14+):**
+1. Open the dashboard URL in **Safari** (not Chrome — iOS only allows Safari to install PWAs)
+2. Tap the **Share** button (the square with an up-arrow at the bottom of Safari)
+3. Scroll down and tap **Add to Home Screen**
+4. Confirm the name (defaults to "STAN") and tap **Add**
+5. The STAN icon appears on your home screen. Tap it: full-screen dashboard, no Safari URL bar, looks and feels native.
+
+**Android (Chrome, Edge, Firefox):**
+1. Open the dashboard URL in your browser
+2. Tap the browser menu (three dots, top-right)
+3. Tap **Install app** or **Add to Home screen** (wording varies by browser)
+4. Confirm; the STAN icon lands on your home screen
+5. Some Android launchers crop the icon to a circle — STAN ships a maskable variant so the artwork stays centered.
+
+**Desktop browsers (Chrome, Edge):**
+- The address bar shows an "Install" icon (a small monitor with a down-arrow). Click it to install STAN as a standalone window. Works on macOS, Windows, and Linux.
+
+**To uninstall:** long-press the icon on your phone home screen and choose Remove / Delete (it just removes the shortcut — no actual app is uninstalled, no data leaves the dashboard).
 
 ---
 
