@@ -389,7 +389,7 @@ if (Test-Path $instrYml) {
     $yml = "# STAN instrument configuration`n# Edit this file to add watch directories and instrument names.`ninstruments: []"
 }
 
-# Append tool paths (use forward slashes — YAML is cross-platform friendly)
+# Append tool paths (use forward slashes - YAML is cross-platform friendly)
 $diannYaml = $diannBinPath -replace "\\", "/"
 $sageYaml = $sageBinPath -replace "\\", "/"
 $yml = "$yml`n"
@@ -404,12 +404,12 @@ $yml | Out-File -FilePath $instrYml -Encoding utf8 -NoNewline
 if ($diannBinPath -ne "") {
     Write-Host "  diann_binary -> $diannBinPath" -ForegroundColor Green
 } else {
-    Write-Host "  diann_binary not set (DIA-NN not found — install manually and re-run)" -ForegroundColor Yellow
+    Write-Host "  diann_binary not set (DIA-NN not found - install manually and re-run)" -ForegroundColor Yellow
 }
 if ($sageBinPath -ne "") {
     Write-Host "  sage_binary  -> $sageBinPath" -ForegroundColor Green
 } else {
-    Write-Host "  sage_binary not set (Sage not found — install manually and re-run)" -ForegroundColor Yellow
+    Write-Host "  sage_binary not set (Sage not found - install manually and re-run)" -ForegroundColor Yellow
 }
 Write-Host "  Config: $instrYml" -ForegroundColor Gray
 
