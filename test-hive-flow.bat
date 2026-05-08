@@ -63,69 +63,44 @@ if not defined SSH_KEY (
     )
 )
 
-REM ---- Build a timestamped local log path -------------------------
+REM ---- Build a timestamped log path on the Y: Quobyte mount ------
+REM v0.2.323+: log writes directly to Y:\STAN\test_logs\ instead of
+REM staging in %TEMP% then SCP-uploading at the end. Real-time
+REM visibility — Brett (and Claude on the Mac side) can tail -f the
+REM log on /Volumes/proteomics-grp/STAN/test_logs/ WHILE the test is
+REM running, not just post-hoc. If a step hangs we can see exactly
+REM where instead of waiting for the .bat to finish.
 for /f %%I in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "TS=%%I"
-set "LOCAL_LOG_DIR=%TEMP%\test-hive-flow"
-if not exist "%LOCAL_LOG_DIR%" mkdir "%LOCAL_LOG_DIR%"
 set "LOG_NAME=test-hive-flow_%COMPUTERNAME%_!TS!.log"
-set "LOCAL_LOG=%LOCAL_LOG_DIR%\%LOG_NAME%"
+set "LOG_DIR=Y:\STAN\test_logs"
+
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+set "LOG_PATH=%LOG_DIR%\%LOG_NAME%"
 
 echo.
-echo Running test, capturing output to:
-echo   !LOCAL_LOG!
+echo Running test. Real-time log being written to:
+echo   %LOG_PATH%
+echo Hive mount Mac side:
+echo   /Volumes/proteomics-grp/STAN/test_logs/%LOG_NAME%
 echo.
 echo This will take a while — pip install + Hive bootstrap +
 echo SLURM jobs. Wait for "TEST COMPLETE" before closing this window.
 echo.
 
-call "%~f0" --inner > "!LOCAL_LOG!" 2>&1
+call "%~f0" --inner > "!LOG_PATH!" 2>&1
 set "INNER_EXIT=!ERRORLEVEL!"
 
 echo.
 echo ===================================================================
-echo  Inner test finished (exit !INNER_EXIT!). Replaying log:
+echo  Inner test finished (exit !INNER_EXIT!). Tail of log:
 echo ===================================================================
-type "!LOCAL_LOG!"
+powershell -NoProfile -Command "Get-Content -Path '%LOG_PATH%' -Tail 60"
 
-REM ---- SCP log to Hive Quobyte -----------------------------------
-echo.
-echo ===================================================================
-echo  Uploading log to Hive Quobyte
-echo ===================================================================
-echo.
-
-if not defined SSH_KEY (
-    echo No SSH key — log NOT uploaded. Local: !LOCAL_LOG!
-    goto done
-)
-
-where ssh >nul 2>&1
-if errorlevel 1 (
-    echo OpenSSH client not on PATH — log NOT uploaded. Local: !LOCAL_LOG!
-    goto done
-)
-
-ssh -i "!SSH_KEY!" -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new !HIVE_USER!@!HIVE_HOST! "mkdir -p !HIVE_LOG_DIR!"
-if errorlevel 1 (
-    echo SSH connect failed — log NOT uploaded. Local: !LOCAL_LOG!
-    goto done
-)
-
-scp -i "!SSH_KEY!" -o BatchMode=yes "!LOCAL_LOG!" !HIVE_USER!@!HIVE_HOST!:!HIVE_LOG_DIR!/!LOG_NAME!
-if errorlevel 1 (
-    echo SCP upload failed. Local: !LOCAL_LOG!
-    goto done
-)
-
-echo Uploaded to !HIVE_LOG_DIR!/!LOG_NAME!
-echo Mac path:  /Volumes/proteomics-grp/STAN/test_logs/!LOG_NAME!
-
-:done
 echo.
 echo ===================================================================
 echo  TEST COMPLETE
 echo ===================================================================
-echo Local log: !LOCAL_LOG!
+echo Log: %LOG_PATH%
 echo.
 pause
 exit /b 0
