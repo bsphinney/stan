@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -330,7 +331,17 @@ CREATE INDEX IF NOT EXISTS idx_uploads_status
 
 
 def get_db_path() -> Path:
-    """Return the path to the STAN SQLite database."""
+    """Return the path to the STAN SQLite database.
+
+    Honors the STAN_DB_PATH environment variable so hive-mode
+    instrument PCs can point the dashboard / CLI at the global
+    Hive stan.db on Y:\\STAN\\stan.db (Windows) or
+    /quobyte/proteomics-grp/STAN/stan.db (Linux) instead of the
+    local per-host DB.
+    """
+    override = os.environ.get("STAN_DB_PATH")
+    if override:
+        return Path(override)
     return get_user_config_dir() / "stan.db"
 
 
@@ -1890,6 +1901,13 @@ def get_column_lifetime(instrument: str, db_path: Path | None = None) -> dict:
     if runs_list:
         first = datetime.fromisoformat(runs_list[0]["run_date"].replace("Z", "+00:00"))
         last_dt = datetime.fromisoformat(runs_list[-1]["run_date"].replace("Z", "+00:00"))
+        # Defend against tz-mixed legacy rows — same hazard as
+        # time_since_last_qc. If first row is naive but last is
+        # aware (or vice versa), subtraction crashes.
+        if first.tzinfo is None:
+            first = first.replace(tzinfo=timezone.utc)
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
         result["days_on_column"] = max(0, (last_dt - first).days)
 
         # Bruker: extract absolute injection counters from filenames
