@@ -6197,6 +6197,10 @@ def hive_process_cmd(
              "pegdrift | extract. Default 'full' is the all-in-one "
              "sequential job. Per-step modes are used by parallel "
              "SLURM DAG dispatch (each step in its own job)."),
+    classification: str = typer.Option("auto", "--classification",
+        help="auto | qc | monitor. 'auto' classifies by filename "
+             "via the QC pattern; 'monitor' forces the lightweight "
+             "sample-health pipeline (used by the monitor sbatch)."),
 ) -> None:
     """Run the full STAN QC pipeline against ONE raw file on Hive.
 
@@ -6234,6 +6238,7 @@ def hive_process_cmd(
             spd=spd or None,
             gradient_length_min=gradient_min or None,
             force=force,
+            classification=classification,
         )
     elif step in ("search", "features", "pegdrift", "extract"):
         from stan.pipeline.hive_steps import (

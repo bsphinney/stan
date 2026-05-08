@@ -435,6 +435,10 @@ def _render_monitor_sbatch(
     # Use the monitor SLURM profile, not the QC one from dispatch.yml.
     slurm = _MONITOR_SLURM
 
+    # Monitor pipeline doesn't write any search artifacts — out_dir
+    # exists only to satisfy hive-process's required CLI flag. Park
+    # under <sbatch_log_dir>/monitor_workdir/<raw_stem>.
+    monitor_workdir = sbatch_log_dir / "monitor_workdir" / raw_stem
     argv = [
         f"{_shell_quote(str(venv))}/bin/stan", "hive-process",
         _shell_quote(str(raw_path)),
@@ -442,6 +446,7 @@ def _render_monitor_sbatch(
         "--family", _shell_quote(instrument["family"]),
         "--vendor", _shell_quote(instrument["vendor"]),
         "--db", _shell_quote(str(db_path)),
+        "--out-dir", _shell_quote(str(monitor_workdir)),
         "--classification", "monitor",
     ]
     if instrument.get("column_vendor"):
