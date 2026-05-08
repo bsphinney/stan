@@ -6,188 +6,146 @@
 [![Dataset: CC BY 4.0](https://img.shields.io/badge/Data_License-CC_BY_4.0-green.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-STAN is an open-source proteomics QC tool for Bruker timsTOF and Thermo Orbitrap mass spectrometers. It watches the directory where your instrument writes raw files, runs a standardized search on every HeLa QC injection, computes instrument health metrics, and pauses your sample queue when a run fails. A local web dashboard shows the results, and you can opt in to a community benchmark that compares your instrument against labs around the world.
+**Author**: Brett Stanley Phinney, UC Davis Proteomics Core  
+**License**: STAN Academic License (free for academic/non-profit use; see [LICENSE](LICENSE))
 
-It is built for proteomics core-facility staff who want continuous QC without writing scripts, and for PIs who want one number to glance at before approving a batch.
-
-**Built at the UC Davis Proteomics Core by Brett Stanley Phinney.**
-
----
-
-## Why STAN
-
-- **Catch instrument problems before your samples do.** Every HeLa QC injection is searched, scored, and gated automatically. If a run fails, STAN drops a HOLD flag the autosampler queue can read.
-- **Know what "normal" looks like for your instrument.** STAN tracks every QC run forever in a local SQLite database, so a slow drift in IPS or peptide count is visible weeks before it would crash an experiment.
-- **Compare against the rest of the world.** The optional community benchmark tells you where your timsTOF Ultra at 60 SPD sits versus other timsTOF Ultras at 60 SPD — without ever uploading a raw file or sample metadata.
-- **No HPC required.** DIA-NN and Sage run as subprocesses on the instrument workstation. SLURM is supported as an option for labs that already have a cluster.
-- **Two questions, then it just works.** STAN auto-detects the instrument model, serial number, gradient length, DIA window scheme, LC system, and acquisition mode by reading the raw file. You only configure your column and your HeLa amount.
+STAN watches the directory where your instrument writes raw files, runs a standardized DIA-NN or Sage search on every HeLa QC injection, scores the result against your instrument's historical cohort, and drops a HOLD flag if a run fails — before your sample queue continues. A local web dashboard tracks everything. Community benchmark submission is opt-in.
 
 ---
 
-## Supported Instruments
+## What it is
+
+Proteomics core facilities need continuous, automated QC. The existing options are either vendor-locked (Bruker ProteoScape), expensive, or require bespoke scripting. STAN is an open-source alternative that runs on the instrument workstation, reads Bruker `.d` directories and Thermo `.raw` files natively, and calls DIA-NN or Sage as subprocesses — no proprietary middleware.
+
+The approach is watcher-based: a daemon monitors your acquisition directory, waits for each file to finish writing (vendor-specific stability detection), identifies DIA vs. DDA acquisition mode from the raw file itself, dispatches the appropriate search engine, extracts a fixed set of QC metrics, and gates the result against configurable thresholds. Everything lands in a local SQLite database and is visible on a single-page dashboard. SLURM is supported for labs that want centralized HPC compute.
+
+The community benchmark uses a frozen FASTA + spectral library so that precursor and PSM counts are comparable across labs. Submission is aggregate metrics only — no raw files, no sample metadata leave your building. A public leaderboard is hosted at [community.stan-proteomics.org](https://community.stan-proteomics.org), faceted by instrument family, gradient length (SPD), and injection amount.
+
+---
+
+## Quick install — pick your mode
+
+| If you... | Use mode | Estimated time | Install doc |
+|---|---|---|---|
+| Have one instrument PC and want auto-QC on it | **A — Local (Windows)** | 5 min | Below |
+| Have a beefy Windows box that should process raws from multiple instruments | **B — WSL2** | 20 min | [`docs/INSTALL_MODE_B_WSL.md`](docs/INSTALL_MODE_B_WSL.md) |
+| Have HPC access and want centralized compute | **C — SLURM** | 1–3 hours | [`docs/INSTALL_MODE_C_HPC.md`](docs/INSTALL_MODE_C_HPC.md) |
+
+### Mode A — instrument PC (Windows, recommended)
+
+Download [`install-stan.bat`](https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat), right-click → Save As, double-click. The script installs Python if needed, clones STAN from GitHub, and auto-installs DIA-NN and Sage from their official release pages.
+
+To update: run [`update-stan.bat`](https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat). It self-updates from GitHub and restarts the watcher.
+
+After install, run `stan setup` (a 6-question wizard) then `stan watch` to start the daemon.
+
+### Mode A — Mac / Linux / advanced
+
+```bash
+git clone https://github.com/bsphinney/stan.git
+cd stan
+pip install -e ".[dev]"
+```
+
+Install DIA-NN and Sage separately and ensure they are on your `PATH`. Then:
+
+```bash
+stan init      # creates ~/.stan/ with config templates
+stan setup     # 6-question wizard
+stan watch     # start the watcher daemon
+stan dashboard # serve dashboard at http://localhost:8421
+```
+
+---
+
+## The dashboard
+
+Open `http://localhost:8421` after `stan dashboard`. Eight tabs:
+
+- **This Week's QCs** — gauge, weekly table, or metric-matrix view of recent HeLa runs. IPS badge front and center.
+- **QC History** — every run, sortable and filterable. Click a row for the full modal: metric breakdown, gate verdicts, PEG lollipop chart, diaPASEF drift cloud (Bruker), 4DFF Ion Cloud (Bruker, optional).
+- **Trends** — longitudinal sparklines for IPS, precursor/PSM count, peptide count, iRT deviation, TIC area, column age. Maintenance events render as vertical markers.
+- **Sample Health** — non-QC Bruker `.d` acquisitions monitored for TIC dropout and injection failures.
+- **Fleet** — all instruments on the shared drive in one view; send remote commands.
+- **Config** — live view of `instruments.yml` and `thresholds.yml`.
+- **Community** — your benchmark standing within your cohort, submission log, TIC overlay vs. community runs.
+- **Arcade** — IPS leaderboard mini-game (opt-in community feature).
+
+---
+
+## Architecture
+
+```
+Raw data dir (watched by watcher daemon)
+    │  file stable for stable_secs
+    ▼
+detector.py → reads .d/analysis.tdf or .raw metadata → DIA or DDA?
+    │
+    ├─ DIA → diann.py → SLURM job → report.parquet
+    └─ DDA → sage.py  → SLURM job → results.sage.parquet
+                                │
+                        extractor.py + chromatography.py
+                                │
+                        evaluator.py → PASS / WARN / FAIL
+                            │                │
+                    SQLite (Hive)      queue.py (HOLD flag)
+                            │
+                    dashboard (FastAPI + React, port 8421)
+                            │
+                    community/submit.py → HF Dataset
+```
+
+---
+
+## Key design decisions
+
+- **Precursor count (DIA) and PSM count (DDA) are the primary metrics** — not protein count. Protein count is confounded by FASTA choice and inference settings and is shown only as a contextual secondary. This is what makes cross-lab comparison valid.
+- **Community benchmark is the cross-lab surface** — submissions are compared only within `(instrument family, SPD bucket, injection amount bucket)`. Opt-in; default off.
+- **Privacy** — raw files never leave your lab. Only aggregate run-level metrics are submitted. Serial numbers are stored server-side but never exposed in the API or downloads.
+- **SPD-first cohort bucketing** — cohorts are keyed on samples-per-day, not gradient minutes, because SPD directly encodes throughput intent. The layered SPD resolution chain reads Bruker method XML first, then TDF metadata, then gradient frame span, then filename tokens.
+- **All three modes share the same `stan.db` schema** — a run processed locally on an instrument PC looks identical in the database to one processed via SLURM on a cluster.
+
+---
+
+## Supported instruments
 
 | Vendor | Models | Raw format | Modes |
 |---|---|---|---|
 | Bruker | timsTOF Ultra 2, Ultra, HT, Pro 2, SCP | `.d` directory | diaPASEF, ddaPASEF |
-| Thermo | Astral, Exploris 480 / 240, Orbitrap Fusion Lumos, Eclipse | `.raw` file | DIA, DDA |
-
-Adding a new model is a config edit — see [`docs/user_guide.md`](docs/user_guide.md).
+| Thermo | Astral, Exploris 480/240, Orbitrap Fusion Lumos, Eclipse | `.raw` file | DIA, DDA |
 
 ---
 
-## Quick Start
-
-The happy path is five commands.
-
-### 1. Install
-
-**Windows (recommended).** Download [`install-stan.bat`](https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat) (right-click → Save As) and double-click it. The script installs Python if needed, downloads STAN from GitHub, and auto-installs DIA-NN and Sage from their official release pages. Re-run [`update-stan.bat`](https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat) any time you want the latest STAN — it self-updates from GitHub.
-
-**Mac / Linux / advanced.** STAN is on GitHub only (no PyPI release yet):
-
-```bash
-$ git clone https://github.com/bsphinney/stan.git
-$ cd stan
-$ pip install -e ".[dev]"
-```
-
-You will need DIA-NN and Sage installed separately and on your `PATH`. See the user guide.
-
-### 2. Initialize
-
-```bash
-$ stan init
-```
-
-Creates `~/.stan/` and seeds three config templates: `instruments.yml`, `thresholds.yml`, `community.yml`.
-
-### 3. Set up
-
-```bash
-$ stan setup
-```
-
-A 6-question wizard. It picks up the watch directory, asks for your LC column and HeLa amount, optionally enrolls you in the community benchmark (with an anonymous pseudonym and email verification), turns on a daily email summary, and offers to run a baseline over any existing files. Everything else (instrument model, gradient, mode) is read from your raw files.
-
-### 4. Watch
-
-```bash
-$ stan watch
-```
-
-The watcher daemon. It tails every directory in `instruments.yml`, waits for a new acquisition to finish writing, runs DIA-NN or Sage, computes metrics, gates against thresholds, and (optionally) submits to the community benchmark. Leave it running — it auto-reloads config every 30 s.
-
-### 5. Dashboard
-
-```bash
-$ stan dashboard
-```
-
-Serves the dashboard at <http://localhost:8421>. Eight tabs: This Week's QCs, QC History, Trends, Sample Health, Fleet, Config, Community, and a 🎮 Arcade mini-game.
-
-> ℹ The dashboard is a single HTML file (`stan/dashboard/public/index.html`) — React + Babel from a CDN, no build step. It already ships; there is nothing to compile.
-
----
-
-## What STAN does for you
-
-- **Auto-search every QC injection.** DIA-NN for DIA, Sage for DDA. Both run locally on the instrument PC; a typical 60 SPD HeLa run finishes in 5–15 min.
-- **Run-and-Done gating.** A FAIL writes `HOLD_<run_name>.txt` to the output directory. Most autosampler queues can poll for this file and pause before the next injection.
-- **Plain-English failure diagnosis.** If a gate fails, STAN names the likely cause ("incomplete digestion — check trypsin", "source contamination — clean the source", and so on).
-- **IPS — one number for instrument health.** A 0–100 cohort-calibrated score that combines precursor, peptide, and protein depth against your instrument family at your gradient. Score 60 means cohort median; 90 means cohort top decile.
-- **Column health.** Trended TIC area and peak retention time tell you when the column is aging.
-- **PEG contamination scan.** Bruker only: STAN scans MS1 for the polyethylene-glycol ladder and flags solvent or emitter contamination before it tanks your IDs.
-- **diaPASEF window-mobility drift.** Bruker only: detects when MS2 windows have walked off the 1/K0 they were calibrated for.
-- **4DFF Ion Cloud.** Optional Bruker 4D feature finder. Generates per-run feature files; the Ion Cloud tab renders m/z × 1/K0 × RT colored by charge with DIA windows overlaid.
-- **cIRT panel.** Empirical retention-time anchors per instrument family + SPD bucket. Lets you trend RT stability without spiking Biognosys iRT into every sample.
-- **Maintenance log.** Record column swaps, source cleans, PMs, and calibrations. Events render as vertical markers on every trend chart, so a sudden shift is immediately traceable.
-- **Daily email + Slack alerts.** Optional. Daily 07:00 HTML summary via Resend; weekly Monday digest; Slack webhook for instant FAIL notifications.
-- **Fleet view.** Run STAN on N instruments, point each one at the same network share, and a single dashboard sees them all. No cloud, no token.
-- **Community benchmark.** Opt-in, fully aggregate. No raw files, no sample metadata, no patient data ever leaves your lab.
-
----
-
-## How a run is processed
-
-```
-new .d / .raw appears
-        │
-        │  size stops changing for stable_secs
-        ▼
-  acquisition mode detector (DIA vs DDA)
-        │
-        ├─ DIA  → DIA-NN  → report.parquet
-        └─ DDA  → Sage    → results.sage.parquet  (.raw → mzML via ThermoRawFileParser first)
-                       │
-                       ▼
-            metric extraction (Polars)
-                       │
-                       ▼
-              gating vs thresholds.yml
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-          PASS         WARN         FAIL → HOLD_<run>.txt
-                       │
-                       ▼
-            SQLite (~/.stan/stan.db)
-                       │
-                       ▼
-        dashboard at :8421  +  (optional) community submission
-```
-
-> ⚠ STAN does **not** redistribute DIA-NN, Sage, or ThermoRawFileParser. They are called as subprocesses, like a Makefile calls `gcc`. Each tool ships under its own license and must be installed separately. DIA-NN is free for academic research; commercial users need a paid license from Aptila Biotech or Thermo Fisher. Sage and ThermoRawFileParser are open source.
-
----
-
-## Metrics at a glance
-
-The headline numbers you'll see on the dashboard.
+## Key metrics
 
 | Metric | Modes | What it tells you |
 |---|---|---|
-| **IPS** (0–100) | DIA + DDA | Single composite of precursor, peptide, and protein depth scored against your cohort. The first thing to glance at. |
-| **Precursor count @ 1% FDR** | DIA | Primary metric for DIA. Cleaner than protein count because it doesn't depend on FASTA or inference. |
-| **PSM count @ 1% FDR** | DDA | Primary metric for DDA. |
+| **IPS** (0–100) | DIA + DDA | Cohort-calibrated composite of precursor/PSM + peptide + protein depth. The single number to check first. |
+| **Precursor count @ 1% FDR** | DIA | Primary DIA metric. |
+| **PSM count @ 1% FDR** | DDA | Primary DDA metric. |
 | **Peptide count** | both | Secondary depth metric. |
-| **Protein count** | both | Contextual only. Heavily confounded by FASTA + inference settings — never use as a leaderboard primary. |
+| **Protein count** | both | Contextual. Never used for ranking. |
+| **Missed cleavage rate** | both | Digestion quality. Healthy: < 0.15. |
 | **Median CV (precursor)** | DIA, replicates | Quantitative reproducibility. Healthy timsTOF Ultra: 4–9%. |
-| **Missed cleavage rate** | both | Digestion quality. Should be < 0.15. |
-| **Median ΔΜ < 5 ppm** | DDA | Mass calibration health. |
-| **MS2 scan rate** | DDA | Duty cycle. Method/platform dependent. |
-| **iRT max deviation** | DIA | Retention-time drift, from the empirical cIRT panel. |
+| **iRT max deviation** | DIA | Retention-time drift from the empirical cIRT panel. |
 | **Points across peak** | both | Median MS2 scans per elution peak. Quantitation quality. |
+| **PEG contamination score** | Bruker | MS1 scan for the polyethylene-glycol ladder. |
+| **diaPASEF window drift** | Bruker | Detects MS2 windows walking off their 1/K0 calibration. |
 
-Full definitions, ranges, and formulas are in [`docs/user_guide.md`](docs/user_guide.md) and [`docs/ips_metric.md`](docs/ips_metric.md).
-
----
-
-## The community benchmark
-
-A live, opt-in HeLa benchmark hosted at **[community.stan-proteomics.org](https://community.stan-proteomics.org)**. Hundreds of QC runs from labs around the world, every one searched with the same FASTA + library + parameters so the differences you see actually reflect instrument performance.
-
-- **Privacy.** No raw files. No sample metadata. No patient data. Aggregate metrics only. Serial numbers are stored server-side but never exposed on the API.
-- **Identity.** Your lab gets an anonymous pseudonym ("Caffeinated Quadrupole", etc.). You can claim a custom name with email verification. The verification token (`auth_token` in `~/.stan/community.yml`) prevents anyone else's STAN install from spoofing your name.
-- **Cohorts.** Submissions are compared only within the same `(instrument family, SPD bucket, injection amount bucket)`. A 50 ng timsTOF Ultra at 60 SPD is not compared against a 500 ng Astral at 200 SPD.
-- **Tracks.** Track A = DDA. Track B = DIA. Track C unlocks when you submit both a DDA and a DIA run from the same instrument within 24 h, which produces a six-axis radar fingerprint.
-- **Opt out.** `community_submit: false` (the default) and nothing leaves your lab. STAN is fully usable as a local-only QC tool.
-
-To join, run `stan setup` and answer "yes" to the community-benchmark question. The wizard claims your name and stores the auth token automatically. Use `stan verify` to check your token any time.
+Full definitions, reference ranges, and formulas: [`docs/user_guide.md`](docs/user_guide.md) and [`docs/ips_metric.md`](docs/ips_metric.md).
 
 ---
 
-## Documentation map
+## Community benchmark
 
-| File | What's in it |
+| | |
 |---|---|
-| [`docs/user_guide.md`](docs/user_guide.md) | The day-to-day manual. Installation, dashboard tour, every CLI command, configuration reference, troubleshooting, full glossary. |
-| [`docs/ips_metric.md`](docs/ips_metric.md) | How IPS is calculated, the cohort references, why protein count is excluded. |
-| [`STAN_MASTER_SPEC.md`](STAN_MASTER_SPEC.md) | The authoritative design spec. Read this if you're changing how STAN works. |
-| [`docs/V1_RUNBOOK.md`](docs/V1_RUNBOOK.md) | The v1.0 release runbook. |
-| [`docs/PEG_EVOSEP_DIAGNOSTIC.md`](docs/PEG_EVOSEP_DIAGNOSTIC.md) | Background on the PEG contamination test. |
-| [`docs/HPC_PATHS.md`](docs/HPC_PATHS.md) | Reference paths for the optional Hive HPC integration. |
-| [`docs/QUEUE_SWITCHING.md`](docs/QUEUE_SWITCHING.md) | Auto partition switching logic for SLURM. |
-| [`docs/GOTCHAS_DELIMP.md`](docs/GOTCHAS_DELIMP.md) | 50+ hard-learned lessons (DIA-NN, SLURM, raw-file quirks). |
-| [`CLAUDE.md`](CLAUDE.md) | Context for Claude Code when working on this codebase. |
+| Public dashboard | [community.stan-proteomics.org](https://community.stan-proteomics.org) · [HF Space](https://huggingface.co/spaces/brettsp/stan) |
+| Public dataset | [huggingface.co/datasets/brettsp/stan-benchmark](https://huggingface.co/datasets/brettsp/stan-benchmark) · CC BY 4.0 |
+
+Runs `stan setup`, answer yes to the benchmark question, and STAN claims an anonymous pseudonym and stores an auth token. Subsequent QC runs are submitted automatically via the HF Space relay — no HF token required on your end.
+
+Three tracks: Track A (DDA, PSM primary), Track B (DIA, precursor primary), Track C (both within 24 h from the same instrument — unlocks a six-axis radar fingerprint).
 
 ---
 
@@ -288,70 +246,59 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 
 ---
 
-## Repository Layout
+## Documentation index
 
-```
-stan/
-├── pyproject.toml
-├── README.md                     ← this file
-├── STAN_MASTER_SPEC.md            authoritative design doc
-├── CLAUDE.md                      development context for Claude Code
-├── LICENSE                        STAN Academic License
-├── install-stan.bat               Windows fresh install
-├── update-stan.bat                Windows update
-├── start_stan.bat                 launches dashboard + watcher
-├── stan/
-│   ├── cli.py                     Typer CLI entry point (45 commands)
-│   ├── config.py                  YAML loaders + hot-reload
-│   ├── db.py                      SQLite schema + queries
-│   ├── setup.py                   6-question wizard
-│   ├── fleet_setup.py             SMB / HF Space / none picker
-│   ├── baseline.py                retroactive QC over existing files
-│   ├── control.py                 fleet command-queue dispatcher
-│   ├── alerts.py                  Slack webhook
-│   ├── telemetry.py               opt-in error reports
-│   ├── watcher/                   watchdog daemon + stability + mode detection
-│   ├── search/                    DIA-NN + Sage runners (local + SLURM)
-│   ├── metrics/                   extraction, IPS, iRT, TIC, PEG, drift, 4DFF
-│   ├── gating/                    threshold evaluation + HOLD flag
-│   ├── community/                 relay submit/fetch/validate, cohort scoring
-│   │   └── scripts/consolidate.py nightly GitHub Actions consolidation
-│   ├── reports/daily_email.py     Resend-based HTML reports
-│   └── dashboard/                 FastAPI + single-file React UI
-├── tests/
-├── docs/
-└── .github/workflows/
-    ├── ci.yml                     lint + test
-    └── consolidate_benchmark.yml  nightly community percentiles
-```
-
----
-
-## Development
-
-```bash
-$ pip install -e ".[dev]"
-$ pytest tests/ -v
-$ pytest tests/ -k "not integration"   # skip Hive-only tests
-$ ruff check stan/
-$ ruff check stan/ --fix
-```
-
-Tests marked `@pytest.mark.integration` require Hive SLURM and real raw files. They're skipped in CI and can be run manually on the cluster.
+| Doc | Contents |
+|---|---|
+| [`STAN_MASTER_SPEC.md`](STAN_MASTER_SPEC.md) | Authoritative design doc. Read before changing core behavior. |
+| [`docs/INSTALL_MODE_B_WSL.md`](docs/INSTALL_MODE_B_WSL.md) | Mode B — WSL2 install and configuration. |
+| [`docs/INSTALL_MODE_C_HPC.md`](docs/INSTALL_MODE_C_HPC.md) | Mode C — SLURM/HPC install and configuration. |
+| [`docs/user_guide.md`](docs/user_guide.md) | Day-to-day manual: all CLI commands, dashboard tour, config reference, troubleshooting. |
+| [`docs/ips_metric.md`](docs/ips_metric.md) | IPS formula, cohort references, why protein count is excluded. |
+| [`docs/external_tools.md`](docs/external_tools.md) | DIA-NN, Sage, ThermoRawFileParser: CLI flags, version pins, container paths, gotchas. |
+| [`docs/HPC_PATHS.md`](docs/HPC_PATHS.md) | Hive HPC reference paths for SLURM integration. |
+| [`docs/GOTCHAS_DELIMP.md`](docs/GOTCHAS_DELIMP.md) | 50+ hard-learned lessons: DIA-NN edge cases, SLURM quirks, raw-file parsing traps. |
+| [`CLAUDE.md`](CLAUDE.md) | Context for AI coding agents working on this codebase. |
 
 ---
 
 ## Search engines
 
-STAN does not bundle DIA-NN, Sage, or ThermoRawFileParser. Each is downloaded separately and called as a subprocess. The Windows installer fetches DIA-NN and Sage automatically; on Mac/Linux you install them yourself and put them on `PATH`.
+STAN does not bundle DIA-NN, Sage, or ThermoRawFileParser. Each is called as a subprocess and must be installed separately. The Windows installer fetches DIA-NN and Sage automatically.
 
 | Tool | Used for | License |
 |---|---|---|
-| [DIA-NN](https://github.com/vdemichev/DiaNN) | All DIA searches (Bruker `.d` and Thermo `.raw` direct, no conversion) | Free for academic research; commercial requires a paid license from Aptila Biotech or Thermo. STAN recommends the latest academic release. |
-| [Sage](https://github.com/lazear/sage) | All DDA searches. Bruker `.d` direct (works in production for ddaPASEF). Thermo `.raw` requires mzML conversion first. | MIT |
-| [ThermoRawFileParser](https://github.com/compomics/ThermoRawFileParser) | Thermo DDA only — `.raw` → indexed mzML. Auto-downloaded by STAN on first use; cached at `~/.stan/tools/`. | Apache 2.0 |
+| [DIA-NN](https://github.com/vdemichev/DiaNN) | All DIA searches (Bruker `.d` and Thermo `.raw` natively, no conversion) | Free for academic research; commercial use requires a paid license from Aptila Biotech or Thermo. |
+| [Sage](https://github.com/lazear/sage) | All DDA searches. Bruker `.d` native. Thermo `.raw` requires mzML conversion first. | MIT |
+| [ThermoRawFileParser](https://github.com/compomics/ThermoRawFileParser) | Thermo DDA only — `.raw` → indexed mzML. Auto-downloaded on first use; cached at `~/.stan/tools/`. | Apache 2.0 |
 
-Sage's built-in LDA rescoring is sufficient for QC-level FDR estimation. STAN does not call Percolator.
+---
+
+## Citing STAN
+
+No paper yet. Until one lands, please cite:
+
+> Phinney BS. STAN: Standardized proteomic Throughput ANalyzer. UC Davis Proteomics Core (2026). <https://github.com/bsphinney/stan>
+
+Also cite the search engine(s) STAN runs on your data:
+
+> Demichev V, et al. DIA-NN: neural networks and interference correction enable deep proteome coverage in high throughput. *Nature Methods*. 2020;17:41–44. <https://doi.org/10.1038/s41592-019-0638-x>
+
+> Lazear MR. Sage: An Open-Source Tool for Fast Proteomics Searching and Quantification at Scale. *J. Proteome Research*. 2023;22(11):3652–3659. <https://doi.org/10.1021/acs.jproteome.3c00486>
+
+---
+
+## Contributing
+
+Open an issue for design discussion first, then submit a PR. Run `ruff check stan/` and `pytest tests/ -v` before submitting. Prefer real DIA-NN or Sage output snippets in `tests/fixtures/` over synthetic data.
+
+---
+
+## License
+
+**Code**: [STAN Academic License](LICENSE) — free for academic, non-profit, educational, and personal research use. Commercial use (CROs, pharma, biotech) requires a separate agreement. Contact <bsphinney@ucdavis.edu>.
+
+**Community dataset**: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 ---
 
@@ -363,38 +310,3 @@ Sage's built-in LDA rescoring is sufficient for QC-level FDR estimation. STAN do
 | Community dashboard | <https://community.stan-proteomics.org> · <https://huggingface.co/spaces/brettsp/stan> |
 | Community dataset | <https://huggingface.co/datasets/brettsp/stan-benchmark> |
 | DE-LIMP (sister project) | <https://github.com/bsphinney/DE-LIMP> |
-
-STAN handles QC and instrument health. For differential-expression analysis and quantitative pipelines, see [DE-LIMP](https://github.com/bsphinney/DE-LIMP).
-
----
-
-## Contributing
-
-Pull requests welcome.
-
-1. Fork and create a feature branch.
-2. `ruff check stan/` and `pytest tests/ -v` before submitting.
-3. Add tests for new behaviour. Prefer real DIA-NN / Sage output snippets in `tests/fixtures/` over synthetic data.
-4. Open a PR with a clear description.
-
-For design discussion, open an issue first.
-
----
-
-## License
-
-**Code.** [STAN Academic License](LICENSE) — free for academic, non-profit, educational, and personal research use. Commercial use (CROs, pharma, biotech) requires a separate license. Contact <bsphinney@ucdavis.edu>.
-
-**Community dataset.** [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
-
-## Citations
-
-If STAN is useful for your work, please cite STAN and the search engines it depends on.
-
-> Phinney BS. STAN: Standardized proteomic Throughput ANalyzer. UC Davis Proteomics Core (2026). <https://github.com/bsphinney/stan>
-
-> Demichev V, Messner CB, Vernardis SI, Lilley KS, Ralser M. DIA-NN: neural networks and interference correction enable deep proteome coverage in high throughput. *Nature Methods*. 2020;17:41–44. <https://doi.org/10.1038/s41592-019-0638-x>
-
-> Lazear MR. Sage: An Open-Source Tool for Fast Proteomics Searching and Quantification at Scale. *J. Proteome Research*. 2023;22(11):3652–3659. <https://doi.org/10.1021/acs.jproteome.3c00486>
-
-> Matthews DE, Hayes JM. Systematic Errors in Gas Chromatography-Mass Spectrometry Isotope Ratio Measurements. *Anal. Chem.* 1976;48(9):1375–1382.
