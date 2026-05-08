@@ -1948,6 +1948,14 @@ def time_since_last_qc(instrument: str, db_path: Path | None = None) -> dict:
         return {"hours_ago": None, "status": "critical"}
 
     last_date = datetime.fromisoformat(row["run_date"].replace("Z", "+00:00"))
+    # Defend against legacy rows whose run_date string lacked any tz
+    # suffix — fromisoformat returns a naive datetime for those, and
+    # subtracting from a tz-aware now() crashes with
+    # "TypeError: can't subtract offset-naive and offset-aware datetimes".
+    # Saw on Exploris dashboard 2026-05-08 in time_since_last_qc.
+    # Treat naive timestamps as UTC.
+    if last_date.tzinfo is None:
+        last_date = last_date.replace(tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
     hours = (now - last_date).total_seconds() / 3600
 
