@@ -224,6 +224,14 @@ if exist "%UPDATE_FLAG%" (
         echo    WARN: pip not found at %STAN_VENV_PIP% - skipping update.
     )
     del "%UPDATE_FLAG%" 2>nul
+    REM Relaunch dashboard now that pip is done — earlier in stan.bat
+    REM the dashboard launched once before the loop; on every later
+    REM update cycle the kill-before-pip step takes it down. Without
+    REM this the dashboard stays dead until operator restarts stan.bat
+    REM completely. Brett 2026-05-08: had to close/reopen 4x to recover
+    REM the dashboard after pip cycles.
+    echo [%DATE% %TIME%] Relaunching dashboard...
+    start "STAN Dashboard" cmd /c ""%STAN_EXE%" dashboard"
     echo [%DATE% %TIME%] update complete — relaunching watcher.
 )
 
