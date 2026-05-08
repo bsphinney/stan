@@ -6642,8 +6642,13 @@ def backfill_from_dir_cmd(
     src: Path = typer.Argument(..., help="Local directory containing raws to backfill (e.g. F:\\data\\may26)"),
     instrument: str = typer.Option("", "--instrument",
         help="Instrument substring from instruments.yml. Empty = first entry."),
-    qc_only: bool = typer.Option(False, "--qc-only",
-        help="Only process raws matching the QC pattern. Default: process all."),
+    qc_only: bool = typer.Option(True, "--qc-only/--no-qc-only",
+        help="Only process raws matching the QC pattern (default). "
+             "Use --no-qc-only to also process patient/sample raws — "
+             "but stan hive-process currently has no monitor pipeline "
+             "(non-QC raws will run DIA-NN against the community lib "
+             "and produce empty rows). Don't disable until the monitor "
+             "pipeline branch ships."),
     partition: str = typer.Option("low", "--partition",
         help="SLURM partition for the search jobs. low | high."),
     limit: int = typer.Option(0, "--limit",
@@ -6671,12 +6676,12 @@ def backfill_from_dir_cmd(
     )
 
     if not src.exists() or not src.is_dir():
-        console.print(f"[red]Source dir not found: {src}[/red]")
+        print(f"[red]Source dir not found: {src}[/red]")
         raise typer.Exit(1)
 
     _hive, insts = load_instruments()
     if not insts:
-        console.print("[red]No instruments in instruments.yml[/red]")
+        print("[red]No instruments in instruments.yml[/red]")
         raise typer.Exit(1)
 
     if instrument:
@@ -6685,7 +6690,7 @@ def backfill_from_dir_cmd(
             None,
         )
         if inst is None:
-            console.print(f"[red]No instrument matching '{instrument}'[/red]")
+            print(f"[red]No instrument matching '{instrument}'[/red]")
             raise typer.Exit(1)
     else:
         inst = insts[0]
@@ -6693,9 +6698,7 @@ def backfill_from_dir_cmd(
     inst_name = inst.get("name") or "unknown"
     vendor, family = resolve_vendor_family(inst)
     if not (vendor and family):
-        console.print(
-            f"[red]Could not derive vendor/family for {inst_name!r}.[/red]"
-        )
+        print(f"ERROR: Could not derive vendor/family for {inst_name!r}.")
         raise typer.Exit(1)
 
     qc_pattern = re.compile(r"(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)")
@@ -6713,10 +6716,10 @@ def backfill_from_dir_cmd(
         if limit and len(candidates) >= limit:
             break
 
-    console.print(f"[cyan]Found {len(candidates)} raws in {src}[/cyan]")
+    print(f"[cyan]Found {len(candidates)} raws in {src}[/cyan]")
     if dry_run:
         for c in candidates:
-            console.print(f"  would process: {c.name}")
+            print(f"  would process: {c.name}")
         return
 
     dest_dir = inst.get("hive_upload_dir") or (
@@ -6726,18 +6729,18 @@ def backfill_from_dir_cmd(
     import os as _os
     ssh_key = Path(_os.path.expanduser("~/.ssh/id_ed25519"))
     if not ssh_key.exists():
-        console.print(f"[red]SSH key not found at {ssh_key}[/red]")
+        print(f"[red]SSH key not found at {ssh_key}[/red]")
         raise typer.Exit(1)
 
     n_ok = n_skipped = n_failed = 0
     for raw in candidates:
-        console.print(f"\n[cyan]==> {raw.name}[/cyan]")
+        print(f"\n[cyan]==> {raw.name}[/cyan]")
         up = upload_raw_to_incoming(raw, Path(dest_dir))
         if up.get("status") not in ("done", "skipped"):
-            console.print(f"  [red]upload failed: {up.get('error')}[/red]")
+            print(f"  [red]upload failed: {up.get('error')}[/red]")
             n_failed += 1
             continue
-        console.print(f"  upload {up['status']}")
+        print(f"  upload {up['status']}")
         sub = submit_one_via_ssh(
             raw_source=raw,
             raw_dest_smb=Path(up["dest"]),
@@ -6754,18 +6757,16 @@ def backfill_from_dir_cmd(
             column_model=inst.get("column_model", ""),
         )
         if sub.get("status") == "submitted":
-            console.print(f"  [green]submitted: job_id={sub.get('job_id')}[/green]")
+            print(f"  [green]submitted: job_id={sub.get('job_id')}[/green]")
             n_ok += 1
         elif sub.get("status") == "skipped":
-            console.print(f"  [yellow]skipped: {sub.get('error')}[/yellow]")
+            print(f"  [yellow]skipped: {sub.get('error')}[/yellow]")
             n_skipped += 1
         else:
-            console.print(f"  [red]submit failed: {sub.get('error')}[/red]")
+            print(f"  [red]submit failed: {sub.get('error')}[/red]")
             n_failed += 1
 
-    console.print(
-        f"\n[bold]Done.[/bold] submitted={n_ok} skipped={n_skipped} failed={n_failed}"
-    )
+    print(f"\nDone. submitted={n_ok} skipped={n_skipped} failed={n_failed}")
 
 
 @app.command("hive-upload")
