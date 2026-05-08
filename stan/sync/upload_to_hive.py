@@ -116,7 +116,7 @@ def upload_raw_to_incoming(
         raw_path: Source on the instrument PC. Bruker ``.d`` directory
             or Thermo ``.raw`` file.
         dest_dir: Destination directory on the Quobyte SMB mount, e.g.
-            ``Y:/proteomics-grp/STAN/incoming/timsTOF HT/``. Created if
+            ``Y:/STAN/incoming/timsTOF HT/``. Created if
             absent.
         db_path: stan.db path for upload tracking. Defaults to the
             global STAN DB at ``~/.stan/stan.db``.
@@ -259,16 +259,17 @@ def _record_submission(
 def _smb_to_quobyte_path(smb_path: str) -> str:
     """Translate Windows SMB Quobyte mount → Linux Quobyte POSIX path.
 
-    Brett's lab convention: ``Y:\\`` on Windows mounts to
-    ``/quobyte/`` on Hive. So ``Y:\\proteomics-grp\\STAN\\incoming\\
-    timsTOF HT\\foo.d`` on the instrument PC is the same file as
+    Brett's lab convention: ``Y:\\`` on Windows mounts to the
+    ``proteomics-grp`` SMB share root, NOT the full Quobyte root.
+    So ``Y:\\STAN\\incoming\\timsTOF HT\\foo.d`` is the same file as
     ``/quobyte/proteomics-grp/STAN/incoming/timsTOF HT/foo.d`` on
-    Hive. The translation is a static prefix swap + slash flip.
+    Hive. The translation is a prefix swap + slash flip — note the
+    Linux side gets ``proteomics-grp`` injected because the Windows
+    drive letter elided it.
     """
     s = str(smb_path)
     if s[:3].upper() == "Y:\\" or s[:3].upper() == "Y:/":
-        s = s[3:]
-        return "/quobyte/" + s.replace("\\", "/").lstrip("/")
+        return "/quobyte/proteomics-grp/" + s[3:].replace("\\", "/").lstrip("/")
     # Already a Linux-style path (dev box on macOS uses
     # /Volumes/proteomics-grp/STAN/...). Map Volumes → quobyte too.
     if s.startswith("/Volumes/proteomics-grp/"):

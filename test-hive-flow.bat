@@ -36,7 +36,9 @@ set "HIVE_VENV=/quobyte/proteomics-grp/brett/stan_venv"
 set "HIVE_DISPATCH_YML=/quobyte/proteomics-grp/STAN/dispatch.yml"
 set "HIVE_LOG_DIR=/quobyte/proteomics-grp/STAN/test_logs"
 set "HIVE_BOOTSTRAP_SH=/quobyte/proteomics-grp/STAN/hive_bootstrap.sh"
-set "QUOBYTE_KEY_SRC=Y:\proteomics-grp\brett\.tmp_keys\id_ed25519"
+REM Y:\ on instrument PCs maps to the proteomics-grp share root (NOT
+REM /quobyte/), so the path is Y:\brett\..., not Y:\proteomics-grp\brett\...
+set "QUOBYTE_KEY_SRC=Y:\brett\.tmp_keys\id_ed25519"
 
 REM ----- Outer wrapper: log capture + auto-upload ---------------------
 if "%1"=="--inner" goto inner

@@ -6390,7 +6390,7 @@ def time_hive_partitions_cmd(
         raise typer.Exit(1)
 
     dest_dir = inst.get("hive_upload_dir") or (
-        f"Y:/proteomics-grp/STAN/incoming/{inst_name}"
+        f"Y:/STAN/incoming/{inst_name}"
     )
     console.print(f"[cyan]Uploading {raw.name} → {dest_dir}[/cyan]")
     up = upload_raw_to_incoming(raw, Path(dest_dir))
@@ -6522,7 +6522,7 @@ def _smb_to_quobyte(p: Path) -> str:
 def hive_upload_cmd(
     raw: Path = typer.Argument(..., help="Path to .d directory or .raw file to upload."),
     dest_dir: Optional[Path] = typer.Option(None, "--dest-dir",
-        help="Override Y:/proteomics-grp/STAN/incoming/<inst>/. "
+        help="Override Y:/STAN/incoming/<inst>/. "
              "If omitted, derives from instruments.yml first instrument."),
     instrument: str = typer.Option("", "--instrument",
         help="Instrument substring for dest-dir derivation. "
@@ -6535,7 +6535,7 @@ def hive_upload_cmd(
     watcher rollout, or when the Hive venv isn't bootstrapped yet.
 
     Default dest matches the watcher's hive-mode behavior:
-    Y:/proteomics-grp/STAN/incoming/<instrument-name>/
+    Y:/STAN/incoming/<instrument-name>/
     """
     import json as _json
     from stan.config import load_instruments
@@ -6559,7 +6559,7 @@ def hive_upload_cmd(
         inst_name = (inst.get("name") or "unknown").strip()
         dest_dir = Path(
             inst.get("hive_upload_dir")
-            or f"Y:/proteomics-grp/STAN/incoming/{inst_name}"
+            or f"Y:/STAN/incoming/{inst_name}"
         )
 
     console.print(f"[cyan]Uploading {raw.name} → {dest_dir}[/cyan]")

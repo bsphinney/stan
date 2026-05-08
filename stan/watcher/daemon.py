@@ -912,7 +912,7 @@ class InstrumentWatcher:
 
         instruments.yml fields read here:
           hive_upload_dir   Windows-side SMB dest. Default
-                            ``Y:/proteomics-grp/STAN/incoming/<inst>/``.
+                            ``Y:/STAN/incoming/<inst>/``.
           hive_user         SSH user (default 'brettsp').
           hive_host         SSH host (default 'hive.hpc.ucdavis.edu').
           hive_venv         Hive STAN venv root for the dispatcher.
@@ -929,7 +929,7 @@ class InstrumentWatcher:
         dest_dir = self._config.get("hive_upload_dir")
         if not dest_dir:
             inst_dir = (self._name or "unknown").strip()
-            dest_dir = f"Y:/proteomics-grp/STAN/incoming/{inst_dir}"
+            dest_dir = f"Y:/STAN/incoming/{inst_dir}"
 
         self._record_event(
             "hive_upload_start", path,
