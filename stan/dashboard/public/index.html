@@ -1871,7 +1871,10 @@
       { key: 'n_proteins',   label: 'Proteins' },
       { key: 'n_peptides',   label: 'Peptides',   ddaFallback: 'n_peptides_dda' },
       { key: 'n_precursors', label: 'Precursors', ddaFallback: 'n_psms' },
-      { key: 'tic_auc',      label: 'MS1 AUC' },
+      // Hive pipeline (v0.2.342) doesn't run a separate TIC integration
+      // step; report.stats.tsv ms1_signal is the equivalent total MS1
+      // intensity over the run, so use it as the silent fallback.
+      { key: 'tic_auc',      label: 'MS1 AUC',    fallback: 'ms1_signal' },
     ];
 
     // Tint thresholds: deviation from baseline in percent.
@@ -1919,6 +1922,10 @@
       if (mcfg.ddaFallback) {
         const vf = run?.[mcfg.ddaFallback];
         if (vf != null) return { value: vf, viaFallback: true };
+      }
+      if (mcfg.fallback) {
+        const vf = run?.[mcfg.fallback];
+        if (vf != null && vf !== 0) return { value: vf, viaFallback: false };
       }
       return { value: null, viaFallback: false };
     }
