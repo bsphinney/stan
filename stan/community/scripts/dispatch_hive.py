@@ -307,6 +307,7 @@ def _render_sbatch(
     # job, since SLURM rejects scripts whose --output dir is missing.
     sbatch_log_dir.mkdir(parents=True, exist_ok=True)
 
+    bruker_ff_dir = "/quobyte/proteomics-grp/brett/bruker_ff"
     return f"""#!/bin/bash
 #SBATCH --job-name={job_name}
 #SBATCH --partition={slurm['partition']}
@@ -324,6 +325,15 @@ set -euo pipefail
 source /etc/profile.d/modules.sh 2>/dev/null || true
 module load apptainer 2>/dev/null || true
 module load dotnet-core-sdk/8.0.4 2>/dev/null || true
+
+# 4DFF (Bruker uff-cmdline2) lives on shared Quobyte storage and
+# needs LD_LIBRARY_PATH for libtbb.so.2 plus STAN_BRUKER_FF_DIR for
+# stan.metrics.features._install_dir() to find it. Without these,
+# is_4dff_installed() returns False and _run_4dff_inline silently
+# skips the .features sidecar — exactly what bit the 2026-05-07
+# timsTOF test (no ion cloud generated despite the .d being Bruker).
+export STAN_BRUKER_FF_DIR={bruker_ff_dir}
+export LD_LIBRARY_PATH={bruker_ff_dir}/linux:${{LD_LIBRARY_PATH:-}}
 
 # STAN venv on shared Quobyte storage.
 source {venv}/bin/activate

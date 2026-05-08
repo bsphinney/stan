@@ -41,6 +41,13 @@ echo "--- Installing/upgrading STAN ---"
 "$VENV/bin/pip" install --quiet --upgrade \
     "stan-proteomics @ ${GITHUB_ZIP}"
 
+# alphatims for PEG + DIA window drift (Bruker MS1 reader). Pinned
+# per pyproject.toml [peg] extra: alphatims 1.0.8 last works against
+# numpy<2 and polars 1.x. Without these, PEG and drift silently skip
+# on Hive — TIC + 4DFF + IPS still work. Install lazily (idempotent).
+"$VENV/bin/pip" install --quiet \
+    'alphatims>=1.0,<1.0.9' 'numpy<2'
+
 echo "Hive STAN version: $($VENV/bin/stan version)"
 
 # Ensure expected directory layout for sbatch logs / dispatch logs /
