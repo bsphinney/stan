@@ -192,6 +192,17 @@ if exist "%UPDATE_FLAG%" (
             rmdir /s /q "%%D" 2>nul
         )
     )
+    REM Kill the dashboard cmd window BEFORE pip install. Pre-fix it
+    REM held stan.exe open and pip's --upgrade tried to overwrite the
+    REM .exe → "in use" error → partial uninstall left venv broken
+    REM (ModuleNotFoundError: No module named 'stan'). Hit Brett 4x on
+    REM 2026-05-08. The dashboard relaunches via the line at the top
+    REM of stan.bat the next time stan.bat is opened cleanly — we
+    REM accept this leaves the dashboard down for ~30s during the
+    REM restart cycle but kills the lock contention class of failure.
+    taskkill /f /fi "WINDOWTITLE eq STAN Dashboard*" 2>nul
+    taskkill /f /fi "IMAGENAME eq stan.exe" 2>nul
+    timeout /t 2 /nobreak >nul
     if exist "%STAN_VENV_PIP%" (
         "%STAN_VENV_PIP%" install --upgrade --quiet --no-input ^
             "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"
