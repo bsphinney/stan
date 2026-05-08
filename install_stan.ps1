@@ -352,19 +352,46 @@ $stanConfigDir = "$env:USERPROFILE\.stan"
 if (-not (Test-Path $stanConfigDir)) { New-Item -ItemType Directory -Path $stanConfigDir -Force | Out-Null }
 $instrYml = "$stanConfigDir\instruments.yml"
 
-# Find installed DIA-NN binary path
+# Find installed DIA-NN binary path. Prefer the one Step 4 already
+# version-selected ($bestDiann); fall back to a version-aware re-scan
+# if Step 4 didn't set one. (A naive Get-ChildItem | Select -First 1
+# returns alphabetic first, which picks 1.8.1 over 2.3.2 -- wrong.)
 $diannBinPath = ""
-$machinePath2 = [Environment]::GetEnvironmentVariable("Path", "Machine")
-$userPath2 = [Environment]::GetEnvironmentVariable("Path", "User")
-$env:Path = "$machinePath2;$userPath2"
-foreach ($sp in $diannSearchPaths) {
-    if (Test-Path $sp) {
-        $f = Get-ChildItem -Path $sp -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($f) { $diannBinPath = $f.FullName; break }
+if ($bestDiann -and (Test-Path $bestDiann)) {
+    $diannBinPath = $bestDiann
+}
+if ($diannBinPath -eq "") {
+    $machinePath2 = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath2 = [Environment]::GetEnvironmentVariable("Path", "User")
+    $env:Path = "$machinePath2;$userPath2"
+    $allFound = @()
+    foreach ($sp in $diannSearchPaths) {
+        if (Test-Path $sp) {
+            $found = Get-ChildItem -Path $sp -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue
+            foreach ($f in $found) { $allFound += $f.FullName }
+        }
+    }
+    # Pick the highest semver match (same logic as Step 4).
+    $picked = $null
+    $pickedMaj = 0
+    $pickedMin = 0
+    foreach ($p in $allFound) {
+        if ($p -match "(\d+)\.(\d+)") {
+            $maj = [int]$Matches[1]
+            $min = [int]$Matches[2]
+            if ($maj -gt $pickedMaj -or ($maj -eq $pickedMaj -and $min -gt $pickedMin)) {
+                $pickedMaj = $maj
+                $pickedMin = $min
+                $picked = $p
+            }
+        }
+    }
+    if ($picked) { $diannBinPath = $picked }
+    if ($diannBinPath -eq "") {
+        $onPath2 = Get-Command "DiaNN.exe" -ErrorAction SilentlyContinue
+        if ($onPath2) { $diannBinPath = $onPath2.Source }
     }
 }
-$onPath2 = Get-Command "DiaNN.exe" -ErrorAction SilentlyContinue
-if ($diannBinPath -eq "" -and $onPath2) { $diannBinPath = $onPath2.Source }
 
 # Find installed Sage binary path
 $sageBinPath = ""
@@ -416,9 +443,20 @@ Write-Host "  Config: $instrYml" -ForegroundColor Gray
 # -- Init --
 Write-Host ""
 Write-Host "  [7/8] Initializing STAN config..." -ForegroundColor Cyan
-$ErrorActionPreference = "Continue"
-& $stanExe init 2>&1 | Out-Null
-$ErrorActionPreference = "Stop"
+# Skip the interactive `stan init` wizard if instruments.yml already
+# exists -- per-instrument wrappers (install_stan_lumosrox.bat,
+# install_stan_tims10878.bat) write the file themselves and `stan init`
+# would just block silently waiting for tty input that isn't piped.
+$instrYml2 = "$env:USERPROFILE\.stan\instruments.yml"
+if (Test-Path $instrYml2) {
+    Write-Host "  instruments.yml already present -- skipping stan init." -ForegroundColor Gray
+} else {
+    $ErrorActionPreference = "Continue"
+    # Don't redirect to Out-Null -- if init prompts, the operator needs
+    # to see the prompt to answer it.
+    & $stanExe init
+    $ErrorActionPreference = "Stop"
+}
 Write-Host "  Done." -ForegroundColor Green
 
 # -- PATH --

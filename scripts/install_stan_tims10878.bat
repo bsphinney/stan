@@ -63,25 +63,36 @@ echo   Estimated time: 3-5 minutes (network dependent)
 echo.
 
 REM ------------------------------------------------------------------
-REM  Step 1: run the base STAN installer
+REM  Step 1: run the base STAN installer (skip if already installed)
 REM ------------------------------------------------------------------
-echo   [1/3] Running base STAN installer...
+echo   [1/4] Base STAN install...
 echo.
 
-REM Always force-redownload install-stan.bat to defeat stale-cache footguns.
-REM (Earlier "if not exist" cached an old install-stan.bat which then reused
-REM an old install_stan.ps1 with mojibake em-dashes that broke PS5.1 parsing.)
-set "INSTALLER=%~dp0install-stan.bat"
-echo   Downloading fresh install-stan.bat from GitHub (cache-busted)...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $t=[DateTime]::Now.Ticks; Invoke-WebRequest -Uri (\"https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat?t=$t\") -OutFile '%~dp0install-stan.bat' -UseBasicParsing"
-del "%~dp0install_stan.ps1" >nul 2>&1
+REM Detect existing install. Two known venv roots: %USERPROFILE%\STAN\venv
+REM (current default) and %USERPROFILE%\.stan\venv (legacy). If stan.exe
+REM exists at either, skip the base install -- this script can then be
+REM re-run cheaply just to refresh the SSH key and instruments.yml.
+set "STAN_EXE=%USERPROFILE%\STAN\venv\Scripts\stan.exe"
+if not exist "%STAN_EXE%" set "STAN_EXE=%USERPROFILE%\.stan\venv\Scripts\stan.exe"
 
-call "%INSTALLER%"
-if errorlevel 1 (
-    echo.
-    echo   ERROR: Base STAN install failed. Fix errors above then re-run.
-    pause
-    exit /b 1
+if exist "%STAN_EXE%" (
+    echo   STAN already installed at %STAN_EXE%
+    echo   Skipping base install. Use stan.bat to update STAN itself
+    echo   ^(it auto-updates from GitHub on launch^).
+) else (
+    REM Always force-redownload install-stan.bat to defeat stale-cache footguns.
+    set "INSTALLER=%~dp0install-stan.bat"
+    echo   Downloading fresh install-stan.bat from GitHub (cache-busted)...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $t=[DateTime]::Now.Ticks; Invoke-WebRequest -Uri (\"https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat?t=$t\") -OutFile '%~dp0install-stan.bat' -UseBasicParsing"
+    del "%~dp0install_stan.ps1" >nul 2>&1
+
+    call "%~dp0install-stan.bat"
+    if errorlevel 1 (
+        echo.
+        echo   ERROR: Base STAN install failed. Fix errors above then re-run.
+        pause
+        exit /b 1
+    )
 )
 
 REM ------------------------------------------------------------------
