@@ -2717,7 +2717,7 @@
               </div>
             );
           })()}
-          <TodayTicOverlay />
+          <TodayTicOverlay instrument={filters.instrument} />
         </div>
       );
     }
@@ -2884,7 +2884,7 @@
     // joining sample_health to a future tic-for-health-rows table.
     // That's Ship B follow-up work; the MVP is the QC overlay because
     // it uses data we already extract in baseline.py.
-    function TodayTicOverlay() {
+    function TodayTicOverlay({ instrument }) {
       const [data, setData] = useState(null);
       const [normalize, setNormalize] = useState(true);
       // v0.2.301: TIC | BPC toggle. 'intensity' = summed (TIC),
@@ -2901,11 +2901,17 @@
       const [filter, setFilter] = useState('all');
 
       useEffect(() => {
-        fetch(API + '/api/today/tic-overview')
+        // v0.2.349: honor the parent's instrument selector so TIC traces
+        // don't span every instrument when the operator drilled into one.
+        let url = '/api/today/tic-overview?days=7';
+        if (instrument && instrument !== '__all__') {
+          url += '&instrument=' + encodeURIComponent(instrument);
+        }
+        fetch(API + url)
           .then(r => r.json())
           .then(setData)
           .catch(() => setData({ runs: [], n_runs: 0, n_with_tic: 0 }));
-      }, []);
+      }, [instrument]);
 
       if (!data) {
         return (
