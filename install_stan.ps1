@@ -11,11 +11,21 @@ Write-Host "  No admin rights required. Takes about 2 minutes."
 Write-Host ""
 
 # -- License --
-Write-Host "  STAN uses DIA-NN (free academic, commercial license required)" -ForegroundColor Gray
-Write-Host "  and Sage (MIT open source) as external search engines." -ForegroundColor Gray
+Write-Host "  =================== DIA-NN License ===================" -ForegroundColor Yellow
+Write-Host "  DIA-NN is developed by Vadim Demichev." -ForegroundColor Gray
+Write-Host "  Free for academic and non-commercial use." -ForegroundColor Gray
+Write-Host "  Commercial use requires a separate license from the author." -ForegroundColor Gray
 Write-Host ""
-$accept = Read-Host "  Accept DIA-NN and Sage license terms? (Y/n)"
-if ($accept -eq "n") { Write-Host "  Cancelled." -ForegroundColor Yellow; exit 0 }
+Write-Host "  Full terms: https://github.com/vdemichev/DiaNN/blob/master/LICENSE.md" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Citation: Demichev V et al. Nature Methods. 2020;17(1):41-44." -ForegroundColor Gray
+Write-Host "  ======================================================" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "  Sage (DDA search engine) is MIT open source." -ForegroundColor Gray
+Write-Host "  https://github.com/lazear/sage" -ForegroundColor Gray
+Write-Host ""
+$accept = Read-Host "  Do you accept the DIA-NN license terms? [yes/no]"
+if ($accept -ne "yes") { Write-Host "  Cancelled." -ForegroundColor Yellow; exit 0 }
 Write-Host "  License accepted." -ForegroundColor Green
 
 # -- SSL workaround for corporate/university proxy networks --
@@ -334,9 +344,78 @@ if (-not $sageInstalled) {
 }
 $ErrorActionPreference = "Stop"
 
+# -- Write tool paths into instruments.yml --
+Write-Host ""
+Write-Host "  [6/8] Writing tool paths to instruments.yml..." -ForegroundColor Cyan
+
+$stanConfigDir = "$env:USERPROFILE\.stan"
+if (-not (Test-Path $stanConfigDir)) { New-Item -ItemType Directory -Path $stanConfigDir -Force | Out-Null }
+$instrYml = "$stanConfigDir\instruments.yml"
+
+# Find installed DIA-NN binary path
+$diannBinPath = ""
+$machinePath2 = [Environment]::GetEnvironmentVariable("Path", "Machine")
+$userPath2 = [Environment]::GetEnvironmentVariable("Path", "User")
+$env:Path = "$machinePath2;$userPath2"
+foreach ($sp in $diannSearchPaths) {
+    if (Test-Path $sp) {
+        $f = Get-ChildItem -Path $sp -Recurse -Filter "DiaNN.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($f) { $diannBinPath = $f.FullName; break }
+    }
+}
+$onPath2 = Get-Command "DiaNN.exe" -ErrorAction SilentlyContinue
+if ($diannBinPath -eq "" -and $onPath2) { $diannBinPath = $onPath2.Source }
+
+# Find installed Sage binary path
+$sageBinPath = ""
+$sageExe2 = Get-ChildItem -Path $sageDir -Recurse -Filter "sage.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($sageExe2) { $sageBinPath = $sageExe2.FullName }
+
+# Read existing instruments.yml or create a minimal one, then upsert tool paths
+if (Test-Path $instrYml) {
+    $yml = Get-Content $instrYml -Raw
+    # Remove any existing diann_binary / sage_binary lines so we can append clean ones
+    $lines = $yml -split "`n"
+    $filtered = @()
+    foreach ($line in $lines) {
+        if ($line -notmatch "^\s*diann_binary\s*:" -and $line -notmatch "^\s*sage_binary\s*:") {
+            $filtered += $line
+        }
+    }
+    # Strip trailing blank lines before we append
+    $yml = ($filtered -join "`n").TrimEnd()
+} else {
+    # Bootstrap a minimal instruments.yml so subsequent stan init fills in the rest
+    $yml = "# STAN instrument configuration`n# Edit this file to add watch directories and instrument names.`ninstruments: []"
+}
+
+# Append tool paths (use forward slashes — YAML is cross-platform friendly)
+$diannYaml = $diannBinPath -replace "\\", "/"
+$sageYaml = $sageBinPath -replace "\\", "/"
+$yml = "$yml`n"
+if ($diannBinPath -ne "") {
+    $yml = "$yml`ndiann_binary: `"$diannYaml`""
+}
+if ($sageBinPath -ne "") {
+    $yml = "$yml`nsage_binary: `"$sageYaml`""
+}
+$yml | Out-File -FilePath $instrYml -Encoding utf8 -NoNewline
+
+if ($diannBinPath -ne "") {
+    Write-Host "  diann_binary -> $diannBinPath" -ForegroundColor Green
+} else {
+    Write-Host "  diann_binary not set (DIA-NN not found — install manually and re-run)" -ForegroundColor Yellow
+}
+if ($sageBinPath -ne "") {
+    Write-Host "  sage_binary  -> $sageBinPath" -ForegroundColor Green
+} else {
+    Write-Host "  sage_binary not set (Sage not found — install manually and re-run)" -ForegroundColor Yellow
+}
+Write-Host "  Config: $instrYml" -ForegroundColor Gray
+
 # -- Init --
 Write-Host ""
-Write-Host "  [6/7] Initializing..." -ForegroundColor Cyan
+Write-Host "  [7/8] Initializing STAN config..." -ForegroundColor Cyan
 $ErrorActionPreference = "Continue"
 & $stanExe init 2>&1 | Out-Null
 $ErrorActionPreference = "Stop"
@@ -344,7 +423,7 @@ Write-Host "  Done." -ForegroundColor Green
 
 # -- PATH --
 Write-Host ""
-Write-Host "  [7/7] Adding to PATH..." -ForegroundColor Cyan
+Write-Host "  [8/8] Adding to PATH..." -ForegroundColor Cyan
 $sp = "$venv\Scripts"
 $up = [Environment]::GetEnvironmentVariable("PATH", "User")
 

@@ -1,6 +1,6 @@
 # STAN Mode C — SLURM Cluster (HPC) Deployment Guide
 
-> **Version**: v0.2.346  
+> **Version**: v0.2.347  
 > **Related docs**: [Mode A — Instrument PC](../README.md) · [Mode B — WSL2 Lab Box](INSTALL_MODE_B_WSL.md) · [HPC Paths Reference](HPC_PATHS.md) · [CLAUDE.md Hive section](../CLAUDE.md)
 
 ---
@@ -296,6 +296,16 @@ Model this on `scripts/hive_bootstrap.sh`. Required sections:
   incoming dirs per instrument)
 - Write `dispatch.yml` via `stan hive-dispatch --print-default-config` only if the file
   does not already exist (idempotent)
+- **DIA-NN**: call `pull_diann_sif()` — pulls the pre-built STAN container image
+  (`docker://registry.hf.space/brettsp-stan-proteomics:latest`) via `apptainer pull`
+  on a compute node (CPU-intensive; mirrors the DE-LIMP `hpc_setup.sh` pattern).
+  The pull is non-fatal if the image is not yet published. On Hive, the existing
+  container at `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif` is already present
+  and referenced in `dispatch.yml` — the pull step adds the STAN-packaged image as a
+  future upgrade path. **You do not need to install DIA-NN manually.**
+- **Sage**: call `download_sage_linux()` — downloads the latest Sage release tarball
+  from GitHub, extracts the static binary to `<STAN_BASE>/sage/sage`, and writes
+  `sage_binary` into `dispatch.yml`. **You do not need to install Sage manually.**
 
 Do NOT use `sudo` — the script runs as the user on the login node.
 Do NOT write outputs to `/tmp` — node-local, invisible after the job ends.
@@ -389,8 +399,10 @@ environment stack. Fill in the SBATCH directives from my sacctmgr output.
 - Cluster name / hostname: ___
 - Number of instruments sending raw files here: ___
 - Instrument types (Bruker timsTOF, Thermo Exploris, Thermo Lumos, etc.): ___
-- DIA-NN .sif container path on the cluster (if known): ___
-- Sage binary path on the cluster (if known): ___
+- DIA-NN .sif container path on the cluster (if already present, skip the bootstrap pull): ___
+  (Leave blank — `hive_bootstrap.sh` pulls it automatically via `pull_diann_sif()`)
+- Sage binary path on the cluster (if already present, skip the bootstrap download): ___
+  (Leave blank — `hive_bootstrap.sh` downloads it automatically via `download_sage_linux()`)
 - Do you want community benchmark submissions enabled? (yes/no): ___
 
 ===== END MASTER PROMPT =====
@@ -429,14 +441,30 @@ Before committing the AI's output, verify each item manually. Do not skip this �
 - [ ] The script does NOT write to `/tmp` — node-local and invisible post-job.
 
 **DIA-NN container / binary**
-- [ ] If the AI specified a container path, verify it exists:
+- [ ] `hive_bootstrap.sh` calls `pull_diann_sif()` automatically — check the bootstrap log
+  for `"DIA-NN .sif installed"` or the non-fatal warning if the image is not yet published.
+  On Hive, the existing container at `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif`
+  is already present and used by `dispatch.yml` — the bootstrap pull is additive.
+- [ ] If the `.sif` was pulled, verify it exists:
   ```bash
-  ssh <cluster> "ls -lh <container_path>"
+  ssh hive "ls -lh /quobyte/proteomics-grp/STAN/containers/diann.sif"
   ```
 - [ ] If using Apptainer, confirm the `.sif` file (not `.simg`) — Apptainer ≥1.0 requires `.sif`.
 - [ ] If you use Thermo `.raw` files, confirm the DIA-NN container has `.NET 8 SDK` bundled.
   The Hive container at `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif` does;
   the lookalike at `apptainers/diann2.3.0.sif` (no underscore) does NOT. See Appendix B.
+
+**Sage binary**
+- [ ] `hive_bootstrap.sh` calls `download_sage_linux()` automatically — check the bootstrap
+  log for `"Sage installed: /quobyte/proteomics-grp/STAN/sage/sage"`.
+- [ ] Verify the binary is present and executable:
+  ```bash
+  ssh hive "/quobyte/proteomics-grp/STAN/sage/sage --help 2>&1 | head -3"
+  ```
+- [ ] Confirm `dispatch.yml` has `sage_binary` set to the correct path:
+  ```bash
+  ssh hive "grep sage_binary /quobyte/proteomics-grp/STAN/dispatch.yml"
+  ```
 
 **DIA-NN download URL (if bare-binary install)**
 - [ ] If the bootstrap script downloads DIA-NN directly (no container), verify the URL
