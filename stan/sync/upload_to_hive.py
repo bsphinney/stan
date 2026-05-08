@@ -1,4 +1,4 @@
-"""Instrument-PC → Hive upload via SMB.
+"""Instrument-PC -> Hive upload via SMB.
 
 In the new "hive" processing mode, the watcher detects a stable raw
 file/directory and copies it to the Quobyte SMB share that's already
@@ -14,8 +14,8 @@ suffixes (already implemented in dispatch_hive._walk_raws), so a
 half-uploaded file never triggers a SLURM job.
 
 Resume: every upload writes a row in the local stan.db ``uploads``
-table at start. Status transitions ``pending → done`` on rename
-success, ``pending → failed`` on copy/rename failure. On watcher
+table at start. Status transitions ``pending -> done`` on rename
+success, ``pending -> failed`` on copy/rename failure. On watcher
 startup, ``resume_pending_uploads`` walks pending+failed rows and
 re-attempts so a crashed/killed copy doesn't strand the file.
 
@@ -224,7 +224,7 @@ def upload_raw_to_incoming(
     try:
         os.replace(str(partial_dest), str(final_dest))
     except OSError as e:
-        err = f"rename {partial_dest} → {final_dest} failed: {e}"
+        err = f"rename {partial_dest} -> {final_dest} failed: {e}"
         result["error"] = err
         _record_upload_failed(raw_path, err, db_path)
         logger.exception(err)
@@ -234,7 +234,7 @@ def upload_raw_to_incoming(
     _record_upload_done(raw_path, db_path)
     result.update(status="done", dest=str(final_dest), size_bytes=size)
     logger.info(
-        "Uploaded %s (%.1f MB) → %s",
+        "Uploaded %s (%.1f MB) -> %s",
         raw_path.name, size / 1e6, final_dest,
     )
     return result
@@ -257,7 +257,7 @@ def _record_submission(
 
 
 def _smb_to_quobyte_path(smb_path: str) -> str:
-    """Translate Windows SMB Quobyte mount → Linux Quobyte POSIX path.
+    """Translate Windows SMB Quobyte mount -> Linux Quobyte POSIX path.
 
     Brett's lab convention: ``Y:\\`` on Windows mounts to the
     ``proteomics-grp`` SMB share root, NOT the full Quobyte root.
@@ -271,7 +271,7 @@ def _smb_to_quobyte_path(smb_path: str) -> str:
     if s[:3].upper() == "Y:\\" or s[:3].upper() == "Y:/":
         return "/quobyte/proteomics-grp/" + s[3:].replace("\\", "/").lstrip("/")
     # Already a Linux-style path (dev box on macOS uses
-    # /Volumes/proteomics-grp/STAN/...). Map Volumes → quobyte too.
+    # /Volumes/proteomics-grp/STAN/...). Map Volumes -> quobyte too.
     if s.startswith("/Volumes/proteomics-grp/"):
         return "/quobyte/proteomics-grp/" + s[len("/Volumes/proteomics-grp/"):]
     return s
@@ -438,7 +438,7 @@ def resume_pending_uploads(
                 "Skipping resume of %s — no dest dir resolved", raw.name,
             )
             continue
-        logger.info("Resuming pending upload: %s → %s", raw.name, dest)
+        logger.info("Resuming pending upload: %s -> %s", raw.name, dest)
         upload_raw_to_incoming(raw, dest, db_path=db_path)
         n += 1
     return n

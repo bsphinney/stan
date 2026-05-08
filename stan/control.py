@@ -1958,6 +1958,15 @@ def _action_backfill_from_dir(args: dict) -> dict:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     log_path = log_dir / f"backfill_from_dir_{ts}.log"
 
+    # Force UTF-8 stdout so any Unicode in CLI output (rich's progress
+    # arrows, em-dashes, etc.) doesn't crash the subprocess on Windows
+    # where stdout-redirected-to-file defaults to cp1252. Hit this on
+    # Exploris 2026-05-08 v0.2.333 — `→` in upload_to_hive.py logger
+    # crashed the backfill mid-run after the first file uploaded.
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+
     try:
         with log_path.open("wb") as logf:
             proc = _subprocess.Popen(
@@ -1968,6 +1977,7 @@ def _action_backfill_from_dir(args: dict) -> dict:
                 # Detach so the watcher's main loop returns immediately
                 # and the backfill keeps running independently.
                 close_fds=True,
+                env=env,
             )
     except Exception as e:
         return {"error": f"failed to launch: {e}"}
