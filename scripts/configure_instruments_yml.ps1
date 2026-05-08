@@ -39,10 +39,23 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 
-$stanDir = "$env:USERPROFILE\.stan"
+# Resolve STAN's user config dir. v0.2.347+ installs put config under
+# %USERPROFILE%\STAN\ (matches the venv parent); legacy installs used
+# %USERPROFILE%\.stan\. Detect which one this install uses by looking
+# for stan.exe at the matching venv path -- write to whichever STAN
+# actually reads.
+if (Test-Path "$env:USERPROFILE\STAN\venv\Scripts\stan.exe") {
+    $stanDir = "$env:USERPROFILE\STAN"
+} elseif (Test-Path "$env:USERPROFILE\.stan\venv\Scripts\stan.exe") {
+    $stanDir = "$env:USERPROFILE\.stan"
+} else {
+    # Brand-new (no venv yet) -- pick the modern path.
+    $stanDir = "$env:USERPROFILE\STAN"
+}
 if (-not (Test-Path $stanDir)) {
     New-Item -ItemType Directory -Path $stanDir -Force | Out-Null
 }
+Write-Host "  Writing config to: $stanDir" -ForegroundColor Gray
 
 # ------------------------------------------------------------------
 # instruments.yml
