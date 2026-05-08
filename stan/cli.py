@@ -6326,6 +6326,11 @@ def hive_dispatch_cmd(
              "parallel; extract waits via afterany. Cuts wall time "
              "from sum(steps) to max(steps) — ~30% on Bruker .d. "
              "Only meaningful with --raw."),
+    classification: str = typer.Option("auto", "--classification",
+        help="Override auto-classification for --raw mode. 'auto' infers "
+             "from filename: HeLa/QC pattern → qc (search+extract pipeline), "
+             "everything else → monitor (lightweight sample-health pipeline). "
+             "'qc' or 'monitor' force the respective sbatch. Default: auto."),
 ) -> None:
     """Hive-side dispatcher: scan watch dirs OR submit ONE raw.
 
@@ -6372,6 +6377,7 @@ def hive_dispatch_cmd(
             partition=partition,
             force=force,
             parallel=parallel,
+            classification=classification,
         )
         # JSONL on stdout for the SSH-invoking caller (watcher,
         # time-hive-partitions) to parse. Plain print, not console.print.

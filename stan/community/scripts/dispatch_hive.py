@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import re
 import shutil
 import sqlite3
@@ -40,6 +39,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("/quobyte/proteomics-grp/STAN/dispatch.yml")
 DEFAULT_QC_PATTERN = r"(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)"
+
+# SLURM resource profile for monitor jobs. Much cheaper than QC jobs:
+# no DIA-NN/Sage, just rawmeat metrics + sample-health writes.
+_MONITOR_SLURM = {
+    "partition": "low",
+    "qos": "publicgrp-low-qos",
+    "account": "publicgrp",
+    "time": "00:30:00",
+    "cpus": 4,
+    "mem": "8G",
+}
 
 # Embedded default-config template. Brett bootstraps via:
 #   stan hive-dispatch --print-default-config > /quobyte/.../dispatch.yml
@@ -186,6 +196,37 @@ def _matches_qc_pattern(name: str, pattern: str) -> bool:
     if not pattern:
         return True
     return re.search(pattern, name) is not None
+
+
+def _classify_raw(raw_name: str, qc_pattern: str = DEFAULT_QC_PATTERN) -> str:
+    """Return 'qc' or 'monitor' for a raw filename.
+
+    Mirrors ``stan.pipeline.hive_process._classify_raw`` — kept in sync so
+    the dispatcher and the SLURM job body agree on routing. QC files match
+    the HeLa/QC/std-HeLa regex; everything else (washes, blanks, patient
+    samples) is 'monitor'.
+    """
+    if _matches_qc_pattern(raw_name, qc_pattern):
+        return "qc"
+    return "monitor"
+
+
+def _already_health_processed(db_path: Path, raw_path: Path) -> bool:
+    """True if the raw already has a row in ``sample_health`` (monitor pipeline).
+
+    Parallel to ``_already_processed`` for the QC runs table. Used so the
+    walk-mode dispatcher skips monitor raws that already landed in
+    sample_health.
+    """
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            row = con.execute(
+                "SELECT 1 FROM sample_health WHERE raw_path = ? LIMIT 1",
+                (str(raw_path),),
+            ).fetchone()
+            return row is not None
+    except sqlite3.OperationalError:
+        return False  # table not yet created — nothing processed
 
 
 def _already_processed(db_path: Path, raw_path: Path) -> bool:
@@ -363,6 +404,81 @@ echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] hive-process exit=$?"
 """
 
 
+def _render_monitor_sbatch(
+    raw_path: Path,
+    instrument: dict,
+    cfg: dict,
+) -> str:
+    """Render a lightweight SLURM sbatch script for a monitor (non-QC) raw.
+
+    Monitor jobs skip DIA-NN/Sage entirely — they run ``stan hive-process``
+    which auto-routes to ``step_monitor`` (rawmeat metrics + sample-health
+    evaluation + TIC trace). Resources are intentionally small: 4 CPU,
+    8 GB, 30 min on the ``low`` (preemptible) partition. Cheap to retry if
+    preempted.
+
+    Output log lands under ``<sbatch_log_dir>/monitor/`` on Quobyte —
+    never /tmp (per CLAUDE.md rule: node-local, invisible post-mortem).
+    """
+    db_path = Path(cfg["db_path"])
+    sbatch_log_dir = Path(cfg["sbatch_log_dir"])
+    venv = Path(cfg["stan_venv"])
+
+    raw_stem = raw_path.stem
+    job_name = f"stan-mon-{raw_stem}"
+    # Monitor logs land under <sbatch_log_dir>/monitor/ — a subdirectory of
+    # the already-established sbatch log root. mkdir is deferred to
+    # _submit_sbatch (same pattern as the scripts/ subdir) so rendering
+    # doesn't touch the filesystem and works cleanly in dry-run / off-Hive.
+    monitor_log_dir = sbatch_log_dir / "monitor"
+
+    # Use the monitor SLURM profile, not the QC one from dispatch.yml.
+    slurm = _MONITOR_SLURM
+
+    argv = [
+        f"{_shell_quote(str(venv))}/bin/stan", "hive-process",
+        _shell_quote(str(raw_path)),
+        "--instrument", _shell_quote(instrument["name"]),
+        "--family", _shell_quote(instrument["family"]),
+        "--vendor", _shell_quote(instrument["vendor"]),
+        "--db", _shell_quote(str(db_path)),
+        "--classification", "monitor",
+    ]
+    if instrument.get("column_vendor"):
+        argv += ["--column-vendor", _shell_quote(instrument["column_vendor"])]
+    if instrument.get("column_model"):
+        argv += ["--column-model", _shell_quote(instrument["column_model"])]
+
+    cmd = " ".join(argv)
+
+    return f"""#!/bin/bash
+#SBATCH --job-name={job_name}
+#SBATCH --partition={slurm['partition']}
+#SBATCH --qos={slurm['qos']}
+#SBATCH --account={slurm['account']}
+#SBATCH --time={slurm['time']}
+#SBATCH --cpus-per-task={slurm['cpus']}
+#SBATCH --mem={slurm['mem']}
+#SBATCH --output={monitor_log_dir}/{raw_stem}_%j.out
+#SBATCH --requeue
+
+set -euo pipefail
+
+# Module env — dotnet not needed (no TRFP for monitor), but load it
+# defensively in case rawmeat falls back to ThermoRawFileParser for
+# Thermo .raw mzML conversion.
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load dotnet-core-sdk/8.0.4 2>/dev/null || true
+
+# STAN venv on shared Quobyte storage.
+source {venv}/bin/activate
+
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] starting monitor for {raw_path.name}"
+{cmd}
+echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] monitor exit=$?"
+"""
+
+
 def _submit_sbatch(
     script_text: str,
     sbatch_log_dir: Path,
@@ -377,6 +493,8 @@ def _submit_sbatch(
     """
     scripts_dir = sbatch_log_dir / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
+    if step == "monitor":
+        (sbatch_log_dir / "monitor").mkdir(parents=True, exist_ok=True)
     fname = f"{raw_stem}.sbatch" if step == "full" else f"{step}-{raw_stem}.sbatch"
     script_path = scripts_dir / fname
     script_path.write_text(script_text)
@@ -472,15 +590,23 @@ def dispatch_all(
                 summary["totals"]["capped"] += 1
                 break
 
-            if not _matches_qc_pattern(raw.name, qc_pattern):
-                per_inst["skipped_pattern"] += 1
-                summary["totals"]["skipped_pattern"] += 1
-                continue
+            # Classify as 'qc' or 'monitor'. QC files run the
+            # search+extract pipeline; monitor files run the lightweight
+            # sample-health pipeline. The old walk mode skipped anything
+            # not matching qc_pattern — now we dispatch both classes.
+            raw_class = _classify_raw(raw.name, qc_pattern)
 
-            if _already_processed(db_path, raw):
-                per_inst["skipped_processed"] += 1
-                summary["totals"]["skipped_processed"] += 1
-                continue
+            # Check the right table for idempotency.
+            if raw_class == "monitor":
+                if _already_health_processed(db_path, raw):
+                    per_inst["skipped_processed"] += 1
+                    summary["totals"]["skipped_processed"] += 1
+                    continue
+            else:
+                if _already_processed(db_path, raw):
+                    per_inst["skipped_processed"] += 1
+                    summary["totals"]["skipped_processed"] += 1
+                    continue
 
             if _failed_too_many(db_path, raw, max_attempts):
                 per_inst["skipped_max_attempts"] += 1
@@ -492,31 +618,46 @@ def dispatch_all(
                 summary["totals"]["skipped_in_flight"] += 1
                 continue
 
-            script = _render_sbatch(raw, inst, cfg)
+            if raw_class == "monitor":
+                script = _render_monitor_sbatch(raw, inst, cfg)
+                step = "monitor"
+            else:
+                script = _render_sbatch(raw, inst, cfg)
+                step = "full"
+
             if dry_run:
-                log.info("[dry-run] would submit %s (%s)", raw.name, inst["name"])
+                log.info(
+                    "[dry-run] would submit %s (%s) [%s]",
+                    raw.name, inst["name"], raw_class,
+                )
                 per_inst["submitted"] += 1
                 summary["totals"]["submitted"] += 1
                 per_inst["submissions"].append(
-                    {"raw": str(raw), "job_id": None, "dry_run": True}
+                    {"raw": str(raw), "job_id": None,
+                     "classification": raw_class, "dry_run": True}
                 )
                 submitted_total += 1
                 continue
 
-            job_id = _submit_sbatch(script, sbatch_log_dir, raw.stem)
+            job_id = _submit_sbatch(script, sbatch_log_dir, raw.stem, step=step)
             if job_id:
-                log.info("submitted %s as SLURM job %s", raw.name, job_id)
+                log.info(
+                    "submitted %s [%s] as SLURM job %s",
+                    raw.name, raw_class, job_id,
+                )
                 per_inst["submitted"] += 1
                 summary["totals"]["submitted"] += 1
                 per_inst["submissions"].append(
-                    {"raw": str(raw), "job_id": job_id}
+                    {"raw": str(raw), "job_id": job_id,
+                     "classification": raw_class}
                 )
                 submitted_total += 1
             else:
                 per_inst["submit_failed"] += 1
                 summary["totals"]["submit_failed"] += 1
                 per_inst["submissions"].append(
-                    {"raw": str(raw), "job_id": None, "error": "sbatch failed"}
+                    {"raw": str(raw), "job_id": None,
+                     "classification": raw_class, "error": "sbatch failed"}
                 )
 
         summary["by_instrument"][inst["name"]] = per_inst
@@ -551,6 +692,7 @@ def dispatch_one_raw(
     partition: str = "",
     force: bool = False,
     parallel: bool = False,
+    classification: str = "auto",
 ) -> dict:
     """Render + submit a single SLURM job for a specific raw file.
 
@@ -560,12 +702,17 @@ def dispatch_one_raw(
     work. Returns a dict the caller can JSON-parse:
 
         {status: 'submitted'|'skipped'|'failed', job_id: str|None,
-         raw: str, error: str|None}
+         raw: str, classification: str, error: str|None}
 
-    Idempotency: ``_already_processed`` short-circuits if the global DB
-    already has a row for this raw_path; ``_job_already_queued`` skips
-    if a SLURM job for this stem is already running. Safe to call
-    repeatedly (e.g. watcher restart re-attempts after a crash).
+    ``classification`` controls which sbatch is emitted:
+      - 'auto'    (default): infer from filename via _classify_raw()
+      - 'qc'     : force the QC search+extract pipeline
+      - 'monitor': force the lightweight monitor/sample-health pipeline
+
+    Idempotency: ``_already_processed`` (runs table) or
+    ``_already_health_processed`` (sample_health) short-circuits if the
+    global DB already has a row; ``_job_already_queued`` skips if a
+    SLURM job for this stem is already running. Safe to call repeatedly.
     """
     cfg = _load_config(config_path)
     db_path = Path(cfg["db_path"])
@@ -600,16 +747,45 @@ def dispatch_one_raw(
         out["error"] = f"raw not on Hive yet: {raw_path}"
         return out
 
+    # Resolve classification before idempotency checks so we query the
+    # right table (runs for QC, sample_health for monitor).
+    if classification == "auto":
+        classification = _classify_raw(
+            raw_path.name, cfg.get("qc_pattern", DEFAULT_QC_PATTERN)
+        )
+    out["classification"] = classification
+
     if not force:
-        if _already_processed(db_path, raw_path):
-            out["status"] = "skipped"
-            out["error"] = "row already in runs table (--force to override)"
-            return out
+        if classification == "monitor":
+            if _already_health_processed(db_path, raw_path):
+                out["status"] = "skipped"
+                out["error"] = "row already in sample_health (--force to override)"
+                return out
+        else:
+            if _already_processed(db_path, raw_path):
+                out["status"] = "skipped"
+                out["error"] = "row already in runs table (--force to override)"
+                return out
         if _job_already_queued(raw_path.stem):
             out["status"] = "skipped"
             out["error"] = "SLURM job already queued/running (--force to override)"
             return out
 
+    # Monitor path: lightweight single-job sbatch (no search engines).
+    if classification == "monitor":
+        script = _render_monitor_sbatch(raw_path, instrument, cfg)
+        if dry_run:
+            out["status"] = "submitted"  # would-be
+            return out
+        job_id = _submit_sbatch(script, sbatch_log_dir, raw_path.stem, step="monitor")
+        if job_id:
+            out["status"] = "submitted"
+            out["job_id"] = job_id
+        else:
+            out["error"] = "sbatch failed — see stderr"
+        return out
+
+    # QC path below — parallel DAG or single all-in-one job.
     if parallel:
         # 4-job DAG (Bruker) or 2-job (Thermo). search/features/pegdrift
         # run in parallel; extract waits via afterany on all of them.
@@ -653,7 +829,7 @@ def dispatch_one_raw(
         out["step_jobs"] = step_jobs
         return out
 
-    # Single-job (sequential, all-in-one) path.
+    # Single-job (sequential, all-in-one) QC path.
     script = _render_sbatch(raw_path, instrument, cfg)
     if dry_run:
         out["status"] = "submitted"  # would-be
@@ -710,6 +886,14 @@ def main() -> None:
         help="Bypass the already-processed and already-queued short-"
              "circuits. For timing tests + manual reprocess.",
     )
+    p.add_argument(
+        "--classification", default="auto",
+        choices=["auto", "qc", "monitor"],
+        help="Override auto-classification for --raw mode. 'auto' (default) "
+             "infers from filename: HeLa/QC pattern → qc, everything else → "
+             "monitor. 'qc' forces the search+extract pipeline; 'monitor' "
+             "forces the lightweight sample-health pipeline.",
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     args = p.parse_args()
 
@@ -741,6 +925,7 @@ def main() -> None:
             dry_run=args.dry_run,
             partition=args.partition,
             force=args.force,
+            classification=args.classification,
         )
         print(json.dumps(result, default=str), flush=True)
         if result["status"] not in ("submitted", "skipped"):
