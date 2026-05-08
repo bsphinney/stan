@@ -6817,3 +6817,12 @@ def hive_upload_cmd(
     console.print(_json.dumps(result, default=str, indent=2))
     if result.get("status") not in ("done", "skipped"):
         raise typer.Exit(1)
+
+
+# Allow `python -m stan.cli ...` to actually invoke the typer app.
+# Without this, the subprocess form (used by remote actions like
+# _action_backfill_from_dir) imports the module but never calls
+# app() — exits silently with 0 bytes of output. v0.2.332 backfill
+# crashed exactly this way 2026-05-08.
+if __name__ == "__main__":
+    app()

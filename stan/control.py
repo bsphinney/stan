@@ -1935,7 +1935,15 @@ def _action_backfill_from_dir(args: dict) -> dict:
     if not src:
         return {"error": "missing 'dir' arg"}
 
-    cmd = [_sys.executable, "-m", "stan.cli", "backfill-from-dir", src]
+    # Resolve the venv's stan entry point (stan.exe on Windows, stan
+    # on Unix). Using -m stan.cli requires a __main__ guard which
+    # pre-v0.2.333 cli.py lacked — silent 0-byte log was the symptom.
+    stan_bin = Path(_sys.executable).parent / (
+        "stan.exe" if _sys.platform == "win32" else "stan"
+    )
+    if not stan_bin.exists():
+        return {"error": f"stan binary not found at {stan_bin}"}
+    cmd = [str(stan_bin), "backfill-from-dir", src]
     if args.get("qc_only"):
         cmd.append("--qc-only")
     if args.get("partition"):
