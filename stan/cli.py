@@ -6288,3 +6288,231 @@ def hive_dispatch_cmd(
     )
     if totals["submit_failed"] > 0:
         raise typer.Exit(1)
+
+
+@app.command("time-hive-partitions")
+def time_hive_partitions_cmd(
+    instrument: str = typer.Option("", "--instrument",
+        help="Substring of instrument name from instruments.yml. "
+             "If empty, uses the first instrument entry."),
+    raw: Optional[Path] = typer.Option(None, "--raw",
+        help="Specific QC raw to time. If omitted, picks the smallest "
+             "QC-pattern-matching .d/.raw in the watch_dir so the "
+             "test isn't wasteful."),
+    partitions: str = typer.Option("low,high", "--partitions",
+        help="Comma-separated SLURM partitions to compare."),
+    timeout_min: int = typer.Option(120, "--timeout-min",
+        help="Stop polling after this many minutes."),
+    poll_sec: int = typer.Option(30, "--poll-sec",
+        help="Seconds between sacct polls."),
+    ssh_key: Optional[Path] = typer.Option(None, "--ssh-key",
+        help="SSH private key. Default: %USERPROFILE%/.ssh/id_ed25519."),
+) -> None:
+    """Time SLURM round trip for one QC raw on each requested partition.
+
+    Picks one QC file from the configured watch_dir (smallest by size
+    to keep the test cheap), uploads it to the Hive incoming dir, and
+    submits a SLURM job per partition with --force so the dispatcher's
+    dedup doesn't short-circuit. Polls sacct over SSH until all jobs
+    end, then prints a comparison table.
+
+    Use this once per lab to decide which partition to set as
+    slurm.partition in dispatch.yml — `low` is preemptible but huge
+    capacity; `high` has stricter caps but priority scheduling.
+    """
+    import json as _json
+    import os
+    import re
+    import subprocess
+    import time as _time
+    from stan.config import load_instruments
+    from stan.sync.upload_to_hive import (
+        upload_raw_to_incoming, submit_one_via_ssh,
+    )
+
+    _hive, insts = load_instruments()
+    if not insts:
+        console.print("[red]No instruments in instruments.yml[/red]")
+        raise typer.Exit(1)
+
+    if instrument:
+        match = next(
+            (i for i in insts if instrument.lower() in (i.get("name") or "").lower()),
+            None,
+        )
+        if not match:
+            console.print(f"[red]No instrument matching '{instrument}'[/red]")
+            raise typer.Exit(1)
+        inst = match
+    else:
+        inst = insts[0]
+        console.print(
+            f"[cyan]No --instrument given; using first entry: {inst.get('name')!r}[/cyan]"
+        )
+
+    watch_dir = Path(inst.get("watch_dir") or "")
+    if not watch_dir.exists():
+        console.print(f"[red]watch_dir missing: {watch_dir}[/red]")
+        raise typer.Exit(1)
+
+    if raw is None:
+        # Pick smallest QC-pattern-matching candidate
+        qc_pat = re.compile(r"(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)")
+        candidates: list[tuple[int, Path]] = []
+        for child in watch_dir.iterdir():
+            if not qc_pat.search(child.name):
+                continue
+            if child.is_dir() and child.suffix.lower() == ".d":
+                size = sum(
+                    p.stat().st_size for p in child.rglob("*") if p.is_file()
+                )
+            elif child.is_file() and child.suffix.lower() == ".raw":
+                size = child.stat().st_size
+            else:
+                continue
+            candidates.append((size, child))
+        if not candidates:
+            console.print(f"[red]No QC files in {watch_dir}[/red]")
+            raise typer.Exit(1)
+        candidates.sort()
+        raw = candidates[0][1]
+        console.print(
+            f"[cyan]Selected smallest QC file: {raw.name} "
+            f"({candidates[0][0]/1e6:.1f} MB)[/cyan]"
+        )
+
+    # Upload (or detect already-uploaded).
+    inst_name = inst.get("name") or "unknown"
+    family = inst.get("family") or inst.get("vendor_family") or ""
+    vendor = (inst.get("vendor") or "").lower()
+    if not (family and vendor):
+        console.print("[red]instruments.yml missing family/vendor[/red]")
+        raise typer.Exit(1)
+
+    dest_dir = inst.get("hive_upload_dir") or (
+        f"Y:/proteomics-grp/STAN/incoming/{inst_name}"
+    )
+    console.print(f"[cyan]Uploading {raw.name} → {dest_dir}[/cyan]")
+    up = upload_raw_to_incoming(raw, Path(dest_dir))
+    if up["status"] not in ("done", "skipped"):
+        console.print(f"[red]Upload failed: {up.get('error')}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Upload {up['status']}[/green]")
+
+    if ssh_key is None:
+        ssh_key = Path(os.path.expanduser("~/.ssh/id_ed25519"))
+    if not ssh_key.exists():
+        console.print(f"[red]SSH key not found at {ssh_key}[/red]")
+        raise typer.Exit(1)
+
+    parts = [p.strip() for p in partitions.split(",") if p.strip()]
+    submitted: list[dict] = []
+    for part in parts:
+        # Pass --force so the dispatcher dedup doesn't skip the second
+        # submission. We're explicitly testing both partitions on the
+        # same file. Same processing happens both times — what we're
+        # measuring is queue-wait + run time per partition.
+        console.print(f"\n[cyan]Submitting to partition={part}...[/cyan]")
+        cmd = [
+            "ssh", "-i", str(ssh_key), "-o", "BatchMode=yes",
+            f"{inst.get('hive_user', 'brettsp')}@"
+            f"{inst.get('hive_host', 'hive.hpc.ucdavis.edu')}",
+            f"{inst.get('hive_venv', '/quobyte/proteomics-grp/brett/stan_venv')}/bin/stan",
+            "hive-dispatch",
+            "--config",
+            inst.get("hive_dispatch_yml", "/quobyte/proteomics-grp/STAN/dispatch.yml"),
+            "--raw", _smb_to_quobyte(Path(up["dest"])),
+            "--instrument-name", inst_name,
+            "--family", family,
+            "--vendor", vendor,
+            "--partition", part,
+            "--force",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            console.print(f"[red]SSH submit failed: {result.stderr.strip()}[/red]")
+            continue
+        out: dict | None = None
+        for line in reversed(result.stdout.strip().splitlines()):
+            try:
+                out = _json.loads(line)
+                break
+            except _json.JSONDecodeError:
+                continue
+        if not out or out.get("status") != "submitted":
+            console.print(f"[yellow]No job_id returned for {part}: {out}[/yellow]")
+            continue
+        console.print(f"[green]{part}: job_id={out.get('job_id')}[/green]")
+        submitted.append({
+            "partition": part,
+            "job_id": out["job_id"],
+            "submit_ts": _time.time(),
+        })
+
+    if not submitted:
+        console.print("[red]No jobs submitted; nothing to time.[/red]")
+        raise typer.Exit(1)
+
+    # Poll sacct via SSH until all jobs end.
+    job_ids = ",".join(s["job_id"] for s in submitted)
+    deadline = _time.time() + (timeout_min * 60)
+    finished: dict[str, dict] = {}
+    console.print(
+        f"\n[cyan]Polling sacct for {len(submitted)} jobs every "
+        f"{poll_sec}s (timeout {timeout_min}min)...[/cyan]"
+    )
+    while _time.time() < deadline and len(finished) < len(submitted):
+        sacct_cmd = [
+            "ssh", "-i", str(ssh_key), "-o", "BatchMode=yes",
+            f"{inst.get('hive_user', 'brettsp')}@"
+            f"{inst.get('hive_host', 'hive.hpc.ucdavis.edu')}",
+            f"sacct -j {job_ids} -P --format=JobID,Elapsed,State,Start,End "
+            "--noheader 2>/dev/null | head -20",
+        ]
+        r = subprocess.run(sacct_cmd, capture_output=True, text=True, timeout=60)
+        for line in r.stdout.strip().splitlines():
+            cols = line.split("|")
+            if len(cols) < 3:
+                continue
+            jid_full = cols[0]
+            jid = jid_full.split(".")[0]  # strip .batch / .extern suffixes
+            if jid in [s["job_id"] for s in submitted] and jid not in finished:
+                state = cols[2]
+                if state in ("COMPLETED", "FAILED", "CANCELLED",
+                             "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL"):
+                    finished[jid] = {
+                        "elapsed": cols[1],
+                        "state": state,
+                        "start": cols[3] if len(cols) > 3 else "",
+                        "end": cols[4] if len(cols) > 4 else "",
+                    }
+                    console.print(
+                        f"[green]Job {jid} → {state} after {cols[1]}[/green]"
+                    )
+        if len(finished) < len(submitted):
+            _time.sleep(poll_sec)
+
+    # Print comparison table.
+    console.print("\n[bold cyan]Partition latency comparison[/bold cyan]")
+    console.print(
+        f"{'partition':<10} {'job_id':<10} {'state':<12} {'elapsed':<12}"
+    )
+    console.print("-" * 50)
+    for s in submitted:
+        row = finished.get(s["job_id"], {})
+        console.print(
+            f"{s['partition']:<10} {s['job_id']:<10} "
+            f"{row.get('state','PENDING'):<12} {row.get('elapsed','—'):<12}"
+        )
+
+    if len(finished) < len(submitted):
+        console.print(
+            f"[yellow]Timeout reached; {len(submitted) - len(finished)} "
+            f"job(s) still running. Check `squeue --me` on Hive.[/yellow]"
+        )
+
+
+def _smb_to_quobyte(p: Path) -> str:
+    """Convenience wrapper so the CLI doesn't need to import a private."""
+    from stan.sync.upload_to_hive import _smb_to_quobyte_path
+    return _smb_to_quobyte_path(p)
