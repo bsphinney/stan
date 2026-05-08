@@ -62,13 +62,13 @@ REM ------------------------------------------------------------------
 echo   [1/3] Running base STAN installer...
 echo.
 
-set "INSTALLER=%~dp0..\install-stan.bat"
-if not exist "%INSTALLER%" (
-    echo   install-stan.bat not found at %INSTALLER%
-    echo   Downloading from GitHub...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat' -OutFile '%~dp0..\install-stan.bat' -UseBasicParsing"
-    set "INSTALLER=%~dp0..\install-stan.bat"
-)
+REM Always force-redownload install-stan.bat to defeat stale-cache footguns.
+REM (Earlier "if not exist" cached an old install-stan.bat which then reused
+REM an old install_stan.ps1 with mojibake em-dashes that broke PS5.1 parsing.)
+set "INSTALLER=%~dp0install-stan.bat"
+echo   Downloading fresh install-stan.bat from GitHub (cache-busted)...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $t=[DateTime]::Now.Ticks; Invoke-WebRequest -Uri (\"https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat?t=$t\") -OutFile '%~dp0install-stan.bat' -UseBasicParsing"
+del "%~dp0install_stan.ps1" >nul 2>&1
 
 call "%INSTALLER%"
 if errorlevel 1 (
@@ -79,10 +79,44 @@ if errorlevel 1 (
 )
 
 REM ------------------------------------------------------------------
-REM  Step 2: write instruments.yml + community.yml
+REM  Step 2: SSH key auto-install (from Quobyte temp drop)
 REM ------------------------------------------------------------------
 echo.
-echo   [2/3] Writing hive-mode config for lumosRox...
+echo   [2/4] Installing SSH key from Quobyte temp drop...
+echo.
+
+set "TEMP_KEY_SRC=Y:\STAN\temp_keys\lumosRox\id_ed25519"
+set "SSH_DIR=%USERPROFILE%\.ssh"
+set "SSH_KEY=%SSH_DIR%\id_ed25519"
+
+if not exist "%SSH_DIR%" mkdir "%SSH_DIR%"
+
+if exist "%TEMP_KEY_SRC%" (
+    copy /y "%TEMP_KEY_SRC%" "%SSH_KEY%" >nul
+    if errorlevel 1 (
+        echo   WARN: copy from %TEMP_KEY_SRC% failed -- check Y: drive mapping.
+    ) else (
+        REM Lock perms (Windows equivalent of chmod 600).
+        icacls "%SSH_KEY%" /inheritance:r >nul
+        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R" >nul
+        echo   SSH key installed to: %SSH_KEY%
+        echo   Permissions locked (icacls).
+        echo.
+        echo   IMPORTANT: After confirming SLURM dispatch works, delete the
+        echo   temp drop on Quobyte:  %TEMP_KEY_SRC%
+    )
+) else (
+    echo   No temp key found at %TEMP_KEY_SRC%
+    echo   Skipping auto-install. If you already have a key at %SSH_KEY%
+    echo   you can ignore this. Otherwise have Brett drop the key on
+    echo   Quobyte and re-run this script.
+)
+
+REM ------------------------------------------------------------------
+REM  Step 3: write instruments.yml + community.yml
+REM ------------------------------------------------------------------
+echo.
+echo   [3/4] Writing hive-mode config for lumosRox...
 echo.
 
 set "CONFIGURE_PS1=%~dp0configure_instruments_yml.ps1"
@@ -114,11 +148,11 @@ if errorlevel 1 (
 )
 
 REM ------------------------------------------------------------------
-REM  Step 3: post-install instructions
+REM  Step 4: post-install instructions
 REM ------------------------------------------------------------------
 echo.
 echo   ============================================================
-echo     [3/3] Installation complete -- lumosRox
+echo     [4/4] Installation complete -- lumosRox
 echo   ============================================================
 echo.
 echo   Config written to: %USERPROFILE%\.stan\instruments.yml
@@ -135,14 +169,10 @@ echo       Uploads go to Y:\STAN\incoming\lumosRox.
 echo       If Y:\ is not mapped, run hive_dashboard.bat to mount it
 echo       or map it manually in Windows Explorer.
 echo.
-echo   SSH KEY -- required for SLURM dispatch (submit_after_upload):
-echo.
-echo     Expected at: %USERPROFILE%\.ssh\id_ed25519
-echo     If that file does not exist, copy your Hive private key there.
-echo     Then run this command in an elevated CMD to lock down permissions
-echo     (Windows equivalent of chmod 600):
-echo.
-echo       icacls "%USERPROFILE%\.ssh\id_ed25519" /inheritance:r /grant:r "%USERNAME%:R"
+echo     SSH key   : auto-installed by Step 2 above (if found).
+echo       If Step 2 reported "No temp key found", have Brett drop
+echo       a key at Y:\STAN\temp_keys\lumosRox\id_ed25519 then
+echo       re-run this script.
 echo.
 echo   COMMUNITY BENCHMARK -- fill in auth_token:
 echo.
