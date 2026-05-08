@@ -179,6 +179,19 @@ echo.
 :loop
 if exist "%UPDATE_FLAG%" (
     echo [%DATE% %TIME%] update_pending.flag detected — running pip install...
+    REM Clean up ~tan-proteomics leftover dist-info dirs from prior
+    REM partially-renamed installs. pip prints three "Ignoring invalid
+    REM distribution ~tan-proteomics" warnings on every run when these
+    REM are present. Harmless but noisy — and the cleanup is a one-line
+    REM rmdir that pip won't do itself.
+    set "STAN_SP=%STAN_DIR%\venv\Lib\site-packages"
+    if not exist "!STAN_SP!" set "STAN_SP=%USERPROFILE%\.stan\venv\Lib\site-packages"
+    if exist "!STAN_SP!" (
+        for /d %%D in ("!STAN_SP!\~tan-proteomics*") do (
+            echo [%DATE% %TIME%] Cleaning leftover %%~nxD
+            rmdir /s /q "%%D" 2>nul
+        )
+    )
     if exist "%STAN_VENV_PIP%" (
         "%STAN_VENV_PIP%" install --upgrade --quiet --no-input ^
             "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"
