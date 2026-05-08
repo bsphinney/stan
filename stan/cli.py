@@ -6642,13 +6642,11 @@ def backfill_from_dir_cmd(
     src: Path = typer.Argument(..., help="Local directory containing raws to backfill (e.g. F:\\data\\may26)"),
     instrument: str = typer.Option("", "--instrument",
         help="Instrument substring from instruments.yml. Empty = first entry."),
-    qc_only: bool = typer.Option(True, "--qc-only/--no-qc-only",
-        help="Only process raws matching the QC pattern (default). "
-             "Use --no-qc-only to also process patient/sample raws — "
-             "but stan hive-process currently has no monitor pipeline "
-             "(non-QC raws will run DIA-NN against the community lib "
-             "and produce empty rows). Don't disable until the monitor "
-             "pipeline branch ships."),
+    qc_only: bool = typer.Option(False, "--qc-only/--no-qc-only",
+        help="When True, only upload + submit raws matching the QC "
+             "regex. Default False — backfill all files; hive-process "
+             "auto-classifies into QC (search → runs table) vs monitor "
+             "(rawmeat → sample_health table) at job time."),
     partition: str = typer.Option("low", "--partition",
         help="SLURM partition for the search jobs. low | high."),
     limit: int = typer.Option(0, "--limit",

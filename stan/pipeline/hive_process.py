@@ -413,6 +413,22 @@ def _run_4dff_inline(raw_path: Path) -> None:
         logger.warning("4DFF run failed for %s", raw_path.name, exc_info=True)
 
 
+QC_PATTERN = "(?i)(he(l[a5\\d]|\\d)|qc|std[_\\-\\s]?he)"
+
+
+def _classify_raw(raw_name: str) -> str:
+    """Decide whether a raw is QC ('qc') or sample/wash ('monitor').
+
+    QC files match the same regex the watcher uses. Everything else
+    (patient samples, blanks, washes) routes to the monitor pipeline
+    so it lands in sample_health instead of polluting runs/.
+    """
+    import re as _re
+    if _re.search(QC_PATTERN, raw_name):
+        return "qc"
+    return "monitor"
+
+
 def process_raw(
     raw_path: Path,
     *,
@@ -428,6 +444,7 @@ def process_raw(
     spd: int | None = None,
     gradient_length_min: int | None = None,
     force: bool = False,
+    classification: str = "auto",
 ) -> dict:
     """Run the full STAN QC pipeline against `raw_path` and write to
     the global Hive-resident DB at `db_path`.
@@ -500,6 +517,33 @@ def process_raw(
         # Ensure schema is current on whatever DB we were handed. Cheap
         # and idempotent — `init_db` only ALTERs missing columns.
         init_db(db_path)
+
+        # Classification: QC files run the search/extract/IPS/gates
+        # pipeline (this function's main body). Sample/wash files run
+        # the monitor pipeline (step_monitor) — rawmeat metrics into
+        # sample_health, no DIA-NN. Auto-classify by filename pattern
+        # unless caller forces a mode.
+        if classification == "auto":
+            classification = _classify_raw(raw_path.name)
+        record["classification"] = classification
+
+        if classification == "monitor":
+            from stan.pipeline.hive_steps import step_monitor
+            mon = step_monitor(
+                raw_path=raw_path,
+                instrument=instrument,
+                vendor=vendor,
+                db_path=db_path,
+            )
+            record.update(
+                status=mon["status"],
+                run_id=mon.get("health_id"),  # health row id
+                error=mon.get("error"),
+                verdict=mon.get("verdict"),
+                reasons=mon.get("reasons"),
+                mode="monitor",
+            )
+            return record
 
         if not force:
             existing = _row_exists(db_path, instrument, raw_path)
