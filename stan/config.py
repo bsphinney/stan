@@ -422,6 +422,51 @@ class ConfigWatcher:
         return self._data
 
 
+def resolve_vendor_family(inst: dict) -> tuple[str, str]:
+    """Resolve (vendor, family) from an instruments.yml entry.
+
+    Both fields are optional in the YAML — the canonical model name in
+    `name` carries enough signal to derive them. Used by the new
+    Hive-mode CLI surface (time-hive-partitions, _on_hive_upload) so
+    operators don't have to add `family:`/`vendor:` lines to existing
+    configs that have only `name:`.
+
+    Returns ('', '') for unrecognized model names; callers should
+    fall through to a clear error message in that case.
+    """
+    vendor = (inst.get("vendor") or "").strip().lower()
+    family = (
+        inst.get("family") or inst.get("vendor_family") or ""
+    ).strip()
+    name = (inst.get("name") or "").lower()
+
+    if not vendor:
+        thermo_keywords = (
+            "lumos", "exploris", "orbitrap", "ascend",
+            "fusion", "eclipse", "tribrid", "q exactive", "qexactive",
+        )
+        if any(kw in name for kw in thermo_keywords):
+            vendor = "thermo"
+        elif "timstof" in name or "tims tof" in name:
+            vendor = "bruker"
+
+    if not family:
+        if "exploris" in name:
+            family = "Exploris"
+        elif any(
+            kw in name
+            for kw in ("lumos", "fusion", "eclipse", "ascend", "tribrid")
+        ):
+            # All Thermo Tribrids share the same IPS cohort family.
+            # See the Lumos IT/OT split notes for the future cohort
+            # refinement.
+            family = "Lumos"
+        elif "timstof" in name or "tims tof" in name:
+            family = "timsTOF"
+
+    return vendor, family
+
+
 def load_instruments() -> tuple[dict, list[dict]]:
     """Load instruments.yml. Returns (hive_config, instruments_list)."""
     path = resolve_config_path("instruments.yml")

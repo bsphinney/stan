@@ -6381,12 +6381,19 @@ def time_hive_partitions_cmd(
             f"({candidates[0][0]/1e6:.1f} MB)[/cyan]"
         )
 
-    # Upload (or detect already-uploaded).
+    # Upload (or detect already-uploaded). Auto-derive vendor + family
+    # from the instrument's `name` if the fields aren't set explicitly
+    # — instruments.yml predates these fields and Brett shouldn't have
+    # to edit existing configs to opt into the Hive-mode CLI surface.
+    from stan.config import resolve_vendor_family
     inst_name = inst.get("name") or "unknown"
-    family = inst.get("family") or inst.get("vendor_family") or ""
-    vendor = (inst.get("vendor") or "").lower()
+    vendor, family = resolve_vendor_family(inst)
     if not (family and vendor):
-        console.print("[red]instruments.yml missing family/vendor[/red]")
+        console.print(
+            f"[red]Could not derive vendor/family from name={inst_name!r}.[/red]\n"
+            "Add 'vendor: thermo' (or 'bruker') and 'family: Exploris' "
+            "(or Lumos / timsTOF) to instruments.yml."
+        )
         raise typer.Exit(1)
 
     dest_dir = inst.get("hive_upload_dir") or (

@@ -976,16 +976,13 @@ class InstrumentWatcher:
             )
             return
 
-        family = (
-            self._config.get("family")
-            or self._config.get("vendor_family")
-            or ""
-        )
-        vendor = (self._config.get("vendor") or "").lower()
+        from stan.config import resolve_vendor_family
+        vendor, family = resolve_vendor_family(self._config)
         if not (family and vendor):
             logger.warning(
-                "watcher: instruments.yml missing family/vendor for %s — "
-                "file uploaded but not submitted.", self._name,
+                "watcher: cannot derive vendor/family from name=%r for "
+                "%s — file uploaded but not submitted.",
+                self._config.get("name"), self._name,
             )
             self._record_event(
                 "hive_submit_skipped", path, "missing_family_or_vendor",
