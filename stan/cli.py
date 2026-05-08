@@ -6399,7 +6399,7 @@ def time_hive_partitions_cmd(
     dest_dir = inst.get("hive_upload_dir") or (
         f"Y:/STAN/incoming/{inst_name}"
     )
-    console.print(f"[cyan]Uploading {raw.name} → {dest_dir}[/cyan]")
+    console.print(f"[cyan]Uploading {raw.name} -> {dest_dir}[/cyan]")
     up = upload_raw_to_incoming(raw, Path(dest_dir))
     if up["status"] not in ("done", "skipped"):
         console.print(f"[red]Upload failed: {up.get('error')}[/red]")
@@ -6494,7 +6494,7 @@ def time_hive_partitions_cmd(
                         "end": cols[4] if len(cols) > 4 else "",
                     }
                     console.print(
-                        f"[green]Job {jid} → {state} after {cols[1]}[/green]"
+                        f"[green]Job {jid} -> {state} after {cols[1]}[/green]"
                     )
         if len(finished) < len(submitted):
             _time.sleep(poll_sec)
@@ -6569,7 +6569,7 @@ def hive_upload_cmd(
             or f"Y:/STAN/incoming/{inst_name}"
         )
 
-    console.print(f"[cyan]Uploading {raw.name} → {dest_dir}[/cyan]")
+    console.print(f"[cyan]Uploading {raw.name} -> {dest_dir}[/cyan]")
     result = upload_raw_to_incoming(raw, dest_dir)
     console.print(_json.dumps(result, default=str, indent=2))
     if result.get("status") not in ("done", "skipped"):

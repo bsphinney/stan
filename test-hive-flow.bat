@@ -30,6 +30,15 @@ REM ===================================================================
 
 setlocal enabledelayedexpansion
 
+REM Force UTF-8 stdout/stderr from any python child process. Windows
+REM cmd.exe redirects (`> file.log`) default to cp1252 which can't
+REM encode common Unicode chars (e.g. `->` arrow, em-dash). Without
+REM this, rich.console.Console prints crash with UnicodeEncodeError
+REM as soon as a Unicode glyph hits the redirected stdout — which
+REM took down the v0.2.323 timing test on the Exploris 2026-05-07.
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONUTF8=1"
+
 set "HIVE_USER=brettsp"
 set "HIVE_HOST=hive.hpc.ucdavis.edu"
 set "HIVE_VENV=/quobyte/proteomics-grp/brett/stan_venv"
