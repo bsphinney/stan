@@ -150,9 +150,18 @@ echo.
 echo [%DATE% %TIME%] Launching STAN dashboard...
 start "STAN Dashboard" cmd /c ""%STAN_EXE%" dashboard"
 
-REM Give the dashboard server a moment to bind, then open the browser.
+REM Give the dashboard server a moment to bind. Do NOT auto-open the
+REM browser — Windows defaults to Internet Explorer on instrument PCs,
+REM and IE doesn't support the React 18 + Babel runtime the dashboard
+REM ships with (blank page on every IE launch). Operator opens
+REM http://localhost:8421 in Chrome or Edge themselves. Brett 2026-05-08.
 timeout /t 4 /nobreak >nul
-start "" http://localhost:8421
+echo.
+echo ===================================================================
+echo  Dashboard ready at http://localhost:8421
+echo  Open it in Chrome or Edge (NOT Internet Explorer).
+echo ===================================================================
+echo.
 
 REM ---- Supervisor loop ------------------------------------------------
 REM Mirrors the proven start_stan_loop.bat flow: a crash triggers a
