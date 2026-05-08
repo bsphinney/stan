@@ -142,8 +142,14 @@ def _extract_metrics(
     from stan.metrics.extractor import extract_dda_metrics, extract_dia_metrics
 
     if mode_str == "dia":
+        # IMPORTANT: pass Path, not str. extract_dia_metrics walks
+        # report.parquet's sibling report.stats.tsv via
+        # report_path.with_name(...) — that's a Path method. Passing
+        # a str crashes the median_points_across_peak branch with
+        # "AttributeError: 'str' object has no attribute 'with_name'"
+        # (Exploris timing test 2026-05-07).
         metrics = extract_dia_metrics(
-            str(report_path),
+            report_path,
             raw_path=raw_path,
             vendor=vendor,
             gradient_min=gradient_min,
@@ -155,7 +161,7 @@ def _extract_metrics(
         metrics["ips_score"] = compute_ips_dia(metrics)
     else:
         metrics = extract_dda_metrics(
-            str(report_path),
+            report_path,
             gradient_min=gradient_min or 60,
         )
         from stan.metrics.chromatography import compute_ips_dda
