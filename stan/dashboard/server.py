@@ -262,11 +262,21 @@ async def api_warnings() -> dict:
       separate cards on the homepage. Surfaces the exact
       `stan fix-instrument-names` command to merge them.
     """
+    import os as _os
     import sqlite3
     from datetime import datetime, timedelta
     from stan.db import get_db_path
 
     warnings: list[dict] = []
+
+    # Skip stale-name detection when the dashboard is pointed at a
+    # multi-instrument fleet DB via STAN_DB_PATH. The local instruments.yml
+    # only knows about THIS host's instruments, so any other instrument
+    # appearing in the DB is "fleet view, not orphan rename" — flagging it
+    # would suggest catastrophic merges (e.g. "merge Exploris into Lumos").
+    # See: STAN-Godmode pattern, v0.2.341+.
+    if _os.environ.get("STAN_DB_PATH"):
+        return {"warnings": warnings}
 
     # Pull configured names from instruments.yml.
     watcher = _get_instruments_watcher()
