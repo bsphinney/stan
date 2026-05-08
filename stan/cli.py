@@ -6637,6 +6637,137 @@ def _smb_to_quobyte(p: Path) -> str:
     return _smb_to_quobyte_path(p)
 
 
+@app.command("backfill-from-dir")
+def backfill_from_dir_cmd(
+    src: Path = typer.Argument(..., help="Local directory containing raws to backfill (e.g. F:\\data\\may26)"),
+    instrument: str = typer.Option("", "--instrument",
+        help="Instrument substring from instruments.yml. Empty = first entry."),
+    qc_only: bool = typer.Option(False, "--qc-only",
+        help="Only process raws matching the QC pattern. Default: process all."),
+    partition: str = typer.Option("low", "--partition",
+        help="SLURM partition for the search jobs. low | high."),
+    limit: int = typer.Option(0, "--limit",
+        help="Stop after N files. 0 = unlimited."),
+    dry_run: bool = typer.Option(False, "--dry-run",
+        help="Walk + report what would be uploaded/submitted, do nothing."),
+) -> None:
+    """Upload + submit every raw in a directory to the Hive pipeline.
+
+    Use this to backfill a folder of historical acquisitions. For each
+    .raw/.d that matches the QC regex (or all, with --qc-only off):
+      1. SMB-uploads to Y:\\STAN\\incoming\\<instrument>\\
+      2. SSHes to Hive and submits a SLURM job (stan hive-dispatch --raw)
+      3. Records the SLURM job id in the local uploads table
+
+    Designed for the operator to fire from the instrument PC against
+    a non-watched data directory. Resumable: re-running skips uploads
+    that already landed at matching size on the Hive side.
+    """
+    import json as _json
+    import re
+    from stan.config import load_instruments, resolve_vendor_family
+    from stan.sync.upload_to_hive import (
+        upload_raw_to_incoming, submit_one_via_ssh,
+    )
+
+    if not src.exists() or not src.is_dir():
+        console.print(f"[red]Source dir not found: {src}[/red]")
+        raise typer.Exit(1)
+
+    _hive, insts = load_instruments()
+    if not insts:
+        console.print("[red]No instruments in instruments.yml[/red]")
+        raise typer.Exit(1)
+
+    if instrument:
+        inst = next(
+            (i for i in insts if instrument.lower() in (i.get("name") or "").lower()),
+            None,
+        )
+        if inst is None:
+            console.print(f"[red]No instrument matching '{instrument}'[/red]")
+            raise typer.Exit(1)
+    else:
+        inst = insts[0]
+
+    inst_name = inst.get("name") or "unknown"
+    vendor, family = resolve_vendor_family(inst)
+    if not (vendor and family):
+        console.print(
+            f"[red]Could not derive vendor/family for {inst_name!r}.[/red]"
+        )
+        raise typer.Exit(1)
+
+    qc_pattern = re.compile(r"(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)")
+    candidates: list[Path] = []
+    for child in sorted(src.iterdir()):
+        if child.is_dir() and child.suffix.lower() == ".d":
+            pass  # Bruker .d directory
+        elif child.is_file() and child.suffix.lower() == ".raw":
+            pass  # Thermo .raw file
+        else:
+            continue
+        if qc_only and not qc_pattern.search(child.name):
+            continue
+        candidates.append(child)
+        if limit and len(candidates) >= limit:
+            break
+
+    console.print(f"[cyan]Found {len(candidates)} raws in {src}[/cyan]")
+    if dry_run:
+        for c in candidates:
+            console.print(f"  would process: {c.name}")
+        return
+
+    dest_dir = inst.get("hive_upload_dir") or (
+        f"Y:/STAN/incoming/{inst_name.strip()}"
+    )
+
+    import os as _os
+    ssh_key = Path(_os.path.expanduser("~/.ssh/id_ed25519"))
+    if not ssh_key.exists():
+        console.print(f"[red]SSH key not found at {ssh_key}[/red]")
+        raise typer.Exit(1)
+
+    n_ok = n_skipped = n_failed = 0
+    for raw in candidates:
+        console.print(f"\n[cyan]==> {raw.name}[/cyan]")
+        up = upload_raw_to_incoming(raw, Path(dest_dir))
+        if up.get("status") not in ("done", "skipped"):
+            console.print(f"  [red]upload failed: {up.get('error')}[/red]")
+            n_failed += 1
+            continue
+        console.print(f"  upload {up['status']}")
+        sub = submit_one_via_ssh(
+            raw_source=raw,
+            raw_dest_smb=Path(up["dest"]),
+            instrument=inst_name,
+            family=family,
+            vendor=vendor,
+            ssh_key=ssh_key,
+            hive_user=inst.get("hive_user", "brettsp"),
+            hive_host=inst.get("hive_host", "hive.hpc.ucdavis.edu"),
+            hive_venv=inst.get(
+                "hive_venv", "/quobyte/proteomics-grp/brett/stan_venv",
+            ),
+            column_vendor=inst.get("column_vendor", ""),
+            column_model=inst.get("column_model", ""),
+        )
+        if sub.get("status") == "submitted":
+            console.print(f"  [green]submitted: job_id={sub.get('job_id')}[/green]")
+            n_ok += 1
+        elif sub.get("status") == "skipped":
+            console.print(f"  [yellow]skipped: {sub.get('error')}[/yellow]")
+            n_skipped += 1
+        else:
+            console.print(f"  [red]submit failed: {sub.get('error')}[/red]")
+            n_failed += 1
+
+    console.print(
+        f"\n[bold]Done.[/bold] submitted={n_ok} skipped={n_skipped} failed={n_failed}"
+    )
+
+
 @app.command("hive-upload")
 def hive_upload_cmd(
     raw: Path = typer.Argument(..., help="Path to .d directory or .raw file to upload."),
