@@ -1912,11 +1912,78 @@ def _action_submit_all(args: dict) -> dict:
     }
 
 
+def _action_backfill_from_dir(args: dict) -> dict:
+    """Launch ``stan backfill-from-dir`` as a background subprocess.
+
+    Brett 2026-05-08: needed to backfill F:\\data\\may26 (DDA QC files)
+    into the Hive pipeline without typing on the Exploris. This action
+    spawns ``stan backfill-from-dir <dir>`` as a detached process so
+    the watcher's main loop isn't blocked while N raws upload + submit.
+
+    Args:
+        dir         Source directory (e.g. F:\\data\\may26). Required.
+        qc_only     bool, default False — apply the QC regex filter.
+        partition   'low' | 'high', default 'low'.
+        limit       int, default 0 (unlimited). Stop after N files.
+        instrument  Optional substring filter on instruments.yml.
+                    Defaults to first instrument entry.
+    """
+    import subprocess as _subprocess
+    import sys as _sys
+
+    src = (args.get("dir") or "").strip()
+    if not src:
+        return {"error": "missing 'dir' arg"}
+
+    cmd = [_sys.executable, "-m", "stan.cli", "backfill-from-dir", src]
+    if args.get("qc_only"):
+        cmd.append("--qc-only")
+    if args.get("partition"):
+        cmd += ["--partition", str(args["partition"])]
+    if args.get("limit"):
+        cmd += ["--limit", str(args["limit"])]
+    if args.get("instrument"):
+        cmd += ["--instrument", str(args["instrument"])]
+
+    log_dir = Path.home() / "STAN" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    log_path = log_dir / f"backfill_from_dir_{ts}.log"
+
+    try:
+        with log_path.open("wb") as logf:
+            proc = _subprocess.Popen(
+                cmd,
+                stdout=logf,
+                stderr=_subprocess.STDOUT,
+                stdin=_subprocess.DEVNULL,
+                # Detach so the watcher's main loop returns immediately
+                # and the backfill keeps running independently.
+                close_fds=True,
+            )
+    except Exception as e:
+        return {"error": f"failed to launch: {e}"}
+
+    return {
+        "status": "started",
+        "pid": proc.pid,
+        "log_path": str(log_path),
+        "command": " ".join(cmd),
+        "monitor": (
+            f"Tail {log_path.name} via stan send-command tail_log "
+            f"--arg name={log_path.stem} --arg n=200, or read it from "
+            f"the Hive mirror at <host>/logs/{log_path.name} after "
+            f"the next sync."
+        ),
+    }
+
+
 COMMAND_WHITELIST: dict[str, Callable[[dict], dict]] = {
     "ping":                _action_ping,
     "status":              _action_status,
     "tail_log":            _action_tail_log,
     "export_db_snapshot":  _action_export_db_snapshot,
+    "backfill_from_dir":   _action_backfill_from_dir,
     "watcher_debug":       _action_watcher_debug,
     "qc_filter_report":    _action_qc_filter_report,
     # First write actions — each is narrowly scoped:
