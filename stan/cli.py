@@ -6243,29 +6243,77 @@ def hive_dispatch_cmd(
         help="Substring filter on instrument name (case-insensitive)."),
     print_default_config: bool = typer.Option(False, "--print-default-config",
         help="Write a default dispatch.yml template to stdout and exit."),
+    raw: str = typer.Option("", "--raw",
+        help="Submit a SLURM job for ONE specific raw on Hive, skipping "
+             "the watch-dir walk. Pair with --instrument-name + --family "
+             "+ --vendor. Used by the watcher's per-file self-submit and "
+             "the partition timing test."),
+    instrument_name: str = typer.Option("", "--instrument-name",
+        help="Required with --raw: canonical model name (e.g. 'timsTOF HT')."),
+    family: str = typer.Option("", "--family",
+        help="Required with --raw: timsTOF | Lumos | Exploris."),
+    vendor: str = typer.Option("", "--vendor",
+        help="Required with --raw: bruker | thermo."),
+    column_vendor: str = typer.Option("", "--column-vendor"),
+    column_model: str = typer.Option("", "--column-model"),
+    partition: str = typer.Option("", "--partition",
+        help="Override slurm.partition from dispatch.yml. With 'low' "
+             "or 'high', the matching qos+account triple is auto-selected. "
+             "Used by partition-comparison timing tests."),
+    force: bool = typer.Option(False, "--force",
+        help="Bypass the already-processed and already-queued short-"
+             "circuits. For timing tests + manual reprocess."),
 ) -> None:
-    """Hive-side cron dispatcher: scan watch dirs, submit SLURM jobs.
+    """Hive-side dispatcher: scan watch dirs OR submit ONE raw.
 
-    Single-pass — exits when done. Designed to run from Hive cron every
-    15 min. Walks each instrument's ``watch_dir``, finds raws not yet in
-    the global stan.db, and submits one SLURM job per raw running
-    ``stan hive-process``. Idempotent; safe to re-run.
+    Two modes:
+      walk  (default): walk each instrument's ``watch_dir``, finds raws
+            not yet in the global stan.db, submits one SLURM job per
+            raw. Idempotent; safe to re-run. Used for backlog catch-up.
+      raw   (--raw): submit a SLURM job for one specific raw already
+            on Hive. Used by the watcher's per-file self-submit
+            (instrument PC SSHes here after upload) and by the
+            time-hive-partitions timing test.
 
     Bootstrap a config:
       stan hive-dispatch --print-default-config > /quobyte/.../dispatch.yml
-
-    Then add a cron entry on Hive (login node):
-      */15 * * * * /quobyte/.../stan_venv/bin/stan hive-dispatch \\
-          --config /quobyte/proteomics-grp/STAN/dispatch.yml \\
-          >> /quobyte/proteomics-grp/STAN/logs/dispatch.log 2>&1
     """
+    import json as _json
     import sys as _sys
     from stan.community.scripts.dispatch_hive import (
-        DEFAULT_CONFIG_TEMPLATE, dispatch_all,
+        DEFAULT_CONFIG_TEMPLATE, dispatch_all, dispatch_one_raw,
     )
 
     if print_default_config:
         _sys.stdout.write(DEFAULT_CONFIG_TEMPLATE)
+        return
+
+    if raw:
+        if not (instrument_name and family and vendor):
+            console.print(
+                "[red]ERROR: --raw requires --instrument-name + --family "
+                "+ --vendor[/red]"
+            )
+            raise typer.Exit(2)
+        result = dispatch_one_raw(
+            raw_path=Path(raw),
+            instrument={
+                "name": instrument_name,
+                "family": family,
+                "vendor": vendor,
+                "column_vendor": column_vendor,
+                "column_model": column_model,
+            },
+            config_path=config,
+            dry_run=dry_run,
+            partition=partition,
+            force=force,
+        )
+        # JSONL on stdout for the SSH-invoking caller (watcher,
+        # time-hive-partitions) to parse. Plain print, not console.print.
+        print(_json.dumps(result, default=str), flush=True)
+        if result.get("status") not in ("submitted", "skipped"):
+            raise typer.Exit(1)
         return
 
     summary = dispatch_all(
