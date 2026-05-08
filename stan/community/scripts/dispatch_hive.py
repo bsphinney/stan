@@ -262,6 +262,9 @@ def _render_sbatch(
     raw_path: Path,
     instrument: dict,
     cfg: dict,
+    *,
+    step: str = "full",
+    dependency_ids: list[str] | None = None,
 ) -> str:
     """Render the SLURM sbatch script for a single raw.
 
@@ -277,7 +280,13 @@ def _render_sbatch(
     venv = Path(cfg["stan_venv"])
 
     raw_stem = raw_path.stem
-    job_name = f"stan-{raw_stem}"
+    # In parallel mode, the job name embeds the step so the dispatcher's
+    # squeue dedup check (looking for stan-<rawstem>) still de-dups
+    # across steps. Use stan-<step>-<rawstem> for per-step jobs.
+    if step == "full":
+        job_name = f"stan-{raw_stem}"
+    else:
+        job_name = f"stan-{step}-{raw_stem}"
     out_dir = out_root / raw_stem
 
     # Argv for `stan hive-process`. Quoted so spaces / special chars
@@ -290,6 +299,7 @@ def _render_sbatch(
         "--vendor", _shell_quote(instrument["vendor"]),
         "--db", _shell_quote(str(db_path)),
         "--out-dir", _shell_quote(str(out_dir)),
+        "--step", step,
     ]
     if instrument.get("column_vendor"):
         argv += ["--column-vendor", _shell_quote(instrument["column_vendor"])]
@@ -301,6 +311,14 @@ def _render_sbatch(
         argv += ["--spd", str(int(instrument["spd"]))]
 
     cmd = " ".join(argv)
+    dep_directive = ""
+    if dependency_ids:
+        # afterany — run after all listed jobs end regardless of exit
+        # code. Lets a failed pegdrift / features step land NULL columns
+        # without blocking extract from writing the runs row.
+        dep_directive = (
+            f"#SBATCH --dependency=afterany:{':'.join(dependency_ids)}\n"
+        )
 
     # Ensure the SLURM stdout dir exists before the script runs (login
     # side, before sbatch). Cleaner to mkdir here than from inside the
@@ -308,6 +326,7 @@ def _render_sbatch(
     sbatch_log_dir.mkdir(parents=True, exist_ok=True)
 
     bruker_ff_dir = "/quobyte/proteomics-grp/brett/bruker_ff"
+    out_log_stem = raw_stem if step == "full" else f"{step}-{raw_stem}"
     return f"""#!/bin/bash
 #SBATCH --job-name={job_name}
 #SBATCH --partition={slurm['partition']}
@@ -316,8 +335,8 @@ def _render_sbatch(
 #SBATCH --time={slurm['time']}
 #SBATCH --cpus-per-task={slurm['cpus']}
 #SBATCH --mem={slurm['mem']}
-#SBATCH --output={sbatch_log_dir}/{raw_stem}_%j.out
-
+#SBATCH --output={sbatch_log_dir}/{out_log_stem}_%j.out
+{dep_directive}
 set -euo pipefail
 
 # Module env so apptainer + dotnet (TRFP runtime) are on PATH for the
@@ -344,16 +363,22 @@ echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] hive-process exit=$?"
 """
 
 
-def _submit_sbatch(script_text: str, sbatch_log_dir: Path, raw_stem: str) -> str | None:
+def _submit_sbatch(
+    script_text: str,
+    sbatch_log_dir: Path,
+    raw_stem: str,
+    step: str = "full",
+) -> str | None:
     """Write the script to disk and submit. Returns SLURM job id or None.
 
     Script lands under ``<sbatch_log_dir>/scripts/`` so it's auditable
-    after the fact (--output captures stdout, but the script itself is
-    sometimes useful when debugging an unexpected --bind or module issue).
+    after the fact. Parallel-mode scripts use ``<step>-<raw_stem>.sbatch``
+    so 4 per-step scripts don't collide on a single .d.
     """
     scripts_dir = sbatch_log_dir / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    script_path = scripts_dir / f"{raw_stem}.sbatch"
+    fname = f"{raw_stem}.sbatch" if step == "full" else f"{step}-{raw_stem}.sbatch"
+    script_path = scripts_dir / fname
     script_path.write_text(script_text)
     script_path.chmod(0o755)
 
@@ -525,6 +550,7 @@ def dispatch_one_raw(
     dry_run: bool = False,
     partition: str = "",
     force: bool = False,
+    parallel: bool = False,
 ) -> dict:
     """Render + submit a single SLURM job for a specific raw file.
 
@@ -584,6 +610,50 @@ def dispatch_one_raw(
             out["error"] = "SLURM job already queued/running (--force to override)"
             return out
 
+    if parallel:
+        # 4-job DAG (Bruker) or 2-job (Thermo). search/features/pegdrift
+        # run in parallel; extract waits via afterany on all of them.
+        is_bruker = (instrument.get("vendor") or "").lower() == "bruker"
+        steps_parallel = ["search", "pegdrift"]
+        if is_bruker:
+            steps_parallel.insert(1, "features")
+        step_jobs: dict[str, str] = {}
+        for step in steps_parallel:
+            script = _render_sbatch(raw_path, instrument, cfg, step=step)
+            if dry_run:
+                step_jobs[step] = f"DRY-{step}"
+                continue
+            jid = _submit_sbatch(script, sbatch_log_dir, raw_path.stem, step=step)
+            if not jid:
+                out["error"] = f"sbatch failed for step={step}"
+                out["step_jobs"] = step_jobs
+                return out
+            step_jobs[step] = jid
+        # Extract step depends on all the above via afterany.
+        extract_script = _render_sbatch(
+            raw_path, instrument, cfg,
+            step="extract",
+            dependency_ids=list(step_jobs.values()) if not dry_run else None,
+        )
+        if dry_run:
+            out["status"] = "submitted"
+            out["step_jobs"] = step_jobs
+            out["job_id"] = "DRY-extract"
+            return out
+        ext_jid = _submit_sbatch(
+            extract_script, sbatch_log_dir, raw_path.stem, step="extract",
+        )
+        if not ext_jid:
+            out["error"] = "sbatch failed for extract step"
+            out["step_jobs"] = step_jobs
+            return out
+        step_jobs["extract"] = ext_jid
+        out["status"] = "submitted"
+        out["job_id"] = ext_jid  # canonical = extract job
+        out["step_jobs"] = step_jobs
+        return out
+
+    # Single-job (sequential, all-in-one) path.
     script = _render_sbatch(raw_path, instrument, cfg)
     if dry_run:
         out["status"] = "submitted"  # would-be

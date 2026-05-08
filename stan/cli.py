@@ -6192,44 +6192,101 @@ def hive_process_cmd(
         help="Forced gradient length in minutes. 0 = snap from SPD."),
     force: bool = typer.Option(False, "--force",
         help="Re-run even when a completed row already exists."),
+    step: str = typer.Option("full", "--step",
+        help="Pipeline step to run: full | search | features | "
+             "pegdrift | extract. Default 'full' is the all-in-one "
+             "sequential job. Per-step modes are used by parallel "
+             "SLURM DAG dispatch (each step in its own job)."),
 ) -> None:
     """Run the full STAN QC pipeline against ONE raw file on Hive.
 
-    Body of each SLURM job in the Hive-side architecture: detect mode,
-    run DIA-NN/Sage, extract metrics, compute IPS, evaluate gates,
-    write to the global DB, persist TIC/BPC + 4DFF features + PEG/drift.
+    Body of each SLURM job in the Hive-side architecture. With
+    ``--step full`` (default), runs detect→search→extract→IPS→
+    gates→DB write→TIC→4DFF→PEG/drift sequentially. With other
+    --step values, runs only that step (used by parallel DAG mode).
 
-    Designed for SLURM dispatch by ``stan/community/scripts/dispatch_hive.py``.
+    Per-step semantics:
+      search   — DIA-NN/Sage; writes <out_dir>/report.parquet
+      features — 4DFF; writes <raw>.features sidecar (Bruker only)
+      pegdrift — alphatims PEG + drift; writes peg_result.json +
+                 drift_result.json under <out_dir>
+      extract  — reads search + pegdrift artifacts, writes runs row
+                 + tic_traces + child tables (insertion step)
+
+    Designed for SLURM dispatch by stan hive-dispatch.
     Idempotent: skips raws whose row already exists unless --force.
     """
     import json as _json
-    from stan.pipeline.hive_process import process_raw
 
-    result = process_raw(
-        raw_path=raw,
-        instrument=instrument,
-        family=family,
-        db_path=db,
-        out_dir=out_dir,
-        vendor=vendor,
-        forced_mode=mode,
-        column_vendor=column_vendor,
-        column_model=column_model,
-        hela_amount_ng=amount_ng,
-        spd=spd or None,
-        gradient_length_min=gradient_min or None,
-        force=force,
-    )
+    if step == "full":
+        from stan.pipeline.hive_process import process_raw
+        result = process_raw(
+            raw_path=raw,
+            instrument=instrument,
+            family=family,
+            db_path=db,
+            out_dir=out_dir,
+            vendor=vendor,
+            forced_mode=mode,
+            column_vendor=column_vendor,
+            column_model=column_model,
+            hela_amount_ng=amount_ng,
+            spd=spd or None,
+            gradient_length_min=gradient_min or None,
+            force=force,
+        )
+    elif step in ("search", "features", "pegdrift", "extract"):
+        from stan.pipeline.hive_steps import (
+            step_search, step_features, step_pegdrift, step_extract,
+        )
+        # Per-step modes don't need the full instrument/family kwargs
+        # for search/features/pegdrift — but we accept them for a
+        # consistent CLI surface.
+        if step == "search":
+            actual_vendor = vendor or _vendor_from_raw(raw)
+            result = step_search(
+                raw_path=raw,
+                family=family,
+                vendor=actual_vendor,
+                out_dir=out_dir,
+                forced_mode=mode,
+            )
+        elif step == "features":
+            result = step_features(raw_path=raw)
+        elif step == "pegdrift":
+            result = step_pegdrift(raw_path=raw, out_dir=out_dir)
+        else:  # extract
+            actual_vendor = vendor or _vendor_from_raw(raw)
+            result = step_extract(
+                raw_path=raw,
+                instrument=instrument,
+                family=family,
+                vendor=actual_vendor,
+                db_path=db,
+                out_dir=out_dir,
+                forced_mode=mode,
+                column_vendor=column_vendor,
+                column_model=column_model,
+                hela_amount_ng=amount_ng,
+                spd=spd or None,
+                gradient_length_min=gradient_min or None,
+            )
+    else:
+        console.print(f"[red]Unknown --step value: {step!r}[/red]")
+        raise typer.Exit(2)
 
-    # JSONL line on stdout for the dispatcher to tally. Plain ``print``,
-    # NOT ``console.print`` — under SLURM stdout is captured to a file
-    # but rich may still inject ANSI when it can't detect a TTY. JSONL
-    # has to round-trip cleanly for the dispatcher's tally parser.
     print(_json.dumps(result, default=str), flush=True)
-    # ``search_empty`` exits 0 — the row is written, dashboard shows
-    # the degraded state, retrying won't help.
     if result.get("status") not in ("ok", "skipped", "search_empty"):
         raise typer.Exit(1)
+
+
+def _vendor_from_raw(raw: Path) -> str:
+    """Best-effort vendor inference for per-step CLI invocations."""
+    if raw.is_dir() and raw.suffix.lower() == ".d":
+        return "bruker"
+    if raw.is_file() and raw.suffix.lower() == ".raw":
+        return "thermo"
+    return ""
 
 
 @app.command("hive-dispatch")
@@ -6263,6 +6320,12 @@ def hive_dispatch_cmd(
     force: bool = typer.Option(False, "--force",
         help="Bypass the already-processed and already-queued short-"
              "circuits. For timing tests + manual reprocess."),
+    parallel: bool = typer.Option(False, "--parallel",
+        help="Submit a 4-job DAG (Bruker) or 2-job (Thermo) instead "
+             "of one all-in-one job: search/features/pegdrift run in "
+             "parallel; extract waits via afterany. Cuts wall time "
+             "from sum(steps) to max(steps) — ~30% on Bruker .d. "
+             "Only meaningful with --raw."),
 ) -> None:
     """Hive-side dispatcher: scan watch dirs OR submit ONE raw.
 
@@ -6308,6 +6371,7 @@ def hive_dispatch_cmd(
             dry_run=dry_run,
             partition=partition,
             force=force,
+            parallel=parallel,
         )
         # JSONL on stdout for the SSH-invoking caller (watcher,
         # time-hive-partitions) to parse. Plain print, not console.print.
