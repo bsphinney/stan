@@ -272,14 +272,46 @@ On each device, sign in to the same Tailscale account. All devices on the same a
 
 ### Find your machine's Tailscale address
 
-On the machine running STAN, run:
+You need two things: your machine's **Tailscale IP** and its **MagicDNS hostname**. Either works for connecting from another device, but the MagicDNS hostname is the better bookmark — it's stable even if the IP changes.
+
+**Step 1.** On the machine running `stan dashboard`, open a terminal and run:
 
 ```
-tailscale ip -4
 tailscale status
 ```
 
-`tailscale ip -4` gives you the Tailscale IP (always in the `100.x.y.z` range). `tailscale status` lists all connected devices and their **MagicDNS hostnames** — addresses like `lumosrox.tail-xxxx-xx.ts.net`.
+You'll see one row per device on your tailnet. The first row is always the local machine. Example output:
+
+```
+100.110.160.42  cbs-gc1414-mini     you@example.com  macOS  -
+100.84.21.56    iphone182           you@example.com  iOS    idle
+100.118.39.56   tims-10878          you@example.com  Windows offline
+```
+
+The **first column** is the Tailscale IP (e.g. `100.110.160.42`).
+The **second column** is the device's hostname (e.g. `cbs-gc1414-mini`) — this is the start of your MagicDNS URL.
+
+**Step 2.** Get the full MagicDNS hostname (which adds a `.tailXXXXX.ts.net` suffix unique to your tailnet). Easiest way:
+
+```
+tailscale status --json | grep DNSName
+```
+
+Look for the entry matching your machine. Example output:
+
+```
+"DNSName": "cbs-gc1414-mini.tail1c95dd.ts.net.",
+```
+
+Strip the trailing dot — your **MagicDNS URL** is:
+
+```
+http://cbs-gc1414-mini.tail1c95dd.ts.net:8421
+```
+
+(The `:8421` is the STAN dashboard port. The short form `http://cbs-gc1414-mini:8421` also works as long as both devices are on the same tailnet, but the full MagicDNS form is universally reliable.)
+
+**Step 3.** Easiest of all — `stan dashboard` prints the URL on startup when Tailscale is detected (see the next section). Just look at the dashboard's launch banner.
 
 ### Access the dashboard remotely
 
