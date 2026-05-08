@@ -54,7 +54,16 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-STALE_AFTER_SEC = 600  # 10 minutes
+STALE_AFTER_SEC = 7 * 24 * 3600  # 7 days
+# 10 min was too aggressive — instrument PCs are routinely off
+# overnight (or all weekend), and a config-edit command queued
+# Friday afternoon would be rejected as "stale" Monday morning
+# the moment the watcher boots. Brett 2026-05-08: queued
+# apply_config to flip Exploris into hive mode at 09:15 PT,
+# started stan.bat at 09:49 PT (34 min later) — command was
+# rejected as stale, processing_mode never flipped.
+# 7 days survives a long weekend. Beyond that, the operator
+# probably wants to re-think the action anyway.
 MAX_LOG_LINES = 500
 
 
