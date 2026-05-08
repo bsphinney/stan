@@ -958,6 +958,20 @@ class InstrumentWatcher:
             f"status={upload_result['status']} dest={upload_result.get('dest')}",
         )
 
+        # submit_after_upload=false: upload only. Dispatch is handled by a
+        # remote receiver (e.g. Mode B WSL2 box watching the SMB share).
+        if not self._config.get("submit_after_upload", True):
+            logger.info(
+                "[hive-upload] uploaded %s to %s; submit_after_upload=false, "
+                "dispatch deferred to remote receiver",
+                path, upload_result.get("dest"),
+            )
+            self._record_event(
+                "hive_submit_deferred", path,
+                "submit_after_upload=false",
+            )
+            return
+
         # Step 2: SSH-submit. Skip if config is missing required fields
         # so the upload still happens but the SLURM job will need to be
         # picked up by a backlog `stan hive-dispatch` run later.

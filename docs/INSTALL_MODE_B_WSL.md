@@ -6,6 +6,35 @@ locally inside WSL2. No HPC, no Docker, no separate Linux server needed.
 
 ---
 
+## Connecting Instrument PCs to This Mode B Box
+
+Each instrument PC running Mode A (`stan.bat`) can push completed raws to this Mode B box
+without any SSH or SLURM involvement. The instrument PC copies the raw file over SMB to the
+Mode B box's incoming share, and Mode B's `stan watch` process (running inside WSL2) picks
+it up automatically from its end.
+
+In `~/.stan/instruments.yml` on the **instrument PC**, configure the instrument block like this:
+
+```yaml
+instruments:
+  - name: "timsTOF HT"
+    watch_dir: "C:/Data/timsTOF"
+    extensions: [".d"]
+    vendor: bruker
+    processing_mode: hive
+    hive_upload_dir: "Y:\\incoming"   # Y: mapped to the Mode B box's SMB share
+    submit_after_upload: false         # upload only — no SSH, no SLURM dispatch
+```
+
+Setting `submit_after_upload: false` tells the watcher to copy the raw file to
+`hive_upload_dir` and then stop — no SSH connection to Hive is attempted and no SLURM job
+is submitted. The Mode B box's `stan watch` (running inside WSL2 against `/mnt/y/incoming/`)
+detects the new file and dispatches the search locally. Results land in Mode B's
+`~/.stan/stan.db`. Optionally, you can sync that database back to your lab's Hive mirror via
+the existing mirror mechanism, but that is out of scope for v0.2.346 — see TODO for v0.2.347.
+
+---
+
 ## When to Use Mode B vs A vs C
 
 | Mode | What it is | When to pick it |
