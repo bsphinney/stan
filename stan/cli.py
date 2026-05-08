@@ -6516,3 +6516,54 @@ def _smb_to_quobyte(p: Path) -> str:
     """Convenience wrapper so the CLI doesn't need to import a private."""
     from stan.sync.upload_to_hive import _smb_to_quobyte_path
     return _smb_to_quobyte_path(p)
+
+
+@app.command("hive-upload")
+def hive_upload_cmd(
+    raw: Path = typer.Argument(..., help="Path to .d directory or .raw file to upload."),
+    dest_dir: Optional[Path] = typer.Option(None, "--dest-dir",
+        help="Override Y:/proteomics-grp/STAN/incoming/<inst>/. "
+             "If omitted, derives from instruments.yml first instrument."),
+    instrument: str = typer.Option("", "--instrument",
+        help="Instrument substring for dest-dir derivation. "
+             "Ignored when --dest-dir is set."),
+) -> None:
+    """SMB-upload one raw to the Hive incoming dir.
+
+    Standalone test path — does NOT submit a SLURM job. Use to verify
+    the SMB write side of the pipeline before the full hive-mode
+    watcher rollout, or when the Hive venv isn't bootstrapped yet.
+
+    Default dest matches the watcher's hive-mode behavior:
+    Y:/proteomics-grp/STAN/incoming/<instrument-name>/
+    """
+    import json as _json
+    from stan.config import load_instruments
+    from stan.sync.upload_to_hive import upload_raw_to_incoming
+
+    if dest_dir is None:
+        _hive, insts = load_instruments()
+        if not insts:
+            console.print("[red]No instruments in instruments.yml[/red]")
+            raise typer.Exit(1)
+        if instrument:
+            inst = next(
+                (i for i in insts if instrument.lower() in (i.get("name") or "").lower()),
+                None,
+            )
+            if not inst:
+                console.print(f"[red]No instrument matching '{instrument}'[/red]")
+                raise typer.Exit(1)
+        else:
+            inst = insts[0]
+        inst_name = (inst.get("name") or "unknown").strip()
+        dest_dir = Path(
+            inst.get("hive_upload_dir")
+            or f"Y:/proteomics-grp/STAN/incoming/{inst_name}"
+        )
+
+    console.print(f"[cyan]Uploading {raw.name} → {dest_dir}[/cyan]")
+    result = upload_raw_to_incoming(raw, dest_dir)
+    console.print(_json.dumps(result, default=str, indent=2))
+    if result.get("status") not in ("done", "skipped"):
+        raise typer.Exit(1)
