@@ -850,7 +850,20 @@ class InstrumentWatcher:
                         f"mode={mode}",
                     )
                     try:
-                        if mode == "monitor":
+                        # v0.2.319: hive-mode branch. When the operator
+                        # has flipped this instrument to remote
+                        # processing in instruments.yml, the watcher
+                        # short-circuits the local search/extract and
+                        # just SMB-uploads the raw to Quobyte. The
+                        # Hive cron picks it up from there. QC vs
+                        # monitor classification happens server-side
+                        # via `stan hive-process --mode auto`.
+                        proc_mode = (
+                            self._config.get("processing_mode") or "local"
+                        ).strip().lower()
+                        if proc_mode == "hive":
+                            self._on_hive_upload(tracker.path, mode)
+                        elif mode == "monitor":
                             self._on_monitor_complete(tracker.path)
                         else:
                             self._on_acquisition_complete(tracker.path)
@@ -875,6 +888,157 @@ class InstrumentWatcher:
                         )
 
             self._stop_event.wait(timeout=10)
+
+    def _on_hive_upload(self, path: Path, mode: str) -> None:
+        """Hive-mode dispatch: SMB-copy then SSH-submit a SLURM job.
+
+        In ``processing_mode: hive``, the watcher stops doing local
+        search/extract/4DFF. Two steps:
+
+          1. SMB-copy the stable raw to Quobyte at
+             ``Y:\\proteomics-grp\\STAN\\incoming\\<inst>\\<file>``.
+             No SSH involved — Quobyte's own auth carries the upload.
+
+          2. SSH to Hive and run ``stan hive-dispatch --raw <hive_path>
+             --instrument-name <inst> ...`` which renders + submits a
+             SLURM job for that one file. SLURM job id lands in the
+             local ``uploads`` table for resume-on-restart.
+
+        Brett wants QC results back ASAP — submitting per-file from
+        the watcher (rather than via a 15-min Hive cron) cuts the
+        latency from "acquisition done" → "row in dashboard" by up to
+        15 min per run. Classification (QC vs sample_health) still
+        happens server-side via ``stan hive-process --mode auto``.
+
+        instruments.yml fields read here:
+          hive_upload_dir   Windows-side SMB dest. Default
+                            ``Y:/proteomics-grp/STAN/incoming/<inst>/``.
+          hive_user         SSH user (default 'brettsp').
+          hive_host         SSH host (default 'hive.hpc.ucdavis.edu').
+          hive_venv         Hive STAN venv root for the dispatcher.
+          ssh_key           Path to private key. Default
+                            ``%USERPROFILE%/.ssh/id_ed25519``.
+          column_vendor     Forwarded to runs.column_vendor stamping.
+          column_model      Forwarded to runs.column_model stamping.
+        """
+        from stan.sync.upload_to_hive import (
+            submit_one_via_ssh, upload_raw_to_incoming,
+        )
+        import os
+
+        dest_dir = self._config.get("hive_upload_dir")
+        if not dest_dir:
+            inst_dir = (self._name or "unknown").strip()
+            dest_dir = f"Y:/proteomics-grp/STAN/incoming/{inst_dir}"
+
+        self._record_event(
+            "hive_upload_start", path,
+            f"mode={mode} dest={dest_dir}",
+        )
+        upload_result = upload_raw_to_incoming(path, Path(dest_dir))
+
+        if upload_result.get("status") not in ("done", "skipped"):
+            logger.error(
+                "watcher: hive upload FAILED for %s: %s",
+                path.name, upload_result.get("error"),
+            )
+            self._record_event(
+                "hive_upload_failed", path,
+                f"error={upload_result.get('error')}",
+            )
+            return
+
+        logger.info(
+            "watcher: hive upload %s for %s (%.1f MB)",
+            upload_result["status"], path.name,
+            (upload_result.get("size_bytes") or 0) / 1e6,
+        )
+        self._record_event(
+            "hive_upload_done", path,
+            f"status={upload_result['status']} dest={upload_result.get('dest')}",
+        )
+
+        # Step 2: SSH-submit. Skip if config is missing required fields
+        # so the upload still happens but the SLURM job will need to be
+        # picked up by a backlog `stan hive-dispatch` run later.
+        ssh_key_str = self._config.get("ssh_key") or os.path.join(
+            os.path.expanduser("~"), ".ssh", "id_ed25519",
+        )
+        ssh_key = Path(ssh_key_str)
+        if not ssh_key.exists():
+            logger.warning(
+                "watcher: ssh_key %s not found — file uploaded but not "
+                "submitted. Run `stan hive-dispatch` from a key-bearing "
+                "host to catch up.", ssh_key,
+            )
+            self._record_event(
+                "hive_submit_skipped", path, f"missing_key={ssh_key}",
+            )
+            return
+
+        family = (
+            self._config.get("family")
+            or self._config.get("vendor_family")
+            or ""
+        )
+        vendor = (self._config.get("vendor") or "").lower()
+        if not (family and vendor):
+            logger.warning(
+                "watcher: instruments.yml missing family/vendor for %s — "
+                "file uploaded but not submitted.", self._name,
+            )
+            self._record_event(
+                "hive_submit_skipped", path, "missing_family_or_vendor",
+            )
+            return
+
+        submit_result = submit_one_via_ssh(
+            raw_source=path,
+            raw_dest_smb=Path(upload_result["dest"]),
+            instrument=self._name,
+            family=family,
+            vendor=vendor,
+            ssh_key=ssh_key,
+            hive_user=self._config.get("hive_user", "brettsp"),
+            hive_host=self._config.get("hive_host", "hive.hpc.ucdavis.edu"),
+            hive_venv=self._config.get(
+                "hive_venv", "/quobyte/proteomics-grp/brett/stan_venv",
+            ),
+            hive_dispatch_yml=self._config.get(
+                "hive_dispatch_yml",
+                "/quobyte/proteomics-grp/STAN/dispatch.yml",
+            ),
+            column_vendor=self._config.get("column_vendor", ""),
+            column_model=self._config.get("column_model", ""),
+        )
+
+        if submit_result.get("status") == "submitted":
+            logger.info(
+                "watcher: SLURM submit OK for %s — job_id=%s",
+                path.name, submit_result.get("job_id"),
+            )
+            self._record_event(
+                "hive_submit_ok", path,
+                f"job_id={submit_result.get('job_id')}",
+            )
+        elif submit_result.get("status") == "skipped":
+            logger.info(
+                "watcher: SLURM submit skipped for %s (%s)",
+                path.name, submit_result.get("error"),
+            )
+            self._record_event(
+                "hive_submit_skipped", path,
+                f"reason={submit_result.get('error')}",
+            )
+        else:
+            logger.error(
+                "watcher: SLURM submit FAILED for %s: %s",
+                path.name, submit_result.get("error"),
+            )
+            self._record_event(
+                "hive_submit_failed", path,
+                f"error={submit_result.get('error')}",
+            )
 
     def _on_monitor_complete(self, path: Path) -> None:
         """Sample Health Monitor path — runs only for non-QC, non-excluded

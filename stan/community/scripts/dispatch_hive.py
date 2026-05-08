@@ -507,6 +507,87 @@ def dispatch_all(
     return summary
 
 
+def dispatch_one_raw(
+    raw_path: Path,
+    instrument: dict,
+    config_path: Path = DEFAULT_CONFIG_PATH,
+    *,
+    dry_run: bool = False,
+    partition: str = "",
+    force: bool = False,
+) -> dict:
+    """Render + submit a single SLURM job for a specific raw file.
+
+    Used by per-instrument self-submission: after the watcher SMB-
+    uploads a file to Quobyte, it SSHes to Hive and calls this with
+    the instrument metadata it already has, skipping the walk + filter
+    work. Returns a dict the caller can JSON-parse:
+
+        {status: 'submitted'|'skipped'|'failed', job_id: str|None,
+         raw: str, error: str|None}
+
+    Idempotency: ``_already_processed`` short-circuits if the global DB
+    already has a row for this raw_path; ``_job_already_queued`` skips
+    if a SLURM job for this stem is already running. Safe to call
+    repeatedly (e.g. watcher restart re-attempts after a crash).
+    """
+    cfg = _load_config(config_path)
+    db_path = Path(cfg["db_path"])
+    sbatch_log_dir = Path(cfg["sbatch_log_dir"])
+
+    # Optional partition override — used for partition-comparison
+    # timing tests. Mutate a copy so the dispatch.yml on disk stays
+    # untouched. ``low`` partition needs a different qos+account triple
+    # per CLAUDE.md; map known partitions to their valid combos so the
+    # operator doesn't have to hand-edit dispatch.yml just to time
+    # ``low``.
+    if partition:
+        cfg = dict(cfg)
+        cfg["slurm"] = dict(cfg.get("slurm") or {})
+        cfg["slurm"]["partition"] = partition
+        if partition == "low":
+            cfg["slurm"]["qos"] = "publicgrp-low-qos"
+            cfg["slurm"]["account"] = "publicgrp"
+        elif partition == "high":
+            cfg["slurm"]["qos"] = "genome-center-grp-high-qos"
+            cfg["slurm"]["account"] = "genome-center-grp"
+
+    out: dict = {
+        "status": "failed",
+        "job_id": None,
+        "raw": str(raw_path),
+        "partition": cfg["slurm"]["partition"],
+        "error": None,
+    }
+
+    if not raw_path.exists():
+        out["error"] = f"raw not on Hive yet: {raw_path}"
+        return out
+
+    if not force:
+        if _already_processed(db_path, raw_path):
+            out["status"] = "skipped"
+            out["error"] = "row already in runs table (--force to override)"
+            return out
+        if _job_already_queued(raw_path.stem):
+            out["status"] = "skipped"
+            out["error"] = "SLURM job already queued/running (--force to override)"
+            return out
+
+    script = _render_sbatch(raw_path, instrument, cfg)
+    if dry_run:
+        out["status"] = "submitted"  # would-be
+        return out
+
+    job_id = _submit_sbatch(script, sbatch_log_dir, raw_path.stem)
+    if job_id:
+        out["status"] = "submitted"
+        out["job_id"] = job_id
+    else:
+        out["error"] = "sbatch failed — see stderr"
+    return out
+
+
 def main() -> None:
     """CLI entry point for `stan hive-dispatch`."""
     p = argparse.ArgumentParser(description=__doc__)
@@ -524,6 +605,31 @@ def main() -> None:
         "--print-default-config", action="store_true",
         help="Write a default dispatch.yml template to stdout and exit.",
     )
+    p.add_argument(
+        "--raw", default="",
+        help="Submit a SLURM job for ONE specific raw on Hive, skipping "
+             "the watch-dir walk. Pair with --instrument-name + --family "
+             "+ --vendor. Used by the watcher's per-file self-submit.",
+    )
+    p.add_argument(
+        "--instrument-name", default="",
+        help="Required with --raw: canonical model name (e.g. 'timsTOF HT').",
+    )
+    p.add_argument("--family", default="", help="Required with --raw.")
+    p.add_argument("--vendor", default="", help="Required with --raw.")
+    p.add_argument("--column-vendor", default="")
+    p.add_argument("--column-model", default="")
+    p.add_argument(
+        "--partition", default="",
+        help="Override slurm.partition from dispatch.yml. With 'low' "
+             "or 'high', the matching qos+account triple is auto-selected. "
+             "Used by partition-comparison timing tests.",
+    )
+    p.add_argument(
+        "--force", action="store_true",
+        help="Bypass the already-processed and already-queued short-"
+             "circuits. For timing tests + manual reprocess.",
+    )
     p.add_argument("--verbose", "-v", action="store_true")
     args = p.parse_args()
 
@@ -535,6 +641,31 @@ def main() -> None:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+
+    if args.raw:
+        if not (args.instrument_name and args.family and args.vendor):
+            print("ERROR: --raw requires --instrument-name + --family + --vendor",
+                  file=sys.stderr)
+            sys.exit(2)
+        inst = {
+            "name": args.instrument_name,
+            "family": args.family,
+            "vendor": args.vendor,
+            "column_vendor": args.column_vendor,
+            "column_model": args.column_model,
+        }
+        result = dispatch_one_raw(
+            raw_path=Path(args.raw),
+            instrument=inst,
+            config_path=args.config,
+            dry_run=args.dry_run,
+            partition=args.partition,
+            force=args.force,
+        )
+        print(json.dumps(result, default=str), flush=True)
+        if result["status"] not in ("submitted", "skipped"):
+            sys.exit(1)
+        return
 
     summary = dispatch_all(
         config_path=args.config,

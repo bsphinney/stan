@@ -293,6 +293,39 @@ CREATE TABLE IF NOT EXISTS dispatch_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_dispatch_attempts_status
     ON dispatch_attempts(status, attempted_at);
+
+-- Uploads table (added v0.2.319). Tracks instrument-PC → Hive Quobyte
+-- transfers in the new "hive" processing mode. Watcher's dispatch path
+-- branches on instruments.yml.processing_mode: "local" runs the
+-- existing search/extract pipeline locally; "hive" copies the stable
+-- raw to Y:\proteomics-grp\STAN\incoming\<instrument>\ via SMB and
+-- stops. Status state machine:
+--   pending  — rename-from-.partial step still in flight
+--   done     — file is at dest_path with final name
+--   failed   — copy or rename failed; error explains why
+-- attempt_count bumps on each retry. Resume-on-restart: watcher walks
+-- pending+failed rows on startup and re-attempts.
+CREATE TABLE IF NOT EXISTS uploads (
+    raw_path        TEXT PRIMARY KEY,        -- source path on instrument PC
+    dest_path       TEXT,                    -- final dest on Quobyte mount
+    size_bytes      INTEGER,                 -- raw size at last attempt
+    status          TEXT NOT NULL,           -- 'pending' | 'done' | 'failed'
+    started_at      TEXT NOT NULL,           -- ISO 8601 of first attempt
+    completed_at    TEXT,                    -- ISO 8601 when status='done'
+    error           TEXT,                    -- last error message
+    attempt_count   INTEGER NOT NULL DEFAULT 1,
+    -- Submission tracking (added v0.2.319). Per-instrument
+    -- self-submission: after the upload renames into the final name,
+    -- the watcher SSHes to Hive and submits a SLURM job for it. The
+    -- job id lands here so resume-on-restart can retry rows whose
+    -- status='done' but slurm_job_id IS NULL (uploaded but never
+    -- submitted because watcher crashed / SSH failed).
+    slurm_job_id    TEXT,
+    submitted_at    TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_uploads_status
+    ON uploads(status, started_at);
 """
 
 
@@ -395,6 +428,28 @@ def _migrate(con: sqlite3.Connection) -> None:
                 logger.info("Migration: added column '%s' to sample_health table", col)
             except sqlite3.OperationalError as e:
                 logger.debug("sample_health migration %s failed: %s", col, e)
+
+    # uploads — slurm_job_id + submitted_at added v0.2.319 for the
+    # per-instrument self-submission model (each watcher SSHes to Hive
+    # after upload to submit its own SLURM job, instead of a separate
+    # cron-driven dispatcher). Existing pre-v0.2.319 DBs need these
+    # added; fresh DBs get them via _SCHEMA.
+    up_existing: set[str] = set()
+    try:
+        up_existing = {row[1] for row in con.execute("PRAGMA table_info(uploads)").fetchall()}
+    except sqlite3.OperationalError:
+        pass
+    up_migrations: list[tuple[str, str]] = [
+        ("slurm_job_id", "ALTER TABLE uploads ADD COLUMN slurm_job_id TEXT"),
+        ("submitted_at", "ALTER TABLE uploads ADD COLUMN submitted_at TEXT"),
+    ]
+    for col, ddl in up_migrations:
+        if up_existing and col not in up_existing:
+            try:
+                con.execute(ddl)
+                logger.info("Migration: added column '%s' to uploads table", col)
+            except sqlite3.OperationalError as e:
+                logger.debug("uploads migration %s failed: %s", col, e)
 
     for col, ddl in migrations:
         if col not in existing:
