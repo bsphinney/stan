@@ -3449,6 +3449,10 @@
       // back on with the controls at the top of the table.
       const [hideFailed, setHideFailed] = useState(true);
       const [showHidden, setShowHidden] = useState(false);
+      // v0.2.350: instrument filter on QC History. Without it the page
+      // mixed all instruments together when STAN_DB_PATH points at a
+      // multi-instrument fleet DB (Brett 2026-05-08).
+      const [instrumentFilter, setInstrumentFilter] = useState('__all__');
 
       if (loading) return <div className="empty">Loading...</div>;
       // Defensive: treat any non-array response as "no runs".
@@ -3525,6 +3529,14 @@
           (r.instrument || '').toLowerCase().includes(term)
         );
       }
+      if (instrumentFilter !== '__all__') {
+        filtered = filtered.filter(r => r.instrument === instrumentFilter);
+      }
+      // Unique instrument names for the dropdown (computed against the
+      // unfiltered runs so all options remain visible after filtering).
+      const allInstrumentNames = [...new Set(
+        (runs || []).map(r => r.instrument).filter(Boolean)
+      )].sort();
       const getSortVal = (r) => {
         if (sortKey === 'primary_ids') return (r.mode === 'DDA' ? r.n_psms : r.n_precursors) || 0;
         // v0.2.185: file number is derived from run_name, not a column
@@ -3601,6 +3613,17 @@
               onChange={e => setSearchTerm(e.target.value)}
               style={{flex:'1 1 250px', padding:'0.4rem 0.6rem', background:'var(--bg)', color:'var(--text)', border:'1px solid var(--border)', borderRadius:'0.3rem'}}
             />
+            <select
+              value={instrumentFilter}
+              onChange={e => setInstrumentFilter(e.target.value)}
+              title="Filter QC History by instrument"
+              style={{padding:'0.4rem 0.6rem', background:'var(--bg)', color:'var(--text)', border:'1px solid var(--border)', borderRadius:'0.3rem'}}
+            >
+              <option value="__all__">All instruments</option>
+              {allInstrumentNames.map(n =>
+                <option key={n} value={n}>{n}</option>
+              )}
+            </select>
             <select
               value={dateFilter}
               onChange={e => setDateFilter(e.target.value)}
