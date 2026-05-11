@@ -123,35 +123,97 @@ def detect_thermo_mode(
 
 
 def _parse_thermo_scan_filters(metadata: dict, raw_path: Path) -> AcquisitionMode:
-    """Parse ScanFilter strings from ThermoRawFileParser JSON metadata."""
+    """Parse ThermoRawFileParser JSON metadata to determine DIA vs DDA mode.
+
+    TRFP -f=4 -m=0 (metadata-only) produces FileProperties, InstrumentProperties,
+    MsData, ScanSettings, and SampleData — it does NOT include a per-scan Scans
+    array with individual ScanFilter strings. Per-scan filters are only emitted
+    with full spectrum output (-f=1 mzML), which is too slow for mode detection.
+
+    Strategy (in priority order):
+    1. Per-scan ScanFilter strings — present when caller passes full-spectrum JSON.
+       The canonical DDA marker is the 'd' flag: "FTMS + c NSI d Full ms2 <mz>@..."
+       The 'd' means data-dependent; DIA scans omit it.
+    2. SampleData acquisition method name — "dia"/"dda" substring match. Weak
+       signal; only used when per-scan data is absent.
+    3. MsData MS2/MS1 ratio — ratio ≥ 15 strongly implies DIA (DDA top-N rarely
+       exceeds 15); ratio < 15 is ambiguous and left as UNKNOWN.
+    """
+    # --- Strategy 1: per-scan ScanFilter strings (full-spectrum JSON) ---
     scan_filters: list[str] = []
     for scan in metadata.get("Scans", metadata.get("scans", [])):
         filt = scan.get("ScanFilter", scan.get("scanFilter", ""))
         if filt:
             scan_filters.append(filt)
 
-    if not scan_filters:
-        logger.warning("No ScanFilter strings found in metadata for %s", raw_path)
+    if scan_filters:
+        # The 'd' flag immediately before "Full ms2" (or anywhere before the
+        # isolation m/z) marks data-dependent acquisition. DIA scans omit it.
+        # Match " d " as a whitespace-bounded token to avoid hitting "dd-" etc.
+        dda_pattern = re.compile(r"\bNSI\s+d\s+Full\b|\bNSI\s+sa\s+d\s+Full\b", re.IGNORECASE)
+        ms2_filters = [f for f in scan_filters if "ms2" in f.lower()]
+        if ms2_filters:
+            dda_count = sum(1 for f in ms2_filters if dda_pattern.search(f))
+            if dda_count > len(ms2_filters) * 0.5:
+                logger.info("Mode from scan-filter 'd' flag: DDA for %s", raw_path.name)
+                return AcquisitionMode.DDA_ORBITRAP
+            logger.info("Mode from scan-filter (no 'd' flag): DIA for %s", raw_path.name)
+            return AcquisitionMode.DIA_ORBITRAP
+
+        logger.warning("No MS2 ScanFilter strings found in metadata for %s", raw_path)
         return AcquisitionMode.UNKNOWN
 
-    # Pattern matching — not hardcoded string equality
-    dia_pattern = re.compile(r"\bDIA\b", re.IGNORECASE)
-    dda_pattern = re.compile(r"\b(dd-MS2|Full\s+ms2)\b", re.IGNORECASE)
+    # --- Strategy 2: acquisition method name in SampleData ---
+    for item in metadata.get("SampleData", []):
+        name = item.get("name", "")
+        value = item.get("value", "")
+        if "method" in name.lower() and value:
+            method_lower = value.lower()
+            # Use non-alpha lookaround instead of \b — underscores are \w
+            # so \bdia\b would NOT match "_dia_". We want to match "dia"
+            # when surrounded by non-letter chars (underscores, spaces,
+            # backslashes, dots, digits) but NOT inside words like "media"
+            # or "paladia". (?<![a-z]) and (?![a-z]) handles this correctly.
+            if re.search(r"(?<![a-z])dia(?![a-z])", method_lower):
+                logger.info("Mode from method name token 'dia': DIA for %s", raw_path.name)
+                return AcquisitionMode.DIA_ORBITRAP
+            if re.search(r"(?<![a-z])dda(?![a-z])", method_lower):
+                logger.info("Mode from method name token 'dda': DDA for %s", raw_path.name)
+                return AcquisitionMode.DDA_ORBITRAP
 
-    dia_count = sum(1 for f in scan_filters if dia_pattern.search(f))
-    dda_count = sum(1 for f in scan_filters if dda_pattern.search(f))
+    # --- Strategy 3: MS2/MS1 scan count ratio from MsData ---
+    ms1_count = ms2_count = 0
+    for item in metadata.get("MsData", []):
+        name = item.get("name", "")
+        value = item.get("value", "")
+        if "Number of MS1" in name:
+            try:
+                ms1_count = int(value)
+            except (ValueError, TypeError):
+                pass
+        elif "Number of MS2" in name:
+            try:
+                ms2_count = int(value)
+            except (ValueError, TypeError):
+                pass
 
-    if dia_count > dda_count:
-        return AcquisitionMode.DIA_ORBITRAP
-    if dda_count > 0:
-        return AcquisitionMode.DDA_ORBITRAP
+    if ms1_count > 10 and ms2_count > 0:
+        ratio = ms2_count / ms1_count
+        if ratio >= 15:
+            # Very high ratio — almost certainly DIA (top-N DDA rarely exceeds 15)
+            logger.info(
+                "Mode from MS2/MS1 ratio %.1f (≥15): DIA for %s", ratio, raw_path.name,
+            )
+            return AcquisitionMode.DIA_ORBITRAP
+        logger.info(
+            "MS2/MS1 ratio %.1f ambiguous (<15) — returning UNKNOWN for %s",
+            ratio, raw_path.name,
+        )
 
-    # Log unrecognized formats for debugging
-    unique_filters = set(scan_filters[:10])  # sample for logging
     logger.warning(
-        "Could not classify scan filters for %s. Samples: %s",
-        raw_path,
-        unique_filters,
+        "Could not classify Thermo acquisition mode for %s — no scan filters, "
+        "no dia/dda method token, MS2/MS1 ratio ambiguous or unavailable.",
+        raw_path.name,
     )
     return AcquisitionMode.UNKNOWN
 
