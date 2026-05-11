@@ -265,6 +265,7 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 | [`docs/external_tools.md`](docs/external_tools.md) | DIA-NN, Sage, ThermoRawFileParser: CLI flags, version pins, container paths, gotchas. |
 | [`docs/HPC_PATHS.md`](docs/HPC_PATHS.md) | Hive HPC reference paths for SLURM integration. |
 | [`docs/GOTCHAS_DELIMP.md`](docs/GOTCHAS_DELIMP.md) | 50+ hard-learned lessons: DIA-NN edge cases, SLURM quirks, raw-file parsing traps. |
+| [`docs/INSTALL_REGRESSION_CHECKLIST.md`](docs/INSTALL_REGRESSION_CHECKLIST.md) | Mode A install regression checklist: pre-flight, during-install warnings, 10-question post-install verification, known failure modes. |
 | [`CLAUDE.md`](CLAUDE.md) | Context for AI coding agents working on this codebase. |
 
 ---
