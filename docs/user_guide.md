@@ -82,7 +82,7 @@ In a separate terminal (while `stan watch` is running):
 stan dashboard
 ```
 
-Then open `http://localhost:8421` in Chrome, Edge, or Firefox. You'll see eight tabs across the top:
+Then open `http://localhost:8421` in Chrome, Edge, or Firefox. You'll see nine tabs across the top:
 
 | Tab | What it shows |
 |-----|---------------|
@@ -94,6 +94,7 @@ Then open `http://localhost:8421` in Chrome, Edge, or Firefox. You'll see eight 
 | **Config** | Per-instrument configuration summary |
 | **Community** | Community benchmark opt-in and submission status |
 | **Arcade** | Leaderboard games built on community benchmark data |
+| **Museum** | Interactive historical QC archive — 999 BSA injections 2005–2022, all instrument eras |
 
 ---
 
@@ -194,6 +195,21 @@ arcade_submit: false
 **Rate limit:** the relay accepts up to 5 score submissions per lab per game per hour to prevent spam. Duplicate submissions within 60 seconds are silently deduplicated.
 
 The relay-side implementation is documented in `stan/community/scripts/relay_arcade.py` — this reference file describes the API contract Brett uses to deploy the endpoints on the HF Space.
+
+### Museum
+
+An interactive historical QC archive celebrating 999 BSA injections collected at the UC Davis Proteomics Core from 2005 to 2022 — spanning every instrument era from the LTQ ion trap through the Q-Exactive Plus. The page is a standalone HTML file (`stan/dashboard/public/museum.html`) that loads from `/static/museum.html` in the iframe.
+
+**What the museum shows:**
+
+- **Timeline** — one card per instrument era with peak PSM count, median, sparkline of run-to-run variability, and hover detail for best/worst run filenames.
+- **Trend chart** — scatter plot (log scale) of every dated BSA injection 2005–2022 plus modern HeLa corpus points, color-coded by era. Filter by instrument type. Click a point to see the run name.
+- **BSA coverage maps** — the same 607-AA bovine albumin (P02769) sequence visualized as a horizontal bar, with identified peptide spans highlighted separately for a 2007 LTQ-FT run (46.5% coverage), the 2017 Q-Exactive Plus record (56% coverage), and an Astral reference projection. The same protein, characterized progressively more completely over time.
+- **Curio cabinet** — six annotated stories: oldest identification (Jan 26 2006), all-time record run (921 PSMs, May 2017), the Michrom LC era, the BSA lot transition, the LTQ-FT peak, and the 2022 coda when HeLa replaced BSA as the QC standard.
+- **Then vs Now table** — direct comparison from 184 PSMs on an LTQ in 2006 to 31,672 precursors on a timsTOF HT in 2026, with a future-state Astral row from the published Orsburn et al. 2023 benchmark.
+- **TIC comparison** — simulated chromatogram envelopes showing the shape difference between a 2007 LTQ-FT run and a modern Lumos HeLa acquisition.
+
+**Deploying to the community HF Space:** see `docs/MUSEUM_DEPLOY.md` for step-by-step instructions. The page is fully self-contained — no STAN API calls — so it works as a static file on any HF Space without a running backend.
 
 ---
 

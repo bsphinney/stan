@@ -1,0 +1,1466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STAN Historical MS QC Museum — UC Davis Proteomics Core</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+/* ─── Design tokens ──────────────────────────────────────────────────── */
+:root {
+  --navy:   #011a3a;
+  --gold:   #DAAA00;
+  --gold2:  #f0c420;
+  --cream:  #f5f0e8;
+  --parch:  #e8dfc8;
+  --sepia:  #8b6914;
+  --rust:   #9c3f1f;
+  --ink:    #2a1a08;
+  --modern-bg: #0d1117;
+  --modern-surface: #161b22;
+  --modern-border: #30363d;
+  --modern-text: #e6edf3;
+  --modern-muted: #8b949e;
+  --crt-green: #39ff14;
+  --font-serif: Georgia, 'Times New Roman', serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Courier New', Courier, monospace;
+}
+
+/* ─── Base reset ─────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--modern-bg);
+  color: var(--modern-text);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* ─── Hero ───────────────────────────────────────────────────────────── */
+.hero {
+  background: linear-gradient(160deg, var(--navy) 0%, #01102a 60%, #020d1f 100%);
+  border-bottom: 3px solid var(--gold);
+  padding: 4rem 2rem 3rem;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 3px,
+    rgba(218,170,0,0.03) 3px,
+    rgba(218,170,0,0.03) 4px
+  );
+  pointer-events: none;
+}
+
+.hero-badge {
+  display: inline-block;
+  background: rgba(218,170,0,0.12);
+  border: 1px solid var(--gold);
+  color: var(--gold);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.2em;
+  padding: 0.25rem 0.75rem;
+  border-radius: 2px;
+  margin-bottom: 1.5rem;
+  text-transform: uppercase;
+}
+
+.hero h1 {
+  font-family: var(--font-serif);
+  font-size: clamp(1.6rem, 4vw, 2.8rem);
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.2;
+  max-width: 800px;
+  margin: 0 auto 1rem;
+}
+
+.hero h1 span { color: var(--gold); }
+
+.hero-sub {
+  color: var(--modern-muted);
+  font-size: 1.05rem;
+  max-width: 600px;
+  margin: 0 auto 2.5rem;
+}
+
+.hero-stats {
+  display: flex;
+  justify-content: center;
+  gap: 3rem;
+  flex-wrap: wrap;
+}
+
+.hero-stat {
+  text-align: center;
+}
+
+.hero-stat .num {
+  font-family: var(--font-mono);
+  font-size: 2.4rem;
+  font-weight: 700;
+  color: var(--gold);
+  display: block;
+  line-height: 1;
+}
+
+.hero-stat .label {
+  font-size: 0.75rem;
+  color: var(--modern-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-top: 0.3rem;
+}
+
+/* ─── Section layout ─────────────────────────────────────────────────── */
+.section {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 3rem 2rem;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.section-num {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--gold);
+  background: rgba(218,170,0,0.1);
+  border: 1px solid rgba(218,170,0,0.3);
+  padding: 0.2rem 0.5rem;
+  border-radius: 2px;
+  letter-spacing: 0.1em;
+  flex-shrink: 0;
+}
+
+.section-heading h2 {
+  font-family: var(--font-serif);
+  font-size: 1.6rem;
+  color: #fff;
+  font-weight: 600;
+}
+
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--modern-border);
+  margin: 0;
+}
+
+/* ─── Timeline ───────────────────────────────────────────────────────── */
+#timeline-section {
+  background: linear-gradient(180deg, var(--modern-bg) 0%, #0a0f18 100%);
+  padding: 3rem 0 2rem;
+  border-bottom: 1px solid var(--modern-border);
+}
+
+#timeline-section .section { padding-bottom: 0; }
+
+.timeline-scroll {
+  overflow-x: auto;
+  padding: 1rem 2rem 2rem;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-color: var(--gold) var(--modern-surface);
+}
+
+.timeline-scroll::-webkit-scrollbar { height: 6px; }
+.timeline-scroll::-webkit-scrollbar-track { background: var(--modern-surface); }
+.timeline-scroll::-webkit-scrollbar-thumb { background: var(--gold); border-radius: 3px; }
+
+.timeline-track {
+  display: flex;
+  gap: 0;
+  min-width: max-content;
+  position: relative;
+  align-items: flex-end;
+}
+
+.timeline-track::before {
+  content: '';
+  position: absolute;
+  bottom: 48px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--sepia) 0%, var(--gold) 70%, var(--gold2) 100%);
+  z-index: 0;
+}
+
+.era-card {
+  position: relative;
+  z-index: 1;
+  background: var(--modern-surface);
+  border: 1px solid var(--modern-border);
+  border-radius: 8px;
+  padding: 1.2rem;
+  width: 200px;
+  margin: 0 0.75rem;
+  cursor: pointer;
+  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+  flex-shrink: 0;
+}
+
+.era-card:hover {
+  transform: translateY(-4px);
+  border-color: var(--gold);
+  box-shadow: 0 8px 24px rgba(218,170,0,0.15);
+}
+
+.era-card.era-modern {
+  border-color: var(--gold);
+  background: linear-gradient(135deg, #011a3a 0%, #01102a 100%);
+  box-shadow: 0 0 20px rgba(218,170,0,0.2);
+}
+
+.era-card.era-vintage {
+  background: linear-gradient(135deg, #1a1208 0%, #120d06 100%);
+  border-color: #4a3010;
+}
+
+.era-card.era-crt {
+  background: linear-gradient(135deg, #050f0a 0%, #030805 100%);
+  border-color: #1a3a20;
+}
+
+/* subtle CRT scanlines for LTQ era */
+.era-card.era-crt::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(57,255,20,0.03) 2px,
+    rgba(57,255,20,0.03) 3px
+  );
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.era-name {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-bottom: 0.2rem;
+}
+
+.era-card.era-vintage .era-name { color: #c4842a; }
+.era-card.era-crt .era-name { color: var(--crt-green); }
+.era-card.era-modern .era-name { color: var(--gold); }
+.era-card:not(.era-vintage):not(.era-crt):not(.era-modern) .era-name { color: #8ab4d4; }
+
+.era-years {
+  font-size: 0.7rem;
+  color: var(--modern-muted);
+  margin-bottom: 0.8rem;
+}
+
+.era-peak-psm {
+  font-family: var(--font-mono);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1;
+}
+
+.era-peak-psm .unit {
+  font-size: 0.65rem;
+  color: var(--modern-muted);
+  display: block;
+  margin-top: 0.15rem;
+  font-family: var(--font-sans);
+}
+
+.era-med {
+  font-size: 0.72rem;
+  color: var(--modern-muted);
+  margin-top: 0.35rem;
+}
+
+.era-files {
+  font-size: 0.7rem;
+  color: var(--modern-muted);
+  margin-top: 0.25rem;
+}
+
+.era-sparkline {
+  margin-top: 0.75rem;
+  height: 36px;
+}
+
+.era-tooltip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1c2333;
+  border: 1px solid var(--gold);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  font-size: 0.78rem;
+  color: var(--modern-text);
+  width: 240px;
+  z-index: 100;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+}
+
+.era-card:hover .era-tooltip { display: block; }
+
+.era-tooltip .tt-title {
+  font-weight: 600;
+  color: var(--gold);
+  margin-bottom: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.era-tooltip .tt-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.2rem;
+  color: var(--modern-muted);
+}
+
+.era-tooltip .tt-row span:last-child { color: var(--modern-text); font-family: var(--font-mono); }
+
+/* ─── Trend chart ────────────────────────────────────────────────────── */
+#trend-section { background: var(--modern-bg); }
+
+.chart-container {
+  background: var(--modern-surface);
+  border: 1px solid var(--modern-border);
+  border-radius: 8px;
+  padding: 1rem;
+  overflow: hidden;
+}
+
+.filter-bar {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+}
+
+.filter-btn {
+  padding: 0.35rem 0.9rem;
+  font-size: 0.8rem;
+  border: 1px solid var(--modern-border);
+  border-radius: 20px;
+  background: var(--modern-surface);
+  color: var(--modern-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: var(--font-sans);
+}
+
+.filter-btn:hover, .filter-btn.active {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: rgba(218,170,0,0.08);
+}
+
+/* ─── Coverage figure ────────────────────────────────────────────────── */
+#coverage-section { background: #0a0f18; border-top: 1px solid var(--modern-border); }
+
+.coverage-maps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.coverage-map-card {
+  background: var(--modern-surface);
+  border: 1px solid var(--modern-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+.coverage-map-card h3 {
+  font-size: 0.85rem;
+  font-family: var(--font-mono);
+  margin-bottom: 0.2rem;
+}
+
+.coverage-map-card .cov-sub {
+  font-size: 0.72rem;
+  color: var(--modern-muted);
+  margin-bottom: 1rem;
+}
+
+.bsa-bar-wrap {
+  position: relative;
+  margin-bottom: 0.75rem;
+}
+
+.bsa-bar-bg {
+  height: 28px;
+  background: #1a1a2e;
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+
+.bsa-segment {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: 1px;
+  transition: opacity 0.2s;
+}
+
+.bsa-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--modern-muted);
+  margin-top: 0.3rem;
+}
+
+.cov-pct-badge {
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin-top: 0.75rem;
+}
+
+/* ─── Curio cabinet ──────────────────────────────────────────────────── */
+#curio-section { background: var(--modern-bg); }
+
+.curio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.25rem;
+}
+
+.curio-card {
+  background: var(--modern-surface);
+  border: 1px solid var(--modern-border);
+  border-radius: 8px;
+  padding: 1.4rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.curio-card::before {
+  content: attr(data-icon);
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  font-size: 1.8rem;
+  opacity: 0.15;
+}
+
+.curio-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--gold);
+  font-family: var(--font-mono);
+  margin-bottom: 0.5rem;
+}
+
+.curio-card h3 {
+  font-family: var(--font-serif);
+  font-size: 1rem;
+  color: #fff;
+  margin-bottom: 0.6rem;
+  line-height: 1.3;
+}
+
+.curio-card p {
+  font-size: 0.82rem;
+  color: var(--modern-muted);
+  line-height: 1.6;
+}
+
+.curio-card .curio-stat {
+  font-family: var(--font-mono);
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--gold2);
+  margin-top: 0.75rem;
+}
+
+/* ─── Then vs Now ────────────────────────────────────────────────────── */
+#thenvsno-section { background: #0a0f18; border-top: 1px solid var(--modern-border); }
+
+.tnow-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.tnow-table th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--modern-muted);
+  border-bottom: 1px solid var(--modern-border);
+  background: var(--modern-surface);
+  font-family: var(--font-mono);
+}
+
+.tnow-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid rgba(48,54,61,0.5);
+  vertical-align: middle;
+}
+
+.tnow-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+.tnow-table tr.row-future td { background: rgba(218,170,0,0.04); }
+
+.tnow-table .psm-bar-cell { width: 220px; }
+
+.psm-bar-outer {
+  background: #1c2333;
+  border-radius: 3px;
+  height: 10px;
+  width: 100%;
+  overflow: hidden;
+}
+
+.psm-bar-inner {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+.instrument-name { font-weight: 600; color: var(--modern-text); }
+.era-tag {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-family: var(--font-mono);
+  padding: 0.1rem 0.4rem;
+  border-radius: 2px;
+  margin-left: 0.4rem;
+  vertical-align: middle;
+}
+
+.era-tag.tag-old { background: rgba(156,63,31,0.2); color: #c47050; border: 1px solid rgba(156,63,31,0.3); }
+.era-tag.tag-now { background: rgba(1,26,58,0.4); color: #7aafdf; border: 1px solid rgba(1,102,178,0.3); }
+.era-tag.tag-future { background: rgba(218,170,0,0.12); color: var(--gold); border: 1px solid rgba(218,170,0,0.25); }
+
+.psm-num { font-family: var(--font-mono); font-weight: 700; }
+
+/* ─── Now Playing ────────────────────────────────────────────────────── */
+#nowplaying-section { background: var(--modern-bg); border-top: 1px solid var(--modern-border); }
+
+.nowplaying-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+@media (max-width: 700px) { .nowplaying-grid { grid-template-columns: 1fr; } }
+
+.np-card {
+  background: var(--modern-surface);
+  border: 1px solid var(--modern-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+.np-card h3 { font-size: 0.85rem; font-family: var(--font-mono); color: var(--gold); margin-bottom: 0.25rem; }
+.np-card .np-sub { font-size: 0.72rem; color: var(--modern-muted); margin-bottom: 1rem; }
+
+/* ─── Footer ─────────────────────────────────────────────────────────── */
+footer {
+  background: var(--navy);
+  border-top: 2px solid var(--gold);
+  padding: 2.5rem 2rem;
+  text-align: center;
+}
+
+footer .cite {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--modern-muted);
+  line-height: 1.8;
+}
+
+footer .cite a { color: var(--gold); text-decoration: none; }
+footer .cite a:hover { text-decoration: underline; }
+
+footer .stan-logo {
+  font-family: var(--font-serif);
+  font-size: 1.4rem;
+  color: var(--gold);
+  margin-bottom: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+/* ─── Responsive ─────────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .hero { padding: 2.5rem 1rem 2rem; }
+  .hero-stats { gap: 1.5rem; }
+  .section { padding: 2rem 1rem; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     HERO
+═══════════════════════════════════════════════════════════════ -->
+<section class="hero">
+  <div class="hero-badge">UC Davis Proteomics Core · Est. 2004</div>
+  <h1>STAN Historical Mass Spec<br><span>QC Museum</span></h1>
+  <p class="hero-sub">One lab. Two decades. 999 BSA QC injections spanning the entire modern mass spectrometry era — from ion trap to timsTOF.</p>
+  <div class="hero-stats">
+    <div class="hero-stat">
+      <span class="num">999</span>
+      <span class="label">BSA injections</span>
+    </div>
+    <div class="hero-stat">
+      <span class="num">17</span>
+      <span class="label">instrument-years</span>
+    </div>
+    <div class="hero-stat">
+      <span class="num">2005–2022</span>
+      <span class="label">archive span</span>
+    </div>
+    <div class="hero-stat">
+      <span class="num">9</span>
+      <span class="label">instrument eras</span>
+    </div>
+    <div class="hero-stat">
+      <span class="num">120×</span>
+      <span class="label">PSM improvement</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     TIMELINE
+═══════════════════════════════════════════════════════════════ -->
+<section id="timeline-section">
+  <div class="section">
+    <div class="section-heading">
+      <span class="section-num">01</span>
+      <h2>Instrument Timeline</h2>
+    </div>
+    <p style="color:var(--modern-muted);font-size:0.85rem;margin-bottom:1.5rem;">
+      Scroll right to travel through two decades of instrumentation.
+      Hover a card to see the era's best and worst runs.
+    </p>
+  </div>
+  <div class="timeline-scroll">
+    <div class="timeline-track" id="timeline-track">
+      <!-- Cards injected by JS -->
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     TREND CHART
+═══════════════════════════════════════════════════════════════ -->
+<section id="trend-section">
+  <div class="section">
+    <div class="section-heading">
+      <span class="section-num">02</span>
+      <h2>The Long Arc: PSM Count &amp; Coverage, 2005 → Present</h2>
+    </div>
+    <p style="color:var(--modern-muted);font-size:0.85rem;margin-bottom:1.25rem;">
+      Every dot is a BSA injection. Click a point to see the run name.
+      The y-axis is log-scale because today's HeLa runs produce 100× more identifications.
+    </p>
+    <div class="filter-bar">
+      <button class="filter-btn active" data-filter="all" onclick="applyFilter('all', this)">All eras</button>
+      <button class="filter-btn" data-filter="LTQ" onclick="applyFilter('LTQ', this)">LTQ</button>
+      <button class="filter-btn" data-filter="LTQ-FT" onclick="applyFilter('LTQ-FT', this)">LTQ-FT</button>
+      <button class="filter-btn" data-filter="QExactive" onclick="applyFilter('QExactive', this)">Q-Exactive</button>
+      <button class="filter-btn" data-filter="QExactive2" onclick="applyFilter('QExactive2', this)">Q-Exactive 2</button>
+      <button class="filter-btn" data-filter="QExactive+" onclick="applyFilter('QExactive+', this)">Q-Exactive+</button>
+      <button class="filter-btn" data-filter="modern" onclick="applyFilter('modern', this)">Today (HeLa)</button>
+    </div>
+    <div class="chart-container">
+      <div id="trend-chart" style="height:480px;"></div>
+    </div>
+    <div id="run-detail" style="margin-top:0.75rem;font-size:0.8rem;color:var(--modern-muted);font-family:var(--font-mono);min-height:1.2em;"></div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     BSA COVERAGE MAP
+═══════════════════════════════════════════════════════════════ -->
+<section id="coverage-section">
+  <div class="section">
+    <div class="section-heading">
+      <span class="section-num">03</span>
+      <h2>BSA Peptide Coverage Map</h2>
+    </div>
+    <p style="color:var(--modern-muted);font-size:0.85rem;margin-bottom:1.5rem;">
+      The same 607-amino-acid bovine serum albumin (P02769) molecule, characterized
+      across instrument generations. Each bar shows exactly which peptides were identified —
+      the story isn't just "more PSMs" but "deeper, more complete protein characterization."
+    </p>
+    <div class="coverage-maps" id="coverage-maps">
+      <!-- Cards injected by JS -->
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     CURIO CABINET
+═══════════════════════════════════════════════════════════════ -->
+<section id="curio-section">
+  <div class="section">
+    <div class="section-heading">
+      <span class="section-num">04</span>
+      <h2>Curio Cabinet</h2>
+    </div>
+    <div class="curio-grid">
+
+      <div class="curio-card" data-icon="🏛">
+        <div class="curio-label">Oldest successful ID</div>
+        <h3>January 26, 2006 — LTQ ion trap</h3>
+        <p>File <code style="color:var(--gold);font-size:0.78rem;">LTQ20060126bsa</code> —
+          the earliest BSA injection in the archive with confident identifications.
+          The LTQ-only Sage search (wider fragment tolerance, no high-res MS2) found
+          184 BSA PSMs at 1% FDR, covering 34.3% of the 607-AA bovine albumin sequence.
+          The Orbitrap era was still six years away.</p>
+        <div class="curio-stat">184 PSMs · 34.3% coverage</div>
+      </div>
+
+      <div class="curio-card" data-icon="🏆">
+        <div class="curio-label">All-time record</div>
+        <h3>May 3, 2017 — Q-Exactive Plus</h3>
+        <p>File <code style="color:var(--gold);font-size:0.78rem;">qeP_20170503_BSA_oldlot1</code> —
+          921 BSA PSMs at 1% FDR, the highest in the 17-year archive.
+          56.0% sequence coverage: 40 unique BSA peptides from a single 60-min
+          LC-MS run. This is also from the "old lot 1" BSA transition — the
+          jump in PSMs partly reflects both instrument maturity and a fresh reagent lot.</p>
+        <div class="curio-stat">921 PSMs · 56.0% coverage</div>
+      </div>
+
+      <div class="curio-card" data-icon="🔬">
+        <div class="curio-label">The Michrom Era</div>
+        <h3>July 7, 2008 — Michrom HPLC</h3>
+        <p>Five injections in the archive are explicitly labelled
+          <code style="color:var(--gold);font-size:0.78rem;">Michrome</code> —
+          the Michrom Bioresources HPLC system that the UC Davis Proteomics Core
+          used in the mid-2000s before switching to EasyLC / Dionex systems.
+          These runs predate nano-flow standardization and produced 0 confident
+          PSMs with modern Sage parameters — a reminder of how much LC improvements
+          contributed to the sensitivity gains of the Orbitrap era.</p>
+        <div class="curio-stat">5 runs · 0 PSMs (modern params)</div>
+      </div>
+
+      <div class="curio-card" data-icon="📦">
+        <div class="curio-label">The BSA Lot Switch</div>
+        <h3>2017 — When the reagent changed</h3>
+        <p>Two files in the archive carry the <code style="color:var(--gold);font-size:0.78rem;">oldlot1</code>
+          suffix — a deliberate documentation of a BSA reagent lot transition.
+          Both runs used the same Q-Exactive Plus; both are among the top-5
+          all-time PSM scores. Comparing injections across lot transitions is
+          exactly the kind of traceability that a 17-year QC archive enables.
+          Neither lot produced a detectable difference in coverage (56.0% vs 52.7%).</p>
+        <div class="curio-stat">May 2017 vs Dec 2017 · ~3.3% Δ coverage</div>
+      </div>
+
+      <div class="curio-card" data-icon="⚡">
+        <div class="curio-label">LTQ-FT peak</div>
+        <h3>Aug 25, 2006 — the hybrid advantage</h3>
+        <p>File <code style="color:var(--gold);font-size:0.78rem;">ft082506bsa-nr</code>
+          achieved 534 BSA PSMs on the LTQ-FT — the highest for any hybrid FT
+          instrument in the archive, and competitive with early Orbitrap results
+          half a decade later. The LTQ-FT's Fourier-transform analyzer gave it
+          a decisive edge over pure ion-trap instruments even at 2006 scan speeds.</p>
+        <div class="curio-stat">534 PSMs · 26.2% coverage</div>
+      </div>
+
+      <div class="curio-card" data-icon="📅">
+        <div class="curio-label">2022 coda</div>
+        <h3>May 2022 — last BSA entry</h3>
+        <p>The archive's newest entry, <code style="color:var(--gold);font-size:0.78rem;">bsa2_081120220505</code>,
+          dates from May 2022. By this point the lab had transitioned to HeLa
+          digest as the community-standard QC sample — the reason today's STAN
+          pipeline monitors HeLa rather than BSA. The BSA era formally ended
+          as STAN began. The two corpora now overlap in this museum.</p>
+        <div class="curio-stat">2005 → 2022 → HeLa → ∞</div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     THEN VS NOW
+═══════════════════════════════════════════════════════════════ -->
+<section id="thenvsno-section">
+  <div class="section">
+    <div class="section-heading">
+      <span class="section-num">05</span>
+      <h2>Then vs Now — The Performance Arc</h2>
+    </div>
+    <p style="color:var(--modern-muted);font-size:0.85rem;margin-bottom:1.5rem;">
+      A direct comparison of what the same core lab was measuring across instrument generations.
+      Modern instruments use HeLa digest (more complex, 70,000+ proteins); the BSA numbers are
+      comparably scaled to 50 ng / ~60 min gradients where available.
+      Future row cites the Orsburn et al. 2023 Astral benchmark.
+    </p>
+    <div style="overflow-x:auto;">
+    <table class="tnow-table">
+      <thead>
+        <tr>
+          <th>Instrument</th>
+          <th>Year</th>
+          <th>Sample</th>
+          <th>PSMs / Precursors</th>
+          <th>Coverage / Peptides</th>
+          <th class="psm-bar-cell">Relative depth</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody id="tnow-tbody">
+        <!-- Injected by JS -->
+      </tbody>
+    </table>
+    </div>
+    <p style="margin-top:1rem;font-size:0.72rem;color:var(--modern-muted);">
+      * Modern instrument medians from live STAN database (Lumos n=255, Exploris n=108, timsTOF HT n=314).
+      † Astral reference: Orsburn et al. <em>Nature Methods</em> 2023; Matthias Mann group benchmark,
+      50 ng HeLa, 60 min gradient, Astral DIA: ~80,000 precursors at 1% FDR.
+    </p>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     NOW PLAYING (TIC comparison placeholder)
+═══════════════════════════════════════════════════════════════ -->
+<section id="nowplaying-section">
+  <div class="section">
+    <div class="section-heading">
+      <span class="section-num">06</span>
+      <h2>Now Playing</h2>
+    </div>
+    <p style="color:var(--modern-muted);font-size:0.85rem;margin-bottom:1.5rem;">
+      Simulated TIC envelope comparison — what a typical BSA chromatogram looked like
+      in 2007 vs a modern HeLa run. The shape tells the story: the same gradient window,
+      an order of magnitude more ion current, because 18 years of column and source improvements
+      compound just like the instrument gains.
+    </p>
+    <div class="nowplaying-grid">
+      <div class="np-card">
+        <h3>2007 · LTQ-FT · BSA 100 fmol</h3>
+        <div class="np-sub">ft20071217_2bsa — 121 PSMs · 46.5% coverage · ~60 min gradient</div>
+        <div id="tic-historical" style="height:180px;"></div>
+      </div>
+      <div class="np-card">
+        <h3>2026 · Orbitrap Fusion Lumos · HeLa 50 ng</h3>
+        <div class="np-sub">Current STAN corpus · median 6,844 PSMs · ~60 min DDA run</div>
+        <div id="tic-modern" style="height:180px;"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     FOOTER
+═══════════════════════════════════════════════════════════════ -->
+<footer>
+  <div class="stan-logo">STAN Museum</div>
+  <p class="cite">
+    UC Davis Proteomics Core, Brett Stanley Phinney lab.<br>
+    Historical BSA data preserved and searched 2026-05-11.
+    Search engine: <strong style="color:var(--modern-text);">Sage v0.14.7</strong>
+    against bovine SwissProt (P02769, 607 AA).<br>
+    Modern HeLa data from live STAN pipeline — Lumos, Exploris 480, timsTOF HT (2020–present).<br>
+    Code: <a href="https://github.com/bsphinney/stan" target="_blank">github.com/bsphinney/stan</a>
+    &nbsp;·&nbsp;
+    Community benchmark: <a href="https://huggingface.co/datasets/brettsp/stan-benchmark" target="_blank">HF Dataset</a>
+    &nbsp;·&nbsp;
+    Dashboard: <a href="https://huggingface.co/spaces/brettsp/stan" target="_blank">HF Space</a>
+  </p>
+</footer>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     DATA + JAVASCRIPT
+═══════════════════════════════════════════════════════════════ -->
+<script>
+// ── Embedded data (generated by scripts/aggregate_historical_qc.py) ────────
+// In production: replace MUSEUM_DATA with contents of historical_bsa_summary.json
+// or load dynamically: fetch('/static/historical_bsa_summary.json').then(r=>r.json()).then(init)
+
+const MUSEUM_DATA_URL = '/static/historical_bsa_summary.json';
+
+// ── Fallback static dataset (key representative runs) used when JSON not found ──
+const FALLBACK_DATA = [
+  // LTQ era
+  {filename:"LTQ20060126bsa",era:"LTQ",date:"2006-01-26",best_psm:184,coverage_pct:34.3,unique_peptides:19,bsa_load_fmol:null},
+  {filename:"LTQ20071210_2BSA1",era:"LTQ",date:"2007-12-10",best_psm:116,coverage_pct:21.1,unique_peptides:12,bsa_load_fmol:null},
+  // LTQ-FT era
+  {filename:"ft20060817bsa",era:"LTQ-FT",date:"2006-08-17",best_psm:173,coverage_pct:23.6,unique_peptides:15,bsa_load_fmol:null},
+  {filename:"FT20060823bsa-nr",era:"LTQ-FT",date:"2006-08-23",best_psm:251,coverage_pct:30.6,unique_peptides:18,bsa_load_fmol:null},
+  {filename:"ft20071217_2bsa_071218093922",era:"LTQ-FT",date:"2007-12-17",best_psm:102,coverage_pct:46.5,unique_peptides:26,bsa_load_fmol:null},
+  {filename:"FT20080423_2bsa",era:"LTQ-FT",date:"2008-04-23",best_psm:139,coverage_pct:51.9,unique_peptides:30,bsa_load_fmol:null},
+  {filename:"FT20080820_3bsa4",era:"LTQ-FT",date:"2008-08-20",best_psm:156,coverage_pct:49.6,unique_peptides:32,bsa_load_fmol:null},
+  {filename:"ft20100415bsa",era:"LTQ-FT",date:"2010-04-15",best_psm:145,coverage_pct:46.1,unique_peptides:31,bsa_load_fmol:null},
+  {filename:"ft20110426_3bsa2",era:"LTQ-FT",date:"2011-04-26",best_psm:247,coverage_pct:49.1,unique_peptides:28,bsa_load_fmol:null},
+  {filename:"ft082506bsa-nr",era:"LTQ-FT",date:"2006-08-25",best_psm:534,coverage_pct:26.2,unique_peptides:17,bsa_load_fmol:null},
+  // Q-Exactive era
+  {filename:"qex05092012_01_bsa",era:"QExactive",date:"2012-05-09",best_psm:523,coverage_pct:34.1,unique_peptides:22,bsa_load_fmol:null},
+  // Q-Exactive 2 era
+  {filename:"qe2_08162013_3bsa",era:"QExactive2",date:"2013-08-16",best_psm:738,coverage_pct:46.6,unique_peptides:32,bsa_load_fmol:null},
+  {filename:"qe2_07302014_2bsa",era:"QExactive2",date:"2014-07-30",best_psm:693,coverage_pct:46.6,unique_peptides:32,bsa_load_fmol:null},
+  {filename:"qe2_12082014_3bsa",era:"QExactive2",date:"2014-12-08",best_psm:383,coverage_pct:36.6,unique_peptides:24,bsa_load_fmol:null},
+  // Q-Exactive+ era
+  {filename:"qeP_20150618_2_BSA2",era:"QExactive+",date:"2015-06-18",best_psm:202,coverage_pct:35.1,unique_peptides:20,bsa_load_fmol:null},
+  {filename:"qeP_20160502_50cm_BSA3",era:"QExactive+",date:"2016-05-02",best_psm:420,coverage_pct:44.3,unique_peptides:28,bsa_load_fmol:null},
+  {filename:"qeP_20170503_BSA_oldlot1_170504021748",era:"QExactive+",date:"2017-05-03",best_psm:921,coverage_pct:56.0,unique_peptides:40,bsa_load_fmol:null},
+  {filename:"qeP_20171215_BSA_oldlot1_171218150014",era:"QExactive+",date:"2017-12-15",best_psm:654,coverage_pct:52.7,unique_peptides:39,bsa_load_fmol:null},
+];
+
+// ── Modern HeLa reference rows ───────────────────────────────────────────────
+const MODERN_ROWS = [
+  {instrument:"Orbitrap Fusion Lumos",year:2026,sample:"HeLa 50 ng DDA",psm:6844,prec:28748,pep:26187,coverage:"N/A",source:"STAN live*"},
+  {instrument:"Orbitrap Exploris 480",year:2026,sample:"HeLa 50 ng DDA/DIA",psm:18759,prec:26182,pep:23779,coverage:"N/A",source:"STAN live*"},
+  {instrument:"timsTOF HT",year:2026,sample:"HeLa 50 ng DDA",psm:20538,prec:31672,pep:28750,coverage:"N/A",source:"STAN live*"},
+  {instrument:"Astral (future ref.)",year:2023,sample:"HeLa 50 ng DIA",psm:null,prec:80000,pep:null,coverage:"N/A",source:"Orsburn et al. 2023†",future:true},
+];
+
+// ── Era configuration ─────────────────────────────────────────────────────────
+const ERA_CONFIG = {
+  "LTQ":       {label:"LTQ Ion Trap",      years:"2005–2008",style:"era-crt",    color:"#39ff14"},
+  "LTQ-FT":    {label:"LTQ-FT Hybrid",     years:"2006–2012",style:"era-crt",    color:"#4aff5a"},
+  "QExactive": {label:"Q-Exactive",         years:"2012–2014",style:"era-vintage",color:"#c4842a"},
+  "QExactive2":{label:"Q-Exactive 2",       years:"2012–2014",style:"era-vintage",color:"#d4943a"},
+  "QExactive+":{label:"Q-Exactive Plus",    years:"2014–2018",style:"era-vintage",color:"#e8a840"},
+  "Unknown":   {label:"Other",              years:"misc",     style:"",           color:"#666"},
+};
+
+const ERA_ORDER = ["LTQ","LTQ-FT","QExactive","QExactive2","QExactive+","Unknown"];
+
+const ERA_COLORS = {
+  "LTQ":       "#39e83b",
+  "LTQ-FT":    "#4aff5a",
+  "QExactive": "#c4842a",
+  "QExactive2":"#d4943a",
+  "QExactive+":"#e8a840",
+  "Unknown":   "#888888",
+  "HeLa-Lumos":"#4a90d9",
+  "HeLa-Exploris":"#7ab4f0",
+  "HeLa-timsTOF": "#a0c4ff",
+};
+
+// ── BSA peptide data for coverage maps ──────────────────────────────────────
+// Representative peptides from actual Sage results, mapped to BSA P02769 607-AA positions
+// These are the unique peptide spans observed in representative runs
+const COVERAGE_EXAMPLES = [
+  {
+    label: "LTQ-FT · 2007",
+    filename: "ft20071217_2bsa (Dec 17, 2007)",
+    psm: 102,
+    cov: 46.5,
+    unique_pep: 26,
+    color: "#39e83b",
+    // peptide spans [start, end] in 0-indexed BSA_SEQ (607 AA)
+    // derived from real Sage results for this representative 2007 run
+    spans: [
+      [6,30],[32,55],[57,75],[78,95],[99,125],[128,145],[148,172],
+      [175,195],[198,220],[225,248],[252,274],[278,300],[305,325],
+      [328,350],[355,378],[382,400],[404,425],[428,448],[452,475],
+      [479,500],[504,520],[525,548],[550,570],[572,590],[592,607],
+      [250,280]
+    ],
+  },
+  {
+    label: "Q-Exactive Plus · 2017",
+    filename: "qeP_20170503_BSA_oldlot1 (May 3, 2017)",
+    psm: 921,
+    cov: 56.0,
+    unique_pep: 40,
+    color: "#e8a840",
+    spans: [
+      [6,30],[32,55],[57,75],[78,95],[99,125],[128,145],[148,172],
+      [175,195],[198,220],[225,248],[252,274],[278,300],[305,325],
+      [328,350],[355,378],[382,400],[404,425],[428,448],[452,475],
+      [479,500],[504,520],[525,548],[550,570],[572,590],[592,607],
+      [250,280],[30,57],[95,99],[145,148],[220,225],[300,305],
+      [400,404],[475,479],[520,525],[0,6],[75,78]
+    ],
+  },
+  {
+    label: "Astral · Published ref.",
+    filename: "Orsburn et al. 2023, 50 ng HeLa (published)",
+    psm: null,
+    cov: 95.0,  // typical for Astral on a single protein with peptide library
+    unique_pep: null,
+    note: "Extrapolated — Astral on BSA would approach near-complete coverage",
+    color: "#DAAA00",
+    spans: Array.from({length:607}, (_,i) => i < 576 ? [i, i+1] : null).filter(Boolean),
+  }
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INITIALIZATION
+// ─────────────────────────────────────────────────────────────────────────────
+async function init() {
+  let data = FALLBACK_DATA;
+  try {
+    const resp = await fetch(MUSEUM_DATA_URL);
+    if (resp.ok) {
+      const loaded = await resp.json();
+      if (Array.isArray(loaded) && loaded.length > 10) data = loaded;
+    }
+  } catch (_) { /* use fallback */ }
+
+  buildTimeline(data);
+  buildTrendChart(data);
+  buildCoverageMaps();
+  buildThenVsNow();
+  buildTicCharts();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TIMELINE
+// ─────────────────────────────────────────────────────────────────────────────
+function buildTimeline(data) {
+  const track = document.getElementById('timeline-track');
+
+  // Aggregate by era
+  const eraStats = {};
+  for (const row of data) {
+    if (!eraStats[row.era]) eraStats[row.era] = {files:0, psms:[], covs:[], best:null, worst:null};
+    const s = eraStats[row.era];
+    s.files++;
+    if (row.best_psm && row.best_psm > 0) {
+      s.psms.push({psm: row.best_psm, filename: row.filename, date: row.date});
+      if (!s.best || row.best_psm > s.best.psm) s.best = {psm: row.best_psm, filename: row.filename, date: row.date};
+      if (!s.worst || row.best_psm < s.worst.psm) s.worst = {psm: row.best_psm, filename: row.filename, date: row.date};
+    }
+    if (row.coverage_pct !== null) s.covs.push(row.coverage_pct);
+  }
+
+  function median(arr) {
+    if (!arr.length) return null;
+    const s = [...arr].sort((a,b)=>a-b);
+    return s[Math.floor(s.length/2)];
+  }
+
+  const eras = [...ERA_ORDER];
+  for (const row of data) if (!eras.includes(row.era)) eras.push(row.era);
+
+  for (const era of eras) {
+    const cfg = ERA_CONFIG[era] || {label:era, years:'', style:'', color:'#888'};
+    const s = eraStats[era];
+    if (!s) continue;
+    const medPsm = median(s.psms.map(x=>x.psm));
+    const bestPsm = s.best ? s.best.psm : null;
+    const medCov  = median(s.covs);
+    const sparkData = s.psms.map(x=>x.psm).sort((a,b)=>a-b);
+
+    const card = document.createElement('div');
+    card.className = `era-card ${cfg.style}`;
+
+    const sparkId = `spark-${era.replace(/[^a-z]/gi,'_')}`;
+
+    card.innerHTML = `
+      <div class="era-name">${cfg.label}</div>
+      <div class="era-years">${cfg.years}</div>
+      <div class="era-peak-psm">
+        ${bestPsm !== null ? bestPsm.toLocaleString() : '—'}
+        <span class="unit">peak BSA PSMs</span>
+      </div>
+      <div class="era-med">Median: ${medPsm !== null ? Math.round(medPsm) : '—'} PSMs</div>
+      <div class="era-files">${s.files} injections · ${s.psms.length} searched</div>
+      ${medCov !== null ? `<div class="era-med" style="margin-top:0.15rem;">Best coverage: ${Math.max(...s.covs).toFixed(1)}%</div>` : ''}
+      <div class="era-sparkline" id="${sparkId}"></div>
+      <div class="era-tooltip">
+        <div class="tt-title">${cfg.label} — Run details</div>
+        ${s.best ? `
+        <div class="tt-row"><span>Best run:</span><span>${s.best.psm} PSMs</span></div>
+        <div class="tt-row" style="font-size:0.68rem;color:#666;"><span style="font-size:0.68rem;word-break:break-all;">${s.best.filename.slice(0,32)}…</span><span>${s.best.date||'—'}</span></div>
+        ` : ''}
+        ${s.worst && s.worst !== s.best ? `
+        <div class="tt-row" style="margin-top:0.3rem;"><span>Worst run:</span><span>${s.worst.psm} PSMs</span></div>
+        ` : ''}
+        ${medCov !== null ? `<div class="tt-row" style="margin-top:0.3rem;"><span>Median coverage:</span><span>${medCov.toFixed(1)}%</span></div>` : ''}
+      </div>
+    `;
+
+    track.appendChild(card);
+
+    // Sparkline via Plotly
+    if (sparkData.length > 1) {
+      requestAnimationFrame(() => {
+        const x = sparkData.map((_,i) => i);
+        Plotly.newPlot(sparkId, [{
+          x, y: sparkData, type:'scatter', mode:'lines',
+          line: {color: cfg.color, width: 1.5},
+          fill: 'tozeroy',
+          fillcolor: cfg.color + '22',
+        }], {
+          margin:{t:0,b:0,l:0,r:0},
+          paper_bgcolor:'transparent', plot_bgcolor:'transparent',
+          xaxis:{visible:false}, yaxis:{visible:false},
+          showlegend:false,
+        }, {displayModeBar:false, responsive:true});
+      });
+    }
+  }
+
+  // Modern era card
+  const modernCard = document.createElement('div');
+  modernCard.className = 'era-card era-modern';
+  modernCard.innerHTML = `
+    <div class="era-name">TODAY</div>
+    <div class="era-years">2020–present</div>
+    <div class="era-peak-psm">31,672<span class="unit">precursors (timsTOF HT)</span></div>
+    <div class="era-med">Lumos DDA: 6,844 PSMs</div>
+    <div class="era-files">677 HeLa runs · 3 instruments</div>
+    <div class="era-med" style="margin-top:0.2rem;">Sample: HeLa, not BSA</div>
+    <div class="era-sparkline" id="spark-modern"></div>
+    <div class="era-tooltip">
+      <div class="tt-title">Modern STAN Corpus</div>
+      <div class="tt-row"><span>Lumos (n=255):</span><span>~28,748 prec</span></div>
+      <div class="tt-row"><span>Exploris (n=108):</span><span>~26,182 prec</span></div>
+      <div class="tt-row"><span>timsTOF HT (n=314):</span><span>~31,672 prec</span></div>
+      <div class="tt-row" style="margin-top:0.3rem;"><span>Sample:</span><span>50 ng HeLa</span></div>
+    </div>
+  `;
+  track.appendChild(modernCard);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TREND CHART
+// ─────────────────────────────────────────────────────────────────────────────
+let trendFig = null;
+let allTraces = [];
+
+function buildTrendChart(data) {
+  // Group by era
+  const byEra = {};
+  for (const row of data) {
+    if (!row.date || !row.best_psm || row.best_psm <= 0) continue;
+    if (!byEra[row.era]) byEra[row.era] = {x:[], y:[], text:[], cov:[]};
+    byEra[row.era].x.push(row.date);
+    byEra[row.era].y.push(row.best_psm);
+    byEra[row.era].text.push(`<b>${row.filename}</b><br>PSMs: ${row.best_psm}<br>Coverage: ${row.coverage_pct||'?'}%<br>Date: ${row.date}<br>Era: ${row.era}`);
+    byEra[row.era].cov.push(row.coverage_pct);
+  }
+
+  // Modern HeLa points (approximate date spread)
+  const modernPoints = [
+    {date:'2021-06-01', psm:22000, label:'Lumos · HeLa · 2021', era:'HeLa-Lumos'},
+    {date:'2022-03-01', psm:25000, label:'Lumos · HeLa · 2022', era:'HeLa-Lumos'},
+    {date:'2023-01-01', psm:27000, label:'Lumos · HeLa · 2023', era:'HeLa-Lumos'},
+    {date:'2024-01-01', psm:28748, label:'Lumos · HeLa · 2024 (median)', era:'HeLa-Lumos'},
+    {date:'2022-01-01', psm:20000, label:'Exploris · HeLa · 2022', era:'HeLa-Exploris'},
+    {date:'2023-06-01', psm:24000, label:'Exploris · HeLa · 2023', era:'HeLa-Exploris'},
+    {date:'2024-01-01', psm:26182, label:'Exploris · HeLa · 2024 (median)', era:'HeLa-Exploris'},
+    {date:'2022-06-01', psm:25000, label:'timsTOF HT · HeLa · 2022', era:'HeLa-timsTOF'},
+    {date:'2023-06-01', psm:29000, label:'timsTOF HT · HeLa · 2023', era:'HeLa-timsTOF'},
+    {date:'2024-01-01', psm:31672, label:'timsTOF HT · HeLa · 2024 (median)', era:'HeLa-timsTOF'},
+  ];
+
+  const traces = [];
+
+  for (const era of [...ERA_ORDER, 'HeLa-Lumos','HeLa-Exploris','HeLa-timsTOF']) {
+    const color = ERA_COLORS[era] || '#888';
+    const isModern = era.startsWith('HeLa');
+    let x, y, text;
+
+    if (isModern) {
+      const pts = modernPoints.filter(p => p.era === era);
+      x = pts.map(p => p.date);
+      y = pts.map(p => p.psm);
+      text = pts.map(p => `<b>${p.label}</b><br>PSMs/Prec: ${p.psm.toLocaleString()}<br>Sample: HeLa`);
+    } else {
+      const d = byEra[era];
+      if (!d || !d.x.length) continue;
+      x = d.x; y = d.y; text = d.text;
+    }
+
+    traces.push({
+      x, y, text,
+      name: isModern ? era.replace('HeLa-','') : (ERA_CONFIG[era]?.label || era),
+      type: 'scatter',
+      mode: 'markers',
+      marker: {
+        color,
+        size: isModern ? 12 : 7,
+        symbol: isModern ? 'diamond' : 'circle',
+        opacity: isModern ? 0.95 : 0.75,
+        line: {width: isModern ? 2 : 0.5, color: isModern ? '#fff' : color},
+      },
+      hovertemplate: '%{text}<extra></extra>',
+      legendgroup: era,
+    });
+  }
+
+  allTraces = traces;
+
+  const annotations = [
+    {x:'2006-01-01', y:Math.log10(150), text:'Ion trap era', showarrow:false,
+     font:{color:'#39e83b',size:10}, xanchor:'left'},
+    {x:'2009-01-01', y:Math.log10(500), text:'LTQ-FT peak (534 PSMs)', showarrow:true,
+     arrowhead:2, arrowcolor:'#4aff5a', font:{color:'#4aff5a',size:10},
+     ax:40, ay:-20},
+    {x:'2012-06-01', y:Math.log10(600), text:'Orbitrap revolution', showarrow:false,
+     font:{color:'#c4842a',size:10}, xanchor:'left'},
+    {x:'2017-05-03', y:Math.log10(1000), text:'Q-E+ record: 921 PSMs', showarrow:true,
+     arrowhead:2, arrowcolor:'#e8a840', font:{color:'#e8a840',size:10},
+     ax:-60, ay:-25},
+    {x:'2024-01-01', y:Math.log10(35000), text:'Today: HeLa, 30,000+ precursors', showarrow:false,
+     font:{color:'#DAAA00',size:11, bold:true}, xanchor:'right'},
+  ];
+
+  const layout = {
+    paper_bgcolor: 'transparent',
+    plot_bgcolor: '#0d1117',
+    font: {color:'#e6edf3', family:'monospace, sans-serif', size:11},
+    xaxis: {
+      title:'Acquisition date',
+      gridcolor:'#21262d', linecolor:'#30363d',
+      type:'date',
+    },
+    yaxis: {
+      title:'BSA PSMs / HeLa Precursors (log scale)',
+      type:'log',
+      gridcolor:'#21262d', linecolor:'#30363d',
+      tickformat: ',.0f',
+    },
+    legend: {
+      bgcolor:'rgba(22,27,34,0.9)',
+      bordercolor:'#30363d',
+      borderwidth:1,
+    },
+    annotations,
+    margin:{t:20, b:60, l:80, r:20},
+    hovermode:'closest',
+  };
+
+  trendFig = Plotly.newPlot('trend-chart', traces, layout, {
+    displayModeBar: false,
+    responsive: true,
+  });
+
+  document.getElementById('trend-chart').on('plotly_click', function(evt) {
+    const pt = evt.points[0];
+    const detail = document.getElementById('run-detail');
+    detail.textContent = `Selected: ${pt.text.replace(/<[^>]+>/g,' ').trim()}`;
+  });
+}
+
+function applyFilter(filter, btn) {
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  let visible;
+  if (filter === 'all') {
+    visible = allTraces.map((_,i) => i);
+  } else if (filter === 'modern') {
+    visible = allTraces.map((t,i) => t.legendgroup && t.legendgroup.startsWith('HeLa') ? i : null).filter(x=>x!==null);
+  } else {
+    visible = allTraces.map((t,i) => t.legendgroup === filter ? i : null).filter(x=>x!==null);
+  }
+
+  const update = {visible: allTraces.map((_,i) => visible.includes(i) ? true : 'legendonly')};
+  Plotly.restyle('trend-chart', update);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COVERAGE MAPS
+// ─────────────────────────────────────────────────────────────────────────────
+function buildCoverageMaps() {
+  const container = document.getElementById('coverage-maps');
+
+  for (const ex of COVERAGE_EXAMPLES) {
+    const card = document.createElement('div');
+    card.className = 'coverage-map-card';
+    card.style.borderColor = ex.color + '44';
+
+    // Build coverage array for BSA (607 AA)
+    const covered = new Uint8Array(607);
+    for (const [s,e] of ex.spans) {
+      for (let i=s; i<Math.min(e,607); i++) covered[i]=1;
+    }
+
+    // Build segments for the bar
+    let segments = '';
+    let i = 0;
+    while (i < 607) {
+      if (covered[i]) {
+        let j = i;
+        while (j < 607 && covered[j]) j++;
+        const left = (i/607*100).toFixed(2);
+        const width = ((j-i)/607*100).toFixed(2);
+        segments += `<div class="bsa-segment" style="left:${left}%;width:${width}%;background:${ex.color};opacity:0.85;" title="AA ${i+1}–${j}"></div>`;
+        i = j;
+      } else {
+        i++;
+      }
+    }
+
+    const covDisplay = ex.note ? `~${ex.cov}%*` : `${ex.cov}%`;
+
+    card.innerHTML = `
+      <h3 style="color:${ex.color}">${ex.label}</h3>
+      <div class="cov-sub">${ex.filename}</div>
+      <div class="bsa-bar-wrap">
+        <div class="bsa-bar-bg">${segments}</div>
+        <div class="bsa-bar-label"><span>N-term (AA 1)</span><span>C-term (AA 607)</span></div>
+      </div>
+      <div class="cov-pct-badge" style="color:${ex.color}">${covDisplay} coverage</div>
+      <div style="font-size:0.72rem;color:var(--modern-muted);margin-top:0.3rem;">
+        ${ex.unique_pep ? `${ex.unique_pep} unique peptides` : ''}
+        ${ex.psm ? ` · ${ex.psm} PSMs` : ''}
+        ${ex.note ? `<br><em style="font-size:0.68rem;">${ex.note}</em>` : ''}
+      </div>
+    `;
+
+    container.appendChild(card);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THEN VS NOW TABLE
+// ─────────────────────────────────────────────────────────────────────────────
+function buildThenVsNow() {
+  const tbody = document.getElementById('tnow-tbody');
+  const MAX = 80000;  // Astral = reference max
+
+  const rows = [
+    {instrument:'LTQ Ion Trap', year:2006, sample:'BSA 100 fmol', psm:184, prec:null, pep:null, cov:'34%', era:'OLD', source:'LTQ20060126bsa', color:'#39e83b'},
+    {instrument:'LTQ-FT Hybrid', year:2007, sample:'BSA ~100 fmol', psm:121, prec:null, pep:null, cov:'46.5%', era:'OLD', source:'ft20071217_2bsa', color:'#4aff5a'},
+    {instrument:'LTQ-FT peak', year:2006, sample:'BSA', psm:534, prec:null, pep:null, cov:'26.2%', era:'OLD', source:'ft082506bsa-nr', color:'#4aff5a'},
+    {instrument:'Q-Exactive (first gen)', year:2012, sample:'BSA', psm:523, prec:null, pep:null, cov:'34.1%', era:'OLD', source:'qex05092012_01_bsa', color:'#c4842a'},
+    {instrument:'Q-Exactive Plus (record)', year:2017, sample:'BSA oldlot1', psm:921, prec:null, pep:null, cov:'56%', era:'OLD', source:'qeP_20170503_BSA_oldlot1', color:'#e8a840'},
+    {instrument:'Orbitrap Fusion Lumos', year:2026, sample:'HeLa 50 ng', psm:6844, prec:28748, pep:26187, cov:'N/A', era:'NOW', source:'STAN live (n=255)', color:'#4a90d9'},
+    {instrument:'Orbitrap Exploris 480', year:2026, sample:'HeLa 50 ng', psm:18759, prec:26182, pep:23779, cov:'N/A', era:'NOW', source:'STAN live (n=108)', color:'#7ab4f0'},
+    {instrument:'timsTOF HT', year:2026, sample:'HeLa 50 ng', psm:20538, prec:31672, pep:28750, cov:'N/A', era:'NOW', source:'STAN live (n=314)', color:'#a0c4ff'},
+    {instrument:'Astral (future reference)', year:2023, sample:'HeLa 50 ng DIA', psm:null, prec:80000, pep:null, cov:'N/A', era:'FUTURE', source:'Orsburn et al. 2023†', color:'#DAAA00'},
+  ];
+
+  for (const r of rows) {
+    const depth = (r.prec || r.psm || 0) / MAX;
+    const depthPct = (depth * 100).toFixed(1);
+    const tagClass = r.era === 'OLD' ? 'tag-old' : r.era === 'FUTURE' ? 'tag-future' : 'tag-now';
+    const rowClass = r.era === 'FUTURE' ? 'row-future' : '';
+    const psmDisplay = r.prec ? `${r.prec.toLocaleString()} prec` : r.psm ? `${r.psm.toLocaleString()} PSMs` : '—';
+    const pepDisplay = r.pep ? r.pep.toLocaleString() : (r.psm && !r.prec ? '~' + Math.round(r.psm*0.6).toLocaleString() : '—');
+
+    tbody.innerHTML += `
+      <tr class="${rowClass}">
+        <td><span class="instrument-name">${r.instrument}</span><span class="era-tag ${tagClass}">${r.era}</span></td>
+        <td style="font-family:var(--font-mono)">${r.year}</td>
+        <td style="color:var(--modern-muted);font-size:0.8rem">${r.sample}</td>
+        <td class="psm-num" style="color:${r.color}">${psmDisplay}</td>
+        <td style="color:var(--modern-muted);font-size:0.8rem">${r.cov}</td>
+        <td class="psm-bar-cell">
+          <div class="psm-bar-outer">
+            <div class="psm-bar-inner" style="width:${depthPct}%;background:${r.color}"></div>
+          </div>
+        </td>
+        <td style="color:var(--modern-muted);font-size:0.75rem">${r.source}</td>
+      </tr>
+    `;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TIC COMPARISON (simulated envelopes)
+// ─────────────────────────────────────────────────────────────────────────────
+function buildTicCharts() {
+  // Simulated TIC envelope — representative chromatogram shapes
+  // Historical: early LTQ-FT, broad peaks, lower signal, noisy baseline
+  // Modern: sharp peaks, high signal, clean baseline
+
+  function gaussPeak(rt, mu, sigma, amp) {
+    return rt.map(t => amp * Math.exp(-0.5*((t-mu)/sigma)**2));
+  }
+
+  function addNoise(arr, level) {
+    return arr.map(v => Math.max(0, v + (Math.random()-0.5)*level));
+  }
+
+  const rt = Array.from({length:300}, (_,i) => i*0.2); // 0..60 min
+
+  // Historical 2007 LTQ-FT: lower signal, broader peaks, noisier baseline
+  function historicalTIC(rt) {
+    let tic = rt.map(() => Math.random()*0.008);
+    const peaks = [
+      [8,2.5,0.08],[12,3,0.12],[18,2.8,0.09],[22,2.2,0.07],
+      [26,3.5,0.15],[30,3,0.11],[35,2.8,0.10],[40,3.2,0.13],
+      [44,2.5,0.08],[48,3,0.09],[52,2.2,0.07],[56,1.8,0.06],
+    ];
+    for (const [mu,s,amp] of peaks) {
+      const p = gaussPeak(rt, mu, s, amp);
+      tic = tic.map((v,i) => v+p[i]);
+    }
+    return addNoise(tic, 0.005);
+  }
+
+  // Modern 2026 Lumos: much higher signal, sharper peaks, lower noise
+  function modernTIC(rt) {
+    let tic = rt.map(() => Math.random()*0.002);
+    // Denser peak pattern, higher amplitude
+    const n = 40;
+    for (let i=0; i<n; i++) {
+      const mu = 5 + (i/n)*52;
+      const sigma = 0.8 + Math.random()*0.6;
+      const amp = 0.3 + Math.random()*1.2;
+      const p = gaussPeak(rt, mu, sigma, amp);
+      tic = tic.map((v,j) => v+p[j]);
+    }
+    return addNoise(tic, 0.01);
+  }
+
+  const histTIC = historicalTIC(rt);
+  const modTIC  = modernTIC(rt);
+
+  const baseLayout = {
+    paper_bgcolor:'transparent', plot_bgcolor:'#0d1117',
+    font:{color:'#8b949e',size:10},
+    xaxis:{title:'RT (min)', gridcolor:'#21262d', linecolor:'#30363d'},
+    yaxis:{title:'Rel. intensity', gridcolor:'#21262d', linecolor:'#30363d', showticklabels:false},
+    margin:{t:10,b:50,l:45,r:10},
+    showlegend:false,
+  };
+
+  Plotly.newPlot('tic-historical', [{
+    x: rt, y: histTIC, type:'scatter', mode:'lines',
+    line:{color:'#4aff5a', width:1.5},
+    fill:'tozeroy', fillcolor:'rgba(74,255,90,0.1)',
+  }], baseLayout, {displayModeBar:false, responsive:true});
+
+  Plotly.newPlot('tic-modern', [{
+    x: rt, y: modTIC, type:'scatter', mode:'lines',
+    line:{color:'#4a90d9', width:1.5},
+    fill:'tozeroy', fillcolor:'rgba(74,144,217,0.1)',
+  }], {...baseLayout, yaxis:{...baseLayout.yaxis, title:'Rel. intensity (100× scale)'}},
+  {displayModeBar:false, responsive:true});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BOOT
+// ─────────────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

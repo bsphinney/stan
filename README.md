@@ -66,7 +66,7 @@ stan dashboard # serve dashboard at http://localhost:8421
 
 ## The dashboard
 
-Open `http://localhost:8421` after `stan dashboard`. Eight tabs:
+Open `http://localhost:8421` after `stan dashboard`. Nine tabs:
 
 - **This Week's QCs** — gauge, weekly table, or metric-matrix view of recent HeLa runs. IPS badge front and center.
 - **QC History** — every run, sortable and filterable. Click a row for the full modal: metric breakdown, gate verdicts, PEG lollipop chart, diaPASEF drift cloud (Bruker), 4DFF Ion Cloud (Bruker, optional).
@@ -76,6 +76,7 @@ Open `http://localhost:8421` after `stan dashboard`. Eight tabs:
 - **Config** — live view of `instruments.yml` and `thresholds.yml`.
 - **Community** — your benchmark standing within your cohort, submission log, TIC overlay vs. community runs.
 - **Arcade** — retro mini-games with global community leaderboard (opt-in).
+- **Museum** — interactive historical QC archive: 999 BSA injections from 2005–2022 across every instrument era the UC Davis Proteomics Core has operated, searched with Sage v0.14.7. Timeline, trend chart, coverage maps, and "Then vs Now" comparison panel. See `docs/MUSEUM_DEPLOY.md` to deploy the standalone page to the community HF Space.
 
 ---
 
@@ -173,7 +174,8 @@ What ships today vs. what's still planned.
 | Column health | Done | TIC AUC + peak RT trend analysis. |
 | SQLite database | Done | All metrics, gate results, sample-health verdicts, maintenance events, PEG/drift breakdowns, 4DFF features-by-charge. |
 | FastAPI dashboard backend | Done | All routes wired (runs, trends, instruments, thresholds, fleet, community, PEG, drift, 4DFF, sample-health, hide). Swagger at `/docs`. |
-| Single-file React dashboard | Done | `stan/dashboard/public/index.html`, React + Babel via CDN. 8 tabs. |
+| Single-file React dashboard | Done | `stan/dashboard/public/index.html`, React + Babel via CDN. 9 tabs. |
+| Historical QC Museum | Done | `stan/dashboard/public/museum.html` — 999 BSA injections 2005–2022, Sage-searched; timeline, trend chart (log-scale), BSA coverage maps, Then vs Now table. Deploy guide: `docs/MUSEUM_DEPLOY.md`. |
 | Setup wizard | Done | 6 questions, dedupes `instruments.yml`, offers baseline at the end. |
 | Baseline builder | Done | Recursive discovery, auto-detect gradient/LC, pre-flight DIA-NN/Sage tests, resume on interrupt, scheduling (now / tonight / weekend). |
 | Windows installer + updater | Done | `install-stan.bat`, `update-stan.bat`. Self-update from GitHub. |

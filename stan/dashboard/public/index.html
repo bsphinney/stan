@@ -5194,7 +5194,7 @@
             <span className="version">{ver ? `v${ver.version}` : ''}</span>
           </header>
           <div className="tabs">
-            {[['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community'], ['arcade', '🎮 Arcade']].map(([k, label]) =>
+            {[['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community'], ['arcade', '🎮 Arcade'], ['museum', '🏛 Museum']].map(([k, label]) =>
               <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
             )}
           </div>
@@ -5210,6 +5210,11 @@
               <iframe src="/static/arcade.html"
                       style={{width:'100%', height:'calc(100vh - 120px)', border:'0', borderRadius:'6px'}}
                       title="STAN Arcade" />
+            )}
+            {tab === 'museum' && (
+              <iframe src="/static/museum.html"
+                      style={{width:'100%', height:'calc(100vh - 120px)', border:'0', borderRadius:'6px'}}
+                      title="STAN Historical MS QC Museum" />
             )}
           </ErrorBoundary>
           {/* PEG/Drift breakdown modal. Event-driven so any badge,
