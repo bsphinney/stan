@@ -75,7 +75,7 @@ Open `http://localhost:8421` after `stan dashboard`. Eight tabs:
 - **Fleet** — all instruments on the shared drive in one view; send remote commands.
 - **Config** — live view of `instruments.yml` and `thresholds.yml`.
 - **Community** — your benchmark standing within your cohort, submission log, TIC overlay vs. community runs.
-- **Arcade** — IPS leaderboard mini-game (opt-in community feature).
+- **Arcade** — retro mini-games with global community leaderboard (opt-in).
 
 ---
 
@@ -183,6 +183,7 @@ What ships today vs. what's still planned.
 | Community speclibs | Partial | Astral + timsTOF HeLa empirical/predicted libs in progress. |
 | Cohort scoring + percentiles | Done | Computed nightly within `(family, SPD, amount)` cohorts. |
 | HF Space community dashboard | Done | Live at `community.stan-proteomics.org`. |
+| Arcade → community leaderboard | Done | `stan/community/arcade_submit.py`; relay endpoints in `stan/community/scripts/relay_arcade.py`. Opt-in via `arcade_submit: true` in `community.yml`. |
 | Bruker `.d` XML method-tree parser | Done | Reads `<N>.m/submethods.xml`, `hystar.method`, `SampleInfo.xml` for authoritative SPD + Evosep detection. |
 | `validate_spd_from_metadata()` | Done | XML → MethodName → `Frames.Time` span fallback chain. |
 | `detect_lc_system()` | Done | Evosep vs custom from `.d` method tree + TrayType; powers the LC filter on the community TIC overlay. |

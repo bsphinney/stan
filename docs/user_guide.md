@@ -164,7 +164,36 @@ Shows your community benchmark opt-in status and a log of recent submissions. Fr
 
 ### Arcade
 
-Leaderboard visualizations built on community benchmark data — historical records, cross-lab comparisons, and ranking charts. Read-only and public-data only.
+Retro mini-games (Keratin Invaders, Angry Mass Specs, m/zork) playable directly in the dashboard. Scores can be submitted to a global community leaderboard so labs can compare.
+
+#### Community Arcade Leaderboard
+
+When `community_submit: true` is set in `~/.stan/community.yml`, arcade scores are automatically submitted to the community relay after each game. The top 5 scores per game are shown in the **Community high scores** panel at the top of the Arcade tab, pulled live from the relay.
+
+**What gets sent** (privacy-first, same rules as QC submissions):
+- Game name, numeric score, win/loss flag
+- Your lab pseudonym (`display_name` from `community.yml`)
+- Instrument *family* only (`timsTOF`, `Exploris`, `Lumos` — never the full model name or serial number)
+- STAN version and timestamp
+
+**Nothing else.** No raw files, no sample metadata, no patient identifiers.
+
+**To opt in without enabling QC submissions**, add to `~/.stan/community.yml`:
+
+```yaml
+arcade_submit: true
+```
+
+**To opt out of arcade submissions only** while keeping QC submissions on:
+
+```yaml
+community_submit: true
+arcade_submit: false
+```
+
+**Rate limit:** the relay accepts up to 5 score submissions per lab per game per hour to prevent spam. Duplicate submissions within 60 seconds are silently deduplicated.
+
+The relay-side implementation is documented in `stan/community/scripts/relay_arcade.py` — this reference file describes the API contract Brett uses to deploy the endpoints on the HF Space.
 
 ---
 
