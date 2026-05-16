@@ -1,0 +1,27 @@
+{
+  "qe_plus": [
+    {
+      "ng": 100,
+      "n": 36,
+      "median_peptides": 12041,
+      "peak_peptides": 19472
+    },
+    {
+      "ng": 250,
+      "n": 1,
+      "median_peptides": 13433,
+      "peak_peptides": 13433
+    },
+    {
+      "ng": 500,
+      "n": 45,
+      "median_peptides": 15789,
+      "peak_peptides": 22465
+    }
+  ],
+  "modern_50ng_reference": {
+    "Lumos": 26307,
+    "Exploris": 23779,
+    "timsTOF HT": 30289
+  }
+}

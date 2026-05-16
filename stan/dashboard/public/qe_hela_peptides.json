@@ -1,0 +1,680 @@
+[
+  {
+    "filename": "qeP_20180719_newbatch_Hela_8_postbackendclean",
+    "ms2": 47621,
+    "psm_count": 28043,
+    "unique_peptides": 22885
+  },
+  {
+    "filename": "QEPlus2_07182018_41_hELA_500ng",
+    "ms2": 61640,
+    "psm_count": 41614,
+    "unique_peptides": 22465
+  },
+  {
+    "filename": "qeP_20180712_Hela_500ng_4_sub2masich_25cm",
+    "ms2": 48600,
+    "psm_count": 27423,
+    "unique_peptides": 22343
+  },
+  {
+    "filename": "qeP_20180712_Hela_500ng_5_sub2masich_25cm",
+    "ms2": 48079,
+    "psm_count": 27162,
+    "unique_peptides": 22151
+  },
+  {
+    "filename": "qeP_20180711_Hela_500ng_1_sub2masich_25cm",
+    "ms2": 49207,
+    "psm_count": 26531,
+    "unique_peptides": 21416
+  },
+  {
+    "filename": "qeP_20180712_Hela_500ng_6_sub2masich_25cm",
+    "ms2": 45955,
+    "psm_count": 25055,
+    "unique_peptides": 21277
+  },
+  {
+    "filename": "qeP_20180712_Hela_500ng_7_sub2masich_25cm",
+    "ms2": 46716,
+    "psm_count": 25740,
+    "unique_peptides": 21116
+  },
+  {
+    "filename": "qeP_20180417_Hela_500ng-1",
+    "ms2": 47207,
+    "psm_count": 25814,
+    "unique_peptides": 20095
+  },
+  {
+    "filename": "qeP_20180417_Hela_500ng-2",
+    "ms2": 46233,
+    "psm_count": 25357,
+    "unique_peptides": 19689
+  },
+  {
+    "filename": "qeP_20171108_Hela2-postclean",
+    "ms2": 46652,
+    "psm_count": 27008,
+    "unique_peptides": 19686
+  },
+  {
+    "filename": "qeP_20180417_Hela_500ng-3",
+    "ms2": 46043,
+    "psm_count": 25267,
+    "unique_peptides": 19593
+  },
+  {
+    "filename": "qeP_20191207_HeLa100ng_120mLCcrap",
+    "ms2": 51782,
+    "psm_count": 25851,
+    "unique_peptides": 19472
+  },
+  {
+    "filename": "qeP_20191207_HeLa100ng_120mLCcrap_2",
+    "ms2": 51879,
+    "psm_count": 25812,
+    "unique_peptides": 19309
+  },
+  {
+    "filename": "qeP_20180417_Hela_500ng-1-gradchange",
+    "ms2": 53672,
+    "psm_count": 28467,
+    "unique_peptides": 19101
+  },
+  {
+    "filename": "qeP_20191008_Hela_2_500ng",
+    "ms2": 45517,
+    "psm_count": 24739,
+    "unique_peptides": 18504
+  },
+  {
+    "filename": "qeP_20191004_Hela_3_500ng",
+    "ms2": 47762,
+    "psm_count": 24608,
+    "unique_peptides": 18452
+  },
+  {
+    "filename": "qeP_20191004_Hela_1_500ng",
+    "ms2": 46938,
+    "psm_count": 24422,
+    "unique_peptides": 18280
+  },
+  {
+    "filename": "qeP_20191004_Hela_2_500ng",
+    "ms2": 46833,
+    "psm_count": 24819,
+    "unique_peptides": 18273
+  },
+  {
+    "filename": "qeP_20170103_Hela-CT-6_170106183401",
+    "ms2": 44384,
+    "psm_count": 24211,
+    "unique_peptides": 18247
+  },
+  {
+    "filename": "qeP_20180711_Hela_500ng_2_sub2masich_25cm",
+    "ms2": 56206,
+    "psm_count": 34819,
+    "unique_peptides": 18074
+  },
+  {
+    "filename": "qeP_20191006_Hela_5_500ng",
+    "ms2": 46263,
+    "psm_count": 24486,
+    "unique_peptides": 17797
+  },
+  {
+    "filename": "qeP_20180418_Hela_500ng-4",
+    "ms2": 43377,
+    "psm_count": 23375,
+    "unique_peptides": 17718
+  },
+  {
+    "filename": "qeP_20180713_Hela_500ng_8_sub2masich_25cm",
+    "ms2": 52256,
+    "psm_count": 32870,
+    "unique_peptides": 17656
+  },
+  {
+    "filename": "qeP_20190903_Hela_9_500ng",
+    "ms2": 50597,
+    "psm_count": 23651,
+    "unique_peptides": 17655
+  },
+  {
+    "filename": "qeP_20180713_newbatch_Hela_3",
+    "ms2": 41742,
+    "psm_count": 20727,
+    "unique_peptides": 17500
+  },
+  {
+    "filename": "qeP_20180420_Hela_500ng-2-gradchange",
+    "ms2": 50727,
+    "psm_count": 26521,
+    "unique_peptides": 17367
+  },
+  {
+    "filename": "qeP_20191207_HeLa100ng_95mLCcrap_2",
+    "ms2": 53811,
+    "psm_count": 24125,
+    "unique_peptides": 17332
+  },
+  {
+    "filename": "qeP_20191207_HeLa100ng_95mLCcrap_1",
+    "ms2": 53950,
+    "psm_count": 23645,
+    "unique_peptides": 17115
+  },
+  {
+    "filename": "qeP_20191101_Hela-100ng_191104165645",
+    "ms2": 45843,
+    "psm_count": 23844,
+    "unique_peptides": 16888
+  },
+  {
+    "filename": "qeP_20180711_Hela_500ng_3_sub2masich_25cm",
+    "ms2": 55744,
+    "psm_count": 33123,
+    "unique_peptides": 16359
+  },
+  {
+    "filename": "qeP_20191205_HeLa100ng_3",
+    "ms2": 54964,
+    "psm_count": 22828,
+    "unique_peptides": 16145
+  },
+  {
+    "filename": "qeP_20191205_HeLa100ng_4",
+    "ms2": 53858,
+    "psm_count": 22932,
+    "unique_peptides": 16031
+  },
+  {
+    "filename": "qeP_20191009_HeLa_100ng",
+    "ms2": 42618,
+    "psm_count": 21303,
+    "unique_peptides": 15962
+  },
+  {
+    "filename": "qeP_20190830_Hela_7_500ng",
+    "ms2": 52531,
+    "psm_count": 21613,
+    "unique_peptides": 15808
+  },
+  {
+    "filename": "qeP_20190830_Hela_8_500ng",
+    "ms2": 52622,
+    "psm_count": 21678,
+    "unique_peptides": 15789
+  },
+  {
+    "filename": "qeP_20191203_HeLa100ng_1",
+    "ms2": 39760,
+    "psm_count": 20272,
+    "unique_peptides": 15713
+  },
+  {
+    "filename": "qeP_20191203_HeLa100ng_104mLCcrap_1",
+    "ms2": 39760,
+    "psm_count": 20272,
+    "unique_peptides": 15713
+  },
+  {
+    "filename": "qeP_20190711_Hela3-100ng",
+    "ms2": 43417,
+    "psm_count": 19866,
+    "unique_peptides": 15569
+  },
+  {
+    "filename": "qeP_20191205_HeLa100ng_2",
+    "ms2": 53702,
+    "psm_count": 21920,
+    "unique_peptides": 15005
+  },
+  {
+    "filename": "qeP_20180605_Hela_500ng",
+    "ms2": 50012,
+    "psm_count": 23355,
+    "unique_peptides": 14992
+  },
+  {
+    "filename": "qeP_20181102_Hela_DIA_1-OG-DDA",
+    "ms2": 53308,
+    "psm_count": 22356,
+    "unique_peptides": 14908
+  },
+  {
+    "filename": "qeP_20181210_Hela_2",
+    "ms2": 44874,
+    "psm_count": 18979,
+    "unique_peptides": 14848
+  },
+  {
+    "filename": "qeP_20190909_3jourHeLa100ng_UnivIDtop15_HCD29_114m_1",
+    "ms2": 56397,
+    "psm_count": 22920,
+    "unique_peptides": 14819
+  },
+  {
+    "filename": "qeP_20180424_Hela_500ng-3-gradchange",
+    "ms2": 47184,
+    "psm_count": 22358,
+    "unique_peptides": 14655
+  },
+  {
+    "filename": "qeP_20181109_Hela_1",
+    "ms2": 47649,
+    "psm_count": 19482,
+    "unique_peptides": 14409
+  },
+  {
+    "filename": "qeP_20191101_Hela-100ng_191101214637",
+    "ms2": 41912,
+    "psm_count": 21572,
+    "unique_peptides": 14347
+  },
+  {
+    "filename": "QEPlus2_02262020_87_Hela100ng_1",
+    "ms2": 54157,
+    "psm_count": 25013,
+    "unique_peptides": 14171
+  },
+  {
+    "filename": "qeP_20181015_Hela_500ng_181016135148",
+    "ms2": 46855,
+    "psm_count": 19556,
+    "unique_peptides": 14120
+  },
+  {
+    "filename": "qeP_20190909_3jourHeLa100ng_UnivIDtop15_HCD29_114m_2",
+    "ms2": 56029,
+    "psm_count": 22022,
+    "unique_peptides": 13671
+  },
+  {
+    "filename": "qeP_20181015_Hela_500ng",
+    "ms2": 46001,
+    "psm_count": 19097,
+    "unique_peptides": 13534
+  },
+  {
+    "filename": "qeP_20181116_Hela_6",
+    "ms2": 48278,
+    "psm_count": 18657,
+    "unique_peptides": 13508
+  },
+  {
+    "filename": "QEPlus2_02262020_36_Hela_test_250ng",
+    "ms2": 33518,
+    "psm_count": 16457,
+    "unique_peptides": 13433
+  },
+  {
+    "filename": "qeP_20180403_Hela_500ng",
+    "ms2": 37440,
+    "psm_count": 16963,
+    "unique_peptides": 13398
+  },
+  {
+    "filename": "qeP_20180425_Hela_500ng-4-gradchange",
+    "ms2": 45618,
+    "psm_count": 20267,
+    "unique_peptides": 13202
+  },
+  {
+    "filename": "qeP_20180622_Hela_500ng_1",
+    "ms2": 45437,
+    "psm_count": 18092,
+    "unique_peptides": 13076
+  },
+  {
+    "filename": "qeP_121219_HeLa100ng_95m_1",
+    "ms2": 52096,
+    "psm_count": 18623,
+    "unique_peptides": 12797
+  },
+  {
+    "filename": "qeP_20180627_Hela_500ng_1_sub2masich",
+    "ms2": 35472,
+    "psm_count": 15687,
+    "unique_peptides": 12600
+  },
+  {
+    "filename": "qeP_20180425_Hela_500ng-5-gradchange",
+    "ms2": 44925,
+    "psm_count": 19261,
+    "unique_peptides": 12338
+  },
+  {
+    "filename": "qeP_20180506_Hela_500ng",
+    "ms2": 40124,
+    "psm_count": 21188,
+    "unique_peptides": 12309
+  },
+  {
+    "filename": "qeP_20191030_HeLa_100ng_2",
+    "ms2": 41585,
+    "psm_count": 20256,
+    "unique_peptides": 12308
+  },
+  {
+    "filename": "qeP_20190509_Hela_3_190509225933",
+    "ms2": 46547,
+    "psm_count": 25463,
+    "unique_peptides": 12142
+  },
+  {
+    "filename": "qeP_20180622_Hela_500ng_2",
+    "ms2": 44714,
+    "psm_count": 16663,
+    "unique_peptides": 12000
+  },
+  {
+    "filename": "qeP_20180403_Hela_500ng_2",
+    "ms2": 35284,
+    "psm_count": 14951,
+    "unique_peptides": 11879
+  },
+  {
+    "filename": "QEPlus2_040220_HeLa100ng_70m",
+    "ms2": 29798,
+    "psm_count": 13593,
+    "unique_peptides": 11775
+  },
+  {
+    "filename": "qeP_20180522_Hela_500ng",
+    "ms2": 46322,
+    "psm_count": 16191,
+    "unique_peptides": 11591
+  },
+  {
+    "filename": "qeP_20180406_Hela1_500ng",
+    "ms2": 34142,
+    "psm_count": 14412,
+    "unique_peptides": 11398
+  },
+  {
+    "filename": "qeP_20191030_HeLa_100ng_1",
+    "ms2": 40811,
+    "psm_count": 20878,
+    "unique_peptides": 11175
+  },
+  {
+    "filename": "qeP_20180627_Hela_500ng_3_sub2masich",
+    "ms2": 50390,
+    "psm_count": 26193,
+    "unique_peptides": 11129
+  },
+  {
+    "filename": "QEp2_100820_HeLa100ng_80m_2",
+    "ms2": 44816,
+    "psm_count": 18569,
+    "unique_peptides": 10682
+  },
+  {
+    "filename": "qeP_20180627_Hela_500ng_2_sub2masich",
+    "ms2": 46090,
+    "psm_count": 23033,
+    "unique_peptides": 10614
+  },
+  {
+    "filename": "qeP_20180406_Hela2_500ng",
+    "ms2": 32632,
+    "psm_count": 12837,
+    "unique_peptides": 10281
+  },
+  {
+    "filename": "QEp2_100820_HeLa100ng_80m_1",
+    "ms2": 36399,
+    "psm_count": 15259,
+    "unique_peptides": 9789
+  },
+  {
+    "filename": "QE2p_10012020_HeLa_100ng_70m_2",
+    "ms2": 27821,
+    "psm_count": 10932,
+    "unique_peptides": 9334
+  },
+  {
+    "filename": "QE2p_10012020_HeLa_100ng_70m_1",
+    "ms2": 25794,
+    "psm_count": 10690,
+    "unique_peptides": 9279
+  },
+  {
+    "filename": "QEp2_100820_HeLa100ng_80m_3",
+    "ms2": 42901,
+    "psm_count": 16029,
+    "unique_peptides": 9204
+  },
+  {
+    "filename": "qeP_20180625_Hela_500ng_1",
+    "ms2": 31442,
+    "psm_count": 11256,
+    "unique_peptides": 9155
+  },
+  {
+    "filename": "QE2p_10012020_HeLa_100ng_70m_3",
+    "ms2": 26551,
+    "psm_count": 10732,
+    "unique_peptides": 8770
+  },
+  {
+    "filename": "qeP_20190125_Hela_Lobind_Tube_Normal_Tip",
+    "ms2": 37628,
+    "psm_count": 11482,
+    "unique_peptides": 8768
+  },
+  {
+    "filename": "qeP_20181221_Hela_9",
+    "ms2": 41650,
+    "psm_count": 16258,
+    "unique_peptides": 8678
+  },
+  {
+    "filename": "QE2p_10012020_HeLa_100ng_70m_5",
+    "ms2": 24530,
+    "psm_count": 9715,
+    "unique_peptides": 8321
+  },
+  {
+    "filename": "QEp2_280820_HeLa100ng_80m_3_pep",
+    "ms2": 43888,
+    "psm_count": 14521,
+    "unique_peptides": 8117
+  },
+  {
+    "filename": "QE2p_10012020_HeLa_100ng_70m_4",
+    "ms2": 28063,
+    "psm_count": 9520,
+    "unique_peptides": 8080
+  },
+  {
+    "filename": "qeP_20180625_Hela_500ng_3",
+    "ms2": 47308,
+    "psm_count": 17488,
+    "unique_peptides": 7266
+  },
+  {
+    "filename": "qeP_20180625_Hela_500ng_2",
+    "ms2": 42622,
+    "psm_count": 15918,
+    "unique_peptides": 7234
+  },
+  {
+    "filename": "QEp2_290820_HeLa100ng_80m",
+    "ms2": 33093,
+    "psm_count": 10515,
+    "unique_peptides": 6519
+  },
+  {
+    "filename": "QEp_241120_HeLa100ng_50mAgain1",
+    "ms2": 21698,
+    "psm_count": 7711,
+    "unique_peptides": 6113
+  },
+  {
+    "filename": "QEp2_300820_HeLa100ng_80m",
+    "ms2": 32163,
+    "psm_count": 9933,
+    "unique_peptides": 5905
+  },
+  {
+    "filename": "QEp_241120_HeLa100ng_50mAgain2",
+    "ms2": 21024,
+    "psm_count": 7366,
+    "unique_peptides": 5894
+  },
+  {
+    "filename": "QEp_241120_HeLa100ng_50m_201125180254",
+    "ms2": 21623,
+    "psm_count": 7320,
+    "unique_peptides": 5541
+  },
+  {
+    "filename": "qeP_19022020_HeLa_500ng_3_ColCondtn",
+    "ms2": 6522,
+    "psm_count": 3749,
+    "unique_peptides": 3281
+  },
+  {
+    "filename": "QE2p_10012020_HeLa_100ng_70m_6",
+    "ms2": 21528,
+    "psm_count": 3528,
+    "unique_peptides": 3112
+  },
+  {
+    "filename": "qeP_19022020_HeLa_500ng_1_ColCondtn",
+    "ms2": 6009,
+    "psm_count": 3437,
+    "unique_peptides": 3012
+  },
+  {
+    "filename": "qeP_121219_HeLa100ng_95m_2",
+    "ms2": 11754,
+    "psm_count": 2665,
+    "unique_peptides": 2001
+  },
+  {
+    "filename": "QEp2_100820_HeLa100ng_80m_4",
+    "ms2": 13921,
+    "psm_count": 213,
+    "unique_peptides": 55
+  },
+  {
+    "filename": "qeP_20170103_Hela-CT-5",
+    "ms2": 2508,
+    "psm_count": 53,
+    "unique_peptides": 34
+  },
+  {
+    "filename": "qeP_19022020_HeLa_500ng_2_ColCondtn",
+    "ms2": 229,
+    "psm_count": 20,
+    "unique_peptides": 19
+  },
+  {
+    "filename": "qeP_20170103_Hela-CT-6",
+    "ms2": 2042,
+    "psm_count": 17,
+    "unique_peptides": 15
+  },
+  {
+    "filename": "qeP_20170103_Hela-CT-4",
+    "ms2": 3304,
+    "psm_count": 32,
+    "unique_peptides": 14
+  },
+  {
+    "filename": "qeP_20191207_HeLa100ng_95mLCcrap_3",
+    "ms2": 31257,
+    "psm_count": 8,
+    "unique_peptides": 7
+  },
+  {
+    "filename": "qeP_090320_HeLa100ng_95m_7",
+    "ms2": 1266,
+    "psm_count": 4,
+    "unique_peptides": 4
+  },
+  {
+    "filename": "qeP_090320_HeLa100ng_95m_9",
+    "ms2": 1041,
+    "psm_count": 3,
+    "unique_peptides": 3
+  },
+  {
+    "filename": "qeP_060320_HeLa100ng_95m_5",
+    "ms2": 266,
+    "psm_count": 2,
+    "unique_peptides": 2
+  },
+  {
+    "filename": "qeP_060320_HeLa100ng_95m_6",
+    "ms2": 27312,
+    "psm_count": 2,
+    "unique_peptides": 2
+  },
+  {
+    "filename": "qeP_090320_HeLa100ng_95m_11",
+    "ms2": 104,
+    "psm_count": 2,
+    "unique_peptides": 2
+  },
+  {
+    "filename": "qeP_200305_HeLa100ng_95m_1",
+    "ms2": 580,
+    "psm_count": 2,
+    "unique_peptides": 2
+  },
+  {
+    "filename": "qeP_060320_HeLa100ng_95m_4",
+    "ms2": 828,
+    "psm_count": 1,
+    "unique_peptides": 1
+  },
+  {
+    "filename": "qeP_200305_HeLa100ng_95m_2",
+    "ms2": 232,
+    "psm_count": 1,
+    "unique_peptides": 1
+  },
+  {
+    "filename": "qeP_28feb20_HeLa50ng_95mCE27",
+    "ms2": 191,
+    "psm_count": 1,
+    "unique_peptides": 1
+  },
+  {
+    "filename": "qeP_28feb20_HeLa50ng_95mCE27again",
+    "ms2": 10,
+    "psm_count": 1,
+    "unique_peptides": 1
+  },
+  {
+    "filename": "QEp_241120_HeLa100ng_50m",
+    "ms2": 808,
+    "psm_count": 0,
+    "unique_peptides": 0
+  },
+  {
+    "filename": "qeP_090320_HeLa100ng_95m_10",
+    "ms2": 424,
+    "psm_count": 0,
+    "unique_peptides": 0
+  },
+  {
+    "filename": "qeP_090320_HeLa100ng_95m_8",
+    "ms2": 732,
+    "psm_count": 0,
+    "unique_peptides": 0
+  },
+  {
+    "filename": "qeP_200305_HeLa100ng_95m_3",
+    "ms2": 125,
+    "psm_count": 0,
+    "unique_peptides": 0
+  }
+]

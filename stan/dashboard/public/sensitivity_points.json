@@ -1,0 +1,3796 @@
+{
+  "points": [
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 22465,
+      "file": "QEPlus2_07182018_41_hELA_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 22343,
+      "file": "qeP_20180712_Hela_500ng_4_sub2masich_25cm"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 22151,
+      "file": "qeP_20180712_Hela_500ng_5_sub2masich_25cm"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 21416,
+      "file": "qeP_20180711_Hela_500ng_1_sub2masich_25cm"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 21277,
+      "file": "qeP_20180712_Hela_500ng_6_sub2masich_25cm"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 21116,
+      "file": "qeP_20180712_Hela_500ng_7_sub2masich_25cm"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 20095,
+      "file": "qeP_20180417_Hela_500ng-1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 19689,
+      "file": "qeP_20180417_Hela_500ng-2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 19593,
+      "file": "qeP_20180417_Hela_500ng-3"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 19472,
+      "file": "qeP_20191207_HeLa100ng_120mLCcrap"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 19309,
+      "file": "qeP_20191207_HeLa100ng_120mLCcrap_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 19101,
+      "file": "qeP_20180417_Hela_500ng-1-gradchange"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 18504,
+      "file": "qeP_20191008_Hela_2_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 18452,
+      "file": "qeP_20191004_Hela_3_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 18280,
+      "file": "qeP_20191004_Hela_1_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 18273,
+      "file": "qeP_20191004_Hela_2_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 18074,
+      "file": "qeP_20180711_Hela_500ng_2_sub2masich_25cm"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 17797,
+      "file": "qeP_20191006_Hela_5_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 17718,
+      "file": "qeP_20180418_Hela_500ng-4"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 17656,
+      "file": "qeP_20180713_Hela_500ng_8_sub2masich_25cm"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 17655,
+      "file": "qeP_20190903_Hela_9_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 17367,
+      "file": "qeP_20180420_Hela_500ng-2-gradchange"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 17332,
+      "file": "qeP_20191207_HeLa100ng_95mLCcrap_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 17115,
+      "file": "qeP_20191207_HeLa100ng_95mLCcrap_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 16888,
+      "file": "qeP_20191101_Hela-100ng_191104165645"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 16359,
+      "file": "qeP_20180711_Hela_500ng_3_sub2masich_25cm"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 16145,
+      "file": "qeP_20191205_HeLa100ng_3"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 16031,
+      "file": "qeP_20191205_HeLa100ng_4"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 15962,
+      "file": "qeP_20191009_HeLa_100ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 15808,
+      "file": "qeP_20190830_Hela_7_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 15789,
+      "file": "qeP_20190830_Hela_8_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 15713,
+      "file": "qeP_20191203_HeLa100ng_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 15713,
+      "file": "qeP_20191203_HeLa100ng_104mLCcrap_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 15569,
+      "file": "qeP_20190711_Hela3-100ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 15005,
+      "file": "qeP_20191205_HeLa100ng_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 14992,
+      "file": "qeP_20180605_Hela_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 14819,
+      "file": "qeP_20190909_3jourHeLa100ng_UnivIDtop15_HCD29_114m_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 14655,
+      "file": "qeP_20180424_Hela_500ng-3-gradchange"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 14347,
+      "file": "qeP_20191101_Hela-100ng_191101214637"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 14171,
+      "file": "QEPlus2_02262020_87_Hela100ng_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 14120,
+      "file": "qeP_20181015_Hela_500ng_181016135148"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 13671,
+      "file": "qeP_20190909_3jourHeLa100ng_UnivIDtop15_HCD29_114m_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 13534,
+      "file": "qeP_20181015_Hela_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 250,
+      "peptides": 13433,
+      "file": "QEPlus2_02262020_36_Hela_test_250ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 13398,
+      "file": "qeP_20180403_Hela_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 13202,
+      "file": "qeP_20180425_Hela_500ng-4-gradchange"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 13076,
+      "file": "qeP_20180622_Hela_500ng_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 12797,
+      "file": "qeP_121219_HeLa100ng_95m_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 12600,
+      "file": "qeP_20180627_Hela_500ng_1_sub2masich"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 12338,
+      "file": "qeP_20180425_Hela_500ng-5-gradchange"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 12309,
+      "file": "qeP_20180506_Hela_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 12308,
+      "file": "qeP_20191030_HeLa_100ng_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 12000,
+      "file": "qeP_20180622_Hela_500ng_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 11879,
+      "file": "qeP_20180403_Hela_500ng_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 11775,
+      "file": "QEPlus2_040220_HeLa100ng_70m"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 11591,
+      "file": "qeP_20180522_Hela_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 11398,
+      "file": "qeP_20180406_Hela1_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 11175,
+      "file": "qeP_20191030_HeLa_100ng_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 11129,
+      "file": "qeP_20180627_Hela_500ng_3_sub2masich"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 10682,
+      "file": "QEp2_100820_HeLa100ng_80m_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 10614,
+      "file": "qeP_20180627_Hela_500ng_2_sub2masich"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 10281,
+      "file": "qeP_20180406_Hela2_500ng"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 9789,
+      "file": "QEp2_100820_HeLa100ng_80m_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 9334,
+      "file": "QE2p_10012020_HeLa_100ng_70m_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 9279,
+      "file": "QE2p_10012020_HeLa_100ng_70m_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 9204,
+      "file": "QEp2_100820_HeLa100ng_80m_3"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 9155,
+      "file": "qeP_20180625_Hela_500ng_1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 8770,
+      "file": "QE2p_10012020_HeLa_100ng_70m_3"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 8321,
+      "file": "QE2p_10012020_HeLa_100ng_70m_5"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 8117,
+      "file": "QEp2_280820_HeLa100ng_80m_3_pep"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 8080,
+      "file": "QE2p_10012020_HeLa_100ng_70m_4"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 7266,
+      "file": "qeP_20180625_Hela_500ng_3"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 7234,
+      "file": "qeP_20180625_Hela_500ng_2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 6519,
+      "file": "QEp2_290820_HeLa100ng_80m"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 6113,
+      "file": "QEp_241120_HeLa100ng_50mAgain1"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 5905,
+      "file": "QEp2_300820_HeLa100ng_80m"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 5894,
+      "file": "QEp_241120_HeLa100ng_50mAgain2"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 5541,
+      "file": "QEp_241120_HeLa100ng_50m_201125180254"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 3281,
+      "file": "qeP_19022020_HeLa_500ng_3_ColCondtn"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 3112,
+      "file": "QE2p_10012020_HeLa_100ng_70m_6"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 500,
+      "peptides": 3012,
+      "file": "qeP_19022020_HeLa_500ng_1_ColCondtn"
+    },
+    {
+      "inst": "Q-Exactive Plus",
+      "ng": 100,
+      "peptides": 2001,
+      "file": "qeP_121219_HeLa100ng_95m_2"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 28580,
+      "file": "FL020524_HeL50-fDia_35m_2good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 36065,
+      "file": "FL020524_HeL50-fDia_60m_1good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 39499,
+      "file": "FL020524_HeL50-fDia_90m_1good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32152,
+      "file": "FL290524_HeL50-fDia_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24700,
+      "file": "FL060426_HeL50-Hors_35m_4.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 29932,
+      "file": "FL060426_HeL50-Hors_60m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30034,
+      "file": "FL060426_HeL50-Hors_60m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 28982,
+      "file": "FL060426_HeL50-Hors_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 29474,
+      "file": "FL060426_HeL50-Hors_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24651,
+      "file": "FL080426_HeL50-Hors_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25602,
+      "file": "FL080426_HeL50-Hors_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25083,
+      "file": "FL080426_HeL50-Hors_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25258,
+      "file": "FL080426_HeL50-Hors_35m_4.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 29517,
+      "file": "FL080426_HeL50-Hors_60m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27823,
+      "file": "FL080426_HeL50-Hors_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25804,
+      "file": "FL100426_2dayHeL50-Hors_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 9845,
+      "file": "FL100426_YWyle_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 29370,
+      "file": "FL170425_HeL50-cSignalStabi-NewdualIT_35m_0.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30720,
+      "file": "FL170425_HeL50_35m_1Good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 35695,
+      "file": "FL170425_HeL50-SignalStabi-NewdualIT_60m_1good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 35839,
+      "file": "FL170425_HeL50-SignalStabi-NewdualIT_90m_1good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 49614,
+      "file": "FL170425_HeL50-SignalStabi-NewdualIT_120m_1good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27872,
+      "file": "FL170425_HeL50_35m_2Good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 34583,
+      "file": "FL170425_HeL50_60m_2G.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 36327,
+      "file": "FL170425_HeL50_90m_2good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25342,
+      "file": "FL170425_HeL50_35m_3G.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32433,
+      "file": "FL170425_HeL50_60m_3G.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 34762,
+      "file": "FL170425_HeL50_90m_3G.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21332,
+      "file": "FL220425_HeL50-fDia_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30059,
+      "file": "FL230425_HeL50-fDia_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24284,
+      "file": "FL250425_HeL50-newAnlyNoodl_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24232,
+      "file": "FL250425_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30962,
+      "file": "FL250425_HeL50_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24703,
+      "file": "FL250425_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 29197,
+      "file": "FL250425_HeL50_60m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 41316,
+      "file": "FL250425_HeL50_120m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25934,
+      "file": "FL290425_HeL50_60m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 5495,
+      "file": "FL290425_HeL50_60m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 10149,
+      "file": "FL1maiMuncitoresc_HeL50_60m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 8952,
+      "file": "FL1maiMuncitoresc_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 13515,
+      "file": "FL050525_HeL50-mechPnupOilChng_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 14271,
+      "file": "FL050525_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 15216,
+      "file": "FL050525_HeL50_35m_4.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 18703,
+      "file": "FL190525_HeL50_35m_1dirtAtEnd.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 18581,
+      "file": "FL190525_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 18010,
+      "file": "FL210525_HeL50-cleanAPI_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 16424,
+      "file": "FL210525_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 10735,
+      "file": "FL210525_HeL50-cleanAPI-DdaUnvID_60m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 20926,
+      "file": "FL220525_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21936,
+      "file": "FL220525_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21613,
+      "file": "FL280525_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 19218,
+      "file": "FL280525_HeL50_28mai1-35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 18087,
+      "file": "FL280525_HeL50_28mai2-35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 20461,
+      "file": "FL300525_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21733,
+      "file": "FL300525_HeL50_28mai1-35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21599,
+      "file": "FL30mai25_BoldogSzuletesNapAnyu-HeL50_28mai1-35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 19434,
+      "file": "FL300525_LaMultiAniAnyu-HeL50_30mai1-35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21734,
+      "file": "FL30525_HeL50-Dia_90m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21083,
+      "file": "FL130625_HeL50_old35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26916,
+      "file": "FL13625_HeL50-Dia_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25625,
+      "file": "FL140625_HeL50_60m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25801,
+      "file": "FL140625_HeL50_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 34604,
+      "file": "FL140625_HeL50_120m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32451,
+      "file": "FL140625_HeL50_120m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 16439,
+      "file": "FL170625_4jourHeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 16795,
+      "file": "FL170625_4jourHeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 22837,
+      "file": "FL170625_nouveauHeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21489,
+      "file": "FL170625_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 22787,
+      "file": "FL200625_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 22238,
+      "file": "FL200625_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 23718,
+      "file": "FL250625_HeL50-topOfMechPnupHuil_35m_1goo.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24965,
+      "file": "FL250625_HeL50_35m_2goo.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 23395,
+      "file": "FL250625_HeL50_35m_3goo.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30097,
+      "file": "FL090725_HeL50_60m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 23865,
+      "file": "FL100725_HeL50_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 35505,
+      "file": "FL100725_HeL50_120m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25023,
+      "file": "FL110725_HeL50-Dia_60m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24972,
+      "file": "FL210725_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 23179,
+      "file": "FL210725_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 29562,
+      "file": "FL210725_HeL50_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27431,
+      "file": "FL220725_HeL50_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 22845,
+      "file": "FL240725_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 36207,
+      "file": "FL240725_HeL50_120m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26023,
+      "file": "FL280725_HeL50-Dia_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26037,
+      "file": "FL300725_HeL50-Dia_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27888,
+      "file": "FL040825_HeL50-Dia_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 22899,
+      "file": "FL040825_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21222,
+      "file": "FL050825_HeL50newPreC_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25188,
+      "file": "FL080825_HeL50-Dia_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 16829,
+      "file": "FL110825_HeL50-Dia_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 20735,
+      "file": "FL140825_HeL50-Dia_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 14302,
+      "file": "FL150825_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 20190,
+      "file": "FL150825_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24616,
+      "file": "FL150825_HeL50-Dia_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24428,
+      "file": "FL180825_HeL50-Dia_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 19562,
+      "file": "FL190825_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 17443,
+      "file": "FL210825_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 15576,
+      "file": "FL020925_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 14004,
+      "file": "FL020925_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 14624,
+      "file": "FL020925_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24468,
+      "file": "FL040925_HeL50-cleanAPInewAnlypreCol_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25398,
+      "file": "FL040925_HeL50-cleanAPInewAnlypreCol_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 31990,
+      "file": "FL040925_HeL50-cleanAPInewAnlypreCol_60m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 31329,
+      "file": "FL040925_HeL50-cleanAPInewAnlypreCol_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 43856,
+      "file": "FL040925_HeL50-cleanAPInewAnlypreCol_120m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 31596,
+      "file": "FL040925_HeL50_60m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 31449,
+      "file": "FL040925_HeL50_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 43952,
+      "file": "FL040925_HeL50_120m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25163,
+      "file": "FL040925_HeL50-cleanAPInewAnlypreCol_35m_4.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24368,
+      "file": "FL050925_HeL50_35m_1-good.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 17709,
+      "file": "FL080925_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21020,
+      "file": "FL100925_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 20777,
+      "file": "FL100925_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25952,
+      "file": "FL100925_HeL50_60m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 15526,
+      "file": "FL100925_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 19151,
+      "file": "FL110925_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 11852,
+      "file": "FL120925_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 15175,
+      "file": "FL120925_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 14193,
+      "file": "FL130925_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 22282,
+      "file": "FL150925_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 18173,
+      "file": "FL160925_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 23676,
+      "file": "FL160925_HeL50_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 18220,
+      "file": "FL160925_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26246,
+      "file": "FL180925_HeL50_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 19499,
+      "file": "FL190925_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 19218,
+      "file": "FL190925_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 19177,
+      "file": "FL190925_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24351,
+      "file": "FL190925_HeL50_60m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24508,
+      "file": "FL190925_HeL50_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 35490,
+      "file": "FL190925_HeL50_120m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 23364,
+      "file": "FL190925_HeL50_60m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 23348,
+      "file": "FL190925_HeL50_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32756,
+      "file": "FL190925_HeL50_120m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25540,
+      "file": "FL270925_HeL50-DeepClean_35m_1-goo.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26433,
+      "file": "FL270925_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27394,
+      "file": "FL270925_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 33491,
+      "file": "FL270925_HeL50-DeepClean_60m_1-goo.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 34789,
+      "file": "FL270925_HeL50-DeepClean_90m_1-goo.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 48055,
+      "file": "FL270925_HeL50-DeepClean_120m_1-goo.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24075,
+      "file": "FL270925_HeL50_35m_4.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 31469,
+      "file": "FL270925_HeL50_60m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 31975,
+      "file": "FL270925_HeL50_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 44307,
+      "file": "FL270925_HeL50_120m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24315,
+      "file": "FL290925_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32615,
+      "file": "FL031025_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32745,
+      "file": "FL031025_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 40638,
+      "file": "FL031025_HeL50_60m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 42481,
+      "file": "FL031025_HeL50_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 59079,
+      "file": "FL031025_HeL50_120m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30105,
+      "file": "FL031025_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 31871,
+      "file": "FL031025_HeL50_35m_4.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 40525,
+      "file": "FL031025_HeL50_60m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 41264,
+      "file": "FL031025_HeL50_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 56754,
+      "file": "FL031025_HeL50_120m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32668,
+      "file": "FL051025_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 38206,
+      "file": "FL061025_HeL50_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27943,
+      "file": "FL071025_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26476,
+      "file": "FL071025_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 15452,
+      "file": "FL071025_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 40818,
+      "file": "FL101025_HeL50_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 41436,
+      "file": "FL061025_HeL50_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 39306,
+      "file": "FL131025_HeL50_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 35136,
+      "file": "FL151025_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 43270,
+      "file": "FL151025_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 42501,
+      "file": "FL151025_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 40824,
+      "file": "FL181025_HeL50_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26093,
+      "file": "FL231025_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26850,
+      "file": "FL231025_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 31295,
+      "file": "FL231025_HeL50_60m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30542,
+      "file": "FL241025_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30435,
+      "file": "FL241025_HeL50_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24770,
+      "file": "FL291025_4jourHeL50_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26416,
+      "file": "FL301025_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 20745,
+      "file": "FL301125_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 29801,
+      "file": "FL301125_HeL50_60m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32171,
+      "file": "FL301125_HeL50_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 47203,
+      "file": "FL301125_HeL50_120m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 19361,
+      "file": "FL301025_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 19740,
+      "file": "FL301125_HeL50_35m_4.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32121,
+      "file": "FL301125_HeL50_60m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32736,
+      "file": "FL301125_HeL50_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 38451,
+      "file": "FL301125_HeL50_120m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 28124,
+      "file": "FL011125_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27494,
+      "file": "FL011125_HeL50_90m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27234,
+      "file": "FL031125_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 26735,
+      "file": "FL031125_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30658,
+      "file": "FL071125_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32647,
+      "file": "FL071125_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 15025,
+      "file": "FL191125_HeL50-cleanAPInewNoodl_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 13133,
+      "file": "FL191125_HeL50-cleanAPInewNoodl_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 20540,
+      "file": "FL191125_HeL50-cleanAPInewNoodl_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 8520,
+      "file": "FL191125_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 21800,
+      "file": "FL191125_HeL50_35m_4.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 23688,
+      "file": "FL191125_HeL50_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 31584,
+      "file": "FL191125_HeL50-cleanAPInewNoodl_120m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 18578,
+      "file": "delFL241125_HeL50-cleanAPIbak2OldAnly_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 17136,
+      "file": "delFL241125_HeL50-cleanAPInewAnly_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 12216,
+      "file": "delFL241125_HeL50-cleanAPInewAnly_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 8818,
+      "file": "delFL241125_HeL50-cleanAPInewAnly_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 24553,
+      "file": "FL191125_HeL50-cleanAPInewNoodl_60m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 11218,
+      "file": "FL201125_HeL50-cleanAPInewAnlyPreCNoodl_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 14873,
+      "file": "FL201125_HeL50-cleanAPInewAnlyPreCNoodl_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 3620,
+      "file": "FL201125_HeL50-newAnlyPreCNoodl_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 20018,
+      "file": "FL201125_HeL50-newAnlyPreCNoodl_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25362,
+      "file": "FL201125_HeL50-newAnlyPreCNoodl_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 8567,
+      "file": "FL201125_HeL50_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27864,
+      "file": "FL241125_HeL50-cleanAPInewAnlypreCNodl_35m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 35388,
+      "file": "FL241125_HeL50-cleanAPInewAnlypreCNodl_60m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 25454,
+      "file": "FL241125_HeL50-cleanAPInewAnlypreCNodl_60m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 33090,
+      "file": "FL241125_HeL50-cleanAPInewAnlypreCNodl_90m_1.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 34749,
+      "file": "FL241125_HeL50-cleanAPInewAnlypreCNodl_90m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 29079,
+      "file": "FL241125_HeL50_35m_2.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 29195,
+      "file": "FL241125_HeL50_35m_3.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 28478,
+      "file": "FL241125_HeL50_35m_4.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 27096,
+      "file": "FL241125_HeL50_35m_5.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 30129,
+      "file": "FL251125_HeL50_35m.raw"
+    },
+    {
+      "inst": "Lumos",
+      "ng": 50,
+      "peptides": 32319,
+      "file": "FL261125_HeL50_35m.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 36024,
+      "file": "Ex230124_HeL50-DiaW45_90m_1good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 25686,
+      "file": "Ex230124_HeL50-DiaW34_60m_1good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 36861,
+      "file": "Ex040524_HeL50-fDia_90m_1.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 23729,
+      "file": "Ex070524_HeL50-Dia_90m_1.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 21538,
+      "file": "Ex080524_HeL50-Dia_90m_3.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24869,
+      "file": "Ex130524_HeL50-fDia_30m_2good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24786,
+      "file": "Ex130524_HeL50-fDia_30m_4good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 22417,
+      "file": "Ex020724_HeL50-fDia_30m_2.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 23314,
+      "file": "Ex010824_HeL50-fDia_30m_2medcr.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24374,
+      "file": "Ex130824_HeL50-fDia_30m_2.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24688,
+      "file": "Ex151124_HeL50-fDia_C30m_2Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 23300,
+      "file": "Ex151124_HeL50-fDia_60m_1good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 6637,
+      "file": "Ex241224_HeL50-Dia-GregCleanQuad-Dia30m_1Crap.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 20920,
+      "file": "Ex301224_HeL50-Dia_10cm60mOK.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 31939,
+      "file": "Ex301224_HeL50-Dia_10cm90mOK.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 30713,
+      "file": "Ex301224_HeL50-Dia_10cm120mOK.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 25445,
+      "file": "Ex170125_HeL50_30m_1Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 35377,
+      "file": "Ex240125_HeL50_90m_1-Med.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 33337,
+      "file": "Ex240125_HeL50_90m_2-Med.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 23408,
+      "file": "Ex110225_HeL50_30m_3OK.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 38393,
+      "file": "Ex110225_new10cmAnly-HeL50_90m_1OK.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 23091,
+      "file": "Ex110225_HeL50_30m_4OK.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24916,
+      "file": "Ex110225_HeL50_60m_2OK.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 29614,
+      "file": "Ex030425_HeL50_30m_1-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 28828,
+      "file": "Ex030425_HeL50_30m_2-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 28523,
+      "file": "Ex030425_HeL50_30m_3-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24749,
+      "file": "Ex030425_newAnlyHeL50_30m_1-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 25019,
+      "file": "Ex070425_HeL50_30m_2-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 25212,
+      "file": "Ex070425_HeL50_30m_3-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 27894,
+      "file": "Ex070425_newAnlyHeL50_60m_1-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 40529,
+      "file": "Ex070425_newAnlyHeL50_90m_1-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 27545,
+      "file": "Ex070425_newAnlyHeL50_60m_2-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 41006,
+      "file": "Ex070425_newAnlyHeL50_90m_2-Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 27500,
+      "file": "Ex230425_HeL50_30m_2.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 29628,
+      "file": "Ex210525_HeL50_30m_2-good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 21177,
+      "file": "Ex300525BoldogSzuletesNapAnyu-HeL50_30m_1med.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 20271,
+      "file": "Ex300525LamultiAniAnyu-HeL50_30m_2-med.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 18242,
+      "file": "Ex120625_HeL50_30m_2-loMed.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 19196,
+      "file": "Ex120625_HeL50_30m_3-loMed.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 26455,
+      "file": "Ex130625_HeL50_30mgood.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 26263,
+      "file": "Ex160625_HeL50_30m-good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 25531,
+      "file": "Ex160625_HeL50_60mGood.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 26703,
+      "file": "Ex170625_newHeL50_NEWsoftwhrz_30m-goo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 25760,
+      "file": "Ex170625_HeL50_60m_1.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24818,
+      "file": "Ex170625_HeL50_60m_2-goo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 32867,
+      "file": "Ex170625_HeL50_90m_2.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24120,
+      "file": "Ex240625_HeL50_masCalButFailSystCal_30m_1-goo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 27603,
+      "file": "Ex240625_HeL50_masCalButFailSystCal_30m_2good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 27476,
+      "file": "Ex240625_HeL50_masCalButFailSystCal_30m_3good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 25142,
+      "file": "Ex080725_HeL50_30m_1OK.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24565,
+      "file": "Ex080725_HeL50_30m_2OK.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 22287,
+      "file": "Ex150725_HeL50_30m_1.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 24381,
+      "file": "Ex150725_HeL50_30m_2.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 23029,
+      "file": "Ex150725_HeL50_30m_3.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 19376,
+      "file": "Ex170725_HeL50_30m_2.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 16748,
+      "file": "Ex040825_HeL50_30m_1-lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 19279,
+      "file": "Ex040825_HeL50_30m_2-loMed.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 19255,
+      "file": "Ex040825_HeL50_30m_3-loMed.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 17734,
+      "file": "Ex060825_HeL50_30m_2lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 17363,
+      "file": "Ex060825_HeL50_30m_3lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 23220,
+      "file": "Ex150825_HeL50cleanAPIquadz_30m_2Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 23503,
+      "file": "Ex150825_HeL50-cleanAPIquadz_30m_4Med.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 22032,
+      "file": "Ex150825_HeL50-cleanAPIquadz_60m_1Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 30646,
+      "file": "Ex150825_HeL50-cleanAPIquadz_90m_1Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 15570,
+      "file": "Ex290925_HeL50-cleanQu-NewMech_30m_1Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 16095,
+      "file": "Ex290925_HeL50_30m_2Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 16346,
+      "file": "Ex290925_HeL50_30m_3Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 17750,
+      "file": "Ex290925_HeL50-cleanQu-NewMech_60m_1Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 27733,
+      "file": "Ex290925_HeL50-cleanQu-NewMech_90m_1Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 18015,
+      "file": "Ex290925_HeL50_60m_2Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 27494,
+      "file": "Ex290925_HeL50_90m_2Lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 10400,
+      "file": "Ex011025_HeL50quadUnglued_30m_1NO.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 16651,
+      "file": "Ex261125_HeL50_30m_1stilCrap.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 16838,
+      "file": "Ex261125_HeL50_60m-stilCrap.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 25159,
+      "file": "Ex261125_HeL50_90m-stilCrap.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 18608,
+      "file": "Ex270126_HeL50_30m_3medi.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 7663,
+      "file": "Ex260226_HeL50-newAnlyPreCNoodl_30m_1lo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 20058,
+      "file": "Ex250226_HeL50-newAnlyPreCNoodl_90mLo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 12526,
+      "file": "Ex250226_HeL50-newAnlyPreCNoodl_60mlo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 19161,
+      "file": "Ex040326_HeL50-aftLCPM_30m_1good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 22016,
+      "file": "Ex040326_HeL50-aftLCPM_30m_2goo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 22790,
+      "file": "Ex040326_HeL50-aftLCPM_30m_3goo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 14331,
+      "file": "Ex050326_HeL50-aftLCPM_30m_2No.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 22813,
+      "file": "Ex050326_HeL50-aftLCPM_30m_3goo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 22620,
+      "file": "Ex240326_HeL50_30m_1Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 22264,
+      "file": "Ex240326_HeL50_30m_2Good.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 17448,
+      "file": "Ex240226_HeL50_60mGood.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 31089,
+      "file": "Ex250226_HeL50_90m_1goo.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 20842,
+      "file": "Ex250326_HeL50_30mGood.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 21806,
+      "file": "Ex250226_HeL50_60mGood.raw"
+    },
+    {
+      "inst": "Exploris 480",
+      "ng": 50,
+      "peptides": 22988,
+      "file": "Ex250226_HeL50_90m_2goo.raw"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33282,
+      "file": "180723_Hel50ng_DIA_100spd_S1-B3_1_77.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 23189,
+      "file": "12sep23_HeL50_100spd_S1-A4_1_945.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 15047,
+      "file": "21sep23_HeL50-6x3_100spd_S1-A3_1_1196Lo.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 18754,
+      "file": "28sep23_HeL5-6x3New21Sept_100spd_S1-A1_1_1284Med.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35348,
+      "file": "071023_HeL50-8x3-k06-14_30spd_S1-A12_1_1407.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 8348,
+      "file": "071123_HeLa50ng_DIA_100spd_S1-A1_1_1990Lo.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32009,
+      "file": "171123_HeL50ng_DIA_100spd_S1-A1_1_2078.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 30502,
+      "file": "061223_HeL50-6x3-k06-14Ramp75_100spd_S1-A2_1_2442.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 26855,
+      "file": "6feb24_HeL50ng-DIA-BPS_11x3-k07to13Ra85_60spd_S1-A4_1_3553.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 22388,
+      "file": "6feb24_HeL50ng-DIA-BPS_11x3-k07to13Ra85_100spd_S1-A5_1_3554.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 10358,
+      "file": "16Feb2024_HeLa50ng_DIA_60spd_S1-A4_1_3831-LOW.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38215,
+      "file": "25mar24_HeL50_newTimCartrCleanQuad_100spd_S1-A1_1_4310.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 26764,
+      "file": "22apr_HeL50-Dia-_100spd_S1-A5_1_5120.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 34353,
+      "file": "13mai_HeL50-Dia_100spd_S1-A1_1_5728.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28395,
+      "file": "17maiBoldogSzuletesNapotCristinaBesina_S1-A1_1_5857.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32935,
+      "file": "03jun2024_HeLa50ng_DIA_100spd_S1-B2_1_6205.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 30392,
+      "file": "12jun2024_HeLa50ng_DIA_100spd-new-ot_S1-B2_1_6270.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36420,
+      "file": "21iun_HeL50OT-DiaChkMasEr_60spd_S1-A12_1_6333.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 34508,
+      "file": "16iul24_BpistonSealChangeHeL50-Dia11x3_100spd_S1-A1_1_6550.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38839,
+      "file": "23iul24_HeL50-Dia_irt_100spd_S1-B1_1_6665.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39037,
+      "file": "23aug24_1dayHel50-Dia_30spd_S1-A3_1_7491.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 40842,
+      "file": "4sep24_6dayJust2testBps-Hela50-DiaBps_100spd_S1-A12_1_7624.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38743,
+      "file": "12oct24_HeL50-DiaBpsC43078b37_60spd_S1-A9_1_8218.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36204,
+      "file": "9dec24_HeL50-Dia-C43tk078b37_100spd_S4-A1_1_9717.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 41542,
+      "file": "8jan25_HeL50-aftrPM-Dia_100spd_S4-A3_1_10433.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 45516,
+      "file": "10ian25_HeL50-Dia_30spd_S4-F2_1_10488.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 44349,
+      "file": "10jan_HeL50-Dia-StopIfIDLo-C59tk6f83144_60sp_S4-F3_1_10491.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37985,
+      "file": "17jan_HeL50-Dia-StopIfIDLo-C59tk6f83144_30sp_S4-F2_1_10662MEDiocr.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 40272,
+      "file": "EICtraces___23ian25_HeL50-Dia_100spd_S4-F2_1_10779.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 40272,
+      "file": "EICtraces___23ian25_HeL50-Dia_100spd_S4-F2_1_10779.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33527,
+      "file": "7feb25_HeL50-Dia-C43tk078b3_60spd_S4-F1_1_11292.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 43707,
+      "file": "20feb25_HeL50-Dia_60spd_S1-A10_1_11440.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 41742,
+      "file": "28feb25_1jourHeL50-Dia_60spd_S4-F7_1_11602.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32012,
+      "file": "12mar_1jourHeL50-Dia_100spd_S4-F1_1_11800.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32012,
+      "file": "EIC__12mar_1jourHeL50-Dia_100spd_11800.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38941,
+      "file": "12mar_1jourHeL50-Dia_30spd_S4-F3_1_11802.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36016,
+      "file": "March21_2025_100spd_Hela_S3-F1_1_12116.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 42968,
+      "file": "27March2025_Hela50-Dia_60spd_S1-A2_1_12216.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 40065,
+      "file": "mamaligaCuMacris_1dayHeL50_30spd_S4-F2_1_12393.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35475,
+      "file": "aprilisBolunzis_1dayHeL50_26mar-60spd_S4-F3_1_12395.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37862,
+      "file": "mamaligaCuMacris_1dayHeL50_26mar-30spd_S4-F4_1_12396.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35295,
+      "file": "18apr_HeL50_100spd_S4-F1_1_12695.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35801,
+      "file": "21apr_HeL50_60spd_S4-F1_1_12699.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38838,
+      "file": "21apr_HeL50_30spd_S4-F3_1_12736.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39014,
+      "file": "1mai25_HeL50-C43tk078b3_100spd_S4-F6_1_12816.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 44664,
+      "file": "22mai25_HeL50_30spd_S4-F3_1_13436.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36417,
+      "file": "17iun25_HeL50_100spd_S4-F2_1_14154.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32487,
+      "file": "7iul25_HeL50-oldAnlynewZDF_100spd_S4-F5_1_14650.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28007,
+      "file": "14iul25_HeL50-cleanGlasCa_60spd_S4-F2_1_14815.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39738,
+      "file": "23iul25_HeL50t_100spd_S4-F2_1_15166.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 44164,
+      "file": "06Aug2025_HeLa50ng_DIA_60spd_S1-A3_1_15665.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39509,
+      "file": "15aug25_HeL50_30spd_S4-F2_1_15945.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36733,
+      "file": "26sep25_HeL50_100spd_S4-F2_1_17904.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39217,
+      "file": "16oct25_HeL50-newHPpnupACfixd_100spd_S4-F1_1_17977.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33582,
+      "file": "1noi25_HeL50-oldDegas_30spd_S4-F1_1_18398.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33137,
+      "file": "1noi25_HeL50-oldDegas_60spd_S4-F2_1_18399.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28546,
+      "file": "1noi25_HeL50-oldDegas_100spd_S4-F3_1_18400.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 31862,
+      "file": "Dec08_2025_HeLa50ng_DIA_100spd_S1-A1_1_18870.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38877,
+      "file": "Dec08_2025_HeLa50ng_DIA_60spd_S1-A2_1_18878.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32785,
+      "file": "13mar26_HeL50Afini-tf9d0_100spd_S4-E1_1_20289.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 30152,
+      "file": "13mar26_HeL50Afini-12marNewANly-tf9d0_100spd_S4-E2_1_20321.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33500,
+      "file": "13mar26_HeL50Evo-tf9d0_100spd_S4-E3_1_20322.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35788,
+      "file": "19mar26_HeL50AfiniManu-tf9d0_100spd_S4-E1_1_20506.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33563,
+      "file": "24mar26_HeL50_100spd_S4-E1_1_20635.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27035,
+      "file": "18feb26_HeL50onOT2-t078b_100spd_S5-A2_1_19948.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 24996,
+      "file": "19feb26_HeL50OT2-newCeramicNodl-t078b_100spd_S5-D2_1_19955.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 29246,
+      "file": "19feb26_1dayHeL50onOT2-t078b_100spd_S5-B2_1_20018.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 24448,
+      "file": "20feb26_2dayHeL50onOT2-t078b_100spd_S5-C2_1_20076.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 30299,
+      "file": "24feb26_HeL50-t078b_100spd_S4-E2_1_20082.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36457,
+      "file": "24feb26_HeL50-tf9d0_60spd_S4-E3_1_20089.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 2138,
+      "file": "11mar26_HeL50Afini-tf9d0_100spd_S4-E1_1_20233.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 21721,
+      "file": "12mar26_HeL50manuMRS-tf9d0_100spd_S4-E1_1_20246.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 2951,
+      "file": "12mar26_HeL50Afini-tf9d0_60spd_S4-E2_1_20251.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 2330,
+      "file": "12mar26_dayOldHeL50Afini-tf9d0_100spd_S4-E1_1_20275.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28160,
+      "file": "12mar26_HeL50Afini-tf9d0_100spd_S4-E3_1_20277.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 14144,
+      "file": "12mar26_HeL50Afini-tf9d0_100spd_S4-E4_1_20279.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28481,
+      "file": "12mar26_HeL50Afini-tf9d0_100spd_S4-E5_1_20281.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27548,
+      "file": "13mar26_HeL50Evo-tf9d0_100spd_S4-E4_1_20323.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 40459,
+      "file": "16March_HeLa50ng_DIA_60spd_Evo_S2-A1_1_20342.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 40522,
+      "file": "16March_HeLa50ng_DIA_60spd_Evo_S2-B1_1_20343.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 30267,
+      "file": "17Mar2026_HeLa50ng_DIA_100spd_affinisep_old_S2-E1_1_20347.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35936,
+      "file": "17Mar2026_HeLa50ng_DIA_100spd_affinisep_old_S2-F1_1_20348.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36134,
+      "file": "17Mar2026_HeLa50ng_DIA_100spd_affinisep_old_S2-G1_1_20349.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 25962,
+      "file": "17mar26_HeL50Afini-tf9d0_100spd_S4-E1_1_20354.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 26631,
+      "file": "17mar26_HeL50Afini-tf9d0_100spd_S4-E2_1_20377.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33673,
+      "file": "17Mar2026_HeLa50ng_DIA_100spd_affinisep_new_S2-B2_1_20380.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33340,
+      "file": "17Mar2026_HeLa50ng_DIA_100spd_affinisep_new_S2-C2_1_20381.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 15475,
+      "file": "17Mar2026_HeLa50ng_DIA_100spd_affinisep_new_dry_S2-E2_1_20384.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 15404,
+      "file": "17Mar2026_HeLa50ng_DIA_100spd_affinisep_new_dry_S2-F2_1_20385.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 17279,
+      "file": "17Mar2026_HeLa50ng_DIA_100spd_affinisep_new_dry_S2-G2_1_20386.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 19804,
+      "file": "19Mar2026_HeLa50ng_DIA_100spd_S2-H1_1_20534.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 1254,
+      "file": "8apr26_HeL50Evo-testClog-DiaWinsTooHi_100spd_S4-E4_1_20825.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 19981,
+      "file": "8apr26_HeL50Evo-testClog_60spd_S4-E6_1_20827.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 16077,
+      "file": "8apr26_newHeL50or100Evo-testClog_100spd_S4-E4_1_20830.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35035,
+      "file": "8apr26_HeLaprox50Evo-testClog_60spd_S4-E8_1_20833.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35352,
+      "file": "9apr26_HeL50-8x4k07to13Ra85_100spd_S4-E2_1_20869.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35598,
+      "file": "9apr26_HeL50-10x4k07to13Ra85_100spd_S4-E4_1_20873.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35155,
+      "file": "9apr26_HeL50-8x4k07to13Ra85_100spd_S4-E5_1_20874.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35799,
+      "file": "9apr26_HeL50-11x3k07to13Ra85_100spd_S4-E6_1_20875.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 6068,
+      "file": "8aprDEL-chekAfiTipClog-mousamon50-tip1_S1-A7_1_20845.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 6475,
+      "file": "8aprDEL-chekAfiTipClog-mousamon50-tip2_S1-A8_1_20846.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 5444,
+      "file": "8aprDEL-chekAfiTipClog-mousamon50-tip3_S1-A9_1_20847.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 6129,
+      "file": "8aprDEL-chekAfiTipClog-mousamon50-tip4_S1-A10_1_20848.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 5715,
+      "file": "8aprDEL-chekAfiTipClog-mousamon50-tip5_S1-A11_1_20849.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 6469,
+      "file": "8aprDEL-chekAfiTipClog-mousamon50-tip6_S1-A12_1_20850.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 3527,
+      "file": "8aprDEL-chekAfiTipClog-spentHeLtip5_S1-A5_1_20842.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 3326,
+      "file": "8aprDEL-chekAfiTipClog-spentHeLtip6_S1-A6_1_20843.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28805,
+      "file": "18ian24_HeL50ng3hrTip--DIA-BPS_11x3-k07to13Ra85_100spd_S1-B4_1_3118.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38270,
+      "file": "10iun25_HeL50_100spd--toGgBps--C43-tf9d0c24_S4-F2_1_13843.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37897,
+      "file": "10sep25_HeL50--tf9d0c24_60spd_S4-F1_1_17104.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 30659,
+      "file": "10sep25_HeL50--tf9d0c24_100spd_S4-F2_1_17116.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 40338,
+      "file": "27sep25_1dayHeL50--tf9d0c24_60spd_S4-F1_1_17920.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 8973,
+      "file": "1oct25_dryTip5dayHeL50--tf9d0c24_60spd_S4-F1_1_17925.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 41160,
+      "file": "5dec25_HeL50--tf9d0c24_60spd_S4-F2_1_18840.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39557,
+      "file": "5dec25_HeL50--tf9d0c24_100spd_S4-F2_1_18865.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38590,
+      "file": "5dec25_HeL50--tf9d0c24_100spd_S4-F3_1_18866.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35864,
+      "file": "20ian26_3jourHeL50--tf9d0c24_100spd_S1-E1_1_19461.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36557,
+      "file": "29ian26_HeL50-testBPS--t078b3_100spd_S4-E1_1_19663.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37773,
+      "file": "29ian26_HeL50-testBPS--t078b3_100spd_S4-E2_1_19664.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 20148,
+      "file": "2feb26_HeL50--tf9d0c24_100spd_S4-E1_1_19729.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27079,
+      "file": "2feb26_HeL50manu--tf9d0c24_100spd_S4-E3_1_19737.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 12297,
+      "file": "3feb26_HeL50flex--tf9d0c24_100spd_S4-E2_1_19750.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 14801,
+      "file": "3feb26_HeL50manu--tf9d0c24_100spd_S4-E4_1_19765.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33844,
+      "file": "17feb26_HeL50manu--tf9d0c24_100spd_S4-E1_1_19933.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33844,
+      "file": "17feb26_HeL50manu--tf9d0c24_100spd_S4-E1_1_19933.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 41204,
+      "file": "17feb26_HeL50--tf9d0c24_30spd_S4-E2_1_19942.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 41204,
+      "file": "17feb26_HeL50--tf9d0c24_30spd_S4-E2_1_19942.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37268,
+      "file": "17feb26_HeL50--tf9d0c24_60spd_S4-E3_1_19943.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37268,
+      "file": "17feb26_HeL50--tf9d0c24_60spd_S4-E3_1_19943.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27745,
+      "file": "18feb26_HeL50onOT2Murdar--tf9d0c_100spd_S5-E2_1_19949.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 29364,
+      "file": "19feb26_HeL50manu--tf9d0c_100spd_S4-B1_1_19973.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27739,
+      "file": "19feb26_1dayHeL50onOT2Murdar--tf9d0c_100spd_S5-F2_1_20019.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 31190,
+      "file": "24feb26_HeL50--tf9d0c_100spd_S4-E1_1_20080.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 21770,
+      "file": "16apr26_HeL50-10x4-tf9d0_100spd_S4-E1_1_21012.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27028,
+      "file": "16apr26_HeL50-10x4-tf9d0_60spd_S4-E2_1_21013.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39112,
+      "file": "02032026_HE50_60-spd-dia_S1-A1_1_19746.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38959,
+      "file": "02032026_HE50_100-spd-dia_S1-A2_1_19747.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39617,
+      "file": "02042026_HE50_60-spd-dia_S1-A1_1_19769.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35100,
+      "file": "02042026_HE50_100-spd-dia_S1-A2_1_19770.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36831,
+      "file": "02092026_HE50_60-spd-dia_S1-A3_1_19865.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36625,
+      "file": "02102026_HE50_60-spd-dia_S1-A1_1_19878.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32838,
+      "file": "02112026_HE50_60-spd-dia_S1-A1_1_19915.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39041,
+      "file": "02132026_HE50_60-spd-dia_S1-A1_1_19920.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39591,
+      "file": "02132026_HE50_60-spd-dia_S1-A2_1_19927.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33621,
+      "file": "02252026_HE50_60-spd-dia_S1-A1_1_20095.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 25915,
+      "file": "02252026_HE50_60-spd-dia_S1-A4_1_20099.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35980,
+      "file": "02252026_HE50_60-spd-dia_S1-A1_1_20101.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28161,
+      "file": "02262026_HE50_60-spd-dia_S1-A1_1_20116.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 34871,
+      "file": "02272026_HE50_60-spd-dia_S1-A1_1_20124.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 21988,
+      "file": "02272026_HE50_60-spd-dia_S1-A2_1_20125.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35572,
+      "file": "02272026_HE50_60-spd-dia_S1-A3_1_20126.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35209,
+      "file": "02272026_HE50_60-spd-dia_S1-A4_1_20133.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 10495,
+      "file": "030472026_HE50_60-spd-dia_S1-A1_1_20166.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 13100,
+      "file": "030472026_HE50_60-spd-dia_S1-A2_1_20167.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38003,
+      "file": "030572026_HE50_60-spd-dia_S1-A1_1_20171.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39794,
+      "file": "030572026_HE50_60-spd-dia_S1-A2_1_20172.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39341,
+      "file": "03062026_HE50_60-spd-dia_S1-A1_1_20185.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39350,
+      "file": "03062026_HE50_60-spd-dia_S1-A2_1_20186.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35231,
+      "file": "03062026_HE50_60-spd-dia-AF-broken_S1-A1_1_20188.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33628,
+      "file": "03062026_HE50_100-spd-dia-AF_S1-A2_1_20189.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35787,
+      "file": "03062026_HE50_100-spd-dia-evo_S1-A4_1_20190.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36011,
+      "file": "03062026_HE50_100-spd-dia-evo_S1-A5_1_20191.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 33528,
+      "file": "03112026_HE50_60-spd-dia-AF_S1-A1_1_20212.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38697,
+      "file": "03112026_HE50_60-spd-dia-AF_S1-A3_1_20214.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39498,
+      "file": "03162026_HE50_60-spd-dia-AF-new_S1-A3_1_20328.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 39350,
+      "file": "03162026_HE50_60-spd-dia-AF-old_S1-A1_1_20329.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37289,
+      "file": "03182026_HE50_60-spd-dia-AF-_S1-A1_1_20424.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35746,
+      "file": "03182026_HE50_60-spd-dia-AF-_S1-A2_1_20425.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 34341,
+      "file": "03192026_HE50_60-spd-dia-AF-_S1-A1_1_20497.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 34946,
+      "file": "03192026_HE50_60-spd-dia-AF-_S1-A2_1_20498.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 22884,
+      "file": "03202026_HE50_60-spd-dia-EV_S1-A1_1_20538.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 34900,
+      "file": "03202026_HE50_60-spd-dia-EV_S1-A2_1_20540.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36268,
+      "file": "03202026_HE50_60-spd-dia-EV_S1-A3_1_20551.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37557,
+      "file": "03232026_HE50_60-spd-dia-EV_S1-A1_1_20555.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37816,
+      "file": "03232026_HE50_60-spd-dia-EV_S1-A2_1_20556.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 37137,
+      "file": "03242026_HE50_60-spd-dia-EV_S1-A1_1_20628.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 36290,
+      "file": "03252026_HE50_60-spd-dia-Af_S1-A1_1_20656.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38387,
+      "file": "03262026_HE50_60-spd-dia-Af_S1-A1_1_20680.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32920,
+      "file": "0402026_HE50_60-spd-dia-Af_S1-A1_1_20737.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32058,
+      "file": "0402026_HE50_60-spd-dia-Af_S1-A4_1_20743.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27700,
+      "file": "0407026_HE50_60-spd-dia-Af_S1-A2_1_20803.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32512,
+      "file": "0407026_HE50_60-spd-dia-Af_S1-A3_1_20807.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28593,
+      "file": "0410026_HE50_60-spd-dia-Af_S1-A3_1_20880.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28825,
+      "file": "0401026_HE50_60-spd-dia-ev_S1-A1_1_20881.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 8356,
+      "file": "0401026_HE50_60-spd-dia-ev_S1-A2_1_20902.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 29712,
+      "file": "0401026_HE50_60-spd-dia-ev_S1-A4_1_20904.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28408,
+      "file": "041726_HE50_60-spd-dia-ev_S1-A2_1_21026.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 23873,
+      "file": "042226_HE50_60-spd-dia-ev_S1-A2_1_21090.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 23543,
+      "file": "042226_HE50_60-spd-dia-ev_S1-A1_1_21089.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 20245,
+      "file": "21apr26_HeL50-10x4-tf9d0_100spd_S4-E2_1_21080.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32563,
+      "file": "21apr26_HeL50-10x4-tf9d0_30spd_S4-E3_1_21079.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 23833,
+      "file": "21apr26_HeL50-10x4-tf9d0_100spd_S4-E1_1_21063.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 25417,
+      "file": "041726_HE50_60-spd-dia-ev_S1-A1_1_21023.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 20931,
+      "file": "041426_HE50_60-spd-dia-ev_S1-A2_1_20945.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 20766,
+      "file": "041426_HE50_60-spd-dia-ev_S1-A1_1_20944.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 30889,
+      "file": "9apr26_HeL50Afi-10x4k07to13Ra85-tf9d0_100spd_S4-E12_1_20871.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35547,
+      "file": "9apr26_HeL50-11x3k07to13Ra85_100spd_S4-E3_1_20870.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35652,
+      "file": "9apr26_HeL50-10x4k07to13Ra85_100spd_S4-E1_1_20868.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 30563,
+      "file": "8apr26_HeLaprox50Evo-testClog_100spd_S4-E7_1_20832.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 34260,
+      "file": "8apr26_HeLaprox50Evo-testClog_60spd_S4-E6_1_20831.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 20314,
+      "file": "8apr26_HeL50Evo-testClog_60spd_S4-E8_1_20829.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 12266,
+      "file": "8apr26_HeL50Evo-testClog_100spd_S4-E7_1_20828.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 8294,
+      "file": "8apr26_HeL50Evo-testClog_100spd_S4-E5_1_20826.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 28383,
+      "file": "0407026_HE50_60-spd-dia-Af_S1-A1_1_20802.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 15190,
+      "file": "6apr26_3jourHeL50Afi_TestClog_100spd_S4-E2_1_20798.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 13862,
+      "file": "6apr26_3jourHeL50Afi_TestClog_100spd_S4-E1_1_20792.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 25641,
+      "file": "0403026_HE50_60-spd-dia-Af_S1-A1_1_20768.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35212,
+      "file": "31mar26_1jourHeL50AfiOT_100spd_S4-E4_1_20733.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35065,
+      "file": "30mar26_HeL50AfiManu-tf9d0_100spd_S4-E1_1_20717.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 18633,
+      "file": "26mar26_HeL50AfiOT-tf9d0_100spd_S4-E2_1_20713.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 20854,
+      "file": "26mar26_HeL50AfiOT-tf9d0_100spd_S4-E1_1_20687.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 32865,
+      "file": "24mar26_HeL50_100spd_S4-E1_1_20635.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 42090,
+      "file": "042326_HE50_60-spd-dia-ev_S1-A2_1_21149.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27178,
+      "file": "042326_HE50_60-spd-dia-ev_S1-A1_1_21148.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 26620,
+      "file": "22April2026_DIA_HeLa50_60spd_S1-A4_1_21144.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 26778,
+      "file": "22April2026_DIA_HeLa50_60spd_S1-A3_1_21103.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 40794,
+      "file": "042326_HE50_60-spd-dia-ev11x3_S1-A3_1_21151.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 29712,
+      "file": "110426_HE50_60-spd-dia-ev_S1-A4_1_20904.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 14947,
+      "file": "24apr26_HeL50-DIAwinFallen-10x4k07to13Ra85_100spd_S4-E1_1_21155.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38237,
+      "file": "24apr_HeL50-DIAwinFallen-11x3k07to13Ra85_100spd_S4-E2_1_21156.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 14114,
+      "file": "24apr_HeL50-DIAwinFallen-10x4k07to13Ra85_100spd_S4-E3_1_21158.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 38256,
+      "file": "24apr_HeL50-DIAwinFallen-11x3k07to13Ra85_100spd_S4-E4_1_21159.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 29712,
+      "file": "110426_WinFall-HE50_60-spd-dia-ev_S1-A4_1_20904.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 41551,
+      "file": "24April2026_DIA_HeLa50_60spd_S6-F1_1_21173.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 40730,
+      "file": "22April2026_DIA_HeLa50_60spd_S6-F2_1_21214.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 14103,
+      "file": "24apr_HeL50-DiaWin2Lo-10x4i-tf9d0_100spd_S6-E11_1_21217.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 30316,
+      "file": "24apr_HeL50-DiaWinOK-11x3-tf9d0_100spd_S6-E12_1_21218.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 42121,
+      "file": "042726_HE50_60-spd-dia-ev11x3_S1-A1_1_21222.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 42069,
+      "file": "042726_HE50_60-spd-dia-ev11x3_S1-A2_1_21223.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 41458,
+      "file": "042726_HE50_60-spd-dia-ev11x3_S1-A3_1_21241.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 41359,
+      "file": "042826_HE50_60-spd-dia-ev11x3_S1-A1_1_21270.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 41686,
+      "file": "042926_HE50_60-spd-dia-ev11x3_S1-A1_1_21307.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 42515,
+      "file": "043026_HE50_60-spd-dia-ev11x3_S1-A1_1_21330.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 25136,
+      "file": "30apr26_HeL50Flextr-tf9d0_100spd_S4-A1_1_21339.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 35755,
+      "file": "30apr26_HeL50Flextr-tf9d0_60spd_S4-B1_1_21340.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27557,
+      "file": "1MaiMuncitoresc_HeL50Flextr-tf9d0_100spd_S4-C1_1_21400.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 23935,
+      "file": "1MaiMuncitoresc_HeL50Flextr_100spd_S4-D1_1_21403.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27833,
+      "file": "1MaiMuncitoresc_HeL50Flextr-tf9d0_60spd_S4-E1_1_21404.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 25010,
+      "file": "1MaiMuncitoresc_HeL50Flextr-tf9d0_100spd_S4-H1_1_21409.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 27557,
+      "file": "1MaiMuncitoresc_HeL50Flextr-tf9d0_100spd_mediocr_21400.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 34708,
+      "file": "050526_HE50_60-spd-dia-ev11x3_S1-A1_1_21434.d"
+    },
+    {
+      "inst": "timsTOF HT",
+      "ng": 50,
+      "peptides": 34035,
+      "file": "050526_HE50_60-spd-dia-ev11x3_S1-A2_1_21435.d"
+    }
+  ]
+}

@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>KarateMass</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; background: #050811; color: #e5e7eb;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow: hidden; height: 100%;
+  }
+  #wrap {
+    display: flex; flex-direction: column; align-items: center;
+    padding-top: 14px;
+  }
+  h1 {
+    margin: 0; font-size: 24px; color: #fbbf24;
+    text-shadow: 0 0 10px rgba(251,191,36,0.4);
+    font-family: "Courier New", monospace; letter-spacing: 4px;
+  }
+  .sub { color: #94a3b8; font-size: 11px; font-style: italic; margin: 2px 0 10px 0; }
+  .hud { width: 1100px; box-sizing: border-box; padding: 0 10px; }
+  .hp-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+  .hp-card {
+    background: rgba(15,23,42,0.7); border: 1px solid #1e293b;
+    padding: 6px 10px; border-radius: 6px; flex: 1; font-size: 12px;
+  }
+  .hp-card.right { text-align: right; }
+  .hp-card .name { color: #f472b6; font-weight: bold; }
+  .hp-card .belt { color: #fbbf24; font-size: 10px; margin-left: 8px; }
+  .hp-bar {
+    height: 14px; background: #1e293b; border: 1px solid #334155;
+    border-radius: 3px; overflow: hidden; margin-top: 4px;
+  }
+  .hp-fill { height: 100%; background: linear-gradient(90deg, #f87171, #facc15, #22c55e); transition: width 0.08s; }
+  .hp-fill.right { background: linear-gradient(270deg, #f87171, #facc15, #22c55e); }
+  .stamina-bar { height: 4px; background: #0f172a; margin-top: 2px; border-radius: 2px; }
+  .stamina-fill { height: 100%; background: #38bdf8; transition: width 0.08s; }
+  canvas {
+    display: block; background: #0a0f1a; border: 1px solid #1e293b;
+    image-rendering: pixelated;
+  }
+  .controls {
+    width: 1100px; box-sizing: border-box; padding: 8px 10px;
+    color: #64748b; font-size: 11px; display: flex; justify-content: space-between;
+  }
+  .controls code {
+    background: #0f172a; padding: 1px 5px; border-radius: 3px;
+    color: #e5e7eb; border: 1px solid #1e293b;
+  }
+  #msg {
+    position: absolute; left: 0; right: 0; top: 240px; text-align: center;
+    color: #fbbf24; font-family: "Courier New", monospace; font-size: 36px;
+    text-shadow: 0 0 20px rgba(251,191,36,0.8); pointer-events: none;
+    letter-spacing: 8px;
+  }
+  #back {
+    position: absolute; top: 14px; left: 14px;
+    background: #0f172a; border: 1px solid #334155; color: #94a3b8;
+    padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  }
+  #back:hover { color: #e5e7eb; border-color: #475569; }
+</style>
+</head>
+<body>
+<a id="back" href="/arcade">← arcade</a>
+<div id="wrap">
+  <h1>K A R A T E M A S S</h1>
+  <div class="sub">a <i>Karateka</i> parody (Apple II, 1984) &middot; earn your belt one instrument at a time</div>
+
+  <div class="hud">
+    <div class="hp-row">
+      <div class="hp-card">
+        <span class="name" id="p1-name">DIA-NN</span>
+        <span class="belt" id="p1-belt">WHITE BELT</span>
+        <div class="hp-bar"><div class="hp-fill" id="p1-hp" style="width:100%"></div></div>
+        <div class="stamina-bar"><div class="stamina-fill" id="p1-st" style="width:100%"></div></div>
+      </div>
+      <div class="hp-card right">
+        <span class="belt" id="p2-belt">WHITE BELT</span>
+        <span class="name" id="p2-name">LCQ Deca XP</span>
+        <div class="hp-bar"><div class="hp-fill right" id="p2-hp" style="width:100%"></div></div>
+        <div class="stamina-bar"><div class="stamina-fill" id="p2-st" style="width:100%"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <canvas id="game" width="1100" height="420"></canvas>
+  <div id="msg"></div>
+
+  <div class="controls">
+    <div>
+      <code>← →</code> move &nbsp;
+      <code>Z</code> HCD strike &nbsp;
+      <code>X</code> CID jab &nbsp;
+      <code>C</code> ETD throw &nbsp;
+      <code>V</code> PRM parry
+    </div>
+    <div><code>R</code> restart · <code>2</code> two-player</div>
+  </div>
+</div>
+
+<script>
+// ────────────────────────────────────────────────────────────────────────────
+// KarateMass — proteomics belt-tournament fighter, single-file canvas game.
+// Inspired by Karateka (Apple II, 1984).
+// ────────────────────────────────────────────────────────────────────────────
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// Belt progression: each opponent is an instrument generation, and only uses
+// the MS2 fragmentation modes the real instrument can do.
+//   3D ion trap (LCQ/LTQ): CID only
+//   LTQ-FT hybrid:         CID + ETD (ETD module added ~2008)
+//   Q-Exactive / Plus:     HCD only (quadrupole + Orbitrap, no IT for ETD)
+//   Lumos (tribrid):       HCD + CID + ETD — the full toolbox boss
+//   Exploris 480:          HCD only
+//   timsTOF HT:            CID (TIMS-CID + PASEF speed bonus)
+//   Astral:                HCD only, very fast (atkRate ↑↑)
+// 'special' is just a flavor label shown when this opponent attacks.
+const OPPONENTS = [
+  { name: 'LCQ Deca XP',           belt: 'WHITE',  color: '#f1f5f9', hp: 60,  speed: 1.6, atkRate: 0.013, atkDmg: 6,  year: 2003, moves: ['cid'],                special: 'CID' },
+  { name: 'LTQ Classic',           belt: 'YELLOW', color: '#fde047', hp: 80,  speed: 2.0, atkRate: 0.018, atkDmg: 8,  year: 2005, moves: ['cid'],                special: 'CID' },
+  { name: 'LTQ Velos',             belt: 'GOLD',   color: '#facc15', hp: 95,  speed: 2.2, atkRate: 0.020, atkDmg: 9,  year: 2009, moves: ['cid'],                special: 'dual-pressure CID' },
+  { name: 'LTQ-FT Hybrid',         belt: 'ORANGE', color: '#fb923c', hp: 110, speed: 2.4, atkRate: 0.022, atkDmg: 10, year: 2007, moves: ['cid','throw'],        special: 'CID+ETD' },
+  { name: 'Q-Exactive',            belt: 'GREEN',  color: '#4ade80', hp: 140, speed: 2.8, atkRate: 0.025, atkDmg: 12, year: 2011, moves: ['hcd'],                special: 'HCD' },
+  { name: 'Q-Exactive Plus',       belt: 'BLUE',   color: '#60a5fa', hp: 175, speed: 3.0, atkRate: 0.028, atkDmg: 14, year: 2013, moves: ['hcd'],                special: 'HCD' },
+  { name: 'Orbitrap Fusion Lumos', belt: 'PURPLE', color: '#c084fc', hp: 210, speed: 3.3, atkRate: 0.032, atkDmg: 16, year: 2015, moves: ['hcd','cid','throw'],  special: 'HCD/CID/ETD' },
+  { name: 'Orbitrap Exploris 480', belt: 'BROWN',  color: '#a78bfa', hp: 240, speed: 3.5, atkRate: 0.035, atkDmg: 18, year: 2019, moves: ['hcd'],                special: 'HCD' },
+  { name: 'timsTOF HT',            belt: 'BLACK',  color: '#fda4af', hp: 280, speed: 4.6, atkRate: 0.055, atkDmg: 18, year: 2022, moves: ['cid'],                special: 'TIMS-CID + PASEF' },
+  { name: 'Orbitrap Astral',       belt: 'RED',    color: '#f87171', hp: 350, speed: 4.6, atkRate: 0.075, atkDmg: 22, year: 2023, moves: ['hcd'],                special: 'HCD @ 200 Hz' },
+];
+
+// ── State ───────────────────────────────────────────────────────────────────
+let state;
+
+function newState(level=0, twoPlayer=false) {
+  return {
+    level,
+    twoPlayer,
+    p1: makeFighter('DIA-NN', 240, 320, '#22c55e', false),
+    p2: makeFighter(OPPONENTS[level].name, W - 240, 320, OPPONENTS[level].color, true),
+    opp: OPPONENTS[level],
+    keys: {},
+    msg: 'ROUND ' + (level+1) + ' · ' + OPPONENTS[level].belt + ' BELT',
+    msgTimer: 110,
+    ended: false,
+    won: null,
+    floatTexts: [],
+    submitted: false,
+    score: 0,
+    startTime: performance.now(),
+    flashColor: null, flashTimer: 0,
+  };
+}
+
+function makeFighter(name, x, y, color, facingLeft) {
+  return {
+    name, x, y, color, facingLeft,
+    hp: 100, maxHp: 100,
+    stamina: 100, maxStamina: 100,
+    state: 'idle',         // idle | jab | strike | throw | parry | hurt | down
+    stateTimer: 0,
+    invuln: 0,
+    cooldown: 0,
+    parryActive: 0,
+    vx: 0,
+    facing: facingLeft ? -1 : 1,
+    // Animation phase
+    bob: 0,
+  };
+}
+
+function reset(level=0, twoPlayer=state ? state.twoPlayer : false) {
+  state = newState(level, twoPlayer);
+  if (twoPlayer) {
+    document.getElementById('p2-name').textContent = 'Spectronaut';
+  } else {
+    document.getElementById('p2-name').textContent = OPPONENTS[level].name;
+  }
+  state.p2.hp = OPPONENTS[level].hp;
+  state.p2.maxHp = OPPONENTS[level].hp;
+  if (twoPlayer) {
+    state.p2.maxHp = 100; state.p2.hp = 100;
+  }
+}
+
+reset(0);
+
+// ── Input ───────────────────────────────────────────────────────────────────
+window.addEventListener('keydown', e => {
+  state.keys[e.key.toLowerCase()] = true;
+  if (e.key.toLowerCase() === 'r') reset(0);
+  if (e.key === '2') {
+    state.twoPlayer = !state.twoPlayer;
+    reset(state.level, state.twoPlayer);
+  }
+  if (['arrowleft','arrowright',' '].includes(e.key.toLowerCase())) e.preventDefault();
+});
+window.addEventListener('keyup', e => { state.keys[e.key.toLowerCase()] = false; });
+
+// ── Combat moves ────────────────────────────────────────────────────────────
+const MOVES = {
+  jab:    { dmg: 6,  reach: 90,  windup: 6,  active: 4,  recover: 10, cost: 8,  staggerHurt: 12, label: 'CID' },
+  strike: { dmg: 18, reach: 110, windup: 14, active: 6,  recover: 22, cost: 18, staggerHurt: 28, label: 'HCD' },
+  throw:  { dmg: 22, reach: 75,  windup: 10, active: 8,  recover: 32, cost: 25, staggerHurt: 40, label: 'ETD' },
+  parry:  { dmg: 0,  reach: 0,   windup: 2,  active: 18, recover: 14, cost: 4,  staggerHurt: 0,  label: 'PRM' },
+};
+
+function tryAttack(f, opponent, move) {
+  if (f.state !== 'idle' || f.cooldown > 0 || f.stamina < move.cost) return false;
+  f.state = (move === MOVES.parry) ? 'parry'
+          : (move === MOVES.jab)    ? 'jab'
+          : (move === MOVES.strike) ? 'strike'
+          : 'throw';
+  f.stateTimer = move.windup + move.active + move.recover;
+  f._move = move;
+  f._activeStart = move.windup;
+  f._activeEnd = move.windup + move.active;
+  f.stamina -= move.cost;
+  if (move === MOVES.parry) f.parryActive = move.active + 4;
+  return true;
+}
+
+function distance(a, b) { return Math.abs(a.x - b.x); }
+
+function landHit(f, target, move) {
+  const dist = distance(f, target);
+  if (dist > move.reach) return false;
+  // Direction check: target must be in front
+  const dx = target.x - f.x;
+  if (Math.sign(dx) !== f.facing) return false;
+  return true;
+}
+
+function applyHit(attacker, victim, move) {
+  // Parry check
+  if (victim.parryActive > 0 && victim.state === 'parry') {
+    victim.parryActive = 0;
+    // Counter-stagger attacker
+    attacker.cooldown = 25;
+    attacker.state = 'hurt'; attacker.stateTimer = 25;
+    spawnText(attacker.x, attacker.y - 30, 'PARRIED!', '#38bdf8');
+    state.flashColor = '#38bdf8'; state.flashTimer = 6;
+    return;
+  }
+  let dmg = move.dmg;
+  if (victim.invuln > 0) return;
+  victim.hp = Math.max(0, victim.hp - dmg);
+  victim.state = 'hurt'; victim.stateTimer = move.staggerHurt;
+  victim.invuln = 8;
+  victim.vx = (victim.x < attacker.x ? -3 : 3);
+  spawnText(victim.x, victim.y - 40, `-${dmg} ${move.label}`, '#f87171');
+  if (attacker === state.p1) state.score += dmg;
+  state.flashColor = move.label === 'HCD' ? '#fb923c' : '#f87171';
+  state.flashTimer = 4;
+}
+
+function spawnText(x, y, text, color) {
+  state.floatTexts.push({ x, y, text, color, life: 50, vy: -1.2 });
+}
+
+// ── AI (opponent) ───────────────────────────────────────────────────────────
+function aiThink(f, player) {
+  if (state.twoPlayer) return; // skip when human-controlled
+  if (f.state !== 'idle' || f.cooldown > 0) return;
+  const dist = distance(f, player);
+  // Move toward player if too far for a jab
+  if (dist > 110) {
+    f.vx = player.x < f.x ? -state.opp.speed : state.opp.speed;
+    f.facing = player.x < f.x ? -1 : 1;
+    return;
+  }
+  // Choose attack — only from the opponent's actually-supported MS2 modes
+  if (Math.random() < state.opp.atkRate) {
+    const allowed = state.opp.moves;
+    const moveMap = { cid: MOVES.jab, hcd: MOVES.strike, throw: MOVES.throw };
+    const choices = allowed.map(k => moveMap[k]).filter(Boolean);
+    if (!choices.length) return;
+    const move = choices[Math.floor(Math.random()*choices.length)];
+    // Buff opponent dmg by tier
+    move.dmg = state.opp.atkDmg;
+    tryAttack(f, player, move);
+  } else {
+    // Sometimes parry preemptively
+    if (Math.random() < 0.01) tryAttack(f, player, MOVES.parry);
+    f.vx = Math.random() < 0.3 ? (player.x < f.x ? state.opp.speed*0.4 : -state.opp.speed*0.4) : 0;
+  }
+}
+
+// ── Update ──────────────────────────────────────────────────────────────────
+function update() {
+  if (state.ended) {
+    if (state.msgTimer > 0) state.msgTimer--;
+    return;
+  }
+  const k = state.keys;
+  const p1 = state.p1, p2 = state.p2;
+
+  // P1 controls
+  if (p1.state === 'idle') {
+    p1.vx = 0;
+    if (k['arrowleft'] || k['a'])  { p1.vx = -3; p1.facing = -1; }
+    if (k['arrowright'] || k['d']) { p1.vx = 3;  p1.facing =  1; }
+    if (k['z']) tryAttack(p1, p2, MOVES.strike);
+    else if (k['x']) tryAttack(p1, p2, MOVES.jab);
+    else if (k['c']) tryAttack(p1, p2, MOVES.throw);
+    else if (k['v']) tryAttack(p1, p2, MOVES.parry);
+  }
+  // P2 (AI or 2P)
+  if (state.twoPlayer && p2.state === 'idle') {
+    p2.vx = 0;
+    if (k['j'])  { p2.vx = -3; p2.facing = -1; }
+    if (k['l']) { p2.vx = 3;  p2.facing =  1; }
+    if (k['1']) tryAttack(p2, p1, MOVES.strike);
+    else if (k['2']) tryAttack(p2, p1, MOVES.jab);
+    else if (k['3']) tryAttack(p2, p1, MOVES.throw);
+    else if (k['4']) tryAttack(p2, p1, MOVES.parry);
+  } else {
+    aiThink(p2, p1);
+  }
+
+  // Step fighters
+  for (const f of [p1, p2]) {
+    // Friction
+    if (f.state !== 'idle') f.vx *= 0.6;
+    f.x += f.vx;
+    f.x = Math.max(60, Math.min(W - 60, f.x));
+    // Bob/animation
+    f.bob = (f.bob + 0.18) % (Math.PI * 2);
+
+    if (f.stateTimer > 0) f.stateTimer--;
+    if (f.cooldown > 0) f.cooldown--;
+    if (f.invuln > 0) f.invuln--;
+    if (f.parryActive > 0) f.parryActive--;
+
+    // Move active-frame hit detection
+    if (f._move && f._move !== MOVES.parry) {
+      const m = f._move;
+      const elapsed = m.windup + m.active + m.recover - f.stateTimer;
+      if (elapsed >= m.windup && elapsed <= m.windup + m.active && !f._didHit) {
+        const target = (f === p1) ? p2 : p1;
+        if (landHit(f, target, m)) {
+          applyHit(f, target, m);
+          f._didHit = true;
+        }
+      }
+    }
+    // Return to idle
+    if (f.stateTimer === 0 && (f.state !== 'idle')) {
+      if (f.state === 'down') {
+        // Stays down (lost)
+      } else if (f.state === 'hurt') {
+        f.state = 'idle';
+      } else {
+        f.cooldown = 4;
+        f.state = 'idle';
+        f._move = null;
+        f._didHit = false;
+      }
+    }
+    // Regen stamina when idle
+    if (f.state === 'idle' && f.cooldown === 0) {
+      f.stamina = Math.min(f.maxStamina, f.stamina + 0.45);
+    }
+    // Death
+    if (f.hp <= 0 && f.state !== 'down') {
+      f.state = 'down';
+      f.stateTimer = 9999;
+      checkRoundEnd();
+    }
+  }
+
+  // HP / stamina UI
+  setBar('p1-hp', p1.hp / p1.maxHp * 100);
+  setBar('p2-hp', p2.hp / p2.maxHp * 100);
+  setBar('p1-st', p1.stamina / p1.maxStamina * 100);
+  setBar('p2-st', p2.stamina / p2.maxStamina * 100);
+  document.getElementById('p1-belt').textContent = beltName(state.level);
+  document.getElementById('p2-belt').textContent = state.opp.belt + ' BELT';
+
+  // Float text
+  for (const t of state.floatTexts) {
+    t.y += t.vy; t.life--;
+  }
+  state.floatTexts = state.floatTexts.filter(t => t.life > 0);
+
+  if (state.msgTimer > 0) state.msgTimer--;
+  if (state.flashTimer > 0) state.flashTimer--;
+}
+
+function setBar(id, pct) {
+  document.getElementById(id).style.width = pct.toFixed(1) + '%';
+}
+
+function beltName(level) {
+  // Track player belt as they progress through opponents
+  return OPPONENTS[level].belt + ' BELT';
+}
+
+function checkRoundEnd() {
+  const p1Won = state.p2.hp <= 0;
+  const p2Won = state.p1.hp <= 0;
+  if (!p1Won && !p2Won) return;
+  state.ended = true;
+  state.won = p1Won;
+  state.msg = p1Won
+      ? `BELT EARNED · ${state.opp.belt}`
+      : `K.O.  ·  ${state.opp.name} WINS`;
+  state.msgTimer = 200;
+  // Submit score (once per round)
+  if (!state.submitted) {
+    state.submitted = true;
+    const finalScore = state.score + (p1Won ? state.level * 100 + 50 : 0);
+    try {
+      window.parent.postMessage({
+        type: 'arcade-score',
+        game: 'karatemass',
+        score: finalScore,
+        won: p1Won,
+        level: state.level + 1,
+      }, '*');
+    } catch (_) {}
+  }
+}
+
+// Auto-advance on win
+window.addEventListener('keydown', e => {
+  if (!state.ended) return;
+  if (e.key === 'Enter' || e.key === ' ') {
+    if (state.won && state.level + 1 < OPPONENTS.length) {
+      reset(state.level + 1, state.twoPlayer);
+    } else {
+      reset(0, state.twoPlayer);
+    }
+  }
+});
+
+// ── Render ──────────────────────────────────────────────────────────────────
+function drawArena() {
+  ctx.clearRect(0, 0, W, H);
+  // Floor
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(0, H - 60, W, 60);
+  ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 1;
+  for (let i = 0; i < 6; i++) {
+    ctx.beginPath();
+    ctx.moveTo(0, H - 60 + i * 12);
+    ctx.lineTo(W, H - 60 + i * 12);
+    ctx.stroke();
+  }
+  // Backdrop "dojo gradient column" stripes
+  for (let i = 0; i < 12; i++) {
+    const x = i * (W / 12);
+    ctx.fillStyle = `rgba(56,189,248,${0.04 + (i % 2) * 0.02})`;
+    ctx.fillRect(x, 0, W / 12, H - 60);
+  }
+  // Subtle "m/z" axis hint at top
+  ctx.fillStyle = '#1e293b';
+  ctx.fillRect(0, 0, W, 24);
+  ctx.fillStyle = '#475569'; ctx.font = '10px Courier New';
+  ctx.fillText('m/z →  100 ─── 500 ─── 1000 ─── 2000', 14, 16);
+
+  // Round/belt banner
+  ctx.fillStyle = 'rgba(15,23,42,0.7)';
+  ctx.fillRect(0, 30, W, 24);
+  ctx.fillStyle = '#fbbf24';
+  ctx.font = 'bold 13px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText(`ROUND ${state.level+1} · ${state.opp.belt} BELT · ${state.opp.name} (${state.opp.year}) · uses ${state.opp.special}`, W/2, 47);
+  ctx.textAlign = 'left';
+}
+
+function drawFighter(f, isOpponent) {
+  const cx = f.x, cy = f.y;
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.beginPath(); ctx.ellipse(cx, H - 60, 30, 4, 0, 0, Math.PI*2); ctx.fill();
+
+  // Glow on parry
+  if (f.parryActive > 0) {
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy - 30, 50, 0, Math.PI*2); ctx.stroke();
+  }
+  // Invuln flicker
+  if (f.invuln > 0 && f.invuln % 2 === 0) return;
+
+  const bob = Math.sin(f.bob) * 1.5;
+
+  // Legs
+  ctx.fillStyle = f.color;
+  ctx.fillRect(cx - 12, cy - 30 + bob, 8, 26);
+  ctx.fillRect(cx + 4, cy - 30 + bob, 8, 26);
+  // Torso
+  ctx.fillRect(cx - 16, cy - 60 + bob, 32, 30);
+  // Belt band
+  ctx.fillStyle = isOpponent ? state.opp.color : '#fbbf24';
+  ctx.fillRect(cx - 18, cy - 35 + bob, 36, 5);
+  // Head
+  ctx.fillStyle = f.color;
+  ctx.beginPath();
+  ctx.arc(cx, cy - 75 + bob, 14, 0, Math.PI*2);
+  ctx.fill();
+  // Headband
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(cx - 14, cy - 80 + bob, 28, 4);
+
+  // Arms — depend on state
+  ctx.fillStyle = f.color;
+  const facing = f.facing;
+  if (f.state === 'idle' || f.state === 'hurt') {
+    ctx.fillRect(cx - 22 + facing * (-2), cy - 56 + bob, 6, 22);
+    ctx.fillRect(cx + 16 + facing * 2, cy - 56 + bob, 6, 22);
+  } else if (f.state === 'jab') {
+    const r = (f._move.windup + f._move.active + f._move.recover - f.stateTimer);
+    const ext = r > f._move.windup && r < f._move.windup + f._move.active ? 50 : 25;
+    ctx.fillRect(cx + facing * 12, cy - 60 + bob, facing * ext, 6);
+    ctx.fillRect(cx - 22 + facing * (-2), cy - 56 + bob, 6, 22);
+  } else if (f.state === 'strike') {
+    const r = (f._move.windup + f._move.active + f._move.recover - f.stateTimer);
+    const ext = r > f._move.windup && r < f._move.windup + f._move.active ? 70 : 30;
+    ctx.fillRect(cx + facing * 12, cy - 70 + bob, facing * ext, 9);
+    ctx.fillRect(cx + facing * 16, cy - 50 + bob, facing * 22, 6);
+  } else if (f.state === 'throw') {
+    ctx.fillRect(cx + facing * 12, cy - 56 + bob, facing * 28, 8);
+    ctx.fillRect(cx + facing * 30, cy - 60 + bob, facing * 8, 18);
+  } else if (f.state === 'parry') {
+    ctx.fillRect(cx + facing * 10, cy - 64 + bob, facing * 18, 6);
+    ctx.fillRect(cx + facing * 10, cy - 50 + bob, facing * 18, 6);
+  } else if (f.state === 'down') {
+    // Knocked over
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(facing * Math.PI / 2 * 0.85);
+    ctx.fillStyle = f.color;
+    ctx.fillRect(-12, -20, 24, 50);
+    ctx.beginPath(); ctx.arc(0, -30, 14, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawFloatText() {
+  ctx.font = 'bold 14px Courier New';
+  for (const t of state.floatTexts) {
+    ctx.globalAlpha = t.life / 50;
+    ctx.fillStyle = t.color;
+    ctx.textAlign = 'center';
+    ctx.fillText(t.text, t.x, t.y);
+    ctx.globalAlpha = 1;
+  }
+  ctx.textAlign = 'left';
+}
+
+function drawFlash() {
+  if (state.flashTimer <= 0) return;
+  ctx.fillStyle = state.flashColor;
+  ctx.globalAlpha = state.flashTimer / 8;
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = 1;
+}
+
+function drawMsg() {
+  if (state.msgTimer > 0) {
+    const el = document.getElementById('msg');
+    el.textContent = state.msg;
+    el.style.opacity = Math.min(1, state.msgTimer / 60);
+  } else {
+    document.getElementById('msg').textContent = '';
+  }
+  if (state.ended) {
+    ctx.fillStyle = state.won ? '#22c55e' : '#f87171';
+    ctx.font = 'bold 36px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText(state.won ? 'BELT EARNED' : 'K.O.', W/2, H/2);
+    ctx.font = '14px Courier New';
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillText(state.won && state.level + 1 < OPPONENTS.length
+      ? 'press ENTER for next belt'
+      : 'press R to restart · ENTER for round 1', W/2, H/2 + 30);
+    ctx.textAlign = 'left';
+  }
+}
+
+function loop() {
+  update();
+  drawArena();
+  drawFighter(state.p1, false);
+  drawFighter(state.p2, true);
+  drawFloatText();
+  drawFlash();
+  drawMsg();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>

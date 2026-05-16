@@ -1,0 +1,118 @@
+{
+  "era_groups": [
+    {
+      "name": "Q-Exactive Plus HeLa (2017-2020, ~100-500 ng)",
+      "color": "#e84393",
+      "points": [
+        {
+          "grad_min": 70,
+          "n": 7,
+          "median_psms": 10690,
+          "rate": 153
+        },
+        {
+          "grad_min": 80,
+          "n": 6,
+          "median_psms": 14890,
+          "rate": 186
+        },
+        {
+          "grad_min": 95,
+          "n": 2,
+          "median_psms": 10644,
+          "rate": 112
+        },
+        {
+          "grad_min": 114,
+          "n": 2,
+          "median_psms": 22471,
+          "rate": 197
+        }
+      ]
+    },
+    {
+      "name": "Orbitrap Fusion Lumos HeLa 50 ng",
+      "color": "#4a90d9",
+      "points": [
+        {
+          "grad_min": 35,
+          "n": 93,
+          "median_psms": 23731,
+          "rate": 678
+        },
+        {
+          "grad_min": 60,
+          "n": 59,
+          "median_psms": 28065,
+          "rate": 468
+        },
+        {
+          "grad_min": 90,
+          "n": 48,
+          "median_psms": 33671,
+          "rate": 374
+        },
+        {
+          "grad_min": 120,
+          "n": 17,
+          "median_psms": 46342,
+          "rate": 386
+        }
+      ]
+    },
+    {
+      "name": "Orbitrap Exploris 480 HeLa 50 ng",
+      "color": "#7ab4f0",
+      "points": [
+        {
+          "grad_min": 30,
+          "n": 56,
+          "median_psms": 23950,
+          "rate": 798
+        },
+        {
+          "grad_min": 60,
+          "n": 16,
+          "median_psms": 24262,
+          "rate": 404
+        },
+        {
+          "grad_min": 90,
+          "n": 18,
+          "median_psms": 34378,
+          "rate": 382
+        }
+      ]
+    },
+    {
+      "name": "timsTOF HT diaPASEF HeLa 50 ng",
+      "color": "#2dd9c5",
+      "points": [
+        {
+          "grad_min": 11,
+          "n": 122,
+          "median_psms": 29810,
+          "rate": 2710
+        },
+        {
+          "grad_min": 20,
+          "n": 77,
+          "median_psms": 36851,
+          "rate": 1843
+        },
+        {
+          "grad_min": 21,
+          "n": 20,
+          "median_psms": 35149,
+          "rate": 1674
+        },
+        {
+          "grad_min": 43,
+          "n": 11,
+          "median_psms": 44440,
+          "rate": 1033
+        }
+      ]
+    }
+  ]
+}
