@@ -648,24 +648,70 @@ def extract_dia_metrics(
         # the live watcher path doesn't have to remember to populate it.
         # Required for community submissions — relay rejects null versions.
         "search_engine": "diann",
-        "diann_version": _detect_engine_version(),
+        "diann_version": _detect_engine_version_from_report(report_path),
         **rt_deciles,
         **c2a,
         **stats,
     }
 
 
-def _detect_engine_version() -> str:
-    """Best-effort lookup of the installed DIA-NN binary's version.
+def _detect_engine_version_from_report(report_path: Path | None = None) -> str:
+    """Extract DIA-NN version from the search-result log, not the local binary.
 
-    Returns "unknown" if detection fails — never raises, never returns
-    None (NULL diann_version is what we're trying to eliminate).
+    DIA-NN writes a log file next to the report (typically ``report.log.txt``,
+    sometimes ``report.log`` or ``diann.log``) whose first lines contain a
+    header like ``DIA-NN 2.3.0 Academia ...``. That's the binary that
+    *actually produced this report* — which is what we want to stamp into
+    the run's ``diann_version`` column.
+
+    Reading from the log avoids the historical bug where ``processing_mode:
+    hive`` searches ran on Hive's 2.3.0 container but STAN stamped them
+    1.8.1 because that was the version of the locally-installed Windows
+    binary that ``detect_diann_version()`` happened to find on PATH.
+
+    Falls back to the locally-installed binary's version if no log file
+    is available, and "unknown" if neither path succeeds.
     """
+    import re
+    header_re = re.compile(r"DIA-NN\s+(\d+\.\d+(?:\.\d+)?)")
+
+    if report_path is not None:
+        rp = Path(report_path)
+        candidates = [
+            rp.with_suffix(".log.txt"),
+            rp.with_suffix(".log"),
+            rp.parent / "report.log.txt",
+            rp.parent / "report.log",
+            rp.parent / "diann.log",
+        ]
+        for c in candidates:
+            if not c.exists():
+                continue
+            try:
+                head = c.open("r", errors="ignore").read(8192)
+            except OSError:
+                continue
+            m = header_re.search(head)
+            if m:
+                return m.group(1)
+
+    # Fallback: query the local binary. This is the OLD behavior — kept as
+    # a safety net for cases where the log file is unavailable. It's the
+    # source of the 1.8.1-stamp bug when local DIA-NN differs from search
+    # DIA-NN, so the log-based path above is preferred.
     try:
         from stan.search.version_detect import detect_diann_version
         return detect_diann_version() or "unknown"
     except Exception:
         return "unknown"
+
+
+# Backwards-compatible alias for old callers that didn't pass report_path.
+def _detect_engine_version() -> str:
+    """Deprecated: use _detect_engine_version_from_report(report_path) for
+    accurate version stamping. Kept for tests and call sites that don't
+    yet thread report_path through."""
+    return _detect_engine_version_from_report(None)
 
 
 def extract_dda_metrics(
