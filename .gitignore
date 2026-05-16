@@ -56,3 +56,8 @@ Thumbs.db
 
 # STAN local config (user-specific)
 # ~/.stan/ is the config dir, not tracked
+
+# Claude Code / oh-my-claudecode local state (per-user, never commit)
+.claude/
+.omc/
+**/.omc/
