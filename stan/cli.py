@@ -6413,6 +6413,148 @@ def hive_dispatch_cmd(
         raise typer.Exit(1)
 
 
+@app.command("ingest-orphans")
+def ingest_orphans_cmd(
+    processing_dir: Path = typer.Option(
+        Path("/quobyte/proteomics-grp/STAN/processing"), "--processing-dir",
+        help="Hive-side processing root with one subdir per raw."),
+    sbatch_log_dir: Path = typer.Option(
+        Path("/quobyte/proteomics-grp/STAN/logs/sbatch"), "--sbatch-log-dir",
+        help="Where the dispatcher staged per-raw sbatch scripts. The "
+             "scripts/ subdir is parsed to recover cohort args (instrument, "
+             "family, vendor, columns, amount_ng, spd) for each orphan."),
+    db: Path = typer.Option(
+        Path("/quobyte/proteomics-grp/STAN/stan.db"), "--db",
+        help="Global Hive-resident stan.db."),
+    dry_run: bool = typer.Option(False, "--dry-run",
+        help="Walk + parse but don't call step_extract or write to DB."),
+    instrument_filter: str = typer.Option("", "--instrument",
+        help="Substring filter on the recovered instrument name."),
+) -> None:
+    """Recover orphan parquets: re-extract metrics, insert runs row.
+
+    An "orphan" is a processing/<raw_stem>/ dir that has a valid
+    ``report.parquet`` but no row in the global ``stan.db.runs``
+    table. This is the failure mode the weekend 2026-05-16 SQLite-
+    corruption episode left behind: DIA-NN succeeded, the parquet
+    landed, but the DB-write step crashed on a corrupted index.
+    Once the DB is repaired (``scripts/repair_and_reingest.sh``),
+    this command walks /processing/ and inserts the missing rows.
+
+    Cohort args (instrument, family, vendor, column_vendor,
+    column_model, amount_ng, spd) are recovered by parsing the
+    sbatch script under ``<sbatch_log_dir>/scripts/<raw_stem>.sbatch``
+    — which the dispatcher already writes for every job.
+
+    Idempotent: short-circuits if a row already exists for this raw.
+    Safe to re-run.
+    """
+    import json as _json
+    import re
+    import shlex
+    from stan.pipeline.hive_steps import step_extract
+    from stan.pipeline.hive_process import _row_exists
+
+    scripts_dir = sbatch_log_dir / "scripts"
+    if not scripts_dir.exists():
+        console.print(f"[red]sbatch scripts dir missing: {scripts_dir}[/red]")
+        raise typer.Exit(2)
+    if not processing_dir.exists():
+        console.print(f"[red]processing dir missing: {processing_dir}[/red]")
+        raise typer.Exit(2)
+
+    arg_re = re.compile(r"stan\s+hive-process\s+(.*?)$", re.MULTILINE)
+
+    def _parse_sbatch_args(sbatch_path: Path) -> dict | None:
+        try:
+            text = sbatch_path.read_text()
+        except OSError:
+            return None
+        m = arg_re.search(text)
+        if not m:
+            return None
+        try:
+            tokens = shlex.split(m.group(1))
+        except ValueError:
+            return None
+        if not tokens or tokens[0].startswith("--"):
+            return None
+        out = {"raw_path": Path(tokens[0])}
+        i = 1
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok.startswith("--") and i + 1 < len(tokens):
+                key = tok[2:].replace("-", "_")
+                out[key] = tokens[i + 1]
+                i += 2
+            else:
+                i += 1
+        return out
+
+    counts = {"inserted": 0, "skipped": 0, "no_sbatch": 0,
+              "no_parquet": 0, "filter": 0, "failed": 0}
+    total = 0
+
+    for sub in sorted(processing_dir.iterdir()):
+        if not sub.is_dir():
+            continue
+        report = sub / "report.parquet"
+        if not report.exists():
+            counts["no_parquet"] += 1
+            continue
+        total += 1
+        raw_stem = sub.name
+        sbatch_path = scripts_dir / f"{raw_stem}.sbatch"
+        if not sbatch_path.exists():
+            counts["no_sbatch"] += 1
+            logger.warning("no sbatch script for %s — cannot recover args",
+                           raw_stem)
+            continue
+        args = _parse_sbatch_args(sbatch_path)
+        if args is None or "raw_path" not in args:
+            counts["no_sbatch"] += 1
+            logger.warning("sbatch script for %s did not parse", raw_stem)
+            continue
+        instrument_name = args.get("instrument", "")
+        if instrument_filter and instrument_filter.lower() not in instrument_name.lower():
+            counts["filter"] += 1
+            continue
+        if _row_exists(db, instrument_name, args["raw_path"]):
+            counts["skipped"] += 1
+            continue
+        if dry_run:
+            counts["inserted"] += 1
+            continue
+        try:
+            result = step_extract(
+                raw_path=args["raw_path"],
+                instrument=instrument_name,
+                family=args.get("family", ""),
+                vendor=args.get("vendor", ""),
+                db_path=db,
+                out_dir=sub,
+                column_vendor=args.get("column_vendor", ""),
+                column_model=args.get("column_model", ""),
+                hela_amount_ng=float(args.get("amount_ng", 50.0)),
+                spd=int(args["spd"]) if args.get("spd") else None,
+            )
+        except Exception as e:
+            counts["failed"] += 1
+            logger.warning("step_extract failed for %s: %s", raw_stem, e)
+            continue
+        if result.get("status") in ("ok", "skipped"):
+            counts["inserted"] += 1
+        else:
+            counts["failed"] += 1
+            logger.warning("step_extract returned %s for %s: %s",
+                           result.get("status"), raw_stem, result.get("error"))
+
+    summary = {"total_with_parquet": total, **counts}
+    print(_json.dumps(summary, indent=2), flush=True)
+    if counts["failed"]:
+        raise typer.Exit(1)
+
+
 @app.command("time-hive-partitions")
 def time_hive_partitions_cmd(
     instrument: str = typer.Option("", "--instrument",

@@ -93,7 +93,14 @@ print(len(orphans))
 PYEOF
 )
 echo "  $orphans orphan parquets to re-ingest"
-echo "  (re-ingest CLI: stan ingest-orphans --processing-dir $PROCESSING)"
-echo "  TODO: implement stan ingest-orphans then run it here"
+
+# stan ingest-orphans walks /processing/, parses each per-raw sbatch
+# script for cohort args (instrument/family/vendor/column/amount_ng/spd),
+# and invokes step_extract — same code path as a fresh search, just
+# replaying the DB-write step against the already-landed report.parquet.
+# Idempotent; rows existing in `runs` are short-circuited.
+/quobyte/proteomics-grp/brett/stan_venv/bin/stan ingest-orphans \
+    --processing-dir "$PROCESSING" \
+    --db "$HIVE_DB"
 
 echo "$(date -u +%FT%TZ) recovery done"
