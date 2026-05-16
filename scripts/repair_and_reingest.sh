@@ -13,10 +13,26 @@
 set -u
 HIVE_DB=/quobyte/proteomics-grp/STAN/stan.db
 PROCESSING=/quobyte/proteomics-grp/STAN/processing
+STAN_BIN=/quobyte/proteomics-grp/brett/stan_venv/bin/stan
+MIN_STAN=0.2.357
 LOG=/quobyte/proteomics-grp/STAN/logs/recovery_$(date +%Y%m%d_%H%M).log
 exec >> "$LOG" 2>&1
 
 echo "$(date -u +%FT%TZ) recovery start"
+
+# ── Preflight: stan ingest-orphans needs >= v0.2.357 ───────────────────────
+# The CLI was added in v0.2.357 alongside this script. Older venvs report
+# "No such command 'ingest-orphans'" and the recovery would fail at the
+# very last step after rebuilding the DB — which is the worst possible
+# place to fail. Fail fast HERE instead.
+cur=$("$STAN_BIN" version 2>&1 | awk '{print $NF}' | sed 's/^v//')
+if ! printf '%s\n%s\n' "$MIN_STAN" "$cur" | sort -V -C; then
+    echo "  HALT: stan_venv has v$cur but recovery needs >= v$MIN_STAN"
+    echo "  Run: cd /quobyte/proteomics-grp/brett/stan && git pull && "
+    echo "       /quobyte/proteomics-grp/brett/stan_venv/bin/pip install -e ."
+    exit 1
+fi
+echo "  stan version $cur OK (>= $MIN_STAN)"
 
 # ── Step 1: stop the dispatcher ────────────────────────────────────────────
 if ps -p 1425177 > /dev/null 2>&1; then
