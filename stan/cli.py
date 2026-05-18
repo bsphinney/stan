@@ -6468,6 +6468,18 @@ def ingest_orphans_cmd(
     if backend_l == "pg":
         _os.environ["STAN_DB_BACKEND"] = "pg"
 
+    # Bulk-load existing (host_origin, instrument, raw_path) keys once so
+    # the per-orphan existence check is in-memory rather than a separate
+    # PG round-trip per row. With 2,700+ orphans, per-row connects took
+    # >10 min — this drops it to one query + a set lookup.
+    existing_keys: set[tuple[str, str, str]] = set()
+    if backend_l == "pg":
+        from stan.db_pg import _connect
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute("SELECT host_origin, instrument, raw_path FROM runs")
+            existing_keys = {(h, i, r) for h, i, r in cur.fetchall()}
+        console.print(f"[cyan]Loaded {len(existing_keys)} existing rows from PG[/cyan]")
+
     scripts_dir = sbatch_log_dir / "scripts"
     if not scripts_dir.exists():
         console.print(f"[red]sbatch scripts dir missing: {scripts_dir}[/red]")
@@ -6535,7 +6547,8 @@ def ingest_orphans_cmd(
             continue
         if backend_l == "pg":
             ho = host_origin_from_family(family_name)
-            exists = row_exists_pg(instrument_name, args["raw_path"], host_origin=ho)
+            key = (ho, instrument_name, str(args["raw_path"]))
+            exists = key in existing_keys
         else:
             exists = _row_exists(db, instrument_name, args["raw_path"])
         if exists:
