@@ -31,6 +31,9 @@ the change is not done yet.
 - `docs/HPC_PATHS.md` — container paths, FASTA locations, storage layout
 - `docs/GOTCHAS_DELIMP.md` — 50+ hard-learned lessons (DIA-NN, SLURM, data)
 - `docs/QUEUE_SWITCHING.md` — auto partition switching logic
+- `docs/PG_FARM.md` — central Postgres at UC Davis Library: connection,
+  schema, `STAN_DB_BACKEND=pg`, cron sync, orphan recovery, weekly
+  token rotation. Read before any change to the DB write path.
 
 ---
 
