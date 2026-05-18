@@ -6461,6 +6461,28 @@ def ingest_orphans_cmd(
     from stan.pipeline.hive_process import _row_exists
     from stan.db_pg import host_origin_from_family, row_exists_pg
 
+    # Hive→Mac path translations. The sbatch sidecars store paths as the
+    # Hive sees them (/nfs/lssc0/flinders/..., /quobyte/proteomics-grp/...),
+    # but step_extract calls raw_path.exists() which fails on the Mac
+    # where the same data is mounted under /Volumes/. Translate at parse
+    # time, falling back to the original when neither exists (so logs
+    # still print a sensible "raw not on Hive" error).
+    PATH_TRANSLATIONS = [
+        ("/nfs/lssc0/flinders/proteomics/", "/Volumes/proteomics/"),
+        ("/quobyte/proteomics-grp/", "/Volumes/proteomics-grp/"),
+    ]
+
+    def _translate_path(p: Path) -> Path:
+        if p.exists():
+            return p
+        s = str(p)
+        for prefix, replacement in PATH_TRANSLATIONS:
+            if s.startswith(prefix):
+                alt = Path(s.replace(prefix, replacement, 1))
+                if alt.exists():
+                    return alt
+        return p
+
     backend_l = backend.lower().strip()
     if backend_l not in ("pg", "sqlite"):
         console.print(f"[red]--backend must be pg or sqlite, got {backend!r}[/red]")
@@ -6504,7 +6526,7 @@ def ingest_orphans_cmd(
             return None
         if not tokens or tokens[0].startswith("--"):
             return None
-        out = {"raw_path": Path(tokens[0])}
+        out = {"raw_path": _translate_path(Path(tokens[0]))}
         i = 1
         while i < len(tokens):
             tok = tokens[i]
