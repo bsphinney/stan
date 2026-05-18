@@ -264,17 +264,33 @@ def _compute_pts_peak_bruker(
         )
         return None
 
-    # Copy TDF to temp file — sqlite3 can't open files on network/Quobyte mounts
+    # Try opening the TDF in place first via sqlite3's read-only URI mode.
+    # Works on most network mounts (SMB on macOS, NFS) and is dramatically
+    # faster than a copy when the file is large (analysis.tdf can be 50+
+    # MB). Quobyte's older client versions reject WAL/journal writes even
+    # on read-only opens, so we fall back to a temp copy if the direct
+    # open fails. tmp_dir is set to None when no copy happened so the
+    # cleanup branch below doesn't shutil.rmtree the original location.
+    tmp_dir: str | None = None
     try:
-        tmp_dir = tempfile.mkdtemp(prefix="stan_tdf_")
-        tmp_tdf = Path(tmp_dir) / "analysis.tdf"
-        shutil.copy2(tdf_path, tmp_tdf)
-    except Exception:
-        logger.exception("Failed to copy analysis.tdf to temp dir")
-        return None
+        con = sqlite3.connect(
+            f"file:{tdf_path}?mode=ro&immutable=1", uri=True,
+        )
+        con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+    except sqlite3.Error:
+        logger.debug("Direct sqlite3 read of %s failed; falling back to temp copy", tdf_path)
+        try:
+            tmp_dir = tempfile.mkdtemp(prefix="stan_tdf_")
+            tmp_tdf = Path(tmp_dir) / "analysis.tdf"
+            shutil.copy2(tdf_path, tmp_tdf)
+            con = sqlite3.connect(str(tmp_tdf))
+        except Exception:
+            logger.exception("Failed to copy analysis.tdf to temp dir")
+            if tmp_dir:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            return None
 
     try:
-        con = sqlite3.connect(str(tmp_tdf))
 
         # 1. Read DIA window scheme
         try:
