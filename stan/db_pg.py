@@ -75,11 +75,40 @@ def _resolve_pgpassword() -> str:
     )
 
 
+_CACHED_CONN = None
+
+
 def _connect():
-    """Open a PG Farm connection. Caller must close."""
+    """Return a cached PG Farm connection, opening one if needed.
+
+    The connection is cached at module level so repeated calls in the
+    same process (e.g. the orphan re-ingest loop, or a long-running
+    SLURM job that writes multiple rows) skip the ~300-500ms SSL
+    handshake each time. psycopg2's context-manager exit (``with
+    _connect() as pg: ...``) commits/rollbacks the transaction but
+    does NOT close the connection, so callers can keep using the
+    context-manager pattern.
+
+    Reconnects if the cached connection has been closed by the server
+    (idle timeout, network blip).
+    """
+    global _CACHED_CONN
     import psycopg2
 
-    return psycopg2.connect(password=_resolve_pgpassword(), **PG_DEFAULTS)
+    if _CACHED_CONN is not None:
+        try:
+            with _CACHED_CONN.cursor() as c:
+                c.execute("SELECT 1")
+            return _CACHED_CONN
+        except (psycopg2.InterfaceError, psycopg2.OperationalError):
+            try:
+                _CACHED_CONN.close()
+            except Exception:
+                pass
+            _CACHED_CONN = None
+
+    _CACHED_CONN = psycopg2.connect(password=_resolve_pgpassword(), **PG_DEFAULTS)
+    return _CACHED_CONN
 
 
 def insert_run_pg(
