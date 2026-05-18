@@ -674,17 +674,47 @@ def insert_run(
     if db_path is None:
         db_path = get_db_path()
 
+    row = _build_runs_row(
+        instrument=instrument, run_name=run_name, raw_path=raw_path,
+        mode=mode, metrics=metrics, gate_result=gate_result,
+        failed_gates=failed_gates, diagnosis=diagnosis,
+        amount_ng=amount_ng, spd=spd,
+        gradient_length_min=gradient_length_min, run_date=run_date,
+    )
+    run_id = row["id"]
+    return _insert_runs_row_sqlite(row, db_path, instrument, run_name, raw_path)
+
+
+def _build_runs_row(
+    *,
+    instrument: str,
+    run_name: str,
+    raw_path: str,
+    mode: str,
+    metrics: dict,
+    gate_result: str = "",
+    failed_gates: list[str] | None = None,
+    diagnosis: str = "",
+    amount_ng: float = 50.0,
+    spd: int | None = None,
+    gradient_length_min: int | None = None,
+    run_date: str | None = None,
+) -> dict:
+    """Build the `runs` row dict used by both the SQLite and PG writers.
+
+    Splitting this out of ``insert_run`` lets the PG-direct path
+    (``stan.db_pg.insert_run_pg``) reuse the exact same column mapping
+    without keeping two copies in sync.
+    """
     run_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
-    # v0.2.219: stamp the producing stan version on every row so we
-    # can identify stale data ahead of the v1.0 community wipe.
     try:
         from stan import __version__ as _stan_version
     except Exception:
         _stan_version = "unknown"
 
-    row = {
+    return {
         "id": run_id,
         "instrument": instrument,
         "run_name": run_name,
@@ -754,13 +784,21 @@ def insert_run(
         "diagnosis": diagnosis,
     }
 
+
+def _insert_runs_row_sqlite(
+    row: dict, db_path: Path,
+    instrument: str, run_name: str, raw_path: str,
+) -> str:
+    """Write a pre-built `runs` row to SQLite. Returns the row id.
+
+    v0.2.208: idx_runs_unique enforces (instrument, run_name, raw_path)
+    uniqueness. On conflict, return the existing id instead of silently
+    inserting a dup (pre-v0.2.208 behavior — every restart of the
+    watcher or backfill walk created a new row).
+    """
     cols = ", ".join(row.keys())
     placeholders = ", ".join(f":{k}" for k in row.keys())
-
-    # v0.2.208: idx_runs_unique enforces (instrument, run_name, raw_path)
-    # uniqueness. On conflict, return the existing id instead of
-    # silently inserting a dup (pre-v0.2.208 behavior — every restart
-    # of the watcher or backfill walk created a new row).
+    run_id = row["id"]
     with sqlite3.connect(str(db_path)) as con:
         try:
             con.execute(
@@ -779,7 +817,7 @@ def insert_run(
                 return existing[0]
             raise
 
-    logger.info("Inserted run %s: %s (%s)", run_id[:8], run_name, gate_result)
+    logger.info("Inserted run %s: %s (%s)", run_id[:8], run_name, row.get("gate_result"))
     return run_id
 
 

@@ -475,6 +475,9 @@ def step_extract(
     Idempotent: short-circuits if a row already exists for this raw.
     """
     from stan.db import init_db, insert_run, record_dispatch_attempt
+    from stan.db_pg import (
+        insert_run_pg, host_origin_from_family, row_exists_pg, use_pg,
+    )
     from stan.gating.evaluator import evaluate_gates
     from stan.watcher.acquisition_date import get_acquisition_date
     from stan.pipeline.hive_process import (
@@ -487,6 +490,8 @@ def step_extract(
         "instrument": instrument, "family": family, "raw": str(raw_path),
         "primary_count": None, "error": None,
     }
+    pg_mode = use_pg()
+    host_origin = host_origin_from_family(family) if pg_mode else None
 
     try:
         if not raw_path.exists():
@@ -497,9 +502,13 @@ def step_extract(
         if not normalized or normalized in ("auto", "unknown"):
             raise ValueError(f"placeholder instrument name: {instrument!r}")
 
-        init_db(db_path)
+        if not pg_mode:
+            init_db(db_path)
 
-        existing = _row_exists(db_path, instrument, raw_path)
+        if pg_mode:
+            existing = row_exists_pg(instrument, raw_path, host_origin=host_origin)
+        else:
+            existing = _row_exists(db_path, instrument, raw_path)
         if existing:
             record.update(status="skipped", run_id=existing)
             return record
@@ -551,7 +560,7 @@ def step_extract(
             except OSError:
                 acq_date = None
 
-        run_id = insert_run(
+        insert_kwargs = dict(
             instrument=instrument,
             run_name=raw_path.name,
             raw_path=str(raw_path),
@@ -563,24 +572,33 @@ def step_extract(
             amount_ng=hela_amount_ng,
             spd=resolved_spd,
             gradient_length_min=resolved_grad,
-            db_path=db_path,
             run_date=acq_date,
         )
-        record["run_id"] = run_id
-        record["gate_result"] = decision.result.value
+        if pg_mode:
+            # Direct-to-Postgres write. The pegdrift/TIC/dispatch_attempt
+            # child-table writes remain SQLite-only for now — they're
+            # nice-to-have side effects that can be backfilled later and
+            # are not blocking the primary `runs` row that the dashboard
+            # and community submission depend on.
+            run_id = insert_run_pg(host_origin=host_origin, **insert_kwargs)
+            record["run_id"] = run_id
+            record["gate_result"] = decision.result.value
+            record["pegdrift"] = None
+        else:
+            run_id = insert_run(db_path=db_path, **insert_kwargs)
+            record["run_id"] = run_id
+            record["gate_result"] = decision.result.value
 
-        # Apply PEG + drift JSON artifacts (if produced by step_pegdrift).
-        is_bruker = raw_path.is_dir() and raw_path.suffix.lower() == ".d"
-        pegdrift_summary = _apply_pegdrift_jsons(run_id, out_dir, db_path, is_bruker)
-        record["pegdrift"] = pegdrift_summary
+            is_bruker = raw_path.is_dir() and raw_path.suffix.lower() == ".d"
+            pegdrift_summary = _apply_pegdrift_jsons(run_id, out_dir, db_path, is_bruker)
+            record["pegdrift"] = pegdrift_summary
 
-        # TIC always extracted in extract step (cheap, raw-file-based).
-        _persist_tic(raw_path, run_id, db_path)
+            _persist_tic(raw_path, run_id, db_path)
 
-        record_dispatch_attempt(
-            raw_path=str(raw_path), status="ok",
-            last_run_id=run_id, db_path=db_path,
-        )
+            record_dispatch_attempt(
+                raw_path=str(raw_path), status="ok",
+                last_run_id=run_id, db_path=db_path,
+            )
         record["status"] = "search_empty" if primary_count == 0 else "ok"
         return record
 

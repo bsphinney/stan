@@ -6425,7 +6425,11 @@ def ingest_orphans_cmd(
              "family, vendor, columns, amount_ng, spd) for each orphan."),
     db: Path = typer.Option(
         Path("/quobyte/proteomics-grp/STAN/stan.db"), "--db",
-        help="Global Hive-resident stan.db."),
+        help="SQLite stan.db (only used when --backend sqlite)."),
+    backend: str = typer.Option("pg", "--backend",
+        help="Target DB: 'pg' (PG Farm, default — survives Quobyte "
+             "corruption) or 'sqlite' (legacy, requires --db to point "
+             "at a healthy file)."),
     dry_run: bool = typer.Option(False, "--dry-run",
         help="Walk + parse but don't call step_extract or write to DB."),
     instrument_filter: str = typer.Option("", "--instrument",
@@ -6434,12 +6438,12 @@ def ingest_orphans_cmd(
     """Recover orphan parquets: re-extract metrics, insert runs row.
 
     An "orphan" is a processing/<raw_stem>/ dir that has a valid
-    ``report.parquet`` but no row in the global ``stan.db.runs``
-    table. This is the failure mode the weekend 2026-05-16 SQLite-
-    corruption episode left behind: DIA-NN succeeded, the parquet
-    landed, but the DB-write step crashed on a corrupted index.
-    Once the DB is repaired (``scripts/repair_and_reingest.sh``),
-    this command walks /processing/ and inserts the missing rows.
+    ``report.parquet`` but no row in the central ``runs`` table.
+    This is the failure mode the weekend 2026-05-16 SQLite-corruption
+    episode left behind: DIA-NN succeeded, the parquet landed, but the
+    DB-write step crashed on a corrupted index. With ``--backend pg``
+    (the default) inserts go straight to PG Farm so a corrupted Hive
+    SQLite doesn't have to be rebuilt first.
 
     Cohort args (instrument, family, vendor, column_vendor,
     column_model, amount_ng, spd) are recovered by parsing the
@@ -6450,10 +6454,19 @@ def ingest_orphans_cmd(
     Safe to re-run.
     """
     import json as _json
+    import os as _os
     import re
     import shlex
     from stan.pipeline.hive_steps import step_extract
     from stan.pipeline.hive_process import _row_exists
+    from stan.db_pg import host_origin_from_family, row_exists_pg
+
+    backend_l = backend.lower().strip()
+    if backend_l not in ("pg", "sqlite"):
+        console.print(f"[red]--backend must be pg or sqlite, got {backend!r}[/red]")
+        raise typer.Exit(2)
+    if backend_l == "pg":
+        _os.environ["STAN_DB_BACKEND"] = "pg"
 
     scripts_dir = sbatch_log_dir / "scripts"
     if not scripts_dir.exists():
@@ -6516,10 +6529,16 @@ def ingest_orphans_cmd(
             logger.warning("sbatch script for %s did not parse", raw_stem)
             continue
         instrument_name = args.get("instrument", "")
+        family_name = args.get("family", "")
         if instrument_filter and instrument_filter.lower() not in instrument_name.lower():
             counts["filter"] += 1
             continue
-        if _row_exists(db, instrument_name, args["raw_path"]):
+        if backend_l == "pg":
+            ho = host_origin_from_family(family_name)
+            exists = row_exists_pg(instrument_name, args["raw_path"], host_origin=ho)
+        else:
+            exists = _row_exists(db, instrument_name, args["raw_path"])
+        if exists:
             counts["skipped"] += 1
             continue
         if dry_run:
