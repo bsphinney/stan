@@ -55,6 +55,22 @@ def host_origin_from_family(family: str) -> str:
     return FAMILY_TO_HOST_ORIGIN.get(family, (family or "hive").lower())
 
 
+def host_origin_from_instrument(instrument: str) -> str:
+    """Map an instrument's canonical model name to a host_origin label.
+
+    Used when only the instrument name is in scope (e.g. inside
+    ``stan.db.insert_run`` which doesn't receive ``family``). Mirrors
+    the ``family`` mapping by substring match — keeps the host_origin
+    space aligned with the per-instrument SQLite cron sync.
+    """
+    s = (instrument or "").lower()
+    if "lumos" in s: return "lumos"
+    if "exploris" in s: return "exploris"
+    if "timstof" in s or "tims-tof" in s: return "timstof"
+    if "astral" in s: return "astral"
+    return s.split()[0] if s else "hive"
+
+
 def _resolve_pgpassword() -> str:
     """Find the PG Farm token, $PGPASSWORD first then the token file."""
     pwd = os.environ.get("PGPASSWORD", "").strip()

@@ -671,6 +671,21 @@ def insert_run(
     Returns:
         The generated run ID (UUID).
     """
+    # Route writes to PG when STAN_DB_BACKEND=pg is set. Covers every
+    # caller — process_raw, step_extract, watcher, baseline, etc. —
+    # without each one needing its own branch. Falls back to SQLite
+    # silently when the env var is unset (instrument-PC default).
+    from stan.db_pg import use_pg, insert_run_pg, host_origin_from_instrument
+    if use_pg():
+        return insert_run_pg(
+            instrument=instrument, run_name=run_name, raw_path=raw_path,
+            mode=mode, metrics=metrics,
+            host_origin=host_origin_from_instrument(instrument),
+            gate_result=gate_result, failed_gates=failed_gates,
+            diagnosis=diagnosis, amount_ng=amount_ng, spd=spd,
+            gradient_length_min=gradient_length_min, run_date=run_date,
+        )
+
     if db_path is None:
         db_path = get_db_path()
 
@@ -681,7 +696,6 @@ def insert_run(
         amount_ng=amount_ng, spd=spd,
         gradient_length_min=gradient_length_min, run_date=run_date,
     )
-    run_id = row["id"]
     return _insert_runs_row_sqlite(row, db_path, instrument, run_name, raw_path)
 
 
