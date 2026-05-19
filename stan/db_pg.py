@@ -147,11 +147,21 @@ def insert_run_pg(
     cols = list(row.keys()) + ["host_origin"]
     col_list = ", ".join(f'"{c}"' for c in cols)
     placeholders = ", ".join(["%s"] * len(cols))
-    update_cols = [c for c in cols if c not in ("id", "host_origin")]
+    # Conflict resolution uses the natural-key unique index
+    # idx_runs_natural (host_origin, instrument, run_name, raw_path).
+    # When a re-ingest produces a new UUID for an already-known raw,
+    # we update the existing row in place instead of inserting a dup.
+    # Don't overwrite host_origin or id; preserve the original
+    # migrated_at so we can tell when a row first landed.
+    update_cols = [
+        c for c in cols
+        if c not in ("id", "host_origin", "instrument", "run_name", "raw_path")
+    ]
     updates = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_cols)
     sql = (
         f'INSERT INTO runs ({col_list}) VALUES ({placeholders}) '
-        f'ON CONFLICT (host_origin, id) DO UPDATE SET {updates}'
+        f'ON CONFLICT (host_origin, instrument, run_name, raw_path) '
+        f'DO UPDATE SET {updates}'
     )
     values = list(row.values()) + [host_origin]
 
