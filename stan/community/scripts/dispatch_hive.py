@@ -398,6 +398,17 @@ export LD_LIBRARY_PATH={bruker_ff_dir}/linux:${{LD_LIBRARY_PATH:-}}
 # STAN venv on shared Quobyte storage.
 source {venv}/bin/activate
 
+# Route all DB writes directly to PG Farm. The Hive-local SQLite has
+# corrupted twice (May 11 + 16, 2026) under high concurrent-writer load,
+# so the canonical write target is now Postgres. PGPASSWORD comes from
+# the shared token file (rotated weekly, see docs/PG_FARM.md). If the
+# token is missing the job still runs but step_extract will raise a
+# clear error instead of silently writing to a broken SQLite.
+export STAN_DB_BACKEND=pg
+if [ -r /quobyte/proteomics-grp/brett/.pgfarm_token ]; then
+    export PGPASSWORD=$(cat /quobyte/proteomics-grp/brett/.pgfarm_token)
+fi
+
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] starting hive-process for {raw_path.name}"
 {cmd}
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] hive-process exit=$?"
