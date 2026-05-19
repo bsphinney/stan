@@ -4455,6 +4455,11 @@ def submit_all(
              "the community dataset is wiped (v1.0 cutover) so every "
              "row gets a fresh push to the relay.",
     ),
+    backend: str = typer.Option(
+        "sqlite", "--backend",
+        help="Read source: 'sqlite' (local stan.db, default) or 'pg' "
+             "(central PG Farm, requires PGPASSWORD or token file).",
+    ),
 ) -> None:
     """Submit all un-submitted QC runs to the community benchmark.
 
@@ -4509,16 +4514,34 @@ def submit_all(
         "dry_run": dry_run,
     })
 
-    with sqlite3.connect(str(db_path)) as con:
-        con.row_factory = sqlite3.Row
-        if force:
-            base_sql = "SELECT * FROM runs "
-        else:
-            base_sql = (
-                "SELECT * FROM runs WHERE submitted_to_benchmark = 0 "
-                "OR submitted_to_benchmark IS NULL "
-            )
-        candidates = con.execute(base_sql + "ORDER BY run_date ASC").fetchall()
+    backend_l = backend.lower().strip()
+    if backend_l not in ("sqlite", "pg"):
+        console.print(f"[red]--backend must be sqlite or pg, got {backend!r}[/red]")
+        raise typer.Exit(2)
+
+    if backend_l == "pg":
+        # Pull candidates from PG Farm. `submitted_to_benchmark` lives on the
+        # PG row directly, mirroring the SQLite schema — set by the post-
+        # submit UPDATE below so re-runs short-circuit.
+        from stan.db_pg import _connect as _pg_connect
+        where = "" if force else (
+            "WHERE submitted_to_benchmark = 0 OR submitted_to_benchmark IS NULL"
+        )
+        with _pg_connect() as pg, pg.cursor() as cur:
+            cur.execute(f"SELECT * FROM runs {where} ORDER BY run_date ASC NULLS LAST")
+            col_names = [d.name for d in cur.description]
+            candidates = [dict(zip(col_names, row)) for row in cur.fetchall()]
+    else:
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            if force:
+                base_sql = "SELECT * FROM runs "
+            else:
+                base_sql = (
+                    "SELECT * FROM runs WHERE submitted_to_benchmark = 0 "
+                    "OR submitted_to_benchmark IS NULL "
+                )
+            candidates = con.execute(base_sql + "ORDER BY run_date ASC").fetchall()
 
     console.print(f"[bold]{len(candidates)} un-submitted runs found[/bold]")
     _log({"event": "candidates", "count": len(candidates)})
@@ -4574,13 +4597,23 @@ def submit_all(
                 diann_version=run.get("diann_version"),
             )
             sid = result.get("submission_id", "")
-            # Mark as submitted in local DB
-            with sqlite3.connect(str(db_path)) as con:
-                con.execute(
-                    "UPDATE runs SET submitted_to_benchmark = 1, "
-                    "submission_id = ? WHERE id = ?",
-                    (sid, run["id"]),
-                )
+            # Mark as submitted in whichever DB we read from.
+            if backend_l == "pg":
+                from stan.db_pg import _connect as _pg_connect
+                with _pg_connect() as pg, pg.cursor() as cur:
+                    cur.execute(
+                        "UPDATE runs SET submitted_to_benchmark = 1, "
+                        "submission_id = %s WHERE host_origin = %s AND id = %s",
+                        (sid, run.get("host_origin"), run["id"]),
+                    )
+                    pg.commit()
+            else:
+                with sqlite3.connect(str(db_path)) as con:
+                    con.execute(
+                        "UPDATE runs SET submitted_to_benchmark = 1, "
+                        "submission_id = ? WHERE id = ?",
+                        (sid, run["id"]),
+                    )
             submitted += 1
             _log({
                 "event": "submitted",
