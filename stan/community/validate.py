@@ -126,10 +126,13 @@ def validate_submission(
     for gate_key, threshold in HARD_GATES.items():
         metric_name, direction = _parse_gate_key(gate_key)
 
-        # Skip gates not relevant to this mode
-        if mode == "dia" and metric_name in ("n_psms", "n_peptides_dda", "pct_delta_mass_lt5ppm", "ms2_scan_rate"):
+        # Skip gates not relevant to this mode. mode.startswith covers
+        # the Bruker "diaPASEF" / "ddaPASEF" forms in addition to the
+        # canonical "dia" / "dda" — both should follow the same
+        # acquisition-mode-specific gate set.
+        if mode.startswith("dia") and metric_name in ("n_psms", "n_peptides_dda", "pct_delta_mass_lt5ppm", "ms2_scan_rate"):
             continue
-        if mode == "dda" and metric_name in ("n_precursors", "n_peptides", "n_proteins", "median_cv_precursor", "pct_charge_1", "missed_cleavage_rate"):
+        if mode.startswith("dda") and metric_name in ("n_precursors", "n_peptides", "n_proteins", "median_cv_precursor", "pct_charge_1", "missed_cleavage_rate"):
             continue
 
         value = metrics.get(metric_name)
