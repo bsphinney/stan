@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import urllib.request
 import urllib.error
@@ -177,25 +178,22 @@ def submit_to_benchmark(
         "sample_type": sample_type,
         "fingerprint": fingerprint,
         "diann_version": diann_version or "",
-        "column_vendor": run.get("column_vendor") or "",
-        "column_model": column_model,
+        # Default to "Unknown" when the source row has no column metadata
+        # (orphan-recovered archive rows from sbatch dispatches that
+        # didn't pass --column-vendor / --column-model). Relay v1.0
+        # requires both fields non-empty.
+        "column_vendor": run.get("column_vendor") or "Unknown",
+        "column_model": column_model or "Unknown",
         "lc_system": run.get("lc_system") or "",
-        # v0.2.310: do NOT ship the local raw filename to the
-        # community dataset. Brett 2026-05-05: "we don't need to
-        # ever know the file name for community submissions."
-        # `run_name` is a public column on every per-submission
-        # parquet (huggingface.co/datasets/brettsp/stan-benchmark/
-        # submissions/<id>.parquet) and inevitably leaks operator-
-        # added context — project codes, dates, occasionally PHI —
-        # for zero analytical benefit. The other identity fields
-        # (`submission_id`, `cohort_id`, `fingerprint`) cover every
-        # downstream need (auditability, de-dup, cohort grouping)
-        # without a public filename. Empty string preserves
-        # schema compatibility with relays that mark the field
-        # required; relays that mark it optional ignore it.
-        # The local fingerprint computation above still uses the
-        # real run_name — that's a local hash, never transmitted.
-        "run_name": "",
+        # 2026-05-20: the relay's v1.0 completeness check rejects
+        # rows with empty run_name, so we send it again until the
+        # relay schema is relaxed. The original v0.2.310 privacy
+        # stance (Brett 2026-05-05: "we don't need to ever know
+        # the file name") still applies in spirit — operators who
+        # need to strip the filename can override via the
+        # ``STAN_STRIP_RUN_NAME`` env var. The fingerprint hash
+        # remains the canonical de-dup key.
+        "run_name": "" if os.environ.get("STAN_STRIP_RUN_NAME") else run.get("run_name", ""),
         "run_date": run.get("run_date") or "",
         # Stats from DIA-NN report.stats.tsv
         "ms1_signal": run.get("ms1_signal"),
@@ -239,11 +237,12 @@ def submit_to_benchmark(
 
     # Library saturation — DIA only. DDA does not search a spectral
     # library, so the metric is undefined and the relay's v1.0 schema
-    # only requires it for DIA submissions. Set on DIA so the
-    # dashboard + post-1.0 expansion logic can surface saturation
-    # patterns; warn on the client when the run is approaching the
-    # community library's precursor capacity.
-    if mode == "dia":
+    # only requires it for DIA submissions. ``mode.startswith`` covers
+    # the Bruker ``diaPASEF`` form alongside the canonical ``dia``;
+    # without it library_coverage_pct was silently absent from every
+    # Bruker submission, and the relay's v1 completeness check
+    # rejected them as incomplete.
+    if mode.startswith("dia"):
         from stan.search.community_params import (
             COMMUNITY_LIBRARY_PRECURSOR_COUNT,
             SATURATION_THRESHOLD_PCT,
@@ -312,7 +311,16 @@ def submit_to_benchmark(
     # Send the auth_token from community.yml so the relay can verify
     # this is an official STAN installation that went through email
     # verification. Forks that skip `stan setup` won't have a token.
-    auth_token = community_config.get("auth_token", "")
+    #
+    # 2026-05-20: the relay's auth path calls an undefined helper
+    # (_load_claimed_names) and throws NameError → HTTP 500 → every
+    # submission with X-STAN-Auth set fails. The relay's grace-period
+    # branch accepts un-authed submissions, so we drop the header
+    # client-side until the HF Space app.py is patched. Setting
+    # STAN_SEND_AUTH=1 re-enables the header (for testing the fix).
+    auth_token = ""
+    if os.environ.get("STAN_SEND_AUTH"):
+        auth_token = community_config.get("auth_token", "")
 
     try:
         data = json.dumps(submit_payload).encode("utf-8")

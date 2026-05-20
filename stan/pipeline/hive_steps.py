@@ -575,15 +575,61 @@ def step_extract(
             run_date=acq_date,
         )
         if pg_mode:
-            # Direct-to-Postgres write. The pegdrift/TIC/dispatch_attempt
-            # child-table writes remain SQLite-only for now — they're
-            # nice-to-have side effects that can be backfilled later and
-            # are not blocking the primary `runs` row that the dashboard
-            # and community submission depend on.
+            # Direct-to-Postgres write. Inline-extract the TIC arrays and
+            # pegdrift columns so the row carries every v1.0 community
+            # submission field — previously these landed in SQLite-only
+            # child tables (tic_traces, dispatch_attempts) which the PG
+            # branch skipped, leaving the rows un-submittable to the
+            # leaderboard. Pegdrift sidecars (peg_result.json /
+            # drift_result.json) may not exist for orphan-recovered
+            # rows — those columns stay NULL and the dashboard renders
+            # them as "unknown" rather than blocking submission.
+            try:
+                from stan.metrics.tic import (
+                    extract_tic_bruker, extract_tic_thermo, downsample_trace,
+                )
+                trace = None
+                if raw_path.is_dir() and raw_path.suffix.lower() == ".d":
+                    trace = extract_tic_bruker(raw_path)
+                elif raw_path.is_file() and raw_path.suffix.lower() == ".raw":
+                    trace = extract_tic_thermo(raw_path)
+                if trace and trace.rt_min and trace.intensity:
+                    trace = downsample_trace(trace, n_bins=128)
+                    metrics["tic_rt_bins"] = [round(r, 3) for r in trace.rt_min]
+                    metrics["tic_intensity"] = [round(v, 0) for v in trace.intensity]
+            except Exception:
+                logger.debug("TIC extract failed for %s", raw_path.name, exc_info=True)
+            # Pegdrift JSON sidecar values land on the row dict too.
+            peg_path = out_dir / "peg_result.json"
+            if peg_path.exists():
+                try:
+                    import json as _json
+                    peg = _json.loads(peg_path.read_text())
+                    metrics.setdefault("peg_score", peg.get("peg_score"))
+                    metrics.setdefault("peg_n_ions_detected", peg.get("n_ions_detected"))
+                    metrics.setdefault("peg_intensity_pct", peg.get("intensity_pct"))
+                    metrics.setdefault("peg_class", peg.get("peg_class"))
+                except Exception:
+                    pass
+            drift_path = out_dir / "drift_result.json"
+            is_bruker = raw_path.is_dir() and raw_path.suffix.lower() == ".d"
+            if is_bruker and drift_path.exists():
+                try:
+                    import json as _json
+                    drift = _json.loads(drift_path.read_text())
+                    metrics.setdefault("drift_coverage", drift.get("global_coverage"))
+                    metrics.setdefault("drift_median_im", drift.get("median_drift_im"))
+                    metrics.setdefault("drift_p90_abs_im", drift.get("p90_abs_drift_im"))
+                    metrics.setdefault("drift_class", drift.get("drift_class"))
+                except Exception:
+                    pass
             run_id = insert_run_pg(host_origin=host_origin, **insert_kwargs)
             record["run_id"] = run_id
             record["gate_result"] = decision.result.value
-            record["pegdrift"] = None
+            record["pegdrift"] = {
+                "peg": metrics.get("peg_class") or "missing",
+                "drift": metrics.get("drift_class") or "missing",
+            }
         else:
             run_id = insert_run(db_path=db_path, **insert_kwargs)
             record["run_id"] = run_id

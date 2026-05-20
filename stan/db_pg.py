@@ -160,6 +160,16 @@ def insert_run_pg(
         gradient_length_min=gradient_length_min, run_date=run_date,
     )
 
+    # JSONB columns need an explicit Json wrapper — psycopg2's default
+    # adapter sends Python lists as PG arrays (`{1, 2, ...}`), which the
+    # JSONB column rejects. Listed here so adding a new JSONB column
+    # to PG only requires touching this set.
+    from psycopg2.extras import Json
+    JSONB_COLS = {"tic_rt_bins", "tic_intensity"}
+    for c in JSONB_COLS:
+        if c in row and row[c] is not None:
+            row[c] = Json(row[c])
+
     cols = list(row.keys()) + ["host_origin"]
     col_list = ", ".join(f'"{c}"' for c in cols)
     placeholders = ", ".join(["%s"] * len(cols))

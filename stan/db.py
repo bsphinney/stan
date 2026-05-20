@@ -796,6 +796,28 @@ def _build_runs_row(
         "gate_result": gate_result,
         "failed_gates": json.dumps(failed_gates or []),
         "diagnosis": diagnosis,
+        # PEG / drift columns. Populated when step_extract reads the
+        # pegdrift JSON sidecars (PG mode) or when _apply_pegdrift_jsons
+        # has run (SQLite mode). NULL when the artifact doesn't exist.
+        "peg_score": metrics.get("peg_score"),
+        "peg_n_ions_detected": metrics.get("peg_n_ions_detected"),
+        "peg_intensity_pct": metrics.get("peg_intensity_pct"),
+        "peg_class": metrics.get("peg_class"),
+        "drift_coverage": metrics.get("drift_coverage"),
+        "drift_median_im": metrics.get("drift_median_im"),
+        "drift_p90_abs_im": metrics.get("drift_p90_abs_im"),
+        "drift_class": metrics.get("drift_class"),
+        # TIC trace bins (JSONB on PG, TEXT on SQLite child table). The
+        # PG-direct path stores them inline on the runs row so the
+        # community submission has the v1.0-required arrays without a
+        # second query.
+        "tic_rt_bins": metrics.get("tic_rt_bins"),
+        "tic_intensity": metrics.get("tic_intensity"),
+        # Community library saturation. Submit-time computes this from
+        # n_precursors + instrument_family, but persisting the value
+        # makes the dashboard's saturation panel render without a
+        # second query. DDA leaves it NULL (no library searched).
+        "library_coverage_pct": metrics.get("library_coverage_pct"),
     }
 
 
@@ -810,13 +832,21 @@ def _insert_runs_row_sqlite(
     inserting a dup (pre-v0.2.208 behavior — every restart of the
     watcher or backfill walk created a new row).
     """
-    cols = ", ".join(row.keys())
-    placeholders = ", ".join(f":{k}" for k in row.keys())
+    # Filter out keys the local SQLite schema doesn't know about.
+    # _build_runs_row emits some fields (tic_rt_bins, tic_intensity,
+    # library_coverage_pct) that only live on the central PG runs
+    # table — including them in the SQLite INSERT would raise
+    # "table runs has no column named ...". The PG writer (insert_run_pg)
+    # accepts the full dict because it built the schema to match.
     run_id = row["id"]
     with sqlite3.connect(str(db_path)) as con:
+        sqlite_cols = {r[1] for r in con.execute("PRAGMA table_info(runs)")}
+        sub = {k: v for k, v in row.items() if k in sqlite_cols}
+        cols = ", ".join(sub.keys())
+        placeholders = ", ".join(f":{k}" for k in sub.keys())
         try:
             con.execute(
-                f"INSERT INTO runs ({cols}) VALUES ({placeholders})", row,
+                f"INSERT INTO runs ({cols}) VALUES ({placeholders})", sub,
             )
         except sqlite3.IntegrityError:
             existing = con.execute(
