@@ -4522,7 +4522,12 @@ def submit_all(
     if backend_l == "pg":
         # Pull candidates from PG Farm. `submitted_to_benchmark` lives on the
         # PG row directly, mirroring the SQLite schema — set by the post-
-        # submit UPDATE below so re-runs short-circuit.
+        # submit UPDATE below so re-runs short-circuit. Datetime columns
+        # (run_date, migrated_at, hidden_at) come back as native
+        # ``datetime.datetime`` objects; we ISO-stringify them so the
+        # downstream submit_to_benchmark → json.dumps path doesn't trip
+        # over "Object of type datetime is not JSON serializable".
+        from datetime import datetime as _dt
         from stan.db_pg import _connect as _pg_connect
         where = "" if force else (
             "WHERE submitted_to_benchmark = 0 OR submitted_to_benchmark IS NULL"
@@ -4530,7 +4535,12 @@ def submit_all(
         with _pg_connect() as pg, pg.cursor() as cur:
             cur.execute(f"SELECT * FROM runs {where} ORDER BY run_date ASC NULLS LAST")
             col_names = [d.name for d in cur.description]
-            candidates = [dict(zip(col_names, row)) for row in cur.fetchall()]
+            candidates = []
+            for row in cur.fetchall():
+                d = {}
+                for c, v in zip(col_names, row):
+                    d[c] = v.isoformat() if isinstance(v, _dt) else v
+                candidates.append(d)
     else:
         with sqlite3.connect(str(db_path)) as con:
             con.row_factory = sqlite3.Row
