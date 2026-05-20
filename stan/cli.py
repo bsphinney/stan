@@ -6477,6 +6477,11 @@ def ingest_orphans_cmd(
         help="Walk + parse but don't call step_extract or write to DB."),
     instrument_filter: str = typer.Option("", "--instrument",
         help="Substring filter on the recovered instrument name."),
+    force: bool = typer.Option(False, "--force",
+        help="Re-ingest every parquet even when the row already exists "
+             "in the target DB. Use after a schema change so the upsert "
+             "(ON CONFLICT) refreshes the row with new columns "
+             "(e.g. tic_rt_bins added in v0.2.370)."),
 ) -> None:
     """Recover orphan parquets: re-extract metrics, insert runs row.
 
@@ -6532,6 +6537,11 @@ def ingest_orphans_cmd(
         raise typer.Exit(2)
     if backend_l == "pg":
         _os.environ["STAN_DB_BACKEND"] = "pg"
+    if force:
+        # step_extract checks this env var to skip its internal
+        # row_exists short-circuit. Required when re-ingesting after
+        # a schema change (e.g. adding tic_rt_bins in v0.2.370).
+        _os.environ["STAN_FORCE_REINGEST"] = "1"
 
     # Bulk-load existing (host_origin, instrument, raw_path) keys once so
     # the per-orphan existence check is in-memory rather than a separate
@@ -6616,7 +6626,7 @@ def ingest_orphans_cmd(
             exists = key in existing_keys
         else:
             exists = _row_exists(db, instrument_name, args["raw_path"])
-        if exists:
+        if exists and not force:
             counts["skipped"] += 1
             continue
         if dry_run:

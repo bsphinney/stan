@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
@@ -505,13 +506,19 @@ def step_extract(
         if not pg_mode:
             init_db(db_path)
 
-        if pg_mode:
-            existing = row_exists_pg(instrument, raw_path, host_origin=host_origin)
-        else:
-            existing = _row_exists(db_path, instrument, raw_path)
-        if existing:
-            record.update(status="skipped", run_id=existing)
-            return record
+        # STAN_FORCE_REINGEST=1 skips the existence short-circuit so a
+        # re-ingest after a schema change actually re-extracts and
+        # upserts via ON CONFLICT. The ingest-orphans CLI sets this
+        # when invoked with --force.
+        force_reingest = os.environ.get("STAN_FORCE_REINGEST") == "1"
+        if not force_reingest:
+            if pg_mode:
+                existing = row_exists_pg(instrument, raw_path, host_origin=host_origin)
+            else:
+                existing = _row_exists(db_path, instrument, raw_path)
+            if existing:
+                record.update(status="skipped", run_id=existing)
+                return record
 
         report_path = out_dir / "report.parquet"
         if not report_path.exists():
