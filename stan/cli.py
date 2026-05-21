@@ -6579,7 +6579,13 @@ def ingest_orphans_cmd(
             return None
         if not tokens or tokens[0].startswith("--"):
             return None
-        out = {"raw_path": _translate_path(Path(tokens[0]))}
+        # Two paths: the canonical Hive-side path (used for DB storage —
+        # must stay stable across Mac vs Hive runs to keep the natural
+        # key (host_origin, instrument, run_name, raw_path) consistent),
+        # and the translated path for local IO when running on the Mac
+        # against /Volumes/ SMB mounts.
+        canonical = Path(tokens[0])
+        out = {"raw_path": canonical, "raw_path_local": _translate_path(canonical)}
         i = 1
         while i < len(tokens):
             tok = tokens[i]
@@ -6632,9 +6638,14 @@ def ingest_orphans_cmd(
         if dry_run:
             counts["inserted"] += 1
             continue
+        # IO against the local (possibly translated) form, storage with
+        # canonical Hive-side path. Prevents the same raw file landing
+        # twice in PG just because one run saw it via /Volumes/ and
+        # another via /quobyte/.
+        _os.environ["STAN_RAW_PATH_CANONICAL"] = str(args["raw_path"])
         try:
             result = step_extract(
-                raw_path=args["raw_path"],
+                raw_path=args.get("raw_path_local", args["raw_path"]),
                 instrument=instrument_name,
                 family=args.get("family", ""),
                 vendor=args.get("vendor", ""),

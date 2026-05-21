@@ -567,10 +567,17 @@ def step_extract(
             except OSError:
                 acq_date = None
 
+        # STAN_RAW_PATH_CANONICAL overrides the stored raw_path so the
+        # row's natural key stays stable across Mac/Hive runs. Set by
+        # ``stan ingest-orphans`` when the local IO path differs from
+        # the canonical Hive-side path stored in sbatch sidecars. IO
+        # still uses `raw_path` (the local form); only the DB write
+        # records the canonical form.
+        storage_raw_path = os.environ.get("STAN_RAW_PATH_CANONICAL") or str(raw_path)
         insert_kwargs = dict(
             instrument=instrument,
             run_name=raw_path.name,
-            raw_path=str(raw_path),
+            raw_path=storage_raw_path,
             mode=mode_enum.value,
             metrics=metrics,
             gate_result=decision.result.value,
