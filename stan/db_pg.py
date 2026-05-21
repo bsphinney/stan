@@ -183,7 +183,16 @@ def insert_run_pg(
         c for c in cols
         if c not in ("id", "host_origin", "instrument", "run_name", "raw_path")
     ]
-    updates = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in update_cols)
+    # COALESCE preserves existing non-NULL values when the new extraction
+    # didn't produce a column. Without this, re-ingesting a row whose
+    # current extractor path can't compute (e.g.) median_peak_width_sec
+    # silently nulls the value populated by the SQLite-path before it.
+    # Trade-off: a true NULL value can't be set to NULL via re-ingest
+    # — needs an explicit UPDATE. Worth it for forward-only enrichment.
+    updates = ", ".join(
+        f'"{c}" = COALESCE(EXCLUDED."{c}", runs."{c}")'
+        for c in update_cols
+    )
     sql = (
         f'INSERT INTO runs ({col_list}) VALUES ({placeholders}) '
         f'ON CONFLICT (host_origin, instrument, run_name, raw_path) '
