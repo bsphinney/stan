@@ -769,6 +769,13 @@ def _build_runs_row(
         "median_mass_acc_ms2_ppm": metrics.get("median_mass_acc_ms2_ppm"),
         "peak_capacity": metrics.get("peak_capacity"),
         "dynamic_range_log10": metrics.get("dynamic_range_log10"),
+        # Peak-width + points-across-peak (Matthews & Hayes 1976). Required
+        # for the relay's v1.0 community submission gate. Previously
+        # missing from the row dict — extractor populated the metrics
+        # dict but _build_runs_row didn't propagate, so every PG insert
+        # silently dropped them and the v1-complete count stayed at 0.
+        "median_peak_width_sec": metrics.get("median_peak_width_sec"),
+        "median_points_across_peak": metrics.get("median_points_across_peak"),
         # LC system (from detect_lc_system on the raw file)
         "lc_system": metrics.get("lc_system") or "",
         # Column metadata (from instruments.yml — set by stan setup
