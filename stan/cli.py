@@ -6482,6 +6482,12 @@ def ingest_orphans_cmd(
              "in the target DB. Use after a schema change so the upsert "
              "(ON CONFLICT) refreshes the row with new columns "
              "(e.g. tic_rt_bins added in v0.2.370)."),
+    shard: str = typer.Option("", "--shard",
+        help="SLURM-array sharding: 'N/M' means this worker processes "
+             "stems whose md5(stem) % M == N. Default empty = single "
+             "worker handles everything. Use for parallel re-ingest:"
+             " 10 workers across the array each set N to their "
+             "SLURM_ARRAY_TASK_ID."),
 ) -> None:
     """Recover orphan parquets: re-extract metrics, insert runs row.
 
@@ -6546,9 +6552,11 @@ def ingest_orphans_cmd(
     # Bulk-load existing (host_origin, instrument, raw_path) keys once so
     # the per-orphan existence check is in-memory rather than a separate
     # PG round-trip per row. With 2,700+ orphans, per-row connects took
-    # >10 min — this drops it to one query + a set lookup.
+    # >10 min — this drops it to one query + a set lookup. Skipped when
+    # --force is set (we're going to UPSERT every row anyway) so each
+    # array worker doesn't pull the same 3k rows on startup.
     existing_keys: set[tuple[str, str, str]] = set()
-    if backend_l == "pg":
+    if backend_l == "pg" and not force:
         from stan.db_pg import _connect
         with _connect() as pg, pg.cursor() as cur:
             cur.execute("SELECT host_origin, instrument, raw_path FROM runs")
@@ -6597,11 +6605,33 @@ def ingest_orphans_cmd(
                 i += 1
         return out
 
+    # Shard parsing for parallel re-ingest. Empty = no sharding.
+    shard_n: int | None = None
+    shard_m: int | None = None
+    if shard:
+        try:
+            shard_n_s, shard_m_s = shard.split("/", 1)
+            shard_n = int(shard_n_s)
+            shard_m = int(shard_m_s)
+            if shard_m <= 0 or not (0 <= shard_n < shard_m):
+                raise ValueError(f"shard out of range: {shard}")
+            console.print(f"[cyan]Sharding: worker {shard_n} of {shard_m}[/cyan]")
+        except Exception as e:
+            console.print(f"[red]--shard parse failed ({e}); expected N/M[/red]")
+            raise typer.Exit(2)
+
+    import hashlib as _hashlib
+
     counts = {"inserted": 0, "skipped": 0, "no_sbatch": 0,
               "no_parquet": 0, "filter": 0, "failed": 0}
     total = 0
 
     for sub in sorted(processing_dir.iterdir()):
+        if shard_m is not None:
+            # md5 % M == N → this worker owns the stem
+            bucket = int(_hashlib.md5(sub.name.encode()).hexdigest()[:8], 16) % shard_m
+            if bucket != shard_n:
+                continue
         if not sub.is_dir():
             continue
         report = sub / "report.parquet"
