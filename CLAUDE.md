@@ -28,6 +28,8 @@ If you can't explain where the documentation lives for a change you just made,
 the change is not done yet.
 
 **Reference files to always check before HPC work:**
+- `docs/FEATURES.md` — STAN feature highlights, quick orientation
+  (start here in new Claude Code sessions)
 - `docs/HPC_PATHS.md` — container paths, FASTA locations, storage layout
 - `docs/GOTCHAS_DELIMP.md` — 50+ hard-learned lessons (DIA-NN, SLURM, data)
 - `docs/QUEUE_SWITCHING.md` — auto partition switching logic
