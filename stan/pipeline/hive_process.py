@@ -619,6 +619,26 @@ def process_raw(
             except OSError:
                 acq_date = None
 
+        # Extract TIC inline so the PG runs row carries tic_rt_bins /
+        # tic_intensity (v1 community submission requires both). The
+        # SQLite-only _persist_tic call below writes the child table
+        # for local dashboards; PG mode reads from the row itself.
+        try:
+            from stan.metrics.tic import (
+                extract_tic_bruker, extract_tic_thermo, downsample_trace,
+            )
+            trace = None
+            if raw_path.is_dir() and raw_path.suffix.lower() == ".d":
+                trace = extract_tic_bruker(raw_path)
+            elif raw_path.is_file() and raw_path.suffix.lower() == ".raw":
+                trace = extract_tic_thermo(raw_path)
+            if trace and trace.rt_min and trace.intensity:
+                trace = downsample_trace(trace, n_bins=128)
+                metrics["tic_rt_bins"] = [round(r, 3) for r in trace.rt_min]
+                metrics["tic_intensity"] = [round(v, 0) for v in trace.intensity]
+        except Exception:
+            logger.debug("inline TIC extract failed for %s", raw_path.name, exc_info=True)
+
         run_id = insert_run(
             instrument=instrument,
             run_name=raw_path.name,
