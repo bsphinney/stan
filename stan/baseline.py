@@ -548,7 +548,7 @@ def run_baseline(redo_stale_diann: bool = False) -> None:
             else:
                 qc_note = " [dim](all files)[/dim]"
             console.print(f"  [cyan]{i}[/cyan]  {label} ({vendor})  {wpath}{qc_note}")
-        console.print(f"  [cyan]c[/cyan]  Custom path")
+        console.print("  [cyan]c[/cyan]  Custom path")
         console.print()
         choices = [str(i) for i in range(1, len(watch_options) + 1)] + ["c"]
         default_choice = "1" if len(watch_options) >= 1 else "c"
@@ -806,7 +806,7 @@ def run_baseline(redo_stale_diann: bool = False) -> None:
         median_grad = detected_gradients[len(detected_gradients) // 2]
         gradient_length_min = median_grad
         spd = gradient_min_to_spd(gradient_length_min)
-        console.print(f"  [dim]Per-file gradients will be used during processing[/dim]")
+        console.print("  [dim]Per-file gradients will be used during processing[/dim]")
         console.print(
             f"  [dim]Default (median): {gradient_length_min} min ({spd} SPD)[/dim]"
         )
@@ -1358,8 +1358,8 @@ def _process_files(
 
                     if vendor == "thermo":
                         console.print(
-                            f"  [dim]Converting .raw → mzML for Sage (Sage cannot read "
-                            f".raw directly, this adds ~2-5 min)[/dim]"
+                            "  [dim]Converting .raw → mzML for Sage (Sage cannot read "
+                            ".raw directly, this adds ~2-5 min)[/dim]"
                         )
                     result_path = run_sage_local(
                         raw_path=raw_file,

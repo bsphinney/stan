@@ -19,9 +19,7 @@ from pydantic import BaseModel
 from stan import __version__
 from stan.config import (
     ConfigWatcher,
-    get_user_config_dir,
     load_ui_prefs,
-    load_yaml,
     resolve_config_path,
 )
 from stan.db import get_db_path, get_run, get_runs, get_tic_trace, get_tic_traces_for_instrument, get_trends, init_db
@@ -462,7 +460,7 @@ async def api_today_tic_overview(
     """
     import json as _json
     import sqlite3
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     from stan.db import get_db_path
 
     db_path = get_db_path()

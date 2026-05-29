@@ -17,8 +17,8 @@ A perfectly healthy instrument shows a regular hexagon.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime
 
 from stan.db import get_runs
 from stan.metrics.scoring import _percentile_rank

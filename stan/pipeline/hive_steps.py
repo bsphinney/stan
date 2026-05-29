@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import sqlite3
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path

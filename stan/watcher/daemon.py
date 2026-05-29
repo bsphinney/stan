@@ -1059,9 +1059,11 @@ class InstrumentWatcher:
         point is just to surface bad injections in the dashboard for
         the operator to review.
 
-        Thermo support is TBD — `rawmeat.py` is currently Bruker-only.
-        For Thermo files we skip with a recorded event so the operator
-        can see the monitor fired but had no data source."""
+        Both vendors are supported: Bruker `.d` via
+        `extract_rawmeat_metrics`, Thermo `.raw` via
+        `extract_rawmeat_thermo`. Unknown vendors skip with a recorded
+        event so the operator can see the monitor fired but had no
+        data source."""
         vendor = self._config.get("vendor", "").lower()
         if vendor not in ("bruker", "thermo"):
             self._record_event(

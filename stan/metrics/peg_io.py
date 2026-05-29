@@ -18,7 +18,6 @@ with very high confidence if it's there, and keeps per-file runtime to
 from __future__ import annotations
 
 import logging
-import random
 from pathlib import Path
 from typing import Iterator
 

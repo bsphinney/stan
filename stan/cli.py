@@ -69,7 +69,6 @@ def doctor() -> None:
     import platform
     import sqlite3
     import sys
-    import traceback
     from datetime import datetime
 
     from stan.config import get_user_config_dir
@@ -478,10 +477,10 @@ def export_cmd(
     if format == "claude":
         console.print()
         console.print("[bold]Next steps:[/bold]")
-        console.print(f"  1. Open Claude (or ChatGPT / Gemini) in your browser")
+        console.print("  1. Open Claude (or ChatGPT / Gemini) in your browser")
         console.print(f"  2. Drag [cyan]{path}[/cyan] into the chat")
-        console.print(f"  3. Say: [italic]\"Please analyze my STAN QC data\"[/italic]")
-        console.print(f"  4. Claude will read the prompt and produce a full report with figures")
+        console.print("  3. Say: [italic]\"Please analyze my STAN QC data\"[/italic]")
+        console.print("  4. Claude will read the prompt and produce a full report with figures")
 
 
 @app.command("import")
@@ -497,7 +496,7 @@ def import_cmd(
     from stan.export import import_archive
 
     result = import_archive(archive, skip_duplicates=not overwrite)
-    console.print(f"[bold]Import complete:[/bold]")
+    console.print("[bold]Import complete:[/bold]")
     console.print(f"  [green]Imported:[/green] {result['imported']} runs")
     console.print(f"  [yellow]Skipped (duplicates):[/yellow] {result['skipped']}")
     console.print(f"  Total in archive: {result['total']}")
@@ -778,7 +777,7 @@ def add_watch(
         _yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
     console.print()
-    console.print(f"[green]Added watch directory:[/green]")
+    console.print("[green]Added watch directory:[/green]")
     console.print(f"  Name:   {name}")
     console.print(f"  Vendor: {vendor}")
     console.print(f"  Path:   {abs_path}")
@@ -786,10 +785,10 @@ def add_watch(
         pat_label = qc_pattern_cfg if qc_pattern_cfg else "default HeLa/QC pattern"
         console.print(f"  Filter: [cyan]{pat_label}[/cyan]")
     else:
-        console.print(f"  Filter: [cyan]none (processing all files)[/cyan]")
+        console.print("  Filter: [cyan]none (processing all files)[/cyan]")
     console.print()
     console.print(f"[dim]Config written to {config_path}[/dim]")
-    console.print(f"[dim]The watcher daemon picks up changes automatically (hot-reload).[/dim]")
+    console.print("[dim]The watcher daemon picks up changes automatically (hot-reload).[/dim]")
 
 
 @app.command("list-watch")
@@ -839,7 +838,6 @@ def remove_watch(
     name_or_number: str = typer.Argument(..., help="Instrument name or number from list-watch"),
 ) -> None:
     """Remove a watch directory from instruments.yml."""
-    from pathlib import Path as _Path
     import yaml as _yaml
     from stan.config import resolve_config_path
 
@@ -1542,7 +1540,7 @@ def _backfill_tic_impl(
             from datetime import datetime as _dt
             _push_log = _log_dir / f"backfill_tic_push_{_dt.now().strftime('%Y%m%d_%H%M%S')}.log"
             with open(_push_log, "w", encoding="utf-8") as _fh:
-                _fh.write(f"backfill-tic --push summary\n")
+                _fh.write("backfill-tic --push summary\n")
                 _fh.write(f"attempted: {len(pushed_rows)}\n")
                 _fh.write(f"succeeded: {ok}\n")
                 _fh.write(f"failed:    {len(push_errors)}\n\n")
@@ -2028,6 +2026,7 @@ def repair_metadata(
         return
 
     from stan.community.submit import RELAY_URL  # noqa: E402
+    from stan.config import load_community  # noqa: E402
 
     submitted = [u for u in updates if u["submission_id"]]
     if not submitted:
@@ -2037,7 +2036,11 @@ def repair_metadata(
         return
 
     # Auth token for /api/update — prevents forks from patching data
-    _repair_token = community_config.get("auth_token", "")
+    try:
+        _community_config = load_community()
+    except Exception:
+        _community_config = {}
+    _repair_token = _community_config.get("auth_token", "")
 
     console.print(
         f"Pushing [bold]{len(submitted)}[/bold] corrections to the relay..."
@@ -2174,7 +2177,6 @@ def watch(
     import logging as _logging
     import sys as _sys
     import threading as _threading
-    import time as _time
     from datetime import datetime as _dt
 
     from stan.watcher.daemon import WatcherDaemon
@@ -2455,7 +2457,7 @@ def log_event_cmd(
         if life.get("injections_since_change", 0) > 0:
             console.print(f"  Previous column: {life['injections_since_change']} injections over {life['days_on_column']} days")
         console.print(f"  New column: {column or '(not specified)'}")
-        console.print(f"  Injection counter reset to 0")
+        console.print("  Injection counter reset to 0")
 
 
 @app.command("email-report")
@@ -3569,7 +3571,7 @@ def fix_instrument_names(
             "SELECT COUNT(*) FROM runs WHERE instrument = ?", (to_name,)
         ).fetchone()[0]
 
-    console.print(f"[bold]Rewrite plan:[/bold]")
+    console.print("[bold]Rewrite plan:[/bold]")
     console.print(f"  from: {from_name!r}")
     console.print(f"  to:   {to_name!r}")
     console.print(f"  runs with {from_name!r}:          {n_runs}")
@@ -3578,7 +3580,7 @@ def fix_instrument_names(
     console.print()
 
     if n_runs == 0 and n_sh == 0:
-        console.print(f"[yellow]No rows to rewrite - nothing to do.[/yellow]")
+        console.print("[yellow]No rows to rewrite - nothing to do.[/yellow]")
         return
 
     if dry_run:
@@ -3892,7 +3894,6 @@ def backfill_peg(
     # Import the algorithm first (pure Python, always available) so we
     # fail fast on import errors before even trying the IO layer.
     from stan.metrics.peg import (
-        classify_peg_score,
         detect_peg_in_spectra,
     )
     # IO layer — may fail for vendors where the optional extra isn't
@@ -4385,7 +4386,7 @@ def derive_cirt_panel(
                 )
                 continue
 
-            skipped.append((fam, sp, f"{len(reports)} runs but no stable anchors (tried CV up to {cv_ladder[-1]:.0f}%)"))
+            skipped.append((fam, sp, f"{len(reports)} runs but no stable anchors (max CV {max_cv:.0f}%)"))
 
         out_path = user_dir / "cirt_panels_auto.yml"
         out_path.write_text(_yaml.safe_dump(out_panels, sort_keys=False), encoding="utf-8")
@@ -4431,8 +4432,8 @@ def derive_cirt_panel(
     if not panel:
         console.print(
             "[yellow]No stable anchors found at current thresholds. "
-            f"Try [bold]--max-cv 12[/bold] or [bold]--max-cv 20[/bold] "
-            f"if this cohort spans many months of runs.[/yellow]"
+            "Try [bold]--max-cv 12[/bold] or [bold]--max-cv 20[/bold] "
+            "if this cohort spans many months of runs.[/yellow]"
         )
         return
 
@@ -4782,7 +4783,7 @@ def watch_status(
         log_line(f"== {name}  watch_dir={watch_dir}  exts={sorted(exts)} ==")
 
         if not watch_dir.exists():
-            msg = f"  [red]watch_dir does not exist[/red]"
+            msg = "  [red]watch_dir does not exist[/red]"
             console.print(msg)
             log_line(f"  WATCH_DIR MISSING: {watch_dir}")
             continue
@@ -5468,7 +5469,7 @@ def set_column(
             event_date=now_iso,
             column_vendor=vendor,
             column_model=model,
-            note=f"set via stan set-column",
+            note="set via stan set-column",
         )
         console.print("[dim]✓ maintenance_events: column_change recorded[/dim]")
     except Exception as e:
@@ -5994,8 +5995,8 @@ def list_stale(
         console.print("[green]✓ no stale rows — DB is at or above cutoff[/green]")
     else:
         console.print(
-            f"\n[dim]Run [bold]stan backfill-metrics --force[/bold] "
-            f"to refresh stale rows.[/dim]"
+            "\n[dim]Run [bold]stan backfill-metrics --force[/bold] "
+            "to refresh stale rows.[/dim]"
         )
 
 
@@ -6513,7 +6514,7 @@ def ingest_orphans_cmd(
     import shlex
     from stan.pipeline.hive_steps import step_extract
     from stan.pipeline.hive_process import _row_exists
-    from stan.db_pg import host_origin_from_family, row_exists_pg
+    from stan.db_pg import host_origin_from_family
 
     # Hive→Mac path translations. The sbatch sidecars store paths as the
     # Hive sees them (/nfs/lssc0/flinders/..., /quobyte/proteomics-grp/...),
@@ -6740,7 +6741,7 @@ def time_hive_partitions_cmd(
     import time as _time
     from stan.config import load_instruments
     from stan.sync.upload_to_hive import (
-        upload_raw_to_incoming, submit_one_via_ssh,
+        upload_raw_to_incoming,
     )
 
     _hive, insts = load_instruments()
@@ -6967,7 +6968,6 @@ def backfill_from_dir_cmd(
     a non-watched data directory. Resumable: re-running skips uploads
     that already landed at matching size on the Hive side.
     """
-    import json as _json
     import re
     from stan.config import load_instruments, resolve_vendor_family
     from stan.sync.upload_to_hive import (

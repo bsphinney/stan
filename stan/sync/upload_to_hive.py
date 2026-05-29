@@ -382,6 +382,8 @@ def submit_one_via_ssh(
         )
     return out
 
+
+def get_pending_uploads(db_path: Path | None = None) -> list[dict]:
     """Return rows in ``pending`` or ``failed`` state for resume."""
     if db_path is None:
         from stan.db import get_db_path

@@ -305,24 +305,24 @@ def build_asset_download_script(vendor: str, cache_dir: str | None = None) -> st
     fasta_filename = COMMUNITY_FASTA_HF_PATH.split("/")[-1]
 
     lines = [
-        f"# Download frozen community search assets (if not cached)",
+        "# Download frozen community search assets (if not cached)",
         f"mkdir -p {cache}",
-        f"",
+        "",
     ]
 
     # FASTA
     lines.append(f"if [ ! -f {cache}/{fasta_filename} ]; then")
-    lines.append(f"  echo 'Downloading community FASTA...'")
+    lines.append("  echo 'Downloading community FASTA...'")
     lines.append(
         f"  hf download {HF_DATASET_REPO} "
         f"{COMMUNITY_FASTA_HF_PATH} "
         f"--repo-type dataset "
         f"--local-dir {cache}"
     )
-    lines.append(f"  # Flatten: move from subdir to cache root")
+    lines.append("  # Flatten: move from subdir to cache root")
     lines.append(f"  mv {cache}/{COMMUNITY_FASTA_HF_PATH} {cache}/{fasta_filename} 2>/dev/null || true")
-    lines.append(f"fi")
-    lines.append(f"")
+    lines.append("fi")
+    lines.append("")
 
     # Speclib (DIA only)
     if speclib_hf_path:
@@ -335,11 +335,11 @@ def build_asset_download_script(vendor: str, cache_dir: str | None = None) -> st
             f"--local-dir {cache}"
         )
         lines.append(f"  mv {cache}/{speclib_hf_path} {cache}/{speclib_filename} 2>/dev/null || true")
-        lines.append(f"fi")
-        lines.append(f"")
+        lines.append("fi")
+        lines.append("")
 
     lines.append(f"echo 'Community assets ready in {cache}'")
     lines.append(f"ls -lh {cache}/")
-    lines.append(f"")
+    lines.append("")
 
     return "\n".join(lines)

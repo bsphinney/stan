@@ -162,7 +162,7 @@ What ships today vs. what's still planned.
 
 | Component | Status | Notes |
 |---|---|---|
-| CLI (56 commands) | Done | Full list in `docs/user_guide.md`. |
+| CLI (57 commands) | Done | Full list in `docs/user_guide.md`. |
 | Watcher daemon | Done | File-stability detection, hot-reloaded config, recursive monitoring, startup catch-up sweep. |
 | Acquisition mode detection | Done | Bruker via `analysis.tdf.Frames.MsmsType`; Thermo via ThermoRawFileParser metadata + filename token fallback. |
 | Local DIA-NN execution | Done | Default. Subprocess on the instrument PC, community-standard params. |
@@ -173,6 +173,8 @@ What ships today vs. what's still planned.
 | QC gating + HOLD flag | Done | Hard gates with plain-English diagnosis. |
 | Column health | Done | TIC AUC + peak RT trend analysis. |
 | SQLite database | Done | All metrics, gate results, sample-health verdicts, maintenance events, PEG/drift breakdowns, 4DFF features-by-charge. |
+| PostgreSQL / PG Farm backend | Done | Optional central source-of-truth for Hive bulk + fleet dashboards. `STAN_DB_BACKEND=pg`; single-lab installs stay on SQLite. See `docs/PG_FARM.md`. |
+| Parallel ingest sharding | Done | `stan ingest-orphans --shard N/M` for SLURM-array recovery of orphaned parquets. |
 | FastAPI dashboard backend | Done | All routes wired (runs, trends, instruments, thresholds, fleet, community, PEG, drift, 4DFF, sample-health, hide). Swagger at `/docs`. |
 | Single-file React dashboard | Done | `stan/dashboard/public/index.html`, React + Babel via CDN. 9 tabs. |
 | Historical QC Museum | Done | `stan/dashboard/public/museum.html` — 999 BSA injections 2005–2022, Sage-searched; timeline, trend chart (log-scale), BSA coverage maps, Then vs Now table. Deploy guide: `docs/MUSEUM_DEPLOY.md`. |
@@ -185,7 +187,7 @@ What ships today vs. what's still planned.
 | Community speclibs | Partial | Astral + timsTOF HeLa empirical/predicted libs in progress. |
 | Cohort scoring + percentiles | Done | Computed nightly within `(family, SPD, amount)` cohorts. |
 | HF Space community dashboard | Done | Live at `community.stan-proteomics.org`. |
-| Arcade → community leaderboard | Done | `stan/community/arcade_submit.py`; relay endpoints in `stan/community/scripts/relay_arcade.py`. Opt-in via `arcade_submit: true` in `community.yml`. |
+| Arcade → community leaderboard | Partial | Clients wired (`stan/community/arcade_submit.py`, `arcade.html`); relay endpoints in `stan/community/scripts/relay_arcade.py` are reference pseudo-code **not yet deployed to the HF Space**. Deferred to 1.1. |
 | Bruker `.d` XML method-tree parser | Done | Reads `<N>.m/submethods.xml`, `hystar.method`, `SampleInfo.xml` for authoritative SPD + Evosep detection. |
 | `validate_spd_from_metadata()` | Done | XML → MethodName → `Frames.Time` span fallback chain. |
 | `detect_lc_system()` | Done | Evosep vs custom from `.d` method tree + TrayType; powers the LC filter on the community TIC overlay. |
@@ -198,7 +200,7 @@ What ships today vs. what's still planned.
 | cIRT panel + trends | Done | `stan backfill-cirt`, `derive-cirt-panel`, Trends tab visualisation. |
 | Maintenance log UI | Done | Trends-tab form. Events render as vertical markers on every trend chart. |
 | Hide / restore a run | Done | `POST /api/runs/{id}/hide`. UI button on the QC History row. |
-| Sample Health (rawmeat) | Done | Bruker `.d` non-QC files monitored; verdict (pass/warn/fail) stored in `sample_health` table. Thermo support TBD. |
+| Sample Health (rawmeat) | Done | Bruker `.d` and Thermo `.raw` non-QC files monitored; verdict (pass/warn/fail) stored in `sample_health` table. |
 | Fleet sync (SMB / HF Space / none) | Done | `~/.stan/fleet.yml`, configured by `stan/fleet_setup.py`. |
 | Fleet command queue | Done | 12 whitelisted actions (`ping`, `status`, `tail_log`, `export_db_snapshot`, `watcher_debug`, `qc_filter_report`, `apply_config`, `update_stan`, `restart_watcher`, `cleanup_excluded`, `fix_instrument_names`, `v1_prep`). |
 | Email reports | Done | Daily 07:00 + optional Monday weekly. Resend API. |
@@ -246,7 +248,6 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 - [ ] **Outlier detection** for community submissions: flag runs where metrics are inconsistent with the declared amount/SPD.
 - [ ] **PyPI release.**
 - [ ] **End-to-end watcher integration test** with real instrument data.
-- [ ] **Points-across-peak metric** (DIA + DDA): median FWHM, cycle time, data points per elution peak.
 - [ ] **Community dashboard figures**: SPD vs. points-across-peak, faceted by LC column model.
 - [ ] **TIC filter by pseudonym** (your traces vs community vs all). Color by lab when showing all traces.
 - [ ] **Migration-keyed `backfill-tic` sentinel** instead of version-keyed (so trivial bumps don't re-force the whole sweep).
@@ -266,6 +267,7 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 | [`docs/ips_metric.md`](docs/ips_metric.md) | IPS formula, cohort references, why protein count is excluded. |
 | [`docs/external_tools.md`](docs/external_tools.md) | DIA-NN, Sage, ThermoRawFileParser: CLI flags, version pins, container paths, gotchas. |
 | [`docs/HPC_PATHS.md`](docs/HPC_PATHS.md) | Hive HPC reference paths for SLURM integration. |
+| [`docs/PG_FARM.md`](docs/PG_FARM.md) | PG Farm Postgres backend: connection, schema, `STAN_DB_BACKEND=pg`, sync, token rotation. |
 | [`docs/GOTCHAS_DELIMP.md`](docs/GOTCHAS_DELIMP.md) | 50+ hard-learned lessons: DIA-NN edge cases, SLURM quirks, raw-file parsing traps. |
 | [`docs/INSTALL_REGRESSION_CHECKLIST.md`](docs/INSTALL_REGRESSION_CHECKLIST.md) | Mode A install regression checklist: pre-flight, during-install warnings, 10-question post-install verification, known failure modes. |
 | [`CLAUDE.md`](CLAUDE.md) | Context for AI coding agents working on this codebase. |

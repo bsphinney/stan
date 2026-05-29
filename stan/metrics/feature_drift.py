@@ -55,7 +55,6 @@ from stan.metrics.window_drift import (
     SEVERE_INT_FRAC_DRIFTED,
     SEVERE_INT_FRAC_WARN,
     WindowDriftMetric,
-    _classify_drift,
     _extract_sub_windows,
     score_drift,
 )

@@ -31,7 +31,7 @@ Three runtime modes:
 - **DIA-NN 2.3.0** containerized for the Hive path:
   `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif`. Native `.raw` support
   on Hive, no msconvert. Half-CPU on instrument PCs (`max(2, cpu/2)`).
-- **Sage 0.14.6** for DDA. Thermo `.raw` goes through TRFP→mzML first;
+- **Sage 0.14.7** for DDA. Thermo `.raw` goes through TRFP→mzML first;
   Bruker `.d` is read natively.
 - **Frozen community params + spectral library** pinned per
   search-engine version. Hash-verified at submission time so the relay
@@ -147,7 +147,7 @@ keeps the per-instrument SQLites mirrored to PG every 30 min.
 
 ---
 
-## CLI surface (`stan/cli.py`, ~6,800 lines)
+## CLI surface (`stan/cli.py`, ~7,100 lines)
 
 Major commands:
 - `stan init|setup` — first-time config wizard
@@ -158,6 +158,8 @@ Major commands:
 - `stan hive-dispatch|hive-process|ingest-orphans` — HPC + recovery
 - `stan backfill-tic|backfill-metrics|fix-spds` — re-derive metrics
 - `stan baseline` — retroactive QC over existing dirs
+- `stan backfill-from-dir` — retroactively search + extract a dir of raws
+- `stan hive-upload` — SMB-upload a single raw to the Hive incoming dir
 - `stan run-4dff|install-4dff` — Bruker ion-cloud sidecar
 - `stan time-hive-partitions` — partition-comparison timing test
 
