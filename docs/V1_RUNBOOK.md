@@ -1,5 +1,9 @@
 # STAN v1.0 cutover — wipe + repopulate community
 
+> **See also:** [`docs/V1_PRERELEASE_CHECKLIST.md`](V1_PRERELEASE_CHECKLIST.md) — the full
+> sequenced release gate (code state, per-instrument verification, relay schema, data wipe,
+> documentation, QA, and the final cut). This runbook covers §4 of that checklist in detail.
+
 The fastest path to flip the public community dataset from
 "mixed v0.2.x metadata" to "consistent v1.0 metadata". Run on
 each instrument PC after pulling v0.2.236+. Estimated total

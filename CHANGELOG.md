@@ -6,15 +6,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versions correspond to tags in `pyproject.toml` / `stan/__init__.py`; both files
 are always bumped together on every push.
 
-**Release gating:** a 1.0.0 tag requires every item in
-[`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST.md) to be checked off.
-The project is currently at **v0.2.377** — 1.0.0 is not yet cut.
+**v1.0.0** is the first public release, cut 2026-05-30. Release process and
+deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST.md).
 
 ---
 
-## [Unreleased]
+## [1.0.0] — 2026-05-30
 
-1.0 hardening continues — see [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST.md).
+First public release of STAN — Standardized proteomic Throughput ANalyzer.
+
+### Highlights
+- Watcher daemon with vendor-aware file-stability detection and DIA/DDA
+  auto-detection; search runs locally or dispatches to SLURM/Hive (DIA-NN, Sage).
+- QC metric extraction, IPS depth score (0–100), threshold gating + HOLD flag.
+- Community benchmark: relay submission (no HF token required), frozen
+  community-standardized search, SPD-bucketed cohorts.
+- FastAPI + React dashboard (Trends, Plotly ion cloud, PEG/drift, sample health),
+  with PG Farm (Postgres) and SQLite backends.
+
+### Notes
+- Folds in the v0.2.377 hardening (three F821 runtime-bug fixes, lint cleanup,
+  documentation accuracy) and the v0.2.305–312 pre-release audit fixes.
+- Known follow-ups deferred to 1.1 — see the "Out of scope for 1.0" section of
+  [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST.md). Operational
+  follow-ups at cut time: update the timsTOF HT PC off v0.2.301 (DIA-NN `--`
+  output-path fix) and the community-dataset wipe + repopulate.
 
 ---
 

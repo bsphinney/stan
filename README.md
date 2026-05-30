@@ -10,6 +10,7 @@
 [![Dataset: CC BY 4.0](https://img.shields.io/badge/Data_License-CC_BY_4.0-green.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
+**Version**: 1.0.0 (2026-05-30, first public release)  
 **Author**: Brett Stanley Phinney, UC Davis Proteomics Core  
 **License**: STAN Academic License (free for academic/non-profit use; see [LICENSE](LICENSE))
 
@@ -39,11 +40,9 @@ The community benchmark uses a frozen FASTA + spectral library so that precursor
 
 ### Mode A — instrument PC (Windows, recommended)
 
-Download [`install-stan.bat`](https://raw.githubusercontent.com/bsphinney/stan/main/install-stan.bat), right-click → Save As, double-click. The script installs Python if needed, clones STAN from GitHub, and auto-installs DIA-NN and Sage from their official release pages.
+Download [`stan.bat`](https://raw.githubusercontent.com/bsphinney/stan/main/stan.bat), right-click → Save As, double-click. On first run it detects no install, downloads `install-stan.bat` automatically, installs Python if needed, clones STAN from GitHub, auto-installs DIA-NN and Sage, and runs the `stan init` config wizard. On every subsequent run it self-updates from GitHub, starts the dashboard, and supervises the watcher — restarting it on crash.
 
-To update: run [`update-stan.bat`](https://raw.githubusercontent.com/bsphinney/stan/main/update-stan.bat). It self-updates from GitHub and restarts the watcher.
-
-After install, run `stan setup` (a 6-question wizard) then `stan watch` to start the daemon.
+After the first-run wizard completes, double-clicking `stan.bat` is all operators need to do.
 
 ### Mode A — Mac / Linux / advanced
 
@@ -180,11 +179,11 @@ What ships today vs. what's still planned.
 | Historical QC Museum | Done | `stan/dashboard/public/museum.html` — 999 BSA injections 2005–2022, Sage-searched; timeline, trend chart (log-scale), BSA coverage maps, Then vs Now table. Deploy guide: `docs/MUSEUM_DEPLOY.md`. |
 | Setup wizard | Done | 6 questions, dedupes `instruments.yml`, offers baseline at the end. |
 | Baseline builder | Done | Recursive discovery, auto-detect gradient/LC, pre-flight DIA-NN/Sage tests, resume on interrupt, scheduling (now / tonight / weekend). |
-| Windows installer + updater | Done | `install-stan.bat`, `update-stan.bat`. Self-update from GitHub. |
+| Windows installer + updater | Done | `stan.bat` — single entry point: installs on first run, self-updates on every run, supervises the watcher. `install-stan.bat` handles the one-time install step internally. |
 | Community submission | Done | Hard gates, soft flags, asset MD5 verification, no HF token needed (relay). |
 | Community auth token | Done | `stan setup` claims a pseudonym via email; relay enforces `X-STAN-Auth` on PATCH. |
 | Community FASTA | Done | UniProt human + universal contaminants, MD5-verified, auto-downloaded on first need. |
-| Community speclibs | Partial | Astral + timsTOF HeLa empirical/predicted libs in progress. |
+| Community speclibs | Done | HeLa empirical libraries for timsTOF (`hela_timstof_202604.parquet`) and Orbitrap/Astral (`hela_orbitrap_202604.parquet`) on HF Dataset; MD5-verified at submission time. |
 | Cohort scoring + percentiles | Done | Computed nightly within `(family, SPD, amount)` cohorts. |
 | HF Space community dashboard | Done | Live at `community.stan-proteomics.org`. |
 | Arcade → community leaderboard | Partial | Clients wired (`stan/community/arcade_submit.py`, `arcade.html`); relay endpoints in `stan/community/scripts/relay_arcade.py` are reference pseudo-code **not yet deployed to the HF Space**. Deferred to 1.1. |
@@ -211,7 +210,7 @@ What ships today vs. what's still planned.
 | Outlier detection (amount / SPD mismatch) | Planned | Flag submissions whose metrics don't match the declared cohort. |
 | Community downtime / reliability leaderboard | Planned | MTBF / availability / recovery-time per instrument model. |
 | PyPI release | Planned | `pip install stan-proteomics` not yet published. |
-| Auto-start `stan watch` as a Windows service | Planned | Today the operator launches it manually after install. |
+| Auto-start `stan watch` as a Windows service | Planned | `stan.bat` supervises the watcher when running, but still requires the operator to double-click it. A Windows Scheduled Task (`stan install-service`) that starts at login/boot without any manual step is not yet shipped. |
 | Mobile PWA | Planned | Responsive CSS + service worker + push notifications on FAIL. |
 
 ---
@@ -224,7 +223,7 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 
 - [ ] **Investigate QC ingest blackout on timsTOF HT since 2026-04-17.** Watcher matches the QC filter but doesn't write rows into `runs`. Likely a downstream search-dispatch bug. See `/Volumes/proteomics-grp/STAN/TIMS-10878/failures/`.
 - [ ] **Watcher stderr → syncable log.** Cascade bugs and observer deaths are invisible to the Hive mirror because `stan watch` only logs to stderr. Route to `~/STAN/logs/watch_<ts>.log` with periodic re-sync.
-- [ ] **Decouple community submission from the Mac.** Hive is firewalled from outbound internet to the HF Space (`*.hf.space` → HTTP 000), so `stan submit-all --backend pg` can only push from an internet-connected box — currently Brett's Mac, a single point of failure. PG Farm itself is reachable from both Hive and the Space. Preferred fix: have the HF Space's nightly consolidation job **pull from PG Farm directly** (the Space has internet; `pgfarm.library.ucdavis.edu` is reachable) instead of being pushed to. Alternative: ask HPCCF to allowlist `*.hf.space` egress on Hive so submit-all runs there (token is already at the Quobyte path). Do before 1.0 — the Mac shouldn't be load-bearing.
+- [ ] **Decouple community submission from the Mac.** Hive is firewalled from outbound internet to the HF Space (`*.hf.space` → HTTP 000), so `stan submit-all --backend pg` can only push from an internet-connected box — currently Brett's Mac, a single point of failure. PG Farm itself is reachable from both Hive and the Space. Preferred fix: have the HF Space's nightly consolidation job **pull from PG Farm directly** (the Space has internet; `pgfarm.library.ucdavis.edu` is reachable) instead of being pushed to. Alternative: ask HPCCF to allowlist `*.hf.space` egress on Hive so submit-all runs there (token is already at the Quobyte path). High priority for 1.1 — the Mac shouldn't be load-bearing.
 - [ ] **`backfill-tic --push` HF error capture.** Push-side relay errors aren't logged. Add a `push_errors` section to the summary log with response codes and bodies.
 - [ ] **Normalize `runs.instrument` + `sample_health.instrument`.** Some hosts split into two cards (`timsTOF HT` + `data_bruker`) because old rows hold the model name from metadata while newer rows use `name:` from `instruments.yml`. One-time migration that maps config name → model derived from the raw file.
 - [ ] **PEG + drift trend lines on the Trends tab.** We already store the per-run scalars and breakdowns. Add sparklines (peg_score, drift_median_im, drift_coverage) so slow weeks-long drifts are visible.

@@ -6,8 +6,9 @@
 > **GitHub**: `bsphinney/stan`  
 > **HF Space**: `brettsp/stan`  
 > **HF Dataset**: `brettsp/stan-benchmark`  
-> **Status**: Original v0.1 design doc, partially superseded by shipped code
-> **Date**: April 2026
+> **Status**: Original v0.1 design doc, **frozen at the v1.0.0 release**. Partially
+> superseded by shipped code — current behavior lives in the code + docs (see drift notice below).
+> **Date**: original design April 2026; frozen v1.0.0 on 2026-05-30
 
 > **⚠ Drift notice (2026-04-27):** STAN has shipped well past v0.1. Sections of
 > this spec describe abandoned or superseded designs. Authoritative current

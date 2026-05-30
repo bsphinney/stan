@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > **HF Space**: https://huggingface.co/spaces/brettsp/stan  
 > **HF Dataset**: https://huggingface.co/datasets/brettsp/stan-benchmark  
 > **Master spec**: `STAN_MASTER_SPEC.md` — read this first, it is the authoritative design doc  
-> **Last updated**: April 2026
+> **Last updated**: May 2026
 
 ---
 

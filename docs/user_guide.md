@@ -68,7 +68,7 @@ stan watch
 You'll see a startup banner with the STAN version, and a line showing where the watcher log is written:
 
 ```
-STAN v0.2.346 — watcher starting
+STAN v1.0.0 — watcher starting
 Log: /Users/you/STAN/logs/watch_20260508_143012.log
 ```
 
@@ -238,6 +238,8 @@ The community benchmark lets you see how your instrument compares to instruments
 - Aggregate metrics: precursor count, peptide count, PSM count, IPS score, gradient length, instrument family, search engine version
 - Nothing else. Raw files are never uploaded. No patient metadata. No sample identifiers. No filenames. Serial numbers are optional, stored server-side, and never exposed in public downloads.
 
+**Privacy note:** The community dataset publishes aggregate metrics. STAN strips raw filenames before submit. If your QC filename contained patient identifiers, only the local stan.db retains them — the public dataset never sees them.
+
 **How to opt in:**
 
 1. Open `~/.stan/community.yml` in a text editor
@@ -360,14 +362,14 @@ http://cbs-gc1414-mini.tail1c95dd.ts.net:8421
 
 ### Access the dashboard remotely
 
-Since v0.2.315, `stan dashboard` auto-detects Tailscale at startup. If Tailscale is running and logged in, the dashboard:
+`stan dashboard` auto-detects Tailscale at startup. If Tailscale is running and logged in, the dashboard:
 
 - Binds to `0.0.0.0` instead of `127.0.0.1` so Tailscale traffic can reach it
 - Adds your Tailscale IP and MagicDNS hostname to the CORS allowlist so godmode action POSTs work without manual config
 - Prints the Tailscale URLs at startup:
 
 ```
-STAN v0.2.346 — dashboard (Tailscale detected)
+STAN v1.0.0 — dashboard (Tailscale detected)
   Bound to:    0.0.0.0:8421
   Local:       http://localhost:8421
   Tailscale:   http://lumosrox:8421
@@ -390,7 +392,7 @@ If the Python version isn't listed yet, the firewall may have blocked it silentl
 
 ### Install STAN as a phone app (Add to Home Screen)
 
-Since v0.2.348, STAN's dashboard is a **Progressive Web App (PWA)** — you can pin it to your phone's home screen and it launches full-screen with a STAN icon, just like a native app. No App Store, no Play Store, no install reviewer involved.
+STAN's dashboard is a **Progressive Web App (PWA)** — you can pin it to your phone's home screen and it launches full-screen with a STAN icon, just like a native app. No App Store, no Play Store, no install reviewer involved.
 
 **Prerequisites:**
 - Tailscale set up on the phone and on the dashboard host (see the section above)
