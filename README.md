@@ -201,6 +201,7 @@ What ships today vs. what's still planned.
 | Hide / restore a run | Done | `POST /api/runs/{id}/hide`. UI button on the QC History row. |
 | Sample Health (rawmeat) | Done | Bruker `.d` and Thermo `.raw` non-QC files monitored; verdict (pass/warn/fail) stored in `sample_health` table. |
 | Fleet sync (SMB / HF Space / none) | Done | `~/.stan/fleet.yml`, configured by `stan/fleet_setup.py`. |
+| STAN Godmode (multi-instrument view) | Done | `STAN_DB_PATH=<global stan.db> stan dashboard` serves a fleet-wide view across instruments (honored in `stan/db.py` + `stan/dashboard/server.py`); pairs with Tailscale for remote phone access. See `docs/user_guide.md` → "STAN Godmode". |
 | Fleet command queue | Done | 12 whitelisted actions (`ping`, `status`, `tail_log`, `export_db_snapshot`, `watcher_debug`, `qc_filter_report`, `apply_config`, `update_stan`, `restart_watcher`, `cleanup_excluded`, `fix_instrument_names`, `v1_prep`). |
 | Email reports | Done | Daily 07:00 + optional Monday weekly. Resend API. |
 | Slack alerts | Done | Webhook in `community.yml`. `stan test-alert` to verify. |
@@ -211,7 +212,7 @@ What ships today vs. what's still planned.
 | Community downtime / reliability leaderboard | Planned | MTBF / availability / recovery-time per instrument model. |
 | PyPI release | Planned | `pip install stan-proteomics` not yet published. |
 | Auto-start `stan watch` as a Windows service | Planned | `stan.bat` supervises the watcher when running, but still requires the operator to double-click it. A Windows Scheduled Task (`stan install-service`) that starts at login/boot without any manual step is not yet shipped. |
-| Mobile PWA | Planned | Responsive CSS + service worker + push notifications on FAIL. |
+| Mobile PWA (install) | Partial | Installable PWA shipped — `manifest.json` + icons + iOS "Add to Home Screen" meta (full-screen, app icon). Service worker (offline) + push-on-FAIL not yet shipped. Setup in `docs/user_guide.md`. |
 
 ---
 
@@ -241,7 +242,7 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 - [ ] **Thermo TIC failures on Lumos.** `fisher_py` throws `ArgumentOutOfRangeException` on some firmwares; TRFP also exits non-zero. Test `SelectInstrument(Device.MS, 0)` or document a per-instrument skip flag.
 - [ ] **Thermo ion-injection-time drift.** Add `median_ion_injection_time_ms` and a mid-run upward-drift flag. Catches marginal sprays that the TIC dropout test misses.
 - [ ] **Remote `run_baseline` / `baseline_status`.** Kick off a baseline from the fleet dashboard or `stan send-command`; poll progress via a mirrored `baseline_progress.json`.
-- [ ] **Mobile PWA.** Responsive CSS, `manifest.json`, service worker, push on FAIL.
+- [ ] **PWA service worker + push.** The installable PWA (manifest + icons + Add to Home Screen) shipped; still needed: a service worker for offline caching and push notifications on FAIL.
 - [ ] **Lumos / Exploris Thermo TIC backfill** via Hive-side `report.parquet` identified-TIC path.
 - [ ] **Thermo `.raw` `fisher_py`-based SPD extraction** from the InstrumentMethod header.
 - [ ] **Generate + upload Astral and timsTOF HeLa speclibs** to the HF Dataset.
