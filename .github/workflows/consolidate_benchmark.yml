@@ -16,3 +16,4 @@ jobs:
       - run: python stan/community/scripts/consolidate.py
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PYTHONPATH: .
