@@ -11,6 +11,23 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.1] — 2026-05-31
+
+### Fixed
+- CI: nightly `consolidate_benchmark` workflow — set the repo `HF_TOKEN`
+  secret (was unset → "HF_TOKEN not set") and added `PYTHONPATH: .` so the
+  consolidate script can import the `stan` package when run by path.
+
+### Changed
+- Docs: README marks the installable PWA as Partial (manifest + icons + iOS
+  "Add to Home Screen" shipped; service worker + push-on-FAIL not yet) and adds
+  a STAN Godmode (`STAN_DB_PATH` multi-instrument view) row.
+
+_(Community HF Space perf work — gzip + lazy-TIC `/api/tic-overlay`, ~27× lighter
+leaderboard — lives in the separate Space repo, not this package.)_
+
+---
+
 ## [1.0.0] — 2026-05-30
 
 First public release of STAN — Standardized proteomic Throughput ANalyzer.
