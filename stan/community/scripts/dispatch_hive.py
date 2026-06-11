@@ -174,6 +174,14 @@ def _walk_raws(watch_dir: Path) -> list[Path]:
     Returns ``.d`` directories (Bruker) and ``.raw`` files (Thermo).
     Skips ``.partial`` / ``.tmp`` markers from in-flight uploads.
     Non-recursive by design — flat layout per instrument.
+
+    Entries are returned **resolved to their real target** (``Path.resolve``)
+    so that when the watch dir is a flat farm of symlinks into the Flinders
+    archive (see ``link_flinders_qc.py``), the dispatched ``raw_path`` is the
+    canonical ``/nfs/...`` path. That keeps the PG dedup/natural key aligned
+    with how runs were originally ingested (PG stores the real Flinders path,
+    not the symlink), so already-processed runs are skipped instead of
+    duplicated. Plain (non-symlink) entries resolve to themselves.
     """
     if not watch_dir.exists() or not watch_dir.is_dir():
         logger.warning("watch_dir missing or not a directory: %s", watch_dir)
@@ -185,9 +193,9 @@ def _walk_raws(watch_dir: Path) -> list[Path]:
         if name.endswith(".partial") or name.endswith(".tmp"):
             continue
         if entry.is_dir() and entry.suffix.lower() == ".d":
-            out.append(entry)
+            out.append(entry.resolve())
         elif entry.is_file() and entry.suffix.lower() == ".raw":
-            out.append(entry)
+            out.append(entry.resolve())
     return out
 
 
@@ -236,7 +244,14 @@ def _already_processed(db_path: Path, raw_path: Path) -> bool:
     we use raw_path as the cohort-independent key here so a misconfigured
     instrument name in a prior dispatch run doesn't trigger a duplicate
     submission. The instrument check happens later inside hive-process.
+
+    PG mode: writes go only to PG, so the SQLite ``runs`` table never sees
+    completions — consult PG instead, or the dispatcher would re-submit the
+    whole backlog every tick forever.
     """
+    from stan.db_pg import use_pg, raw_run_id_pg
+    if use_pg():
+        return raw_run_id_pg(raw_path) is not None
     try:
         with sqlite3.connect(str(db_path)) as con:
             row = con.execute(

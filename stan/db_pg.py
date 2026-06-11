@@ -36,7 +36,11 @@ PG_DEFAULTS = {
     "port": 5432,
     "database": "uc-davis-genome-center-proteomics-core/stan",
     "sslmode": "require",
-    "user": "brettsp",
+    # v1.0.2: migrated from the personal `brettsp` CAS token to the
+    # `genome-proteomics-service-account` service account. The 7-day
+    # token in the token file is now minted from the long-lived secret
+    # (service-account.json) via scripts/pgfarm_refresh_token.py.
+    "user": "genome-proteomics-service-account",
 }
 
 # Map ``--family`` (canonical instrument family from instruments.yml /
@@ -227,6 +231,24 @@ def row_exists_pg(
         )
         r = cur.fetchone()
     return r[0] if r else None
+
+
+def raw_run_id_pg(raw_path: str | Path) -> str | None:
+    """Return the runs.id for ``raw_path`` if present in PG, else None.
+
+    Cohort-independent (matches ``dispatch_hive._already_processed`` and
+    ``hive_process._row_exists``): keyed on ``raw_path`` alone so a
+    mislabeled instrument in a prior run can't trigger a duplicate
+    submission. This is the PG-mode replacement for the SQLite dedup —
+    in PG mode writes go only to PG, so the SQLite ``runs`` table never
+    sees completions and must not be consulted for "already processed".
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM runs WHERE raw_path = %s LIMIT 1", (str(raw_path),)
+        )
+        r = cur.fetchone()
+    return str(r[0]) if r else None
 
 
 def use_pg() -> bool:

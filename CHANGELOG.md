@@ -11,6 +11,41 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.2] — 2026-06-10
+
+### Changed
+- **PG Farm auth migrated to a service account.** Writes now connect as
+  `genome-proteomics-service-account` (was the personal `brettsp` CAS token).
+  The 7-day token is minted from a long-lived secret (`service-account.json`)
+  via `scripts/pgfarm_refresh_token.py` instead of `pgfarm auth login` — no
+  more manual weekly refresh. Secret lives at
+  `/quobyte/proteomics-grp/brett/.pgfarm_secret.json` (chmod 600). See
+  `docs/PG_FARM.md`.
+
+### Fixed
+- **Hive dispatch was writing to PG but deduping against SQLite** — a
+  split-brain that, with PG-only writes, made the dispatcher re-submit the
+  whole backlog every tick. `dispatch_hive._already_processed` and
+  `hive_process._row_exists` now consult PG (`db_pg.raw_run_id_pg`) when
+  `STAN_DB_BACKEND=pg`.
+- **`_walk_raws` now resolves symlinks to their real target** so a flat farm
+  of symlinks into the Flinders archive dispatches the canonical `/nfs/...`
+  path — keeping the PG natural key aligned (no duplicate rows).
+- Reset a **corrupted** global SQLite (`/quobyte/.../STAN/stan.db`); it now
+  holds only the dispatch-audit + sample_health tables (runs live in PG).
+
+### Added
+- `stan/community/scripts/link_flinders_qc.py` — flattens Flinders QC raws
+  (recursive, QC-pattern-filtered) into the dispatcher's flat watch dirs.
+  Instruments sync raws to Flinders, which the flat/non-recursive dispatcher
+  couldn't see.
+- `scripts/cron_flinders_dispatch.sh` — 15-min Hive cron: refresh token →
+  link Flinders → dispatch (the dispatch cron was never installed before).
+- `scripts/pgfarm_refresh_token.py` — mint a 7-day PG token from the secret.
+- `submit-all --since <ISO date>` — scope a community push to recent runs;
+  `scripts/push_recent_community.sh` wraps it for the Mac (Hive has no
+  egress to the relay).
+
 ## [1.0.1] — 2026-05-31
 
 ### Fixed

@@ -53,7 +53,13 @@ def _row_exists(db_path: Path, instrument: str, raw_path: Path) -> str | None:
     means "search ran, primary metrics in DB". Re-running orphaned
     children is a job for ``stan repair-incomplete`` (separate command);
     re-running a full pipeline is a job for ``--force``. Don't conflate.
+
+    PG mode: writes go only to PG, so the SQLite ``runs`` table never sees
+    completions — consult PG instead of the write-only-bypassed SQLite.
     """
+    from stan.db_pg import use_pg, raw_run_id_pg
+    if use_pg():
+        return raw_run_id_pg(raw_path)
     try:
         with sqlite3.connect(str(db_path)) as con:
             row = con.execute(

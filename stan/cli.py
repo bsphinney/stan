@@ -4461,6 +4461,11 @@ def submit_all(
         help="Read source: 'sqlite' (local stan.db, default) or 'pg' "
              "(central PG Farm, requires PGPASSWORD or token file).",
     ),
+    since: str = typer.Option(
+        "", "--since",
+        help="Only submit runs with run_date >= this ISO date "
+             "(e.g. 2026-05-13). Scopes a push to recently-processed runs.",
+    ),
 ) -> None:
     """Submit all un-submitted QC runs to the community benchmark.
 
@@ -4530,11 +4535,20 @@ def submit_all(
         # over "Object of type datetime is not JSON serializable".
         from datetime import datetime as _dt
         from stan.db_pg import _connect as _pg_connect
-        where = "" if force else (
-            "WHERE submitted_to_benchmark = 0 OR submitted_to_benchmark IS NULL"
-        )
+        conds, params = [], []
+        if not force:
+            conds.append(
+                "(submitted_to_benchmark = 0 OR submitted_to_benchmark IS NULL)"
+            )
+        if since:
+            conds.append("run_date >= %s")
+            params.append(since)
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
         with _pg_connect() as pg, pg.cursor() as cur:
-            cur.execute(f"SELECT * FROM runs {where} ORDER BY run_date ASC NULLS LAST")
+            cur.execute(
+                f"SELECT * FROM runs {where} ORDER BY run_date ASC NULLS LAST",
+                params,
+            )
             col_names = [d.name for d in cur.description]
             candidates = []
             for row in cur.fetchall():
@@ -4545,14 +4559,18 @@ def submit_all(
     else:
         with sqlite3.connect(str(db_path)) as con:
             con.row_factory = sqlite3.Row
-            if force:
-                base_sql = "SELECT * FROM runs "
-            else:
-                base_sql = (
-                    "SELECT * FROM runs WHERE submitted_to_benchmark = 0 "
-                    "OR submitted_to_benchmark IS NULL "
+            conds, params = [], []
+            if not force:
+                conds.append(
+                    "(submitted_to_benchmark = 0 OR submitted_to_benchmark IS NULL)"
                 )
-            candidates = con.execute(base_sql + "ORDER BY run_date ASC").fetchall()
+            if since:
+                conds.append("run_date >= ?")
+                params.append(since)
+            where = ("WHERE " + " AND ".join(conds)) if conds else ""
+            candidates = con.execute(
+                f"SELECT * FROM runs {where} ORDER BY run_date ASC", params
+            ).fetchall()
 
     console.print(f"[bold]{len(candidates)} un-submitted runs found[/bold]")
     _log({"event": "candidates", "count": len(candidates)})

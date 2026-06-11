@@ -16,20 +16,39 @@
 host      pgfarm.library.ucdavis.edu
 port      5432
 database  uc-davis-genome-center-proteomics-core/stan
-user      brettsp                              # for now; service account
-                                               # `bsphinney` pending Justin Merz
+user      genome-proteomics-service-account    # service account (since v1.0.2)
 sslmode   require                              # 'verify-full' breaks on the
                                                # Mac cert path — don't bother
 ```
 
-Token file (lives on the shared volume so Hive jobs can read it too):
+### Service-account auth (v1.0.2+)
+
+As of 2026-06-10 STAN authenticates as the **service account**
+`genome-proteomics-service-account`, not the personal `brettsp` CAS token.
+The model is two-tier:
+
+1. **Long-lived secret** — `service-account.json` (`{username, secret}`),
+   downloaded from the PG Farm UI "rotate" button. Keep it safe; even the
+   PG Farm admins can't read it. Stored chmod 600 at:
+   - Hive: `/quobyte/proteomics-grp/brett/.pgfarm_secret.json`
+   - Mac:  `/Volumes/proteomics-grp/brett/.pgfarm_secret.json`
+2. **7-day token** minted from the secret by POSTing `{username, secret}` to
+   `https://pgfarm.library.ucdavis.edu/auth/service-account/login`
+   (returns `access_token`). This is the Postgres password.
+
+`scripts/pgfarm_refresh_token.py` does the mint and writes the token file —
+no more `pgfarm auth login`. The Hive cron (`scripts/cron_flinders_dispatch.sh`)
+runs it with `--max-age-days 5` each tick, so the token self-refreshes.
+
+Token file (shared volume so Hive jobs read it too):
 - Hive: `/quobyte/proteomics-grp/brett/.pgfarm_token`
 - Mac:  `/Volumes/proteomics-grp/brett/.pgfarm_token`
 
-The token is a **7-day CAS bearer**. Refresh weekly with `pgfarm auth login`.
-A RemoteTrigger fires every Wednesday 9am PT (`0 16 * * 3` UTC) to email a
-reminder. **Long-term goal:** swap to a service-account password from Justin
-Merz at UCD Library so the manual refresh goes away.
+**Grants:** the service account needs `SELECT,INSERT,UPDATE,DELETE` on the
+`runs` table (run once as the owner `brettsp`; see git history of this file /
+the v1.0.2 session). New tables are auto-granted via `ALTER DEFAULT
+PRIVILEGES`. If you rotate the secret, just re-download `service-account.json`
+to both paths above — grants and code are unaffected.
 
 ---
 
