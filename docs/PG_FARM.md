@@ -164,7 +164,8 @@ pwd = open('/Volumes/proteomics-grp/brett/.pgfarm_token').read().strip()
 with psycopg2.connect(
     host='pgfarm.library.ucdavis.edu', port=5432,
     database='uc-davis-genome-center-proteomics-core/stan',
-    sslmode='require', user='brettsp', password=pwd,
+    sslmode='require',
+    user='genome-proteomics-service-account', password=pwd,
 ) as c:
     cur = c.cursor()
     cur.execute('SELECT host_origin, COUNT(*) FROM runs GROUP BY 1')
@@ -277,9 +278,12 @@ populated row in PG, run the recovery then enqueue a per-instrument
 backfill that calls `_apply_pegdrift_jsons`, `_persist_tic`, etc., reading
 from the same `/processing/` artifacts.
 
-**Token expiry.** Every 7 days the CAS bearer dies and everything silently
-breaks. Wednesday-9am-Pacific email reminder is the safety net; if you see
-auth failures, that's the first thing to check.
+**Token expiry.** The 7-day service-account token now self-refreshes — the
+Hive cron runs `scripts/pgfarm_refresh_token.py --max-age-days 5` each tick
+and rewrites the token file from the long-lived secret. No manual
+`pgfarm auth login` anymore. If you see auth failures, check (1) the secret
+JSON still exists at both `.pgfarm_secret.json` paths, and (2) the cron is
+firing — `tail` the dispatch log under `/quobyte/proteomics-grp/STAN/logs/`.
 
 ---
 
@@ -287,11 +291,14 @@ auth failures, that's the first thing to check.
 
 | When               | What                                          |
 |--------------------|-----------------------------------------------|
-| Every Wednesday    | `pgfarm auth login`, write to token file      |
+| Secret rotated     | Re-download `service-account.json` to both    |
+|                    | `.pgfarm_secret.json` paths (token auto-mints)|
 | When schema drifts | Update `PG_COLUMN_TYPES` in migrate script    |
 |                    | + `_build_runs_row` in `stan.db`              |
 | New instrument     | Add to `FAMILY_TO_HOST_ORIGIN` in `db_pg.py`  |
 |                    | + new entry in cron's host loop               |
+
+> Token refresh is automatic (Hive cron, see above) — no weekly manual step.
 
 ---
 
