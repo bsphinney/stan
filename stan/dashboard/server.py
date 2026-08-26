@@ -150,38 +150,23 @@ PG_REFRESH_SECONDS = int(_os.environ.get("STAN_PG_REFRESH_SECONDS", "300"))
 
 
 def _pull_from_pg_once() -> int:
-    """Copy central PG ``runs`` into the local SQLite the dashboard reads.
+    """Copy central PG data into the local SQLite the dashboard reads.
 
-    Returns the row count pulled, or -1 when PG isn't configured/reachable.
-    The dashboard is a SQLite reader, but the fleet's canonical store is PG
-    Farm -- so without this the local DB is whatever it was last seeded with
-    and the UI silently shows stale (or empty) data.
+    Returns the number of ``runs`` pulled, or -1 when PG isn't
+    configured/reachable. Never raises: a dashboard that can't reach PG
+    should still serve whatever it already has.
     """
     try:
-        from stan.db_pg import _connect
-        from stan.db import connect, get_db_path
+        from stan.sync.pg_to_sqlite import pull_from_pg
     except Exception:
         return -1
     try:
-        pg = _connect()
-        cur = pg.cursor()
-        db_path = get_db_path()
-        local = connect(db_path)
-        sq_cols = [r[1] for r in local.execute("PRAGMA table_info(runs)").fetchall()]
-        cur.execute("SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name='runs'")
-        pg_cols = {r[0] for r in cur.fetchall()}
-        cols = [c for c in sq_cols if c in pg_cols]
-        cur.execute(f'SELECT {", ".join(chr(34) + c + chr(34) for c in cols)} FROM runs')
-        rows = cur.fetchall()
-        with local:
-            local.executemany(
-                f"INSERT OR REPLACE INTO runs ({', '.join(cols)}) "
-                f"VALUES ({','.join('?' * len(cols))})",
-                [tuple(r) for r in rows],
-            )
-        local.close()
-        return len(rows)
+        written = pull_from_pg()
+        logger.info(
+            "PG refresh: %s",
+            ", ".join(f"{k}={v}" for k, v in written.items()),
+        )
+        return written.get("runs", 0)
     except Exception as e:  # noqa: BLE001 - never take the dashboard down
         logger.warning("PG refresh skipped: %s", str(e).strip().splitlines()[0][:120])
         return -1

@@ -304,6 +304,80 @@ def update_drift_result_pg(
     return n > 0
 
 
+# ---------------------------------------------------------------------------
+# PEG/drift detail writers.
+#
+# These take ALREADY-FLATTENED row tuples rather than the metric objects, so
+# the dedup and field extraction stay in stan.db and both backends are
+# guaranteed to write identical data. Duplicating the attribute walk here
+# would be a second place to get `m.ion.n` vs `m.repeat_n` wrong.
+# ---------------------------------------------------------------------------
+
+def insert_peg_ion_hits_pg(run_id: str, rows: list, source: str = "runs") -> int:
+    """Replace the PEG ion ladder for one run in PG. Returns rows written.
+
+    ``rows`` are ``(run_id, source, mz, observed_intensity, adduct,
+    repeat_n, charge, ppm_error)`` tuples, already deduped to the
+    highest-intensity observation per ion by ``stan.db.insert_peg_ion_hits``.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute("DELETE FROM peg_ion_hits WHERE run_id = %s AND source = %s",
+                    (run_id, source))
+        if rows:
+            cur.executemany(
+                "INSERT INTO peg_ion_hits (run_id, source, mz, observed_intensity,"
+                " adduct, repeat_n, charge, ppm_error) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (run_id, source, repeat_n, adduct, charge) "
+                "DO UPDATE SET mz = EXCLUDED.mz, "
+                "observed_intensity = EXCLUDED.observed_intensity, "
+                "ppm_error = EXCLUDED.ppm_error",
+                rows,
+            )
+        pg.commit()
+    return len(rows)
+
+
+def insert_drift_window_centroids_pg(run_id: str, rows: list, source: str = "runs") -> int:
+    """Replace the per-window drift centroids for one run in PG.
+
+    ``rows`` are ``(run_id, source, window_idx, mz_low, mz_high, im_low,
+    im_high, im_center, im_mode, drift_im, coverage, in_peptide_zone)``.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute("DELETE FROM drift_window_centroids WHERE run_id = %s AND source = %s",
+                    (run_id, source))
+        if rows:
+            cur.executemany(
+                "INSERT INTO drift_window_centroids (run_id, source, window_idx,"
+                " mz_low, mz_high, im_low, im_high, im_center, im_mode, drift_im,"
+                " coverage, in_peptide_zone) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (run_id, source, window_idx) DO NOTHING",
+                rows,
+            )
+        pg.commit()
+    return len(rows)
+
+
+def insert_drift_peak_cloud_pg(
+    run_id: str, mz_json: str, im_json: str, log_intensity_json: str,
+    n_points: int, source: str = "runs",
+) -> int:
+    """Store the ion-cloud scatter for one run in PG (JSON-array strings)."""
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO drift_peak_clouds (run_id, source, mz, im, log_intensity, n_points) "
+            "VALUES (%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (run_id, source) DO UPDATE SET mz = EXCLUDED.mz, "
+            "im = EXCLUDED.im, log_intensity = EXCLUDED.log_intensity, "
+            "n_points = EXCLUDED.n_points",
+            (run_id, source, mz_json, im_json, log_intensity_json, n_points),
+        )
+        pg.commit()
+    return n_points
+
+
 def insert_run_pg(
     instrument: str,
     run_name: str,

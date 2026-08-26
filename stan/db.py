@@ -1401,6 +1401,12 @@ def insert_peg_ion_hits(
         (run_id, table, mz, intensity, adduct, n, charge, ppm)
         for (n, adduct, charge), (intensity, mz, ppm) in best_per_ion.items()
     ]
+    # PG mode: the parent run lives centrally, so the breakdown must too or
+    # the dashboard modal has nothing to draw. Dedup above is shared, so both
+    # backends store identical rows.
+    from stan.db_pg import insert_peg_ion_hits_pg, use_pg
+    if use_pg() and table == "runs":
+        return insert_peg_ion_hits_pg(run_id, rows, source=table)
     with connect(db_path) as con:
         # Clear any prior hits for this (run_id, source) so re-runs
         # (e.g. backfill-peg --force) replace rather than accumulate.
@@ -1477,6 +1483,10 @@ def insert_drift_window_centroids(
     if not rows:
         return 0
 
+    # PG mode: see insert_peg_ion_hits — the breakdown follows the run.
+    from stan.db_pg import insert_drift_window_centroids_pg, use_pg
+    if use_pg() and table == "runs":
+        return insert_drift_window_centroids_pg(run_id, rows, source=table)
     with connect(db_path) as con:
         # v0.2.182 migration: add in_peptide_zone column to legacy DBs
         # where the CREATE TABLE IF NOT EXISTS didn't include it.
@@ -1571,17 +1581,23 @@ def insert_drift_peak_cloud(
         return 0
 
     import json as _json
+    mz_json = _json.dumps([round(float(x), 4) for x in mz[:n]])
+    im_json = _json.dumps([round(float(x), 4) for x in im[:n]])
+    li_json = _json.dumps([round(float(x), 3) for x in log_intensity[:n]])
+
+    # PG mode: see insert_peg_ion_hits — the ion cloud follows the run.
+    from stan.db_pg import insert_drift_peak_cloud_pg, use_pg
+    if use_pg() and table == "runs":
+        return insert_drift_peak_cloud_pg(
+            run_id, mz_json, im_json, li_json, n, source=table,
+        )
     with connect(db_path) as con:
         con.execute(
             "INSERT OR REPLACE INTO drift_peak_clouds "
             "(run_id, source, mz, im, log_intensity, n_points) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (
-                run_id, table,
-                _json.dumps([round(float(x), 4) for x in mz[:n]]),
-                _json.dumps([round(float(x), 4) for x in im[:n]]),
-                _json.dumps([round(float(x), 3) for x in log_intensity[:n]]),
-                n,
+                run_id, table, mz_json, im_json, li_json, n,
             ),
         )
     return n
