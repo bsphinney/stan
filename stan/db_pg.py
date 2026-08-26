@@ -177,8 +177,68 @@ def _connect():
                 pass
             _CACHED_CONN = None
 
-    _CACHED_CONN = psycopg2.connect(password=_resolve_pgpassword(), **PG_DEFAULTS)
+    _CACHED_CONN = _connect_with_retry()
     return _CACHED_CONN
+
+
+# PG Farm caps concurrent connections, and a Hive backlog drain runs ~100
+# SLURM jobs at once that each want one. Without a retry the losers die with
+# "remaining connection slots are reserved for roles with the SUPERUSER
+# attribute" *after* their DIA-NN search already finished — throwing away
+# hours of compute over a transient slot shortage. Backoff is jittered by PID
+# so a fleet that all failed at the same instant doesn't retry in lockstep.
+_CONNECT_MAX_ATTEMPTS = 6
+_CONNECT_BASE_DELAY_S = 4.0
+_TRANSIENT_CONNECT_MARKERS = (
+    "remaining connection slots",
+    "too many clients",
+    "could not connect",
+    "connection timed out",
+    "server closed the connection",
+    "temporarily unavailable",
+)
+
+
+def _is_transient_connect_error(exc: Exception) -> bool:
+    """True when a failed connect is worth retrying rather than surfacing."""
+    msg = str(exc).lower()
+    return any(m in msg for m in _TRANSIENT_CONNECT_MARKERS)
+
+
+def _connect_with_retry():
+    """Open a PG Farm connection, retrying transient slot exhaustion.
+
+    Raises the last error once the attempt budget is spent, so a genuine
+    auth or config problem still fails loudly instead of hanging.
+    """
+    import random
+    import time
+
+    import psycopg2
+
+    last: Exception | None = None
+    for attempt in range(1, _CONNECT_MAX_ATTEMPTS + 1):
+        try:
+            return psycopg2.connect(
+                password=_resolve_pgpassword(), **PG_DEFAULTS
+            )
+        except psycopg2.OperationalError as e:
+            last = e
+            if not _is_transient_connect_error(e):
+                raise
+            if attempt == _CONNECT_MAX_ATTEMPTS:
+                break
+            delay = _CONNECT_BASE_DELAY_S * (2 ** (attempt - 1))
+            delay *= 0.5 + random.random()  # noqa: S311 - jitter, not crypto
+            delay = min(delay, 90.0)
+            logger.warning(
+                "PG Farm connect attempt %d/%d failed (%s) — retrying in %.1fs",
+                attempt, _CONNECT_MAX_ATTEMPTS,
+                str(e).strip().splitlines()[0][:120], delay,
+            )
+            time.sleep(delay)
+    assert last is not None
+    raise last
 
 
 def insert_run_pg(
