@@ -145,10 +145,77 @@ def _get_ui_prefs_watcher() -> ConfigWatcher | None:
 
 # ── Startup ──────────────────────────────────────────────────────────
 
+# How often the dashboard re-pulls central runs, and whether it does at all.
+PG_REFRESH_SECONDS = int(_os.environ.get("STAN_PG_REFRESH_SECONDS", "300"))
+
+
+def _pull_from_pg_once() -> int:
+    """Copy central PG ``runs`` into the local SQLite the dashboard reads.
+
+    Returns the row count pulled, or -1 when PG isn't configured/reachable.
+    The dashboard is a SQLite reader, but the fleet's canonical store is PG
+    Farm -- so without this the local DB is whatever it was last seeded with
+    and the UI silently shows stale (or empty) data.
+    """
+    try:
+        from stan.db_pg import _connect
+        from stan.db import connect, get_db_path
+    except Exception:
+        return -1
+    try:
+        pg = _connect()
+        cur = pg.cursor()
+        db_path = get_db_path()
+        local = connect(db_path)
+        sq_cols = [r[1] for r in local.execute("PRAGMA table_info(runs)").fetchall()]
+        cur.execute("SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='runs'")
+        pg_cols = {r[0] for r in cur.fetchall()}
+        cols = [c for c in sq_cols if c in pg_cols]
+        cur.execute(f'SELECT {", ".join(chr(34) + c + chr(34) for c in cols)} FROM runs')
+        rows = cur.fetchall()
+        with local:
+            local.executemany(
+                f"INSERT OR REPLACE INTO runs ({', '.join(cols)}) "
+                f"VALUES ({','.join('?' * len(cols))})",
+                [tuple(r) for r in rows],
+            )
+        local.close()
+        return len(rows)
+    except Exception as e:  # noqa: BLE001 - never take the dashboard down
+        logger.warning("PG refresh skipped: %s", str(e).strip().splitlines()[0][:120])
+        return -1
+
+
+async def _pg_refresh_loop() -> None:
+    """Background refresher so the fleet view tracks PG in near-real-time."""
+    import asyncio
+    while True:
+        try:
+            n = await asyncio.to_thread(_pull_from_pg_once)
+            if n >= 0:
+                logger.info("PG refresh: %d runs", n)
+        except Exception:
+            logger.debug("PG refresh loop error", exc_info=True)
+        await asyncio.sleep(max(60, PG_REFRESH_SECONDS))
+
+
+@app.post("/api/refresh")
+async def api_refresh() -> dict:
+    """Pull from PG right now (the dashboard's ↻ shortcut)."""
+    import asyncio
+    n = await asyncio.to_thread(_pull_from_pg_once)
+    return {"ok": n >= 0, "runs": n}
+
+
 @app.on_event("startup")
 async def startup() -> None:
-    """Initialize database on startup."""
+    """Initialize database, then keep it in step with central PG."""
+    import asyncio
+
     init_db()
+    if PG_REFRESH_SECONDS > 0:
+        asyncio.create_task(_pg_refresh_loop())
 
 
 # ── API Routes ───────────────────────────────────────────────────────

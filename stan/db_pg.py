@@ -127,21 +127,27 @@ def _resolve_pgpassword() -> str:
     pwd = os.environ.get("PGPASSWORD", "").strip()
     if pwd:
         return pwd if _is_jwt(pwd) else _mint_jwt(pwd)
-    token_file = Path(os.environ.get(
-        "STAN_PGFARM_TOKEN_FILE",
-        "/quobyte/proteomics-grp/brett/.pgfarm_token",
-    ))
-    if token_file.exists():
+    # The same shared volume is mounted at different paths on Hive and on a
+    # Mac, so try both rather than making every Mac-side caller export
+    # STAN_PGFARM_TOKEN_FILE by hand.
+    override = os.environ.get("STAN_PGFARM_TOKEN_FILE")
+    candidates = [Path(override)] if override else [
+        Path("/quobyte/proteomics-grp/brett/.pgfarm_token"),
+        Path("/Volumes/proteomics-grp/brett/.pgfarm_token"),
+    ]
+    for token_file in candidates:
+        if not token_file.exists():
+            continue
         try:
             raw = token_file.read_text().strip()
         except OSError as e:
             logger.warning("could not read %s: %s", token_file, e)
-        else:
-            if raw:
-                return raw if _is_jwt(raw) else _mint_jwt(raw)
+            continue
+        if raw:
+            return raw if _is_jwt(raw) else _mint_jwt(raw)
     raise RuntimeError(
-        "no PG Farm password — set PGPASSWORD or place a token at "
-        f"{token_file} (chmod 600)"
+        "no PG Farm password — set PGPASSWORD or place a token at one of: "
+        + ", ".join(str(c) for c in candidates)
     )
 
 
