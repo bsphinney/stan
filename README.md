@@ -171,7 +171,7 @@ What ships today vs. what's still planned.
 | IPS scoring | Done | 3-component depth composite (precursors / peptides / proteins), 0–100, percentile-mapped against an `(instrument family, SPD bucket)` cohort. See `docs/ips_metric.md`. |
 | QC gating + HOLD flag | Done | Hard gates with plain-English diagnosis. |
 | Column health | Done | TIC AUC + peak RT trend analysis. |
-| SQLite database | Done | All metrics, gate results, sample-health verdicts, maintenance events, PEG/drift breakdowns, 4DFF features-by-charge. |
+| SQLite database | Done | All metrics, gate results, sample-health verdicts, maintenance events, PEG/drift breakdowns, 4DFF features-by-charge (`feature_clouds`). |
 | PostgreSQL / PG Farm backend | Done | Optional central source-of-truth for Hive bulk + fleet dashboards. `STAN_DB_BACKEND=pg`; single-lab installs stay on SQLite. See `docs/PG_FARM.md`. |
 | Parallel ingest sharding | Done | `stan ingest-orphans --shard N/M` for SLURM-array recovery of orphaned parquets. |
 | FastAPI dashboard backend | Done | All routes wired (runs, trends, instruments, thresholds, fleet, community, PEG, drift, 4DFF, sample-health, hide). Swagger at `/docs`. |
@@ -195,7 +195,7 @@ What ships today vs. what's still planned.
 | Today TIC overlay | Done | `/api/today/tic-overview` powers the at-a-glance pump-and-spray view. |
 | PEG contamination panel | Done | `stan backfill-peg`, scoring, lollipop chart in the run modal. |
 | diaPASEF window drift | Done | `stan backfill-window-drift`, drift cloud scatter in the run modal. |
-| 4DFF Ion Cloud | Done | `stan install-4dff`, `run-4dff`, `backfill-features`. Plotly per-charge view, SVG fallback. |
+| 4DFF Ion Cloud | Done | `stan install-4dff`, `run-4dff`, `backfill-features`, `backfill-feature-cloud`. Plotly per-charge view, SVG fallback. Clouds are stored in `feature_clouds` and served from the DB, so the view no longer needs the raw `.d` mounted on the dashboard host. |
 | cIRT panel + trends | Done | `stan backfill-cirt`, `derive-cirt-panel`, Trends tab visualisation. |
 | Maintenance log UI | Done | Trends-tab form. Events render as vertical markers on every trend chart. |
 | Hide / restore a run | Done | `POST /api/runs/{id}/hide`. UI button on the QC History row. |

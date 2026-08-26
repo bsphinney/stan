@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stan-proteomics"
-version = "1.0.15"
+version = "1.0.16"
 description = "STAN — Standardized proteomic Throughput ANalyzer"
 readme = "README.md"
 license = { text = "STAN Academic License" }

@@ -413,10 +413,17 @@ def _persist_tic(raw_path: Path, run_id: str, db_path: Path) -> None:
         logger.debug("TIC extract failed for %s", raw_path.name, exc_info=True)
 
 
-def _run_4dff_inline(raw_path: Path) -> None:
-    """Generate `.features` sidecar for Bruker .d so the dashboard's
-    Plotly ion-cloud view is the default. Skips Thermo, skips when an
-    existing `.features` is found, skips when the binary isn't installed.
+def _run_4dff_inline(raw_path: Path, run_id: str = "", db_path: Path | None = None) -> None:
+    """Generate the `.features` sidecar for a Bruker .d, then publish it.
+
+    Two halves, and the second one matters as much as the first: writing
+    the sidecar makes the ion cloud *possible*, storing it makes the
+    cloud *visible*. The dashboard reads the DB, not this filesystem —
+    it runs on a laptop while the raw data sits on the cluster — so a
+    sidecar nobody extracted is a run that renders the empty legacy SVG.
+
+    Skips Thermo, skips 4DFF when a sidecar already exists (but still
+    publishes it), skips when the binary isn't installed.
     """
     if not (raw_path.is_dir() and raw_path.suffix.lower() == ".d"):
         return
@@ -424,14 +431,22 @@ def _run_4dff_inline(raw_path: Path) -> None:
         from stan.metrics.features import (
             find_features_file, is_4dff_installed, run_4dff,
         )
-        if find_features_file(raw_path) is not None:
-            return
-        if not is_4dff_installed():
-            logger.info("4DFF not installed; skipping features for %s", raw_path.name)
-            return
-        run_4dff(raw_path)
+        if find_features_file(raw_path) is None:
+            if not is_4dff_installed():
+                logger.info(
+                    "4DFF not installed; skipping features for %s", raw_path.name
+                )
+                return
+            run_4dff(raw_path)
     except Exception:
         logger.warning("4DFF run failed for %s", raw_path.name, exc_info=True)
+        return
+
+    if run_id:
+        from stan.metrics.feature_cloud import publish_feature_cloud
+        n = publish_feature_cloud(raw_path, run_id, db_path=db_path)
+        if n:
+            logger.info("ion cloud stored: %d points for %s", n, raw_path.name)
 
 
 QC_PATTERN = "(?i)(he(l[a5\\d]|\\d)|qc|std[_\\-\\s]?he)"
@@ -680,7 +695,7 @@ def process_raw(
 
         _run_peg_and_drift(raw_path, run_id, db_path)
         _persist_tic(raw_path, run_id, db_path)
-        _run_4dff_inline(raw_path)
+        _run_4dff_inline(raw_path, run_id=run_id, db_path=db_path)
 
         # HOLD flag deliberately NOT written on the Hive path. The
         # contract is "pause the instrument's next acquisition on FAIL"

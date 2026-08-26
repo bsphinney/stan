@@ -1176,7 +1176,8 @@
           <div style={{display:'flex', gap:'0.9rem', flexWrap:'wrap',
                        fontSize:'0.72rem', color:'var(--muted)',
                        marginTop:'0.3rem', paddingLeft:'0.2rem'}}>
-            <span>Points = 4DFF MS1 features (exact charge from feature finder).</span>
+            <span>Points = 4DFF MS1 features (exact charge from feature finder)
+              {features?.from_store ? ', served from the STAN database' : ''}.</span>
             <span>Click legend entries to toggle charges — e.g. hide +1 contamination.</span>
             <span>Colored rectangles = DIA isolation windows, grouped by window_group.</span>
           </div>
@@ -1290,8 +1291,10 @@
                          color:'var(--muted)', fontSize:'0.8rem',
                          marginBottom:'0.6rem'}}>
               Charge-labeled view unavailable: {reason}
-              {' '}Run <code>stan run-4dff &lt;path/to/.d&gt;</code> to enable
-              it; showing the legacy SVG cloud below.
+              {' '}Clouds are published to the database by{' '}
+              <code>stan backfill-feature-cloud</code>, run on the machine
+              that can see the raw data — this dashboard usually cannot.
+              Showing the legacy SVG cloud below.
             </div>
             {cloud
               ? <DriftCloudSvg cloud={cloud} windows={windows}

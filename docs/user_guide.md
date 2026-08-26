@@ -141,7 +141,7 @@ The landing tab. Shows every QC run from the current week (Monday–Sunday) as a
 
 ### QC History
 
-The same run data across all time. Use the date filter controls (Week / Month / 3 Months / 6 Months / Year / All) to narrow the view. Clicking a run name opens the run detail panel with per-run drift plots, TIC trace, and raw metric values. If you see a step-change in precursor counts at a particular date, check the maintenance log in Config for a column change event that might explain it.
+The same run data across all time. Use the date filter controls (Week / Month / 3 Months / 6 Months / Year / All) to narrow the view. Clicking a run name opens the run detail panel with per-run drift plots, TIC trace, and raw metric values. On Bruker runs the drift panel's **Ion cloud** tab plots every MS1 feature coloured by charge state — see the Ion cloud recipe below if it reports no cloud available. If you see a step-change in precursor counts at a particular date, check the maintenance log in Config for a column change event that might explain it.
 
 ### Trends
 
@@ -457,6 +457,41 @@ stan backfill-from-dir /path/to/old/raw/files
 ```
 
 This walks the directory, finds raw files that match the QC pattern, runs the search pipeline on each, and writes results to the database. Useful when you've just installed STAN and have months of existing HeLa runs.
+
+**"The run modal's Ion cloud tab says no cloud is available."** (Bruker only)
+
+The charge-labeled ion cloud comes from Bruker's 4DFF feature finder,
+which writes a `<name>.d.features` file next to the raw `.d`. Two things
+have to be true: the sidecar has to exist, and its contents have to be
+published to the database — the dashboard usually runs on a different
+machine from the raw data, so it cannot open the sidecar itself.
+
+On the machine that can see the raw files (your instrument PC, or the
+cluster if searches run there):
+
+```
+stan install-4dff              # once — downloads the Bruker binaries
+stan run-4dff /path/to/run.d   # one run
+stan backfill-features         # or: every indexed .d that lacks a sidecar
+stan backfill-feature-cloud    # publish the clouds to the database
+```
+
+`backfill-feature-cloud` walks your runs newest-first, reads each
+sidecar, and stores a downsampled charge-labeled cloud (15,000 points by
+default) in the `feature_clouds` table. Once it's there, every dashboard
+shows the Plotly view — one trace per charge state, click the legend to
+hide `+1` contamination. Runs without a cloud fall back to the older
+grayscale SVG cloud.
+
+If the extraction host can't reach the database, point the two halves at
+a shared directory instead:
+
+```
+# on the host with the raw data
+stan backfill-feature-cloud --cache-dir /shared/feature_clouds
+# on the host with the database
+stan backfill-feature-cloud --from-cache /shared/feature_clouds
+```
 
 **"I need to disable community submission temporarily."**
 

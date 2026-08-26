@@ -1322,7 +1322,7 @@ class InstrumentWatcher:
                         path.name,
                     )
                 else:
-                    def _bg_4dff(p: Path) -> None:
+                    def _bg_4dff(p: Path, rid: str | None) -> None:
                         try:
                             r = run_4dff(p)
                             logger.info(
@@ -1333,10 +1333,23 @@ class InstrumentWatcher:
                             logger.exception(
                                 "watcher: 4DFF failed for %s", p.name,
                             )
+                            return
+                        # Writing the sidecar is only half the job: the
+                        # dashboard reads the DB, so an unpublished cloud
+                        # still renders the empty legacy SVG view.
+                        if rid:
+                            from stan.metrics.feature_cloud import (
+                                publish_feature_cloud,
+                            )
+                            n = publish_feature_cloud(p, rid)
+                            logger.info(
+                                "watcher: ion cloud stored: %d points for %s",
+                                n, p.name,
+                            )
 
                     threading.Thread(
-                        target=_bg_4dff, args=(path,), daemon=True,
-                        name=f"4dff-{path.stem}",
+                        target=_bg_4dff, args=(path, run_id_for_attempt),
+                        daemon=True, name=f"4dff-{path.stem}",
                     ).start()
             except Exception as e:
                 logger.warning("watcher: 4DFF dispatch failed: %s", e)

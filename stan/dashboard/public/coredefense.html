@@ -1,0 +1,1653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Core Defense — STAN Arcade</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; min-height: 100%;
+    background: #0a0f1a; color: #e5e7eb;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    user-select: none;
+  }
+  #app {
+    display: flex; gap: 12px; padding: 10px; box-sizing: border-box;
+    align-items: flex-start; justify-content: center;
+  }
+  #left { display: flex; flex-direction: column; min-width: 0; }
+  #side {
+    width: 268px; flex: none; display: flex; flex-direction: column; gap: 8px;
+  }
+
+  /* ── top HUD ─────────────────────────────────────────────── */
+  #topbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    margin-bottom: 6px; font-size: 13px;
+  }
+  #topbar .title {
+    color: #fbbf24; font-weight: bold; font-size: 17px; letter-spacing: 1px;
+  }
+  #topbar .sub { color: #94a3b8; font-style: italic; font-size: 11px; }
+  .pill {
+    background: #0f172a; border: 1px solid #1e293b; border-radius: 6px;
+    padding: 4px 9px; font-size: 12px; color: #94a3b8;
+    font-variant-numeric: tabular-nums;
+  }
+  .pill b { color: #fbbf24; font-size: 13px; }
+  .pill.health b { color: #22c55e; }
+  .pill.health.hurt b { color: #f87171; }
+  .pill.gold b { color: #fbbf24; }
+  .pill.wave b { color: #f472b6; }
+  button {
+    background: #1e293b; color: #e5e7eb; border: 1px solid #475569;
+    padding: 5px 11px; border-radius: 4px; cursor: pointer; font-size: 12px;
+    font-family: inherit;
+  }
+  button:hover:not(:disabled) { background: #334155; border-color: #64748b; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary {
+    background: #7c2d12; border-color: #fbbf24; color: #fde68a; font-weight: bold;
+  }
+  button.primary:hover:not(:disabled) { background: #9a3412; }
+
+  canvas {
+    display: block; background: #0f172a;
+    border: 1px solid #1e293b; border-radius: 8px;
+    max-width: 100%; touch-action: none; cursor: pointer;
+  }
+  #ticker {
+    margin-top: 6px; font-size: 12px; color: #94a3b8; min-height: 32px;
+    line-height: 1.4; max-width: 860px;
+  }
+  #ticker .hint { color: #f472b6; }
+
+  /* ── side panel ──────────────────────────────────────────── */
+  .panel {
+    background: #0f172a; border: 1px solid #1e293b;
+    border-radius: 8px; padding: 10px;
+  }
+  .panel h3 {
+    margin: 0 0 8px 0; font-size: 12px; color: #fbbf24;
+    text-transform: uppercase; letter-spacing: 1px; font-weight: bold;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  #waveBox .wavelabel { font-size: 13px; color: #f472b6; font-weight: bold; }
+  #waveBox .countdown { font-size: 11px; color: #94a3b8; margin: 4px 0 8px 0; }
+  #waveBox .hint { font-size: 11px; color: #cbd5e1; font-style: italic; margin-bottom: 8px; line-height: 1.35; }
+
+  #shop { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .tcard {
+    background: #1e293b; border: 1px solid #334155; border-radius: 6px;
+    padding: 6px; cursor: pointer; text-align: center; position: relative;
+  }
+  .tcard:hover { border-color: #64748b; }
+  .tcard.sel { border-color: #fbbf24; box-shadow: 0 0 0 1px #fbbf24 inset; }
+  .tcard.poor { opacity: 0.45; }
+  .tcard .ico { font-size: 19px; line-height: 1.1; }
+  .tcard .nm { font-size: 10px; color: #e5e7eb; line-height: 1.15; margin-top: 2px; }
+  .tcard .cost { font-size: 10px; color: #fbbf24; font-weight: bold; margin-top: 2px; }
+  .tcard .key {
+    position: absolute; top: 2px; left: 4px; font-size: 9px; color: #64748b;
+  }
+
+  #info { font-size: 11px; color: #cbd5e1; line-height: 1.45; min-height: 92px; }
+  #info .nm { color: #fbbf24; font-weight: bold; font-size: 12px; }
+  #info .stat { color: #94a3b8; }
+  #info .stat b { color: #e5e7eb; font-variant-numeric: tabular-nums; }
+  #info .joke { color: #64748b; font-style: italic; }
+  #info .good { color: #22c55e; }
+  #info .bad { color: #f87171; }
+  #info .btnrow { display: flex; gap: 6px; margin-top: 8px; }
+
+  #bestiary { font-size: 10.5px; color: #cbd5e1; }
+  #bestiary .row {
+    display: flex; gap: 6px; padding: 3px 0; border-bottom: 1px dashed #1e293b;
+    align-items: flex-start;
+  }
+  #bestiary .row:last-child { border-bottom: none; }
+  #bestiary .e { font-size: 14px; width: 18px; flex: none; text-align: center; }
+  #bestiary .n { color: #e5e7eb; font-weight: bold; }
+  #bestiary .w { color: #22c55e; }
+  #bestiary .r { color: #f87171; }
+  #bestiary.collapsed .list { display: none; }
+
+  /* ── floating tooltip over the canvas ────────────────────── */
+  #tip {
+    position: fixed; z-index: 40; pointer-events: none; display: none;
+    background: #020617; border: 1px solid #475569; border-radius: 6px;
+    padding: 7px 9px; font-size: 11px; color: #cbd5e1; max-width: 250px;
+    line-height: 1.4; box-shadow: 0 6px 18px rgba(0,0,0,0.6);
+  }
+  #tip .nm { color: #fbbf24; font-weight: bold; display: block; margin-bottom: 2px; }
+  #tip .joke { color: #64748b; font-style: italic; }
+  #tip .good { color: #22c55e; }
+  #tip .bad { color: #f87171; }
+
+  /* ── end-of-game overlay ─────────────────────────────────── */
+  #overlay {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    background: rgba(2,6,23,0.88);
+    align-items: center; justify-content: center;
+  }
+  #overlay .box {
+    background: #0f172a; border: 1px solid #334155; border-radius: 12px;
+    padding: 26px 34px; text-align: center; max-width: 520px;
+  }
+  #overlay h2 { margin: 0 0 6px 0; font-size: 26px; color: #f87171; }
+  #overlay.win h2 { color: #22c55e; }
+  #overlay p { color: #cbd5e1; font-size: 13px; line-height: 1.6; margin: 6px 0; }
+  #overlay .score { color: #fbbf24; font-size: 20px; font-weight: bold; margin: 12px 0; }
+  #overlay .flavor { color: #94a3b8; font-style: italic; font-size: 12px; }
+  a.back {
+    position: fixed; top: 12px; right: 14px; z-index: 30;
+    background: #0f172a; border: 1px solid #334155; color: #94a3b8;
+    padding: 4px 10px; border-radius: 4px; font-size: 11px; text-decoration: none;
+  }
+  a.back:hover { color: #e5e7eb; border-color: #475569; }
+
+  @media (max-width: 1150px) {
+    #app { flex-direction: column; align-items: center; }
+    #side { width: 100%; max-width: 860px; }
+    #shop { grid-template-columns: repeat(3, 1fr); }
+  }
+</style>
+</head>
+<body>
+<a class="back" href="/arcade">← arcade</a>
+<div id="app">
+  <div id="left">
+    <div id="topbar">
+      <span class="title">🧬 CORE DEFENSE</span>
+      <span class="sub">nothing gets to the mass spec</span>
+      <span class="pill health" id="pHealth">Instrument <b id="vHealth">20</b></span>
+      <span class="pill gold" id="pGold">Gold <b id="vGold">250</b></span>
+      <span class="pill wave" id="pWave">Wave <b id="vWave">0/12</b></span>
+      <span class="pill" id="pScore">Score <b id="vScore">0</b></span>
+      <button id="btnSpeed" title="Toggle 1x / 2x game speed (F)">▶ 1×</button>
+      <button id="btnPause" title="Pause (P)">⏸ Pause</button>
+      <button id="btnReset" title="Start a fresh run">↺ Reset</button>
+    </div>
+    <canvas id="cv" width="860" height="580"></canvas>
+    <div id="ticker">Click a tower in the shop, then click a hex pad to build. Enemies walk from the autosampler to your mass spec — stop them.</div>
+  </div>
+
+  <div id="side">
+    <div class="panel" id="waveBox">
+      <h3>Wave</h3>
+      <div class="wavelabel" id="waveLabel">Wave 1 of 12</div>
+      <div class="countdown" id="waveCountdown">Build phase</div>
+      <div class="hint" id="waveHint"></div>
+      <button class="primary" id="btnSend" style="width:100%">▶ Send wave 1 now</button>
+    </div>
+
+    <div class="panel">
+      <h3>Defenses <span style="color:#64748b;font-weight:normal;text-transform:none;letter-spacing:0">keys 1–6</span></h3>
+      <div id="shop"></div>
+    </div>
+
+    <div class="panel">
+      <h3 id="infoTitle">Details</h3>
+      <div id="info">Hover a tower or an enemy for details.</div>
+    </div>
+
+    <div class="panel" id="bestiary">
+      <h3 style="cursor:pointer" id="bestToggle">Bestiary <span style="color:#64748b;font-weight:normal">click to hide</span></h3>
+      <div class="list" id="bestList"></div>
+    </div>
+  </div>
+</div>
+
+<div id="tip"></div>
+
+<div id="overlay">
+  <div class="box">
+    <h2 id="ovTitle">INSTRUMENT DOWN</h2>
+    <p id="ovBody"></p>
+    <div class="score" id="ovScore"></div>
+    <p class="flavor" id="ovFlavor"></p>
+    <button class="primary" id="ovAgain">Play again</button>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   CORE DEFENSE — a Kingdom Rush-style tower defense for the STAN arcade.
+
+   Premise: everything that ruins a proteomics experiment queues up in the
+   sample line and walks toward your mass spectrometer. You buy the things
+   that actually protect an experiment (guard columns, C18 cleanup, a clean
+   bench, a HeLa QC standard, DIA-NN) and place them along the fluidics.
+
+   Everything here is deliberately keyed to real lab experience — the
+   resistance table is the joke AND the strategy. Comments below explain the
+   references for maintainers who are not mass spectrometrists.
+
+   Single file, zero external requests (arcade pages may be served behind a
+   strict CSP). Canvas + vanilla JS, no build step.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const W = 860, H = 580;
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+/* ── The sample path ────────────────────────────────────────────────────────
+   Enemies enter off-canvas left (the autosampler) and walk a fixed serpentine
+   to the mass spec at bottom-right. Positions are computed from a single
+   scalar `d` (distance travelled along the polyline), which guarantees every
+   enemy always makes forward progress — no pathfinding, no way to stall. */
+const PATH_PTS = [
+  [-40,  80], [150,  80], [150, 200], [400, 200], [400,  90], [660,  90],
+  [660, 310], [170, 310], [170, 440], [520, 440], [520, 520], [715, 520],
+];
+const SEGS = [];
+let PATH_LEN = 0;
+for (let i = 0; i < PATH_PTS.length - 1; i++) {
+  const a = PATH_PTS[i], b = PATH_PTS[i + 1];
+  const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+  SEGS.push({ ax: a[0], ay: a[1], bx: b[0], by: b[1], len, start: PATH_LEN });
+  PATH_LEN += len;
+}
+function posAt(d) {
+  if (d <= 0) return { x: PATH_PTS[0][0], y: PATH_PTS[0][1] };
+  for (const s of SEGS) {
+    if (d <= s.start + s.len) {
+      const t = (d - s.start) / s.len;
+      return { x: s.ax + (s.bx - s.ax) * t, y: s.ay + (s.by - s.ay) * t };
+    }
+  }
+  const last = PATH_PTS[PATH_PTS.length - 1];
+  return { x: last[0], y: last[1] };
+}
+
+/* Buildable hex pads. Hand-placed so no pad sits closer than ~45 px to the
+   fluid path (verified with a point-to-segment distance check — see the
+   headless harness notes in the commit message). Several pads are deliberately
+   clustered within ~130 px of each other so a HeLa QC standard has neighbours
+   to buff; a lone tower in a far corner is meant to feel like a mistake. */
+const SLOTS = [
+  [70, 175], [275, 140], [355, 140], [95, 250], [95, 375], [280, 250],
+  [525, 250], [735, 190], [735, 285], [690, 420], [300, 375], [430, 375],
+  [500, 375], [615, 375], [345, 515], [215, 515], [620, 468],
+];
+
+/* ── Towers ─────────────────────────────────────────────────────────────────
+   Every tower is a real thing that protects a real experiment. `kind`
+   controls the firing behaviour:
+     shot   — single-target homing projectile
+     splash — lobbed projectile, damages everything in `splash` radius
+     beam   — instant hitscan (software doesn't have a time of flight)
+     aura   — never attacks; buffs neighbouring towers + burns enemies
+   Damage is multiplied by the target's per-tower resistance (see ENEMIES). */
+const TOWERS = {
+  guard: {
+    id: 'guard', name: 'Guard Column', short: 'Guard Col.', icon: '🛡️', color: '#38bdf8', key: '1',
+    kind: 'shot', cost: 70,
+    blurb: 'In-line filter + guard cartridge. Cheap, reliable, catches the coarse stuff — hair, particulates. Does nothing about anything dissolved.',
+    levels: [
+      { dmg: 12, range: 100, rate: 1.30, up: 0   },
+      { dmg: 19, range: 112, rate: 1.50, up: 60  },
+      { dmg: 29, range: 125, rate: 1.75, up: 110 },
+    ],
+  },
+  trap: {
+    id: 'trap', name: 'Trap Column', short: 'Trap Col.', icon: '⏳', color: '#a78bfa', key: '2',
+    kind: 'splash', cost: 90,
+    blurb: 'Peptides get parked on the trap while the loading pump runs. In here: a slowing field. Barely scratches anything, but it buys your damage towers time.',
+    levels: [
+      { dmg: 4,  range: 105, rate: 1.20, splash: 36, slow: 0.40, slowT: 1.8, up: 0   },
+      { dmg: 7,  range: 118, rate: 1.35, splash: 42, slow: 0.50, slowT: 2.1, up: 80  },
+      { dmg: 11, range: 132, rate: 1.50, splash: 48, slow: 0.60, slowT: 2.5, up: 140 },
+    ],
+  },
+  c18: {
+    id: 'c18', name: 'C18 Desalting', short: 'C18 SPE', icon: '🧪', color: '#22c55e', key: '3',
+    kind: 'shot', cost: 110,
+    blurb: 'Solid-phase cleanup. Salt, detergent and polymer wash straight to waste while peptides stay bound. The single best answer to a dirty sample.',
+    levels: [
+      { dmg: 18, range: 112, rate: 1.10, up: 0   },
+      { dmg: 30, range: 124, rate: 1.25, up: 100 },
+      { dmg: 46, range: 138, rate: 1.45, up: 170 },
+    ],
+  },
+  hela: {
+    id: 'hela', name: 'HeLa QC Standard', short: 'HeLa QC', icon: '🧬', color: '#f472b6', key: '4',
+    kind: 'aura', cost: 100,
+    blurb: 'Does not shoot. A QC standard tells you something is wrong BEFORE you burn the real samples — so neighbouring towers hit harder and further, enemies in the aura lose their armour (you now know exactly what they are), and they take steady chip damage. Administrators take TRIPLE: hard QC data is the only thing that survives contact with management.',
+    // Aura radius is sized against the pad spacing: 130 reaches one or two
+    // neighbouring pads, 170 covers a whole cluster.
+    levels: [
+      { dmg: 0, range: 130, rate: 0, dps: 3, buffDmg: 0.20, buffRange: 0.08, up: 0   },
+      { dmg: 0, range: 150, rate: 0, dps: 5, buffDmg: 0.30, buffRange: 0.12, up: 90  },
+      { dmg: 0, range: 170, rate: 0, dps: 8, buffDmg: 0.45, buffRange: 0.18, up: 150 },
+    ],
+  },
+  bench: {
+    id: 'bench', name: 'Clean Bench + N₂', short: 'Clean bench', icon: '💨', color: '#2dd4bf', key: '5',
+    kind: 'splash', cost: 160,
+    blurb: 'Laminar-flow bench on a nitrogen supply. Area damage: sweeps whole clouds of keratin, degasses bubbles out of the line, and grounds static.',
+    levels: [
+      { dmg: 14, range: 128, rate: 0.85, splash: 48, up: 0   },
+      { dmg: 22, range: 140, rate: 0.95, splash: 56, up: 140 },
+      { dmg: 33, range: 155, rate: 1.10, splash: 64, up: 220 },
+    ],
+  },
+  search: {
+    id: 'search', name: 'DIA-NN / Sage node', short: 'DIA-NN', icon: '💻', color: '#fbbf24', key: '6',
+    kind: 'beam', cost: 210,
+    blurb: 'A compute node running the search engine. Expensive, slow-firing, enormous range and damage — if you can identify it, you can get rid of it. The only thing that meaningfully hurts a forced Windows Update, because software fights software.',
+    levels: [
+      { dmg: 38, range: 170, rate: 0.60, up: 0   },
+      { dmg: 62, range: 188, rate: 0.72, up: 190 },
+      { dmg: 95, range: 210, rate: 0.90, up: 300 },
+    ],
+  },
+};
+const TOWER_ORDER = ['guard', 'trap', 'c18', 'hela', 'bench', 'search'];
+
+/* ── Enemies ────────────────────────────────────────────────────────────────
+   `resist` is a multiplier applied to incoming damage, keyed by tower id.
+   Anything missing defaults to 1.0.  >1 = weakness, <1 = resistance.
+   Nothing is fully immune (min 1 damage always lands) so there is no way to
+   soft-lock a run by owning the "wrong" towers — just a slow, painful one.
+   `armor` is flat reduction per hit, which is what makes cheap fast towers
+   useless against the boss until a HeLa QC aura strips it. */
+const ENEMIES = {
+  keratin: {
+    id: 'keratin', name: 'Keratin', icon: '💇', color: '#fde68a',
+    hp: 16, speed: 62, gold: 6, leak: 1, armor: 0, r: 11,
+    // K1/K10/K14 from skin and hair. Individually trivial, but they arrive
+    // in clouds and every digest has them.
+    joke: 'K1/K10 from somebody\'s hair. Weak alone, never arrives alone.',
+    resist: { guard: 1.4, bench: 2.0, search: 0.8 },
+  },
+  peg: {
+    id: 'peg', name: 'PEG contamination', icon: '🧴', color: '#c4b5fd',
+    hp: 58, speed: 50, gold: 12, leak: 2, armor: 0, r: 13, splits: 'peg_frag',
+    // PEG is a polymer: kill one and you get the 44 Da oligomer ladder,
+    // which is exactly why it splits into two smaller units on death.
+    joke: 'Polyethylene glycol. Kill it and it splits into the 44 Da ladder — because of course it does.',
+    resist: { guard: 0.5, c18: 1.8, bench: 0.8 },
+  },
+  peg_frag: {
+    id: 'peg_frag', name: 'PEG oligomer', icon: '🔵', color: '#ddd6fe',
+    hp: 20, speed: 60, gold: 4, leak: 1, armor: 0, r: 8, child: true,
+    joke: '+44, +44, +44… all the way across your gradient.',
+    resist: { guard: 0.5, c18: 1.8 },
+  },
+  salt: {
+    id: 'salt', name: 'Salt / detergent', icon: '🧂', color: '#e2e8f0',
+    hp: 95, speed: 40, gold: 15, leak: 2, armor: 1, r: 13,
+    // Buffer salts and SDS/Triton suppress ionization. Physical filters do
+    // nothing; SPE desalting is the actual fix, hence the 3x.
+    joke: 'Suppresses your whole spray. A filter will not save you — desalt it.',
+    resist: { c18: 3.0, guard: 0.55, trap: 0.55, search: 0.55, bench: 0.7 },
+  },
+  bubble: {
+    id: 'bubble', name: 'Air bubble in the LC', icon: '🫧', color: '#7dd3fc',
+    hp: 34, speed: 102, gold: 9, leak: 2, armor: 0, r: 11, slowImmune: true,
+    // A bubble in the line will not be slowed down by anything; you degas
+    // the solvent (nitrogen / vacuum degasser) or you live with it.
+    joke: 'Sprints through the line and kills your pressure trace. Degas the solvent.',
+    resist: { bench: 2.5, guard: 0.5, c18: 0.6, search: 0.7 },
+  },
+  emitter: {
+    id: 'emitter', name: 'Clogged emitter', icon: '🚧', color: '#fca5a5',
+    hp: 230, speed: 30, gold: 24, leak: 3, armor: 3, r: 15, slowImmune: true,
+    // Already the slowest thing in the lab. An upstream filter is no help
+    // once the tip itself is blocked — you backflush it or you replace it.
+    joke: 'Already as slow as it gets. Upstream filters do not un-clog a tip — backflush it.',
+    resist: { guard: 0.35, trap: 0.5, c18: 0.8, bench: 1.4 },
+  },
+  trypsin: {
+    id: 'trypsin', name: 'Trypsin autolysis', icon: '✂️', color: '#fdba74',
+    hp: 120, speed: 53, gold: 16, leak: 2, armor: 0, r: 13, spawns: 'tryp_frag',
+    // Trypsin digests itself. Left running it keeps shedding autolysis
+    // peptides, so this one drips out small adds as it walks.
+    joke: 'Trypsin digesting trypsin. Keeps shedding autolysis peptides the whole way down the path.',
+    resist: { search: 1.3, hela: 1.2, c18: 0.7 },
+  },
+  tryp_frag: {
+    id: 'tryp_frag', name: 'Autolysis peptide', icon: '🟠', color: '#fed7aa',
+    hp: 18, speed: 67, gold: 3, leak: 1, armor: 0, r: 8, child: true,
+    joke: 'VLVK, LGEHNIDVLEGNEQFINAAK… you know them by heart by now.',
+    resist: { search: 1.3, c18: 0.7 },
+  },
+  winupdate: {
+    id: 'winupdate', name: 'Forced Windows Update', icon: '🪟', color: '#93c5fd',
+    hp: 150, speed: 90, gold: 22, leak: 3, armor: 0, r: 14, slowImmune: true,
+    // Nothing physical stops IT. Only the compute node touches it properly
+    // (software fights software), and even that is a fight.
+    joke: 'Nothing physical stops IT. Only the compute node lands real damage — software fights software.',
+    resist: { guard: 0.15, trap: 0.15, c18: 0.15, bench: 0.6, search: 1.6 },
+  },
+  static: {
+    id: 'static', name: 'Static discharge', icon: '⚡', color: '#fde047',
+    hp: 70, speed: 120, gold: 13, leak: 2, armor: 0, r: 11, slowImmune: true,
+    // Dry-room static: fast, unpredictable, fixed by grounding / an ionizer
+    // at the bench rather than by anything in the fluid path.
+    joke: 'Winter, dry air, nylon lab coat. Ground the bench.',
+    resist: { bench: 1.8, guard: 0.7, c18: 0.5, search: 0.9 },
+  },
+  freezer: {
+    id: 'freezer', name: 'Freezer failure', icon: '🧊', color: '#a5f3fc',
+    hp: 260, speed: 35, gold: 26, leak: 4, armor: 2, r: 15, heals: 6, healR: 90,
+    // The -80 alarm nobody heard. It keeps everything around it alive,
+    // which is exactly the wrong kind of preservation.
+    joke: 'The −80 alarm nobody heard. Preserves every enemy around it — kill it first.',
+    resist: { guard: 0.85, trap: 0.85, c18: 0.85, search: 0.9, bench: 1.2 },
+  },
+  deadline: {
+    id: 'deadline', name: 'Grant deadline', icon: '📅', color: '#f9a8d4',
+    hp: 200, speed: 56, gold: 30, leak: 5, armor: 1, r: 14, accel: 7, maxSpeed: 136,
+    // Accelerates the whole way in. Preliminary data is what actually
+    // defuses a deadline, hence HeLa QC hitting it for 2.2x.
+    joke: 'Accelerates the closer it gets. Preliminary data is the only real defence — park it in a QC aura.',
+    resist: { hela: 2.2, search: 1.2, guard: 0.6, c18: 0.6, trap: 0.8, bench: 0.8 },
+  },
+  admin: {
+    id: 'admin', name: 'Evil Administrator', icon: '👔', color: '#fb7185',
+    hp: 900, speed: 27, gold: 160, leak: 1, armor: 8, r: 20, boss: true,
+    slowImmune: true, stealsGold: true,
+    // The boss. Heavily armoured against every physical defence, immune to
+    // being slowed down, and when it reaches the instrument it takes your
+    // BUDGET instead of your hardware. The counter is the QC standard:
+    // documented evidence that the instrument is fine is the only argument
+    // that works on an administrator.
+    joke: 'Armoured against everything in the fluid path and cannot be slowed. Reaches the instrument → budget cut, not hardware damage. Melts in a HeLa QC aura (3×): you cannot argue with QC data.',
+    resist: { guard: 0.2, trap: 0.2, c18: 0.4, bench: 0.45, search: 1.0, hela: 3.0 },
+  },
+};
+
+/* ── Waves ──────────────────────────────────────────────────────────────────
+   12 waves. `gap` is seconds between spawns in a group, `delay` is the group's
+   offset from the start of the wave. HP scales +5% per wave on top of this. */
+const WAVES = [
+  { hint: 'Keratin cloud. Somebody opened a tube next to the bench.',
+    groups: [ { type: 'keratin', n: 10, gap: 0.9 } ] },
+  { hint: 'More hair, plus the first PEG. PEG splits when it dies.',
+    groups: [ { type: 'keratin', n: 8, gap: 0.8 }, { type: 'peg', n: 3, gap: 2.2, delay: 4 } ] },
+  { hint: 'PEG and air bubbles. Bubbles are fast and cannot be slowed.',
+    groups: [ { type: 'peg', n: 6, gap: 1.6 }, { type: 'bubble', n: 4, gap: 1.4, delay: 5 } ] },
+  { hint: 'Salt and detergent — C18 desalting hits these for 3×.',
+    groups: [ { type: 'salt', n: 6, gap: 1.5 }, { type: 'keratin', n: 10, gap: 0.7, delay: 3 } ] },
+  { hint: 'Trypsin autolysis: it sheds extra peptides the whole way down.',
+    groups: [ { type: 'trypsin', n: 4, gap: 2.4 }, { type: 'bubble', n: 6, gap: 1.1, delay: 4 },
+              { type: 'keratin', n: 8, gap: 0.7, delay: 9 } ] },
+  { hint: 'First clogged emitters — armoured, and filters barely touch them.',
+    groups: [ { type: 'emitter', n: 2, gap: 5 }, { type: 'salt', n: 8, gap: 1.2, delay: 2 },
+              { type: 'peg', n: 5, gap: 1.6, delay: 8 } ] },
+  { hint: 'Forced Windows Update. Physical defences do almost nothing — build a compute node.',
+    groups: [ { type: 'winupdate', n: 3, gap: 4 }, { type: 'keratin', n: 14, gap: 0.55, delay: 1 },
+              { type: 'trypsin', n: 3, gap: 2.5, delay: 8 } ] },
+  { hint: 'Static discharge is the fastest thing in the game. Clean bench grounds it.',
+    groups: [ { type: 'static', n: 8, gap: 1.0 }, { type: 'salt', n: 6, gap: 1.4, delay: 4 },
+              { type: 'emitter', n: 3, gap: 4, delay: 8 } ] },
+  { hint: 'Freezer failures heal everything nearby. Kill the ice first.',
+    groups: [ { type: 'freezer', n: 2, gap: 6 }, { type: 'trypsin', n: 6, gap: 1.8, delay: 3 },
+              { type: 'winupdate', n: 4, gap: 3.2, delay: 6 }, { type: 'bubble', n: 8, gap: 0.9, delay: 12 } ] },
+  { hint: 'Grant deadlines. They accelerate. QC aura hits them for 2.2×.',
+    groups: [ { type: 'deadline', n: 3, gap: 5 }, { type: 'emitter', n: 4, gap: 3.4, delay: 2 },
+              { type: 'static', n: 10, gap: 0.8, delay: 6 } ] },
+  { hint: 'An Evil Administrator is on the schedule. Armoured, unslowable, steals gold. QC standard = 3× damage.',
+    groups: [ { type: 'admin', n: 1, gap: 1 }, { type: 'winupdate', n: 5, gap: 2.6, delay: 3 },
+              { type: 'salt', n: 10, gap: 1.0, delay: 5 }, { type: 'freezer', n: 2, gap: 6, delay: 14 } ] },
+  { hint: 'FINAL: site visit. Two administrators, three deadlines, and everything else they brought with them.',
+    groups: [ { type: 'keratin', n: 20, gap: 0.45 }, { type: 'emitter', n: 4, gap: 3.5, delay: 2 },
+              { type: 'winupdate', n: 4, gap: 3.0, delay: 6 }, { type: 'deadline', n: 3, gap: 5.5, delay: 8 },
+              { type: 'admin', n: 2, gap: 14, delay: 10 } ] },
+];
+
+const START_GOLD = 260;
+const START_HEALTH = 20;
+const BUILD_TIME = 20;       // seconds of build phase between waves
+const FIRST_BUILD_TIME = 30; // a little longer before wave 1
+const SELL_REFUND = 0.6;
+
+/* ── Game state ─────────────────────────────────────────────────────────── */
+let G;
+let nextId = 1;
+
+function newGame() {
+  return {
+    phase: 'build',        // 'build' | 'wave' | 'over'
+    wave: 0,               // index of the NEXT wave to run
+    buildT: FIRST_BUILD_TIME,
+    waveT: 0,
+    spawnQueue: [],
+    enemies: [],
+    towers: [],            // one per occupied slot
+    shots: [],
+    beams: [],
+    fx: [],                // impact rings
+    floats: [],            // floating text
+    gold: START_GOLD,
+    goldEarned: 0,
+    health: START_HEALTH,
+    kills: 0,
+    leaks: 0,
+    score: 0,
+    wavesCleared: 0,
+    over: false,
+    won: false,
+    submitted: false,      // score is posted exactly once per game
+    paused: false,
+    speed: 1,
+    selType: null,         // tower id chosen in the shop
+    selTower: null,        // placed tower currently inspected
+    hoverSlot: -1,
+    alertT: 0,             // "wave incoming" flash timer
+    ticker: '',
+  };
+}
+
+/* ── Helpers ────────────────────────────────────────────────────────────── */
+function tstats(t) {
+  // Effective stats for a placed tower, including the best nearby HeLa QC
+  // buff. Buffs deliberately do NOT stack (take the strongest) — stacking
+  // three QC standards into one corner would trivialise the whole game.
+  const base = TOWERS[t.type].levels[t.level - 1];
+  let bd = 0, br = 0;
+  if (t.type !== 'hela') {
+    for (const o of G.towers) {
+      if (o.type !== 'hela' || o === t) continue;
+      const ol = TOWERS.hela.levels[o.level - 1];
+      if (Math.hypot(o.x - t.x, o.y - t.y) <= ol.range) {
+        if (ol.buffDmg > bd) { bd = ol.buffDmg; br = ol.buffRange; }
+      }
+    }
+  }
+  return {
+    dmg: base.dmg * (1 + bd),
+    range: base.range * (1 + br),
+    rate: base.rate,
+    splash: base.splash || 0,
+    slow: base.slow || 0,
+    slowT: base.slowT || 0,
+    dps: base.dps || 0,
+    buffed: bd > 0,
+  };
+}
+
+function towerCost(type) { return TOWERS[type].cost; }
+function upgradeCost(t) {
+  const lv = TOWERS[t.type].levels;
+  return t.level < lv.length ? lv[t.level].up : null;
+}
+
+function float(x, y, txt, color) {
+  G.floats.push({ x, y, txt, color, t: 0.9 });
+}
+
+function spawnEnemy(type, scale, atD) {
+  const def = ENEMIES[type];
+  const hp = Math.round(def.hp * (def.child ? 1 : scale));
+  G.enemies.push({
+    id: nextId++,
+    type,
+    hp, maxHp: hp,
+    d: atD == null ? 0 : atD,
+    speed: def.speed,
+    armor: def.armor || 0,
+    slowUntil: 0, slowF: 1,
+    strip: 0,              // seconds of "armour stripped by QC" remaining
+    spawnT: 0,
+    hitFlash: 0,
+    x: PATH_PTS[0][0], y: PATH_PTS[0][1],
+  });
+}
+
+/* Damage entry point. Every hit in the game goes through here so the
+   resistance table can never be bypassed. */
+function hurt(e, amount, towerType) {
+  const def = ENEMIES[e.type];
+  const mult = (def.resist && def.resist[towerType] != null) ? def.resist[towerType] : 1;
+  const armor = e.strip > 0 ? 0 : (e.armor || 0);
+  // Floor of 1 keeps every tower marginally useful — resistances make a
+  // wrong build slow and expensive, never literally unable to kill.
+  const dmg = Math.max(1, amount * mult - armor);
+  e.hp -= dmg;
+  e.hitFlash = 0.12;
+  if (e.hp <= 0) killEnemy(e, towerType);
+  return dmg;
+}
+
+function killEnemy(e, byType) {
+  if (e.dead) return;
+  e.dead = true;
+  const def = ENEMIES[e.type];
+  G.gold += def.gold;
+  G.goldEarned += def.gold;
+  G.kills++;
+  G.score += 10;
+  float(e.x, e.y - 14, '+' + def.gold, '#fbbf24');
+  G.fx.push({ x: e.x, y: e.y, r: 4, max: def.r + 12, t: 0.35, color: def.color });
+  // PEG splits into its oligomer ladder. Children are flagged `child` so
+  // they can never split again (otherwise: infinite PEG, which is only
+  // funny in real life).
+  if (def.splits) {
+    for (let i = 0; i < 2; i++) spawnEnemy(def.splits, 1, Math.max(0, e.d - 6 - i * 10));
+  }
+  if (def.boss) {
+    G.ticker = 'Administrator neutralised. Somebody found the QC binder.';
+  }
+}
+
+function leak(e) {
+  const def = ENEMIES[e.type];
+  e.dead = true;
+  G.leaks++;
+  if (def.stealsGold) {
+    // Budget cut instead of hardware damage — the administrator does not
+    // break your instrument, it defunds it.
+    const steal = Math.max(60, Math.round(G.gold * 0.4));
+    G.gold = Math.max(0, G.gold - steal);
+    G.health -= def.leak;
+    float(700, 470, '-' + steal + 'g BUDGET CUT', '#f87171');
+    G.ticker = 'The Administrator reached the instrument. Budget cut: -' + steal + ' gold.';
+  } else {
+    G.health -= def.leak;
+    float(700, 470, '-' + def.leak, '#f87171');
+    G.ticker = def.name + ' reached the mass spec. Instrument health -' + def.leak + '.';
+  }
+  if (G.health <= 0) {
+    G.health = 0;
+    endGame(false);
+  }
+}
+
+function endGame(won) {
+  if (G.over) return;
+  G.over = true;
+  G.won = won;
+  G.phase = 'over';
+  G.score += G.goldEarned + G.health * 40 + G.wavesCleared * 120 + (won ? 2000 : 0);
+  submitScore();
+  showOverlay();
+}
+
+/* Score submission — exactly once per game, relayed by arcade.html. */
+function submitScore() {
+  if (G.submitted) return;
+  G.submitted = true;
+  try {
+    window.parent.postMessage({
+      type: 'arcade-score',
+      game: 'core_defense',
+      score: Math.round(G.score),
+      won: !!G.won,
+      level: G.wavesCleared,
+    }, '*');
+  } catch (_) {}
+}
+
+/* ── Wave control ───────────────────────────────────────────────────────── */
+function startWave() {
+  if (G.phase !== 'build' || G.over) return;
+  const w = WAVES[G.wave];
+  const scale = 1 + 0.05 * G.wave;
+  G.spawnQueue = [];
+  for (const grp of w.groups) {
+    for (let i = 0; i < grp.n; i++) {
+      G.spawnQueue.push({ t: (grp.delay || 0) + i * grp.gap, type: grp.type, scale });
+    }
+  }
+  G.spawnQueue.sort((a, b) => a.t - b.t);
+  G.waveT = 0;
+  G.phase = 'wave';
+  G.alertT = 1.4;
+  G.ticker = 'Wave ' + (G.wave + 1) + ' incoming — ' + w.hint;
+}
+
+function sendEarlyBonus() {
+  // Kingdom Rush's "call next wave" bonus: gold for bravery.
+  return Math.max(0, Math.round(G.buildT * 2));
+}
+
+function finishWave() {
+  G.wavesCleared++;
+  G.wave++;
+  const bonus = 40 + 15 * G.wavesCleared;
+  G.gold += bonus;
+  G.goldEarned += bonus;
+  float(430, 300, 'WAVE CLEAR +' + bonus + 'g', '#22c55e');
+  if (G.wave >= WAVES.length) {
+    endGame(true);
+    return;
+  }
+  G.phase = 'build';
+  G.buildT = BUILD_TIME;
+  G.ticker = 'Wave ' + G.wavesCleared + ' held. +' + bonus + ' gold. Next: ' + WAVES[G.wave].hint;
+}
+
+/* ── Building ───────────────────────────────────────────────────────────── */
+function slotOccupied(i) { return G.towers.some(t => t.slot === i); }
+
+function buildTower(slotIdx, type) {
+  if (G.over) return false;
+  if (slotIdx < 0 || slotIdx >= SLOTS.length) return false;
+  if (slotOccupied(slotIdx)) return false;
+  const cost = towerCost(type);
+  if (G.gold < cost) return false;
+  G.gold -= cost;
+  const [x, y] = SLOTS[slotIdx];
+  const t = { slot: slotIdx, type, level: 1, x, y, cd: 0, angle: -Math.PI / 2, invested: cost, pulse: 0 };
+  G.towers.push(t);
+  float(x, y - 22, '-' + cost + 'g', '#94a3b8');
+  return t;
+}
+
+function upgradeTower(t) {
+  const c = upgradeCost(t);
+  if (c == null || G.gold < c) return false;
+  G.gold -= c;
+  t.level++;
+  t.invested += c;
+  t.pulse = 0.5;
+  float(t.x, t.y - 22, 'LVL ' + t.level, '#22c55e');
+  return true;
+}
+
+function sellTower(t) {
+  const refund = Math.round(t.invested * SELL_REFUND);
+  G.gold += refund;
+  G.towers = G.towers.filter(o => o !== t);
+  if (G.selTower === t) G.selTower = null;
+  float(t.x, t.y - 22, '+' + refund + 'g', '#fbbf24');
+}
+
+/* ── Simulation ─────────────────────────────────────────────────────────── */
+function update(dt) {
+  if (G.over || G.paused) { updateFx(dt); return; }
+
+  if (G.phase === 'build') {
+    G.buildT -= dt;
+    if (G.buildT <= 0) startWave();
+    if (G.buildT <= 3 && G.buildT > 0) G.alertT = Math.max(G.alertT, 0.5);
+  }
+
+  if (G.phase === 'wave') {
+    G.waveT += dt;
+    while (G.spawnQueue.length && G.spawnQueue[0].t <= G.waveT) {
+      const s = G.spawnQueue.shift();
+      spawnEnemy(s.type, s.scale);
+    }
+  }
+
+  // ── enemies
+  for (const e of G.enemies) {
+    if (e.dead) continue;
+    const def = ENEMIES[e.type];
+    e.spawnT += dt;
+    if (e.hitFlash > 0) e.hitFlash -= dt;
+    if (e.strip > 0) e.strip -= dt;
+    if (e.slowUntil > 0) {
+      e.slowUntil -= dt;
+      if (e.slowUntil <= 0) e.slowF = 1;
+    }
+    // Grant deadlines accelerate as they approach.
+    if (def.accel) e.speed = Math.min(def.maxSpeed, e.speed + def.accel * dt);
+    // Trypsin autolysis keeps shedding peptides behind itself.
+    if (def.spawns) {
+      e.shedT = (e.shedT || 0) + dt;
+      if (e.shedT >= 4.5) { e.shedT = 0; spawnEnemy(def.spawns, 1, Math.max(0, e.d - 14)); }
+    }
+    e.d += e.speed * e.slowF * dt;
+    const p = posAt(e.d);
+    e.x = p.x; e.y = p.y;
+    if (e.d >= PATH_LEN) leak(e);
+  }
+
+  // Freezer failures heal their neighbours (resolved after movement so the
+  // heal radius uses current positions).
+  for (const e of G.enemies) {
+    if (e.dead) continue;
+    const def = ENEMIES[e.type];
+    if (!def.heals) continue;
+    for (const o of G.enemies) {
+      if (o.dead || o === e || o.hp >= o.maxHp) continue;
+      if (Math.hypot(o.x - e.x, o.y - e.y) <= def.healR) {
+        o.hp = Math.min(o.maxHp, o.hp + def.heals * dt);
+      }
+    }
+  }
+
+  // ── HeLa QC auras: strip armour + chip damage. This is the
+  // anti-Administrator tool (admins take 3x from `hela`).
+  // Only the STRONGEST aura on an enemy applies — auras never stack.
+  // Without this rule, papering the map with QC standards wins the game on
+  // its own, which is both unbalanced and the wrong lesson: one QC standard
+  // tells you the instrument is fine, fifteen of them tell you the same thing.
+  for (const e of G.enemies) {
+    if (e.dead) continue;
+    let bestDps = 0;
+    for (const t of G.towers) {
+      if (t.type !== 'hela') continue;
+      const st = tstats(t);
+      if (Math.hypot(e.x - t.x, e.y - t.y) <= st.range) {
+        e.strip = 0.4;
+        if (st.dps > bestDps) bestDps = st.dps;
+      }
+    }
+    if (bestDps > 0) hurt(e, bestDps * dt, 'hela');
+  }
+
+  // ── towers
+  for (const t of G.towers) {
+    if (t.pulse > 0) t.pulse -= dt;
+    if (t.type === 'hela') continue;   // handled by the aura pass above
+    const st = tstats(t);
+
+    t.cd -= dt;
+    if (t.cd > 0) continue;
+
+    // Classic TD targeting: whatever is furthest along the path and in range.
+    let best = null;
+    for (const e of G.enemies) {
+      if (e.dead) continue;
+      if (Math.hypot(e.x - t.x, e.y - t.y) > st.range) continue;
+      if (!best || e.d > best.d) best = e;
+    }
+    if (!best) continue;
+
+    t.angle = Math.atan2(best.y - t.y, best.x - t.x);
+    t.cd = 1 / st.rate;
+
+    if (TOWERS[t.type].kind === 'beam') {
+      // Hitscan — a search engine has no time of flight.
+      hurt(best, st.dmg, t.type);
+      G.beams.push({ x1: t.x, y1: t.y, x2: best.x, y2: best.y, t: 0.16, color: TOWERS[t.type].color });
+    } else {
+      G.shots.push({
+        x: t.x, y: t.y, targetId: best.id,
+        tx: best.x, ty: best.y,
+        speed: 430, dmg: st.dmg, type: t.type,
+        splash: st.splash, slow: st.slow, slowT: st.slowT,
+        color: TOWERS[t.type].color,
+      });
+    }
+  }
+
+  // ── projectiles
+  for (const s of G.shots) {
+    const tgt = G.enemies.find(e => e.id === s.targetId && !e.dead);
+    if (tgt) { s.tx = tgt.x; s.ty = tgt.y; }
+    const dx = s.tx - s.x, dy = s.ty - s.y;
+    const dist = Math.hypot(dx, dy);
+    const step = s.speed * dt;
+    if (dist <= step || dist < 1) {
+      s.x = s.tx; s.y = s.ty;
+      impact(s, tgt);
+      s.done = true;
+    } else {
+      s.x += dx / dist * step;
+      s.y += dy / dist * step;
+    }
+  }
+  G.shots = G.shots.filter(s => !s.done);
+
+  // ── cleanup + wave end
+  G.enemies = G.enemies.filter(e => !e.dead);
+  if (G.phase === 'wave' && G.spawnQueue.length === 0 && G.enemies.length === 0) {
+    finishWave();
+  }
+
+  updateFx(dt);
+}
+
+function impact(s, tgt) {
+  if (s.splash > 0) {
+    // Area hit: everything inside the splash radius, target or not.
+    for (const e of G.enemies) {
+      if (e.dead) continue;
+      if (Math.hypot(e.x - s.x, e.y - s.y) <= s.splash) {
+        hurt(e, s.dmg, s.type);
+        applySlow(e, s);
+      }
+    }
+    G.fx.push({ x: s.x, y: s.y, r: 4, max: s.splash, t: 0.3, color: s.color });
+  } else if (tgt && !tgt.dead) {
+    hurt(tgt, s.dmg, s.type);
+    applySlow(tgt, s);
+    G.fx.push({ x: s.x, y: s.y, r: 2, max: 10, t: 0.18, color: s.color });
+  }
+}
+
+function applySlow(e, s) {
+  if (!s.slow) return;
+  const def = ENEMIES[e.type];
+  // Bubbles, updates, emitters and administrators cannot be slowed — see
+  // `slowImmune` in the enemy table for why each one is exempt.
+  if (def.slowImmune) return;
+  const f = 1 - s.slow;
+  if (f < e.slowF || e.slowUntil <= 0) e.slowF = f;
+  e.slowUntil = Math.max(e.slowUntil, s.slowT);
+}
+
+function updateFx(dt) {
+  for (const b of G.beams) b.t -= dt;
+  G.beams = G.beams.filter(b => b.t > 0);
+  for (const f of G.fx) { f.t -= dt; f.r += (f.max - f.r) * Math.min(1, dt * 12); }
+  G.fx = G.fx.filter(f => f.t > 0);
+  for (const f of G.floats) { f.t -= dt; f.y -= 22 * dt; }
+  G.floats = G.floats.filter(f => f.t > 0);
+  if (G.alertT > 0) G.alertT -= dt;
+}
+
+/* ═══ RENDERING ═════════════════════════════════════════════════════════ */
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // background grid — faint lab bench
+  ctx.strokeStyle = 'rgba(148,163,184,0.05)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y <= H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+  drawPath();
+  drawInstrument();
+  drawSlots();
+  for (const t of G.towers) drawTowerRange(t);
+  for (const t of G.towers) drawTower(t);
+  for (const e of G.enemies) drawEnemy(e);
+  drawShots();
+  drawFx();
+  drawFloats();
+  drawBanner();
+}
+
+function drawPath() {
+  // Fluidic line: outer casing, inner bore, dashed flow marks.
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#1e293b';
+  ctx.lineWidth = 32;
+  strokePath();
+  ctx.strokeStyle = '#334155';
+  ctx.lineWidth = 24;
+  strokePath();
+  ctx.strokeStyle = 'rgba(148,163,184,0.25)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([10, 14]);
+  ctx.lineDashOffset = -(Date.now() * 0.03) % 24;
+  strokePath();
+  ctx.setLineDash([]);
+
+  // Entry point label — where the sample comes in.
+  ctx.fillStyle = '#475569';
+  ctx.font = 'bold 10px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('AUTOSAMPLER →', 8, 56);
+  ctx.font = '16px serif';
+  ctx.fillText('🧫', 8, 80);
+}
+
+function strokePath() {
+  ctx.beginPath();
+  ctx.moveTo(PATH_PTS[0][0], PATH_PTS[0][1]);
+  for (let i = 1; i < PATH_PTS.length; i++) ctx.lineTo(PATH_PTS[i][0], PATH_PTS[i][1]);
+  ctx.stroke();
+}
+
+function drawInstrument() {
+  const x = 716, y = 452, w = 128, h = 116;
+  const frac = Math.max(0, G.health) / START_HEALTH;
+  ctx.fillStyle = '#111c33';
+  roundRect(x, y, w, h, 10);
+  ctx.fill();
+  ctx.strokeStyle = G.health <= 6 ? '#f87171' : '#334155';
+  ctx.lineWidth = 2;
+  roundRect(x, y, w, h, 10);
+  ctx.stroke();
+
+  // hazard flash when the instrument is nearly gone
+  if (G.health <= 6 && Math.floor(Date.now() / 350) % 2 === 0) {
+    ctx.fillStyle = 'rgba(248,113,113,0.12)';
+    roundRect(x, y, w, h, 10);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = '#fbbf24';
+  ctx.font = 'bold 10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('MASS SPECTROMETER', x + w / 2, y + 15);
+  ctx.font = '34px serif';
+  ctx.fillText('🛰️', x + w / 2, y + 50);
+
+  // instrument health bar
+  ctx.fillStyle = '#0f172a';
+  ctx.fillRect(x + 14, y + 78, w - 28, 10);
+  ctx.fillStyle = frac > 0.5 ? '#22c55e' : (frac > 0.25 ? '#fbbf24' : '#f87171');
+  ctx.fillRect(x + 14, y + 78, (w - 28) * frac, 10);
+  ctx.strokeStyle = '#334155';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x + 14, y + 78, w - 28, 10);
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '9px sans-serif';
+  ctx.fillText(Math.max(0, G.health) + ' / ' + START_HEALTH, x + w / 2, y + 100);
+}
+
+function hexPath(cx, cy, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 6 + i * Math.PI / 3;
+    const px = cx + Math.cos(a) * r, py = cy + Math.sin(a) * r;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+function drawSlots() {
+  for (let i = 0; i < SLOTS.length; i++) {
+    if (slotOccupied(i)) continue;
+    const [x, y] = SLOTS[i];
+    const hot = G.hoverSlot === i && G.selType;
+    const affordable = G.selType && G.gold >= towerCost(G.selType);
+    hexPath(x, y, 20);
+    ctx.fillStyle = hot ? (affordable ? 'rgba(251,191,36,0.16)' : 'rgba(248,113,113,0.14)') : 'rgba(30,41,59,0.65)';
+    ctx.fill();
+    ctx.strokeStyle = hot ? (affordable ? '#fbbf24' : '#f87171') : '#334155';
+    ctx.lineWidth = hot ? 2 : 1;
+    ctx.setLineDash(hot ? [] : [4, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = hot ? '#fbbf24' : '#475569';
+    ctx.font = 'bold 15px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('+', x, y + 1);
+    // ghost preview of the selected tower's range
+    if (hot) {
+      const base = TOWERS[G.selType].levels[0];
+      ctx.beginPath();
+      ctx.arc(x, y, base.range, 0, Math.PI * 2);
+      ctx.strokeStyle = affordable ? 'rgba(251,191,36,0.35)' : 'rgba(248,113,113,0.3)';
+      ctx.setLineDash([5, 5]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(251,191,36,0.05)';
+      ctx.fill();
+    }
+  }
+}
+
+function drawTowerRange(t) {
+  const showing = (G.selTower === t) || (G.hoverTower === t);
+  if (!showing) return;
+  const st = tstats(t);
+  ctx.beginPath();
+  ctx.arc(t.x, t.y, st.range, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(251,191,36,0.05)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(251,191,36,0.4)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([6, 5]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function drawTower(t) {
+  const def = TOWERS[t.type];
+  const st = tstats(t);
+  // HeLa QC draws a permanent soft aura so its coverage is always readable.
+  if (t.type === 'hela') {
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, st.range, 0, Math.PI * 2);
+    const pulse = 0.05 + 0.02 * Math.sin(Date.now() * 0.003);
+    ctx.fillStyle = 'rgba(244,114,182,' + pulse.toFixed(3) + ')';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(244,114,182,0.28)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  hexPath(t.x, t.y, 21);
+  ctx.fillStyle = '#0f172a';
+  ctx.fill();
+  ctx.strokeStyle = def.color;
+  ctx.lineWidth = t.pulse > 0 ? 3 : 2;
+  ctx.stroke();
+  if (st.buffed) {
+    // pink ring = currently inside a HeLa QC aura
+    hexPath(t.x, t.y, 25);
+    ctx.strokeStyle = 'rgba(244,114,182,0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  ctx.font = '17px serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(def.icon, t.x, t.y - 1);
+  // level pips
+  for (let i = 0; i < t.level; i++) {
+    ctx.beginPath();
+    ctx.arc(t.x - 6 + i * 6, t.y + 15, 2.1, 0, Math.PI * 2);
+    ctx.fillStyle = def.color;
+    ctx.fill();
+  }
+  // muzzle direction for attacking towers
+  if (def.kind !== 'aura') {
+    ctx.strokeStyle = def.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(t.x + Math.cos(t.angle) * 13, t.y + Math.sin(t.angle) * 13);
+    ctx.lineTo(t.x + Math.cos(t.angle) * 22, t.y + Math.sin(t.angle) * 22);
+    ctx.stroke();
+  }
+}
+
+function drawEnemy(e) {
+  const def = ENEMIES[e.type];
+  const r = def.r;
+  // freezer heal field
+  if (def.heals) {
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, def.healR, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(165,243,252,0.18)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.arc(e.x, e.y, r, 0, Math.PI * 2);
+  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : def.color;
+  ctx.globalAlpha = 0.85;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = def.boss ? '#fbbf24' : 'rgba(2,6,23,0.7)';
+  ctx.lineWidth = def.boss ? 2.5 : 1.5;
+  ctx.stroke();
+  ctx.font = (def.boss ? '22px' : (r > 12 ? '15px' : '11px')) + ' serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(def.icon, e.x, e.y + 1);
+
+  // slowed marker
+  if (e.slowUntil > 0) {
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, r + 4, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(167,139,250,0.8)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+  // armour-stripped marker (inside a QC aura)
+  if (e.strip > 0) {
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, r + 7, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(244,114,182,0.7)';
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // hp bar
+  const bw = def.boss ? 46 : 24;
+  const frac = Math.max(0, e.hp) / e.maxHp;
+  ctx.fillStyle = 'rgba(2,6,23,0.8)';
+  ctx.fillRect(e.x - bw / 2, e.y - r - 9, bw, 4);
+  ctx.fillStyle = frac > 0.5 ? '#22c55e' : (frac > 0.22 ? '#fbbf24' : '#f87171');
+  ctx.fillRect(e.x - bw / 2, e.y - r - 9, bw * frac, 4);
+  if (def.armor && e.strip <= 0) {
+    // little grey tick = armoured
+    ctx.fillStyle = '#94a3b8';
+    ctx.fillRect(e.x + bw / 2 + 2, e.y - r - 9, 3, 4);
+  }
+}
+
+function drawShots() {
+  for (const s of G.shots) {
+    ctx.beginPath();
+    if (s.splash > 0) {
+      ctx.arc(s.x, s.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = s.color;
+      ctx.globalAlpha = 0.85;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.arc(s.x, s.y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = s.color;
+      ctx.fill();
+    }
+  }
+  for (const b of G.beams) {
+    ctx.strokeStyle = b.color;
+    ctx.globalAlpha = Math.min(1, b.t / 0.16);
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(b.x1, b.y1);
+    ctx.lineTo(b.x2, b.y2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawFx() {
+  for (const f of G.fx) {
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+    ctx.strokeStyle = f.color;
+    ctx.globalAlpha = Math.max(0, f.t * 2.5);
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawFloats() {
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (const f of G.floats) {
+    ctx.globalAlpha = Math.min(1, f.t * 1.6);
+    ctx.fillStyle = f.color;
+    ctx.fillText(f.txt, f.x, f.y);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawBanner() {
+  // "wave incoming" flash + a red chevron at the spawn point
+  if (G.alertT > 0) {
+    const a = Math.min(1, G.alertT);
+    ctx.globalAlpha = a * 0.9;
+    ctx.fillStyle = '#f87171';
+    ctx.font = 'bold 26px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const label = G.phase === 'wave'
+      ? 'WAVE ' + (G.wave + 1) + ' INCOMING'
+      : 'WAVE ' + (G.wave + 1) + ' IN ' + Math.max(0, Math.ceil(G.buildT));
+    ctx.fillText(label, W / 2, 36);
+    ctx.globalAlpha = 1;
+  }
+  if (G.phase === 'build' && !G.over) {
+    ctx.fillStyle = 'rgba(34,197,94,0.9)';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('BUILD PHASE — ' + Math.max(0, Math.ceil(G.buildT)) + 's', W / 2, 14);
+  }
+  if (G.paused) {
+    ctx.fillStyle = 'rgba(2,6,23,0.6)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = 'bold 30px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('PAUSED', W / 2, H / 2);
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+/* ═══ UI ════════════════════════════════════════════════════════════════ */
+const el = id => document.getElementById(id);
+
+function buildShop() {
+  const shop = el('shop');
+  shop.innerHTML = '';
+  for (const id of TOWER_ORDER) {
+    const d = TOWERS[id];
+    const card = document.createElement('div');
+    card.className = 'tcard';
+    card.dataset.id = id;
+    card.innerHTML =
+      '<span class="key">' + d.key + '</span>' +
+      '<div class="ico">' + d.icon + '</div>' +
+      '<div class="nm">' + d.short + '</div>' +
+      '<div class="cost">' + d.cost + 'g</div>';
+    card.addEventListener('click', () => {
+      G.selType = (G.selType === id) ? null : id;
+      G.selTower = null;
+      refreshShop();
+      showInfoTower(id);
+    });
+    card.addEventListener('mouseenter', () => showInfoTower(id));
+    shop.appendChild(card);
+  }
+}
+
+function refreshShop() {
+  const cards = el('shop').children;
+  for (const c of cards) {
+    const id = c.dataset.id;
+    c.classList.toggle('sel', G.selType === id);
+    c.classList.toggle('poor', G.gold < TOWERS[id].cost);
+  }
+}
+
+function showInfoTower(id) {
+  const d = TOWERS[id];
+  const l = d.levels[0];
+  el('infoTitle').textContent = 'Tower';
+  el('info').innerHTML =
+    '<div class="nm">' + d.icon + ' ' + d.name + '</div>' +
+    '<div class="stat">Cost <b>' + d.cost + 'g</b> · ' +
+      (d.kind === 'aura'
+        ? 'Aura <b>' + l.range + '</b> · <b>' + l.dps + '</b> dps · buff <b>+' + Math.round(l.buffDmg * 100) + '%</b> dmg'
+        : 'Dmg <b>' + l.dmg + '</b> · Range <b>' + l.range + '</b> · <b>' + l.rate.toFixed(2) + '</b>/s') +
+    '</div>' +
+    '<div style="margin-top:5px">' + d.blurb + '</div>';
+}
+
+function showInfoPlaced(t) {
+  const d = TOWERS[t.type];
+  const st = tstats(t);
+  const up = upgradeCost(t);
+  el('infoTitle').textContent = 'Selected tower';
+  el('info').innerHTML =
+    '<div class="nm">' + d.icon + ' ' + d.name + ' <span style="color:#94a3b8">lvl ' + t.level + '</span></div>' +
+    '<div class="stat">' +
+      (d.kind === 'aura'
+        ? 'Aura <b>' + Math.round(st.range) + '</b> · <b>' + st.dps + '</b> dps'
+        : 'Dmg <b>' + st.dmg.toFixed(1) + '</b> · Range <b>' + Math.round(st.range) + '</b> · <b>' + st.rate.toFixed(2) + '</b>/s') +
+      (st.buffed ? ' <span class="good">(QC buffed)</span>' : '') +
+    '</div>' +
+    '<div class="btnrow">' +
+      (up != null
+        ? '<button id="btnUp"' + (G.gold < up ? ' disabled' : '') + '>Upgrade ' + up + 'g</button>'
+        : '<button disabled>Max level</button>') +
+      '<button id="btnSell">Sell ' + Math.round(t.invested * SELL_REFUND) + 'g</button>' +
+    '</div>';
+  const bu = el('btnUp');
+  if (bu) bu.addEventListener('click', () => { if (upgradeTower(t)) showInfoPlaced(t); refreshShop(); });
+  el('btnSell').addEventListener('click', () => {
+    sellTower(t);
+    el('info').innerHTML = 'Hover a tower or an enemy for details.';
+    refreshShop();
+  });
+}
+
+function buildBestiary() {
+  const names = { guard: 'guard column', trap: 'trap column', c18: 'C18', hela: 'HeLa QC', bench: 'clean bench', search: 'DIA-NN' };
+  const list = el('bestList');
+  list.innerHTML = '';
+  for (const id of Object.keys(ENEMIES)) {
+    const d = ENEMIES[id];
+    if (d.child) continue;   // adds are described by their parent
+    const weak = [], res = [];
+    for (const k of TOWER_ORDER) {
+      const m = d.resist && d.resist[k] != null ? d.resist[k] : 1;
+      if (m >= 1.2) weak.push(names[k] + ' ×' + m);
+      else if (m <= 0.7) res.push(names[k] + ' ×' + m);
+    }
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML =
+      '<div class="e">' + d.icon + '</div>' +
+      '<div><span class="n">' + d.name + '</span>' +
+      (d.slowImmune ? ' <span style="color:#a78bfa">unslowable</span>' : '') +
+      (d.armor ? ' <span style="color:#94a3b8">armour ' + d.armor + '</span>' : '') +
+      '<br>' +
+      (weak.length ? '<span class="w">weak: ' + weak.join(', ') + '</span>' : '') +
+      (weak.length && res.length ? '<br>' : '') +
+      (res.length ? '<span class="r">resists: ' + res.join(', ') + '</span>' : '') +
+      '</div>';
+    row.addEventListener('mouseenter', () => showInfoEnemy(d));
+    list.appendChild(row);
+  }
+}
+
+function showInfoEnemy(d) {
+  const names = { guard: 'Guard column', trap: 'Trap column', c18: 'C18', hela: 'HeLa QC', bench: 'Clean bench', search: 'DIA-NN' };
+  const parts = [];
+  for (const k of TOWER_ORDER) {
+    const m = d.resist && d.resist[k] != null ? d.resist[k] : 1;
+    if (m !== 1) parts.push('<span class="' + (m > 1 ? 'good' : 'bad') + '">' + names[k] + ' ×' + m + '</span>');
+  }
+  el('infoTitle').textContent = 'Enemy';
+  el('info').innerHTML =
+    '<div class="nm">' + d.icon + ' ' + d.name + '</div>' +
+    '<div class="stat">HP <b>' + d.hp + '</b> · speed <b>' + d.speed + '</b> · bounty <b>' + d.gold + 'g</b> · leak <b>-' + d.leak + '</b></div>' +
+    (d.armor ? '<div class="stat">Armour <b>' + d.armor + '</b> (a HeLa QC aura strips it)</div>' : '') +
+    (d.slowImmune ? '<div class="stat">Cannot be slowed.</div>' : '') +
+    (parts.length ? '<div style="margin-top:4px">' + parts.join(' · ') + '</div>' : '') +
+    '<div class="joke" style="margin-top:5px">' + d.joke + '</div>';
+}
+
+function updateHud() {
+  el('vHealth').textContent = Math.max(0, G.health);
+  el('pHealth').classList.toggle('hurt', G.health <= 6);
+  el('vGold').textContent = Math.floor(G.gold);
+  el('vWave').textContent = Math.min(G.wave + (G.phase === 'wave' ? 1 : 1), WAVES.length) + '/' + WAVES.length;
+  el('vScore').textContent = Math.round(G.score + G.goldEarned + G.wavesCleared * 120);
+  el('waveLabel').textContent = 'Wave ' + Math.min(G.wave + 1, WAVES.length) + ' of ' + WAVES.length;
+  el('waveHint').textContent = G.wave < WAVES.length ? WAVES[G.wave].hint : '';
+  const btn = el('btnSend');
+  if (G.over) {
+    el('waveCountdown').textContent = G.won ? 'Run complete.' : 'Instrument down.';
+    btn.disabled = true;
+    btn.textContent = 'Run over';
+  } else if (G.phase === 'build') {
+    el('waveCountdown').textContent = 'Build phase — auto-starts in ' + Math.max(0, Math.ceil(G.buildT)) + 's';
+    btn.disabled = false;
+    btn.textContent = '▶ Send wave ' + (G.wave + 1) + ' now (+' + sendEarlyBonus() + 'g)';
+  } else {
+    const left = G.spawnQueue.length + G.enemies.length;
+    el('waveCountdown').textContent = 'Wave running — ' + left + ' left on the line';
+    btn.disabled = true;
+    btn.textContent = 'Wave in progress';
+  }
+  if (G.ticker) el('ticker').innerHTML = G.ticker;
+  refreshShop();
+}
+
+function showOverlay() {
+  const o = el('overlay');
+  o.classList.toggle('win', G.won);
+  el('ovTitle').textContent = G.won ? 'CORE SECURED' : 'INSTRUMENT DOWN';
+  el('ovBody').innerHTML = G.won
+    ? 'All 12 waves held. The mass spec finished the queue with ' + G.health + '/' + START_HEALTH +
+      ' health, ' + G.kills + ' contaminants stopped and ' + G.leaks + ' leakers.'
+    : 'The queue got through. ' + G.kills + ' stopped, ' + G.leaks + ' leaked, ' +
+      G.wavesCleared + ' of ' + WAVES.length + ' waves held.';
+  el('ovScore').textContent = 'Score ' + Math.round(G.score);
+  el('ovFlavor').textContent = G.won
+    ? 'Vent it, bake it out, and do not tell the administrator it was ever close.'
+    : 'Somebody is venting the source at 4 pm on a Friday. Again.';
+  o.style.display = 'flex';
+}
+
+/* ── Input ──────────────────────────────────────────────────────────────── */
+function toCanvas(evt) {
+  const r = cv.getBoundingClientRect();
+  return {
+    x: (evt.clientX - r.left) * (W / r.width),
+    y: (evt.clientY - r.top) * (H / r.height),
+  };
+}
+
+function slotAt(x, y) {
+  for (let i = 0; i < SLOTS.length; i++) {
+    if (Math.hypot(SLOTS[i][0] - x, SLOTS[i][1] - y) <= 22) return i;
+  }
+  return -1;
+}
+function towerAt(x, y) {
+  for (const t of G.towers) {
+    if (Math.hypot(t.x - x, t.y - y) <= 22) return t;
+  }
+  return null;
+}
+function enemyAt(x, y) {
+  let best = null, bd = 1e9;
+  for (const e of G.enemies) {
+    const d = Math.hypot(e.x - x, e.y - y);
+    if (d <= ENEMIES[e.type].r + 6 && d < bd) { best = e; bd = d; }
+  }
+  return best;
+}
+
+cv.addEventListener('mousemove', (evt) => {
+  const p = toCanvas(evt);
+  G.hoverSlot = slotAt(p.x, p.y);
+  G.hoverTower = towerAt(p.x, p.y);
+  const e = enemyAt(p.x, p.y);
+  const tip = el('tip');
+  if (e) {
+    const d = ENEMIES[e.type];
+    tip.innerHTML = '<span class="nm">' + d.icon + ' ' + d.name + '</span>' +
+      Math.ceil(e.hp) + '/' + e.maxHp + ' hp' +
+      (e.slowUntil > 0 ? ' · <span class="good">slowed</span>' : '') +
+      (d.armor ? ' · armour ' + (e.strip > 0 ? '<span class="good">stripped</span>' : d.armor) : '') +
+      '<div class="joke">' + d.joke + '</div>';
+    tip.style.display = 'block';
+    tip.style.left = Math.min(window.innerWidth - 262, evt.clientX + 14) + 'px';
+    tip.style.top = (evt.clientY + 16) + 'px';
+  } else if (G.hoverTower) {
+    const t = G.hoverTower, d = TOWERS[t.type], st = tstats(t);
+    tip.innerHTML = '<span class="nm">' + d.icon + ' ' + d.name + ' lvl ' + t.level + '</span>' +
+      (d.kind === 'aura'
+        ? 'aura ' + Math.round(st.range) + ' · ' + st.dps + ' dps · buff +' + Math.round((TOWERS.hela.levels[t.level - 1].buffDmg) * 100) + '% dmg'
+        : 'dmg ' + st.dmg.toFixed(1) + ' · range ' + Math.round(st.range) + ' · ' + st.rate.toFixed(2) + '/s') +
+      '<div class="joke">Click to upgrade or sell.</div>';
+    tip.style.display = 'block';
+    tip.style.left = Math.min(window.innerWidth - 262, evt.clientX + 14) + 'px';
+    tip.style.top = (evt.clientY + 16) + 'px';
+  } else {
+    tip.style.display = 'none';
+  }
+});
+cv.addEventListener('mouseleave', () => {
+  G.hoverSlot = -1;
+  G.hoverTower = null;
+  el('tip').style.display = 'none';
+});
+
+function handleClick(p) {
+  if (G.over) return;
+  const t = towerAt(p.x, p.y);
+  if (t) {
+    G.selTower = t;
+    G.selType = null;
+    refreshShop();
+    showInfoPlaced(t);
+    return;
+  }
+  const s = slotAt(p.x, p.y);
+  if (s >= 0 && G.selType) {
+    const built = buildTower(s, G.selType);
+    if (built) {
+      G.selTower = built;
+      showInfoPlaced(built);
+      G.ticker = TOWERS[built.type].name + ' online.';
+      // Keep the type selected so you can chain-build; deselect if broke.
+      if (G.gold < towerCost(G.selType)) G.selType = null;
+      refreshShop();
+    } else {
+      G.ticker = 'Not enough gold for a ' + TOWERS[G.selType].name + ' (' + towerCost(G.selType) + 'g).';
+    }
+    return;
+  }
+  const e = enemyAt(p.x, p.y);
+  if (e) { showInfoEnemy(ENEMIES[e.type]); return; }
+  G.selTower = null;
+  G.selType = null;
+  refreshShop();
+}
+
+cv.addEventListener('mousedown', (evt) => { handleClick(toCanvas(evt)); });
+cv.addEventListener('touchstart', (evt) => {
+  evt.preventDefault();
+  const t = evt.touches[0];
+  const p = toCanvas({ clientX: t.clientX, clientY: t.clientY });
+  G.hoverSlot = slotAt(p.x, p.y);
+  handleClick(p);
+}, { passive: false });
+
+window.addEventListener('keydown', (evt) => {
+  const k = evt.key.toLowerCase();
+  for (const id of TOWER_ORDER) {
+    if (k === TOWERS[id].key) {
+      G.selType = (G.selType === id) ? null : id;
+      G.selTower = null;
+      refreshShop();
+      showInfoTower(id);
+      return;
+    }
+  }
+  if (k === 'escape') { G.selType = null; G.selTower = null; refreshShop(); }
+  if (k === 'p') togglePause();
+  if (k === 'f') toggleSpeed();
+  if (k === ' ') { evt.preventDefault(); if (G.phase === 'build') sendNow(); }
+  if (k === 'r') reset();
+});
+
+function sendNow() {
+  if (G.phase !== 'build' || G.over) return;
+  const bonus = sendEarlyBonus();
+  G.gold += bonus;
+  G.goldEarned += bonus;
+  if (bonus > 0) float(430, 300, '+' + bonus + 'g EARLY CALL', '#fbbf24');
+  startWave();
+}
+function togglePause() {
+  G.paused = !G.paused;
+  el('btnPause').textContent = G.paused ? '▶ Resume' : '⏸ Pause';
+}
+function toggleSpeed() {
+  G.speed = G.speed === 1 ? 2 : 1;
+  el('btnSpeed').textContent = G.speed === 1 ? '▶ 1×' : '▶▶ 2×';
+}
+function reset() {
+  G = newGame();
+  el('overlay').style.display = 'none';
+  el('overlay').classList.remove('win');
+  el('info').innerHTML = 'Hover a tower or an enemy for details.';
+  el('btnPause').textContent = '⏸ Pause';
+  el('btnSpeed').textContent = '▶ 1×';
+  G.ticker = 'Click a tower in the shop, then click a hex pad to build. Enemies walk from the autosampler to your mass spec — stop them.';
+  refreshShop();
+  updateHud();
+}
+
+el('btnSend').addEventListener('click', sendNow);
+el('btnPause').addEventListener('click', togglePause);
+el('btnSpeed').addEventListener('click', toggleSpeed);
+el('btnReset').addEventListener('click', reset);
+el('ovAgain').addEventListener('click', reset);
+el('bestToggle').addEventListener('click', () => {
+  el('bestiary').classList.toggle('collapsed');
+});
+
+/* ── Main loop ──────────────────────────────────────────────────────────── */
+let lastT = 0;
+function frame(ts) {
+  if (!lastT) lastT = ts;
+  let dt = (ts - lastT) / 1000;
+  lastT = ts;
+  if (dt > 0.05) dt = 0.05;          // clamp after a tab switch
+  for (let i = 0; i < G.speed; i++) update(dt);
+  draw();
+  updateHud();
+  requestAnimationFrame(frame);
+}
+
+G = newGame();
+buildShop();
+buildBestiary();
+reset();
+requestAnimationFrame(frame);
+
+// Test hook: the headless balance/soft-lock harness drives update() directly.
+// Harmless in the browser; keeps the game logic verifiable without a DOM.
+window.__CD = {
+  get G() { return G; },
+  update, startWave, buildTower, upgradeTower, sellTower, reset,
+  TOWERS, ENEMIES, WAVES, SLOTS, PATH_LEN, TOWER_ORDER,
+};
+</script>
+</body>
+</html>

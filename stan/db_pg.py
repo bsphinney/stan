@@ -481,6 +481,79 @@ def insert_health_tic_trace_pg(
     return True
 
 
+_FEATURE_CLOUDS_DDL = """
+CREATE TABLE IF NOT EXISTS feature_clouds (
+    run_id        TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    mz            TEXT NOT NULL,
+    mobility      TEXT NOT NULL,
+    rt            TEXT NOT NULL,
+    charge        TEXT NOT NULL,
+    intensity     TEXT NOT NULL,
+    n_points      INTEGER NOT NULL,
+    n_total       INTEGER NOT NULL,
+    features_path TEXT,
+    created_at    TEXT,
+    PRIMARY KEY (run_id, source)
+)
+"""
+
+# Create-once-per-process guard. The table is owner-created; every other
+# writer just needs it to exist before the first INSERT.
+_feature_clouds_ready = False
+
+
+def ensure_feature_clouds_table_pg() -> bool:
+    """Create ``feature_clouds`` in PG if it isn't there yet.
+
+    Returns True when the table is usable. Swallows a permission error
+    (a non-owner role can't CREATE) and returns False so the caller can
+    report "ask the owner to run the migration" instead of crashing a
+    backfill mid-walk.
+    """
+    global _feature_clouds_ready
+    if _feature_clouds_ready:
+        return True
+    try:
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(_FEATURE_CLOUDS_DDL)
+            pg.commit()
+        _feature_clouds_ready = True
+        return True
+    except Exception as e:  # noqa: BLE001 - diagnostics, not control flow
+        logger.warning("feature_clouds table not available in PG: %s", e)
+        return False
+
+
+def insert_feature_cloud_pg(
+    run_id: str, mz_json: str, mobility_json: str, rt_json: str,
+    charge_json: str, intensity_json: str, n_points: int,
+    n_total: int = 0, features_path: str = "", source: str = "runs",
+) -> int:
+    """Store one charge-labeled 4DFF ion cloud in PG (JSON-array strings)."""
+    from datetime import datetime, timezone
+
+    ensure_feature_clouds_table_pg()
+    created = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO feature_clouds (run_id, source, mz, mobility, rt, "
+            "charge, intensity, n_points, n_total, features_path, created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (run_id, source) DO UPDATE SET "
+            "mz = EXCLUDED.mz, mobility = EXCLUDED.mobility, "
+            "rt = EXCLUDED.rt, charge = EXCLUDED.charge, "
+            "intensity = EXCLUDED.intensity, n_points = EXCLUDED.n_points, "
+            "n_total = EXCLUDED.n_total, "
+            "features_path = EXCLUDED.features_path, "
+            "created_at = EXCLUDED.created_at",
+            (run_id, source, mz_json, mobility_json, rt_json, charge_json,
+             intensity_json, n_points, n_total, features_path, created),
+        )
+        pg.commit()
+    return n_points
+
+
 def insert_run_pg(
     instrument: str,
     run_name: str,
@@ -601,6 +674,382 @@ def raw_run_id_pg(raw_path: str | Path) -> str | None:
     return str(r[0]) if r else None
 
 
+# ---------------------------------------------------------------------------
+# Readers (dashboard).
+#
+# Until v1.0.15 the dashboard was a SQLite-only reader and PG reached it by
+# way of a 5-minute mirror (``stan.sync.pg_to_sqlite``). That made every
+# panel up to five minutes stale and put a full table copy on the wire each
+# tick. These functions let ``stan.db`` read PG straight through when
+# ``use_pg()``; the mirror stays for hosts that genuinely want a local cache.
+#
+# Every reader returns the SAME SHAPE as its SQLite counterpart -- same keys,
+# same Python types. Two conversions carry that:
+#
+#   * PG ``runs.run_date`` / ``hidden_at`` / ``migrated_at`` are
+#     ``timestamptz``; SQLite holds ISO-8601 TEXT. ``_normalize_row``
+#     re-serialises datetimes with ``.isoformat()``, which is exactly what
+#     ``_build_runs_row`` writes on the SQLite side.
+#   * PG keeps the TIC inline on the run row as JSONB; SQLite keeps a
+#     ``tic_traces`` side table of JSON strings. ``get_tic_trace_pg``
+#     projects the former into the latter's shape.
+# ---------------------------------------------------------------------------
+
+# The inline TIC arrays are ~2 x 300 floats per run. A 150-row dashboard page
+# would drag several MB across the wire that no caller of get_runs() looks at,
+# so they are excluded from row reads and fetched on demand by
+# get_tic_trace_pg / get_tic_traces_for_instrument_pg.
+_RUNS_FAT_COLS = ("tic_rt_bins", "tic_intensity")
+
+_RUNS_COLS_CACHE: list[str] | None = None
+
+
+def _runs_columns(cur) -> list[str]:
+    """Column list for ``SELECT`` on ``runs``, minus the fat TIC columns.
+
+    Read from information_schema once per process so a column added to PG
+    shows up without a code change, the same way ``SELECT *`` behaves on
+    the SQLite side.
+    """
+    global _RUNS_COLS_CACHE
+    if _RUNS_COLS_CACHE is None:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'runs' "
+            "ORDER BY ordinal_position"
+        )
+        _RUNS_COLS_CACHE = [
+            r[0] for r in cur.fetchall() if r[0] not in _RUNS_FAT_COLS
+        ]
+    return _RUNS_COLS_CACHE
+
+
+def _normalize_row(d: dict) -> dict:
+    """Coerce PG-native scalars to the types the SQLite reader yields."""
+    import datetime as _dt
+    import decimal as _dec
+
+    for k, v in d.items():
+        if isinstance(v, _dt.datetime):
+            d[k] = v.isoformat()
+        elif isinstance(v, (_dt.date, _dt.time)):
+            d[k] = v.isoformat()
+        elif isinstance(v, _dec.Decimal):
+            d[k] = float(v)
+        elif isinstance(v, memoryview):
+            d[k] = bytes(v)
+    return d
+
+
+def _rows(cur) -> list[dict]:
+    """Fetch the open cursor as normalized dicts."""
+    names = [c[0] for c in cur.description]
+    return [_normalize_row(dict(zip(names, r))) for r in cur.fetchall()]
+
+
+def _as_list(v) -> list:
+    """JSONB comes back decoded; tolerate a TEXT column holding JSON too."""
+    if v is None:
+        return []
+    if isinstance(v, str):
+        import json as _json
+        try:
+            v = _json.loads(v)
+        except ValueError:
+            return []
+    return list(v) if isinstance(v, (list, tuple)) else []
+
+
+def get_runs_pg(
+    instrument: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    qc_only: bool = False,
+    include_hidden: bool = False,
+) -> list[dict]:
+    """Recent ``runs`` rows from PG, newest first.
+
+    Mirrors ``stan.db.get_runs``'s SQL half: same WHERE clauses, same
+    ``ORDER BY run_date DESC``, same 3x over-fetch when the caller will
+    post-filter to QC rows. The QC filtering itself stays in ``stan.db``
+    so both backends share one copy of it.
+    """
+    fetch = limit * 3 if qc_only else limit
+    where, args = [], []
+    if instrument:
+        where.append("instrument = %s")
+        args.append(instrument)
+    if not include_hidden:
+        where.append("(hidden IS NULL OR hidden = 0)")
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+    args.extend([fetch, offset])
+    with _connect() as pg, pg.cursor() as cur:
+        cols = ", ".join(f'"{c}"' for c in _runs_columns(cur))
+        cur.execute(
+            f"SELECT {cols} FROM runs{clause} "
+            f"ORDER BY run_date DESC LIMIT %s OFFSET %s",
+            tuple(args),
+        )
+        return _rows(cur)
+
+
+def get_run_pg(run_id: str) -> dict | None:
+    """One ``runs`` row by id, or None."""
+    with _connect() as pg, pg.cursor() as cur:
+        cols = ", ".join(f'"{c}"' for c in _runs_columns(cur))
+        cur.execute(f"SELECT {cols} FROM runs WHERE id = %s", (run_id,))
+        rows = _rows(cur)
+    return rows[0] if rows else None
+
+
+def get_trends_pg(
+    instrument: str,
+    limit: int = 100,
+    qc_only: bool = False,
+    include_hidden: bool = False,
+) -> list[dict]:
+    """Trend rows for one instrument, oldest-first for charting.
+
+    Takes the NEWEST ``limit`` (x3 when the caller will drop non-QC rows)
+    and only then flips to ascending -- selecting ``ORDER BY run_date ASC
+    LIMIT n`` would pin every trend chart to the oldest rows in a table
+    that now holds the whole fleet's multi-year history. Same inner/outer
+    shape as the SQLite query it mirrors.
+    """
+    fetch = limit * 3 if qc_only else limit
+    inner_where = ["instrument = %s"]
+    args: list = [instrument]
+    if not include_hidden:
+        inner_where.append("(hidden IS NULL OR hidden = 0)")
+    args.append(fetch)
+    with _connect() as pg, pg.cursor() as cur:
+        cols = ", ".join(f'"{c}"' for c in _runs_columns(cur))
+        cur.execute(
+            f"SELECT * FROM (SELECT {cols} FROM runs "
+            f"WHERE {' AND '.join(inner_where)} "
+            f"ORDER BY run_date DESC LIMIT %s) t ORDER BY run_date ASC",
+            tuple(args),
+        )
+        return _rows(cur)
+
+
+def get_tic_trace_pg(run_id: str) -> dict | None:
+    """Project PG's inline TIC columns into SQLite's ``tic_traces`` shape.
+
+    Returns ``{run_id, rt_min, intensity, n_frames}`` -- lists, not JSON
+    strings, exactly as ``stan.db.get_tic_trace`` returns after its
+    ``json.loads``. ``n_frames`` is ``len(rt_min)``, matching what the
+    mirror wrote into the SQLite column.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "SELECT id, tic_rt_bins, tic_intensity FROM runs WHERE id = %s",
+            (run_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return None
+    rt, inten = _as_list(row[1]), _as_list(row[2])
+    if not rt or not inten:
+        return None
+    return {
+        "run_id": str(row[0]),
+        "rt_min": rt,
+        "intensity": inten,
+        "n_frames": len(rt),
+    }
+
+
+def get_tic_traces_for_instrument_pg(
+    instrument: str, limit: int = 20,
+) -> list[dict]:
+    """Recent TIC traces for an instrument, newest first.
+
+    The SQLite version joins ``tic_traces`` to ``runs``; in PG the trace
+    already lives on the run row, so the ``IS NOT NULL`` predicates stand
+    in for the join's inner-join semantics.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "SELECT id, tic_rt_bins, tic_intensity, run_name, run_date, "
+            "gate_result FROM runs WHERE instrument = %s "
+            "AND tic_rt_bins IS NOT NULL AND tic_intensity IS NOT NULL "
+            "ORDER BY run_date DESC LIMIT %s",
+            (instrument, limit),
+        )
+        raw = cur.fetchall()
+    out = []
+    for run_id, rt, inten, run_name, run_date, gate in raw:
+        rt, inten = _as_list(rt), _as_list(inten)
+        if not rt or not inten:
+            continue
+        out.append({
+            "run_id": str(run_id),
+            "rt_min": rt,
+            "intensity": inten,
+            "n_frames": len(rt),
+            "run_name": run_name,
+            "run_date": run_date.isoformat() if hasattr(run_date, "isoformat")
+            else run_date,
+            "gate_result": gate,
+        })
+    return out
+
+
+def get_peg_ion_hits_pg(run_id: str, source: str = "runs") -> list[dict]:
+    """PEG ion ladder for one run, sorted by m/z."""
+    try:
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                "SELECT mz, observed_intensity, adduct, repeat_n, charge, "
+                "ppm_error FROM peg_ion_hits WHERE run_id = %s AND source = %s "
+                "ORDER BY mz ASC",
+                (run_id, source),
+            )
+            return _rows(cur)
+    except Exception as e:  # noqa: BLE001 - table not migrated yet
+        logger.warning("get_peg_ion_hits_pg: %s", e)
+        return []
+
+
+def get_drift_window_centroids_pg(run_id: str, source: str = "runs") -> list[dict]:
+    """Per-window DIA drift centroids for one run, by window index."""
+    try:
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                "SELECT window_idx, mz_low, mz_high, im_low, im_high, "
+                "im_center, im_mode, drift_im, coverage, in_peptide_zone "
+                "FROM drift_window_centroids WHERE run_id = %s AND source = %s "
+                "ORDER BY window_idx ASC",
+                (run_id, source),
+            )
+            rows = _rows(cur)
+    except Exception as e:  # noqa: BLE001 - table not migrated yet
+        logger.warning("get_drift_window_centroids_pg: %s", e)
+        return []
+    # Same normalisation the SQLite reader does: API callers always see an
+    # int 0/1, never NULL, on this key.
+    for r in rows:
+        r["in_peptide_zone"] = int(r.get("in_peptide_zone") or 0)
+    return rows
+
+
+def get_drift_peak_cloud_pg(run_id: str, source: str = "runs") -> dict | None:
+    """Stored MS1 ion cloud as ``{mz, im, log_intensity, n_points}``.
+
+    The three arrays are TEXT columns holding JSON in both backends, so
+    this decodes them the same way the SQLite reader does.
+    """
+    import json as _json
+    try:
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                "SELECT mz, im, log_intensity, n_points FROM drift_peak_clouds "
+                "WHERE run_id = %s AND source = %s",
+                (run_id, source),
+            )
+            row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 - table not migrated yet
+        logger.warning("get_drift_peak_cloud_pg: %s", e)
+        return None
+    if row is None:
+        return None
+    return {
+        "mz": _json.loads(row[0]),
+        "im": _json.loads(row[1]),
+        "log_intensity": _json.loads(row[2]),
+        "n_points": row[3],
+    }
+
+
+def get_detail_summary_pg(run_id: str, table: str, cols: "tuple[str, ...]") -> dict:
+    """Scalar columns from ``runs``/``sample_health`` for a detail panel.
+
+    Backs the PEG/drift endpoints' summary badge. ``table`` is validated
+    by the caller against a two-item allowlist before it reaches here.
+    """
+    col_list = ", ".join(f'"{c}"' for c in cols)
+    try:
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                f"SELECT {col_list} FROM {table} WHERE id = %s", (run_id,)
+            )
+            rows = _rows(cur)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("get_detail_summary_pg(%s): %s", table, e)
+        return {}
+    return rows[0] if rows else {}
+
+
+def set_run_hidden_pg(run_id: str, hidden: bool, reason: str = "") -> bool:
+    """Soft-delete or restore a run in PG. Returns True if a row changed.
+
+    The dashboard's hide button is a write against the same table the
+    dashboard reads. Once reads come from PG, leaving this on SQLite
+    means the row reappears on the next page load -- the operator hides
+    a bad run and nothing happens.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat() if hidden else None
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET hidden = %s, hidden_reason = %s, hidden_at = %s "
+            "WHERE id = %s",
+            (1 if hidden else 0, reason or None, now, run_id),
+        )
+        n = cur.rowcount
+        pg.commit()
+    return n > 0
+
+
+def mark_submitted_pg(run_id: str, submission_id: str) -> bool:
+    """Flag a run as submitted to the community benchmark in PG.
+
+    ``stan submit-all --backend pg`` pushes rows read from PG, so the
+    "already submitted" bookkeeping has to land there too -- against
+    SQLite it marks a row nothing will ever read again, and the next
+    submit-all re-sends every run.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET submitted_to_benchmark = 1, submission_id = %s "
+            "WHERE id = %s",
+            (submission_id, run_id),
+        )
+        n = cur.rowcount
+        pg.commit()
+    return n > 0
+
+
+def probe_pg(timeout: int = 8) -> bool:
+    """One bounded attempt to reach PG Farm. True when it answered.
+
+    ``stan dashboard`` calls this to decide whether to read PG directly.
+    It deliberately does NOT go through ``_connect_with_retry`` -- that
+    backs off for up to several minutes on slot exhaustion, which is the
+    right behaviour for a search job that has already spent an hour of
+    compute and the wrong behaviour for a startup probe. A successful
+    connection is stashed as the module cache, so the probe costs one
+    connection, not two.
+    """
+    global _CACHED_CONN
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            password=_resolve_pgpassword(), connect_timeout=timeout,
+            **PG_DEFAULTS,
+        )
+    except Exception as e:  # noqa: BLE001 - absence of PG is a normal state
+        logger.info("PG Farm not available (%s)",
+                    str(e).strip().splitlines()[0][:120])
+        return False
+    if _CACHED_CONN is None:
+        _CACHED_CONN = conn
+    else:
+        conn.close()
+    return True
+
+
 def use_pg() -> bool:
-    """Return True when the PG backend should be used for writes."""
+    """Return True when the PG backend should be used for reads and writes."""
     return os.environ.get("STAN_DB_BACKEND", "").lower() == "pg"

@@ -70,6 +70,7 @@ def pull_from_pg(db_path: Path | None = None, since: str = "") -> dict:
 
         written["tic_traces"] = _pull_tic(cur, local, since)
         written.update(_pull_detail_tables(cur, local))
+        written["feature_clouds"] = _pull_feature_clouds(cur, local)
     finally:
         local.close()
     return written
@@ -160,3 +161,110 @@ def _pull_detail_tables(cur, local) -> dict:
             )
         out[t] = len(rows)
     return out
+
+
+def _pull_feature_clouds(cur, local) -> int:
+    """Mirror ``feature_clouds`` from PG, pulling only rows we don't have.
+
+    This table is two orders of magnitude fatter than the other detail
+    tables -- ~400 KB of JSON per run against a few KB for
+    ``drift_window_centroids`` -- so the blanket "SELECT everything,
+    every refresh" treatment used above would drag tens of megabytes
+    across the wire every ``STAN_PG_REFRESH_SECONDS``. Rows are
+    effectively immutable (a re-backfill of the same run is rare), so an
+    anti-join on the keys we already hold makes the steady-state cost
+    zero.
+
+    Set ``STAN_PG_CLOUD_FULL_REFRESH=1`` to force a full re-pull after a
+    ``stan backfill-feature-cloud --force`` on the cluster side.
+    """
+    import os
+
+    try:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'feature_clouds'"
+        )
+        pg_cols = [r[0] for r in cur.fetchall()]
+        if not pg_cols:
+            return 0
+        sq_cols = [
+            r[1] for r in
+            local.execute("PRAGMA table_info(feature_clouds)").fetchall()
+        ]
+        cols = [c for c in sq_cols if c in pg_cols]
+        if not cols:
+            return 0
+
+        full = (os.environ.get("STAN_PG_CLOUD_FULL_REFRESH") or "").strip().lower()
+        have: set[tuple] = set()
+        if full not in ("1", "true", "yes"):
+            have = {
+                (r[0], r[1]) for r in
+                local.execute("SELECT run_id, source FROM feature_clouds")
+            }
+
+        quoted = ", ".join('"' + c + '"' for c in cols)
+        # Fetch keys first so the fat JSON columns only cross the wire
+        # for rows we are actually going to store. Newest first: a
+        # dashboard catching up on a fresh backfill should light up the
+        # runs someone is actually looking at, not 2024's.
+        # Order by the run's acquisition date, not the cloud's created_at:
+        # a bulk backfill stamps every row within the same minute, so
+        # created_at carries no useful ordering afterwards and a catching-up
+        # dashboard would fill in essentially at random. Fall back to
+        # created_at if the join can't run (id type mismatch across
+        # deployments).
+        try:
+            cur.execute(
+                "SELECT f.run_id, f.source FROM feature_clouds f "
+                "LEFT JOIN runs r ON r.id::text = f.run_id "
+                "ORDER BY r.run_date DESC NULLS LAST"
+            )
+        except Exception:
+            cur.connection.rollback()
+            cur.execute(
+                "SELECT run_id, source FROM feature_clouds "
+                "ORDER BY created_at DESC NULLS LAST"
+            )
+        wanted = [k for k in cur.fetchall() if (k[0], k[1]) not in have]
+        if not wanted:
+            return 0
+
+        # Drain a bounded slice per refresh. A first sync against a fully
+        # backfilled fleet is ~170 MB; pulling it in one tick would stall
+        # the refresh loop for minutes and hand the user a dashboard that
+        # looks hung. Subsequent ticks pick up where this one stopped.
+        try:
+            max_pull = int(os.environ.get("STAN_PG_CLOUD_MAX_PULL", "50"))
+        except ValueError:
+            max_pull = 50
+        if max_pull > 0:
+            wanted = wanted[:max_pull]
+
+        written = 0
+        for i in range(0, len(wanted), 25):
+            chunk = wanted[i:i + 25]
+            cur.execute(
+                f"SELECT {quoted} FROM feature_clouds "
+                "WHERE (run_id, source) IN %s",
+                (tuple((str(a), str(b)) for a, b in chunk),),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                continue
+            with local:
+                local.executemany(
+                    f"INSERT OR REPLACE INTO feature_clouds ({', '.join(cols)}) "
+                    f"VALUES ({','.join('?' * len(cols))})",
+                    [tuple(r) for r in rows],
+                )
+            written += len(rows)
+        return written
+    except Exception as e:  # noqa: BLE001 - a broken sync must not stall the rest
+        # Warning, not debug: the "no ion cloud for this run" symptom is
+        # indistinguishable from "not backfilled yet", so a silent failure
+        # here is a bug that hides itself. The absent-table case already
+        # returned above.
+        logger.warning("feature_clouds sync failed: %s", e)
+        return 0

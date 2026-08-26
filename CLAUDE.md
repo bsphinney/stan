@@ -472,22 +472,67 @@ conversion details live in [`docs/external_tools.md`](docs/external_tools.md).
 
 ---
 
-## Dashboard: Ion Cloud View (v0.2.192+)
+## Dashboard: Ion Cloud View (v0.2.192+, DB-backed since v1.0.16)
 
 The drift "Ion cloud" tab has two render modes that switch automatically
-depending on whether a 4DFF `.features` file exists next to the raw `.d`:
+depending on whether charge-labeled 4DFF data is available for the run:
 
 - **Plotly per-charge scatter** (`DriftCloudPlotly` in `public/index.html`)
-  is the preferred view. It fetches `/api/runs/{run_id}/features-by-charge`
-  which reads the `LcTimsMsFeature` table directly with a raw `sqlite3`
-  connection — **never import from `stan.metrics.features` here**. One
-  trace per charge state, Ziggy palette (`+2` blue, `+1` teal, `+3` green,
+  is the preferred view. It fetches `/api/runs/{run_id}/features-by-charge`,
+  which resolves in two steps: **the `feature_clouds` table first**, then
+  the `LcTimsMsFeature` table in the on-disk `.features` sidecar via a raw
+  `sqlite3` connection — **never import from `stan.metrics.features`
+  here**. One trace per charge state, Ziggy palette (`+2` blue, `+1` teal, `+3` green,
   `+4` orange, `+5` purple, `+6` red, unassigned yellow). DIA windows are
   overlaid as rectangles grouped by `window_group` with an 8-color palette
   cycled modulo the group count. Click the legend entries to toggle charges.
-- **Legacy SVG cloud** (`DriftCloudSvg`) is the fallback when no `.features`
-  exists. The friendly stub tells the user to run `stan run-4dff <path>`
-  to unlock the richer view.
+- **Legacy SVG cloud** (`DriftCloudSvg`) is the fallback when neither a
+  stored cloud nor a reachable `.features` exists. The friendly stub names
+  both halves that are missing.
+
+### Never make this view depend on the raw file being local
+
+The sidecar-only lookup was the bug that made this tab useless in the
+fleet, and it is easy to reintroduce. `stan dashboard` is a SQLite reader
+that syncs from PG; it runs on Brett's Mac or an instrument PC, while the
+`.d` lives on Hive / the Flinders NFS export. So `raw_path` almost never
+resolves on the host serving the API, and every run showed *"no .features
+file found next to raw data"* even though 4DFF had written a perfectly
+good sidecar hours earlier. The `.features` files existed for 38 of the 40
+newest runs the whole time.
+
+The fix is a store-and-serve path, populated where the files are:
+
+```
+Hive:  .d/<name>.d.features        (4DFF, already written by the pipeline)
+         │  stan backfill-feature-cloud       ← run on Hive
+         ▼
+       feature_clouds (PG)          run_id, source, mz, mobility, rt,
+         │                          charge, intensity, n_points, n_total
+         │  stan.sync.pg_to_sqlite  ← bounded, newest-first, missing keys only
+         ▼
+Mac:   feature_clouds (SQLite) → /api/runs/{id}/features-by-charge
+```
+
+- `stan/metrics/feature_cloud.py` does the extraction: a deterministic
+  `rowid % step` stride down to `DEFAULT_MAX_POINTS` (15,000), which
+  preserves relative density so the cloud still *looks* like the run.
+- Storage is a **separate table from `drift_peak_clouds`** on purpose.
+  That one holds raw MS1 peaks from `detect_window_drift`; this one holds
+  4DFF features with an exact charge per point. Different writers — a
+  shared `(run_id, source)` key means whichever backfill finished last
+  silently clobbers the other.
+- `feature_clouds` rows are ~330 KB each, two orders of magnitude fatter
+  than the other detail tables, so `_pull_feature_clouds` pulls only keys
+  the local DB is missing, newest first, capped per refresh
+  (`STAN_PG_CLOUD_MAX_PULL`, default 50). Do not fold it into the blanket
+  `_DETAIL_TABLES` copy — that would drag ~170 MB every refresh tick.
+- PG DDL needs the table **owner** (`brettsp`, CAS login) —
+  `genome-proteomics-service-account` has DML but no CREATE on schema
+  public. When the table is missing, the Hive driver falls back to a JSON
+  cache at `/quobyte/proteomics-grp/STAN/feature_clouds/<run_id>.json`
+  (visible on the Mac as `/Volumes/...`), loadable with
+  `stan backfill-feature-cloud --from-cache <dir>`.
 
 Plotly is loaded from `cdn.plot.ly/plotly-2.35.2.min.js` — pure client-side,
 same CDN pattern as React + Babel. No build step needed. If the CDN is

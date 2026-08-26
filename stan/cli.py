@@ -2311,13 +2311,57 @@ def _detect_tailscale() -> dict | None:
 
 
 @app.command()
+def _resolve_dashboard_backend(backend: str) -> None:
+    """Set STAN_DB_BACKEND for the dashboard process.
+
+    An explicit STAN_DB_BACKEND in the environment always wins -- the
+    flag is a convenience, not an override of what the operator already
+    said. Otherwise "auto" probes PG Farm once (bounded, ~1s when the
+    credential file is absent) and uses it if it answers.
+    """
+    import os
+
+    choice = (backend or "auto").strip().lower()
+    if choice not in ("auto", "pg", "sqlite"):
+        console.print(f"[red]--backend must be auto, pg or sqlite (got {backend!r})[/red]")
+        raise typer.Exit(1)
+
+    if os.environ.get("STAN_DB_BACKEND"):
+        return
+    if choice == "sqlite":
+        return
+    if choice == "pg":
+        os.environ["STAN_DB_BACKEND"] = "pg"
+        return
+
+    from stan.db import get_db_path
+    from stan.db_pg import probe_pg
+    if probe_pg():
+        os.environ["STAN_DB_BACKEND"] = "pg"
+        console.print("  Store:       [green]PG Farm (direct)[/green]")
+    else:
+        console.print(f"  Store:       SQLite ({get_db_path()})")
+
+
+@app.command()
 def dashboard(
     port: int = typer.Option(8421, "--port", "-p", help="Dashboard port"),
     host: str = typer.Option("127.0.0.1", "--host", help="Dashboard host"),
+    backend: str = typer.Option(
+        "auto", "--backend",
+        help="Which store to read: auto | pg | sqlite",
+    ),
 ) -> None:
     """Start the local STAN dashboard.
 
     Serves the QC dashboard at http://localhost:8421.
+
+    v1.0.15: reads the central PG Farm store directly when it can reach
+    it, instead of waiting on the 5-minute SQLite mirror. --backend auto
+    (the default) probes for PG credentials once at startup and falls
+    back to SQLite when there are none -- so a single-lab install with no
+    PG Farm access is unchanged and needs no flag. Force either side with
+    --backend pg / --backend sqlite, or by exporting STAN_DB_BACKEND.
 
     v0.2.315: if Tailscale is installed and logged in on this host,
     the dashboard auto-configures godmode access:
@@ -2330,6 +2374,8 @@ def dashboard(
     """
     import os
     import uvicorn
+
+    _resolve_dashboard_backend(backend)
 
     ts = _detect_tailscale()
     if ts:
@@ -3386,6 +3432,236 @@ def run_4dff_cmd(
         f"(rc={result.returncode})\n"
         f"  features: [bold]{result.features_path}[/bold]"
     )
+
+
+@app.command("backfill-feature-cloud")
+def backfill_feature_cloud(
+    limit: int = typer.Option(
+        0, "--limit", help="Stop after this many runs (0 = all queued).",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Re-extract even for runs that already have a stored cloud.",
+    ),
+    instrument: str = typer.Option(
+        "", "--instrument", help="Only runs from this instrument.",
+    ),
+    max_points: int = typer.Option(
+        0, "--max-points",
+        help="Points kept per run (0 = module default, 15000).",
+    ),
+    since: str = typer.Option(
+        "", "--since",
+        help="Only runs with run_date >= this ISO date (e.g. 2026-06-01).",
+    ),
+    cache_dir_opt: str = typer.Option(
+        "", "--cache-dir",
+        help="Also write each cloud as <run_id>.json here. Use when the "
+             "extraction host can't reach the DB — the other host picks "
+             "them up with --from-cache.",
+    ),
+    from_cache: str = typer.Option(
+        "", "--from-cache",
+        help="Load pre-extracted <run_id>.json clouds from this directory "
+             "instead of reading .features sidecars. Use on a host that "
+             "can't see the raw data (e.g. "
+             "/Volumes/proteomics-grp/STAN/feature_clouds).",
+    ),
+) -> None:
+    """Publish charge-labeled ion clouds from 4DFF .features into the DB.
+
+    ``backfill-features`` generates the ``.features`` sidecars; this
+    reads them and stores a downsampled, charge-labeled point cloud in
+    the ``feature_clouds`` table (PG when ``STAN_DB_BACKEND=pg``).
+
+    Run it on the host that can see the raw data — the dashboard almost
+    never can. Before this existed, the Plotly ion-cloud view only
+    rendered on a machine with the ``.d`` mounted locally, so the fleet
+    dashboard showed "no .features file found" for every single run even
+    though 4DFF had written the sidecars hours earlier.
+
+    Newest runs first, because that is what anyone opens first.
+    """
+    import json as _json
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from stan.config import get_user_config_dir
+    from stan.db import get_db_path, init_db, insert_feature_cloud
+    from stan.db_pg import use_pg
+    from stan.metrics.feature_cloud import (
+        DEFAULT_MAX_POINTS, cloud_to_json, extract_feature_cloud,
+        load_feature_cloud_json,
+    )
+    from stan.metrics.features import find_features_file
+
+    cap = max_points if max_points > 0 else DEFAULT_MAX_POINTS
+    cache_dir = Path(from_cache) if from_cache else None
+    if cache_dir is not None and not cache_dir.is_dir():
+        console.print(f"[red]--from-cache dir not found: {cache_dir}[/red]")
+        raise typer.Exit(1)
+    write_cache = Path(cache_dir_opt) if cache_dir_opt else None
+    if write_cache is not None:
+        write_cache.mkdir(parents=True, exist_ok=True)
+
+    # Row source follows the store of record: on Hive that is PG, and
+    # reading the local SQLite there would queue a handful of stale
+    # rows instead of the fleet's 200+.
+    rows: list[dict] = []
+    have: set[str] = set()
+    if use_pg():
+        from stan.db_pg import _connect
+        with _connect() as pg, pg.cursor() as cur:
+            sql = ("SELECT id, run_name, instrument, raw_path FROM runs "
+                   "WHERE raw_path LIKE '%%.d'")
+            params: list = []
+            if instrument:
+                sql += " AND instrument = %s"
+                params.append(instrument)
+            if since:
+                sql += " AND run_date >= %s"
+                params.append(since)
+            sql += " ORDER BY run_date DESC"
+            if limit > 0:
+                sql += f" LIMIT {int(limit)}"
+            cur.execute(sql, tuple(params))
+            rows = [
+                {"id": str(r[0]), "run_name": r[1], "instrument": r[2],
+                 "raw_path": r[3]}
+                for r in cur.fetchall()
+            ]
+            if not force:
+                try:
+                    cur.execute(
+                        "SELECT run_id FROM feature_clouds WHERE source = 'runs'"
+                    )
+                    have = {str(r[0]) for r in cur.fetchall()}
+                except Exception:
+                    have = set()
+    else:
+        init_db()
+        with sqlite3.connect(str(get_db_path())) as con:
+            con.row_factory = sqlite3.Row
+            sql = "SELECT id, run_name, instrument, raw_path FROM runs WHERE raw_path LIKE '%.d'"
+            params = []
+            if instrument:
+                sql += " AND instrument = ?"
+                params.append(instrument)
+            if since:
+                sql += " AND run_date >= ?"
+                params.append(since)
+            sql += " ORDER BY run_date DESC"
+            if limit > 0:
+                sql += f" LIMIT {int(limit)}"
+            rows = [dict(r) for r in con.execute(sql, params).fetchall()]
+            if not force:
+                try:
+                    have = {
+                        r[0] for r in con.execute(
+                            "SELECT run_id FROM feature_clouds WHERE source = 'runs'"
+                        )
+                    }
+                except sqlite3.OperationalError:
+                    have = set()
+
+    console.print(
+        f"[bold]{len(rows)} runs queued for ion-cloud extraction[/bold] "
+        f"(cap {cap:,} points/run, {len(have)} already stored)"
+    )
+
+    log_dir = get_user_config_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = (
+        log_dir
+        / f"backfill_feature_cloud_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+    )
+    log_fh = open(log_path, "a", encoding="utf-8")
+
+    def _log(record: dict) -> None:
+        record["ts"] = datetime.now(timezone.utc).isoformat()
+        log_fh.write(_json.dumps(record) + "\n")
+        log_fh.flush()
+
+    _log({"event": "start", "n_queued": len(rows), "force": force,
+          "max_points": cap, "backend": "pg" if use_pg() else "sqlite"})
+
+    n_done = n_skipped = n_errors = 0
+    for run in rows:
+        rid = run["id"]
+        raw_path = run.get("raw_path") or ""
+        if not force and rid in have:
+            n_skipped += 1
+            continue
+        if not raw_path:
+            n_skipped += 1
+            _log({"event": "skip", "run_id": rid, "reason": "no raw_path"})
+            continue
+        if cache_dir is not None:
+            # Look the file up by run id rather than listing the
+            # directory: the quobyte share is mounted over SMB on the Mac
+            # and readdir results go stale for minutes at a time, so a
+            # glob reports an empty directory whose files stat fine.
+            feat = cache_dir / f"{rid}.json"
+            if not feat.exists():
+                n_skipped += 1
+                continue
+        else:
+            feat = find_features_file(raw_path)
+            if feat is None:
+                n_skipped += 1
+                _log({"event": "skip", "run_id": rid, "run_name": run["run_name"],
+                      "reason": "no .features sidecar", "raw_path": raw_path})
+                continue
+        try:
+            if cache_dir is not None:
+                cloud = load_feature_cloud_json(feat)
+            else:
+                cloud = extract_feature_cloud(feat, max_points=cap)
+            if cloud.n_points == 0:
+                n_skipped += 1
+                _log({"event": "skip", "run_id": rid, "run_name": run["run_name"],
+                      "reason": "sidecar has no usable rows"})
+                continue
+            if write_cache is not None:
+                # Write via a temp name so a reader on the other side of
+                # the share never picks up a half-written cloud.
+                tmp = write_cache / f".{rid}.json.part"
+                tmp.write_text(_json.dumps(
+                    cloud_to_json(cloud, rid, str(run.get("run_name") or ""))
+                ))
+                tmp.replace(write_cache / f"{rid}.json")
+            insert_feature_cloud(
+                run_id=rid, mz=cloud.mz, mobility=cloud.mobility,
+                rt=cloud.rt, charge=cloud.charge, intensity=cloud.intensity,
+                n_total=cloud.n_total,
+                features_path=cloud.features_path or str(feat), table="runs",
+            )
+        except Exception as e:  # noqa: BLE001 - one bad sidecar must not stop the walk
+            n_errors += 1
+            _log({"event": "error", "run_id": rid, "run_name": run["run_name"],
+                  "error": str(e), "error_type": type(e).__name__})
+            console.print(f"  [red]{str(run['run_name'])[:60]}: {e}[/red]")
+            continue
+
+        n_done += 1
+        charges = sorted({int(z) for z in cloud.charge})
+        _log({"event": "done", "run_id": rid, "run_name": run["run_name"],
+              "n_points": cloud.n_points, "n_total": cloud.n_total,
+              "charges": charges, "features_path": str(feat)})
+        console.print(
+            f"  [green]{str(run['run_name'])[:56]:<56}[/green] "
+            f"{cloud.n_points:>6,}/{cloud.n_total:<7,} pts  "
+            f"z={','.join(str(z) for z in charges)}"
+        )
+
+    _log({"event": "end", "done": n_done, "skipped": n_skipped,
+          "errors": n_errors})
+    log_fh.close()
+    console.print(
+        f"[bold]Ion-cloud backfill complete[/bold] — "
+        f"done={n_done} skipped={n_skipped} errors={n_errors}"
+    )
+    console.print(f"[dim]Log: {log_path}[/dim]")
 
 
 @app.command("backfill-features")

@@ -349,6 +349,34 @@ CREATE TABLE IF NOT EXISTS drift_peak_clouds (
 
 CREATE INDEX IF NOT EXISTS idx_drift_cloud_run ON drift_peak_clouds(run_id, source);
 
+-- v1.0.16: charge-labeled 4DFF ion cloud. `drift_peak_clouds` above
+-- holds raw MS1 peaks from detect_window_drift; this holds deconvolved
+-- features from the 4DFF `.features` sidecar, which carry an exact
+-- charge state per point. Separate table, not extra columns, because
+-- the two have different writers and sharing (run_id, source) would
+-- mean whichever backfill ran last clobbered the other.
+--
+-- Populated by `stan backfill-feature-cloud` on the host that can see
+-- the raw data (Hive), then synced down to every dashboard via PG.
+-- Without this the Plotly ion-cloud view only ever worked on a machine
+-- with the .d mounted locally -- i.e. never, for the fleet.
+CREATE TABLE IF NOT EXISTS feature_clouds (
+    run_id              TEXT NOT NULL,
+    source              TEXT NOT NULL,          -- 'runs' | 'sample_health'
+    mz                  TEXT NOT NULL,          -- JSON array of floats
+    mobility            TEXT NOT NULL,          -- JSON array of floats (1/K0)
+    rt                  TEXT NOT NULL,          -- JSON array of floats (sec)
+    charge              TEXT NOT NULL,          -- JSON array of ints
+    intensity           TEXT NOT NULL,          -- JSON array of floats
+    n_points            INTEGER NOT NULL,       -- points stored (downsampled)
+    n_total             INTEGER NOT NULL,       -- features in the sidecar
+    features_path       TEXT,                   -- provenance, for debugging
+    created_at          TEXT,
+    PRIMARY KEY (run_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_feature_clouds_run ON feature_clouds(run_id, source);
+
 -- v0.2.312: dispatch_attempts records every search-dispatch outcome
 -- so silent failures are observable and re-tryable. Pre-fix, when
 -- dispatch_search returned None (DIA-NN crashed silently with no row
@@ -593,7 +621,7 @@ def _migrate(con: sqlite3.Connection) -> None:
             placeholders = ",".join("?" * len(losers))
             for child in (
                 "tic_traces", "drift_window_centroids", "peg_ion_hits",
-                "irt_anchor_rts", "drift_peak_clouds",
+                "irt_anchor_rts", "drift_peak_clouds", "feature_clouds",
             ):
                 try:
                     con.execute(
@@ -1072,6 +1100,15 @@ def insert_sample_health(
     return row_id
 
 
+def _decode_reasons(d: dict) -> dict:
+    """JSON-decode a sample_health row's ``reasons`` column in place."""
+    try:
+        d["reasons"] = json.loads(d.get("reasons") or "[]")
+    except Exception:  # noqa: BLE001 - legacy rows held a bare string
+        d["reasons"] = []
+    return d
+
+
 def get_sample_health(
     instrument: str | None = None,
     verdict: str | None = None,
@@ -1083,8 +1120,13 @@ def get_sample_health(
         db_path = get_db_path()
     from stan.db_pg import get_sample_health_pg, use_pg
     if use_pg():
-        return get_sample_health_pg(
-            instrument=instrument, verdict=verdict, limit=limit)
+        # `reasons` is a JSON string column in both backends; the SQLite
+        # path below decodes it, so the PG path has to as well or the
+        # dashboard renders a raw '["low signal"]' string.
+        return [
+            _decode_reasons(r) for r in get_sample_health_pg(
+                instrument=instrument, verdict=verdict, limit=limit)
+        ]
     if not db_path.exists():
         return []
     clauses = []
@@ -1103,15 +1145,7 @@ def get_sample_health(
             f"SELECT * FROM sample_health {where} "
             f"ORDER BY run_date DESC LIMIT ?", args,
         ).fetchall()
-    out = []
-    for r in rows:
-        d = dict(r)
-        try:
-            d["reasons"] = json.loads(d.get("reasons") or "[]")
-        except Exception:
-            d["reasons"] = []
-        out.append(d)
-    return out
+    return [_decode_reasons(dict(r)) for r in rows]
 
 
 def rolling_median_ms1_max_intensity(
@@ -1462,6 +1496,48 @@ def insert_peg_ion_hits(
         return len(rows)
 
 
+def get_detail_summary(
+    run_id: str,
+    table: str = "runs",
+    cols: "tuple[str, ...]" = (),
+    db_path: Path | None = None,
+) -> dict:
+    """Fetch a handful of scalar columns from ``runs``/``sample_health``.
+
+    Backs the badge line above the PEG and drift detail charts ("score 62
+    -- 14 ions detected"). The dashboard used to open sqlite3 directly for
+    this, which meant those two endpoints kept reading SQLite even after
+    everything around them moved to PG -- the chart would render with an
+    empty summary. Routed through here so both backends answer it.
+
+    ``table`` must be validated by the caller: it is interpolated into the
+    SQL, not bound.
+    """
+    if table not in ("runs", "sample_health"):
+        raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
+    if not cols:
+        return {}
+    if db_path is None:
+        db_path = get_db_path()
+
+    from stan.db_pg import get_detail_summary_pg, use_pg
+    if use_pg():
+        return get_detail_summary_pg(run_id, table, cols)
+
+    if not db_path.exists():
+        return {}
+    try:
+        with connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            row = con.execute(
+                f"SELECT {', '.join(cols)} FROM {table} WHERE id = ?", (run_id,),
+            ).fetchone()
+    except sqlite3.OperationalError as e:
+        logger.warning("get_detail_summary(%s): %s", table, e)
+        return {}
+    return dict(row) if row else {}
+
+
 def get_peg_ion_hits(
     run_id: str,
     table: str = "runs",
@@ -1470,6 +1546,9 @@ def get_peg_ion_hits(
     """Return all PEG ion hits for a run, sorted by m/z."""
     if db_path is None:
         db_path = get_db_path()
+    from stan.db_pg import get_peg_ion_hits_pg, use_pg
+    if use_pg():
+        return get_peg_ion_hits_pg(run_id, source=table)
     with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         try:
@@ -1562,6 +1641,9 @@ def get_drift_window_centroids(
     """Return all drift windows for a run, sorted by window index."""
     if db_path is None:
         db_path = get_db_path()
+    from stan.db_pg import get_drift_window_centroids_pg, use_pg
+    if use_pg():
+        return get_drift_window_centroids_pg(run_id, source=table)
     with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         # v0.2.182: defensively check for in_peptide_zone column so
@@ -1651,6 +1733,9 @@ def get_drift_peak_cloud(
     Returns None if no cloud exists for this run."""
     if db_path is None:
         db_path = get_db_path()
+    from stan.db_pg import get_drift_peak_cloud_pg, use_pg
+    if use_pg():
+        return get_drift_peak_cloud_pg(run_id, source=table)
     import json as _json
     with connect(db_path) as con:
         try:
@@ -1668,6 +1753,113 @@ def get_drift_peak_cloud(
         "im": _json.loads(row[1]),
         "log_intensity": _json.loads(row[2]),
         "n_points": row[3],
+    }
+
+
+def insert_feature_cloud(
+    run_id: str,
+    mz: "list[float]",
+    mobility: "list[float]",
+    rt: "list[float]",
+    charge: "list[int]",
+    intensity: "list[float]",
+    n_total: int = 0,
+    features_path: str = "",
+    table: str = "runs",
+    db_path: Path | None = None,
+) -> int:
+    """Store a charge-labeled 4DFF ion cloud for one run.
+
+    All five arrays must be the same length; caller downsamples (see
+    ``stan.metrics.feature_cloud.extract_feature_cloud``). Routes to PG
+    when the central backend is active, exactly like
+    ``insert_drift_peak_cloud``. Idempotent — REPLACE/upsert semantics
+    so ``--force`` re-backfills overwrite cleanly.
+
+    Returns the number of points written.
+    """
+    import json as _json
+    from datetime import datetime, timezone
+
+    n = len(mz)
+    if not (n == len(mobility) == len(rt) == len(charge) == len(intensity)):
+        raise ValueError(
+            "feature cloud arrays must be equal length: "
+            f"mz={len(mz)} mobility={len(mobility)} rt={len(rt)} "
+            f"charge={len(charge)} intensity={len(intensity)}"
+        )
+    if n == 0:
+        return 0
+
+    mz_json = _json.dumps(mz)
+    mob_json = _json.dumps(mobility)
+    rt_json = _json.dumps(rt)
+    charge_json = _json.dumps([int(z) for z in charge])
+    int_json = _json.dumps(intensity)
+    created = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+    from stan.db_pg import insert_feature_cloud_pg, use_pg
+    if use_pg():
+        return insert_feature_cloud_pg(
+            run_id=run_id, mz_json=mz_json, mobility_json=mob_json,
+            rt_json=rt_json, charge_json=charge_json,
+            intensity_json=int_json, n_points=n, n_total=int(n_total or n),
+            features_path=features_path, source=table,
+        )
+
+    if db_path is None:
+        db_path = get_db_path()
+    with connect(db_path) as con:
+        con.execute(
+            "INSERT OR REPLACE INTO feature_clouds "
+            "(run_id, source, mz, mobility, rt, charge, intensity, "
+            " n_points, n_total, features_path, created_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                run_id, table, mz_json, mob_json, rt_json, charge_json,
+                int_json, n, int(n_total or n), features_path, created,
+            ),
+        )
+    return n
+
+
+def get_feature_cloud(
+    run_id: str,
+    table: str = "runs",
+    db_path: Path | None = None,
+) -> dict | None:
+    """Return the stored 4DFF ion cloud, or None when absent.
+
+    Shape mirrors the ``/api/runs/{id}/features-by-charge`` payload's
+    needs: parallel arrays plus the provenance counters. A missing
+    ``feature_clouds`` table (pre-migration DB) reads as None rather
+    than raising, so an older dashboard keeps serving the rest of the
+    drift modal.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    import json as _json
+    with connect(db_path) as con:
+        try:
+            row = con.execute(
+                "SELECT mz, mobility, rt, charge, intensity, n_points, "
+                "n_total, features_path FROM feature_clouds "
+                "WHERE run_id = ? AND source = ?",
+                (run_id, table),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+    if row is None:
+        return None
+    return {
+        "mz": _json.loads(row[0]),
+        "mobility": _json.loads(row[1]),
+        "rt": _json.loads(row[2]),
+        "charge": _json.loads(row[3]),
+        "intensity": _json.loads(row[4]),
+        "n_points": row[5],
+        "n_total": row[6],
+        "features_path": row[7] or "",
     }
 
 
@@ -1727,6 +1919,12 @@ def get_tic_trace(run_id: str, db_path: Path | None = None) -> dict | None:
     if db_path is None:
         db_path = get_db_path()
 
+    # PG keeps the trace inline on the run row as JSONB rather than in a
+    # side table; get_tic_trace_pg projects it into this same shape.
+    from stan.db_pg import get_tic_trace_pg, use_pg
+    if use_pg():
+        return get_tic_trace_pg(run_id)
+
     with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         row = con.execute(
@@ -1752,6 +1950,10 @@ def get_tic_traces_for_instrument(
     if db_path is None:
         db_path = get_db_path()
 
+    from stan.db_pg import get_tic_traces_for_instrument_pg, use_pg
+    if use_pg():
+        return get_tic_traces_for_instrument_pg(instrument, limit=limit)
+
     with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
@@ -1775,6 +1977,22 @@ def get_tic_traces_for_instrument(
             "gate_result": row["gate_result"],
         }
         for row in rows
+    ]
+
+
+def _filter_qc(rows: list[dict]) -> list[dict]:
+    """Drop rows whose run_name isn't a QC standard.
+
+    Shared by the SQLite and PG read paths so the two can't drift: both
+    over-fetch 3x, then this decides what survives. Keeping one copy is
+    the point -- a divergence here would silently change which runs a
+    trend line is drawn from depending on the backend.
+    """
+    from stan.watcher.qc_filter import compile_qc_pattern
+    pat = compile_qc_pattern()
+    return [
+        r for r in rows
+        if r.get("run_name") and pat.search(Path(r["run_name"]).stem)
     ]
 
 
@@ -1808,6 +2026,18 @@ def get_runs(
     """
     if db_path is None:
         db_path = get_db_path()
+
+    # PG mode: the fleet's canonical store answers directly, no SQLite
+    # mirror in the loop. Shape is identical -- see stan.db_pg readers.
+    from stan.db_pg import get_runs_pg, use_pg
+    if use_pg():
+        rows = get_runs_pg(
+            instrument=instrument, limit=limit, offset=offset,
+            qc_only=qc_only, include_hidden=include_hidden,
+        )
+        # Rows are DESC (newest first), so the head of the list is the
+        # newest page -- slice from the front.
+        return _filter_qc(rows)[:limit] if qc_only else rows
 
     # Fresh install or wrong host: no DB yet. Return an empty list
     # instead of crashing the dashboard.
@@ -1850,15 +2080,7 @@ def get_runs(
 
     result = [dict(row) for row in rows]
     if qc_only:
-        from stan.watcher.qc_filter import compile_qc_pattern
-        pat = compile_qc_pattern()
-        # Keep the LAST `limit` after filtering, not the first: `result` is
-        # ascending, so slicing from the front would hand back the oldest
-        # QC runs in the fetch window rather than the most recent ones.
-        result = [
-            r for r in result
-            if r.get("run_name") and pat.search(Path(r["run_name"]).stem)
-        ][:limit]
+        result = _filter_qc(result)[:limit]
     return result
 
 
@@ -1866,6 +2088,10 @@ def get_run(run_id: str, db_path: Path | None = None) -> dict | None:
     """Fetch a single run by ID."""
     if db_path is None:
         db_path = get_db_path()
+
+    from stan.db_pg import get_run_pg, use_pg
+    if use_pg():
+        return get_run_pg(run_id)
 
     if not db_path.exists():
         return None
@@ -1898,6 +2124,17 @@ def get_trends(
     if db_path is None:
         db_path = get_db_path()
 
+    from stan.db_pg import get_trends_pg, use_pg
+    if use_pg():
+        rows_pg = get_trends_pg(
+            instrument=instrument, limit=limit,
+            qc_only=qc_only, include_hidden=include_hidden,
+        )
+        # Rows are ASC (oldest first), so keep the TAIL after filtering --
+        # slicing from the front would chart the oldest QC runs in the
+        # fetch window instead of the most recent ones.
+        return _filter_qc(rows_pg)[-limit:] if qc_only else rows_pg
+
     if not db_path.exists():
         return []
 
@@ -1925,12 +2162,7 @@ def get_trends(
 
     result = [dict(row) for row in rows]
     if qc_only:
-        from stan.watcher.qc_filter import compile_qc_pattern
-        pat = compile_qc_pattern()
-        result = [
-            r for r in result
-            if r.get("run_name") and pat.search(Path(r["run_name"]).stem)
-        ][-limit:]
+        result = _filter_qc(result)[-limit:]
     return result
 
 
@@ -1949,6 +2181,9 @@ def set_run_hidden(
     """
     if db_path is None:
         db_path = get_db_path()
+    from stan.db_pg import set_run_hidden_pg, use_pg
+    if use_pg():
+        return set_run_hidden_pg(run_id, hidden, reason=reason)
     if not db_path.exists():
         return False
     now = datetime.now(timezone.utc).isoformat() if hidden else None
@@ -1965,12 +2200,15 @@ def mark_submitted(run_id: str, submission_id: str, db_path: Path | None = None)
     """Mark a run as submitted to the community benchmark."""
     if db_path is None:
         db_path = get_db_path()
-
-    with connect(db_path) as con:
-        con.execute(
-            "UPDATE runs SET submitted_to_benchmark = 1, submission_id = ? WHERE id = ?",
-            (submission_id, run_id),
-        )
+    from stan.db_pg import mark_submitted_pg, use_pg
+    if use_pg():
+        mark_submitted_pg(run_id, submission_id)
+    else:
+        with connect(db_path) as con:
+            con.execute(
+                "UPDATE runs SET submitted_to_benchmark = 1, submission_id = ? WHERE id = ?",
+                (submission_id, run_id),
+            )
     logger.info("Run %s marked as submitted (submission %s)", run_id[:8], submission_id[:8])
 
 

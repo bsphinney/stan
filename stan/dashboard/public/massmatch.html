@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mass Match — STAN Arcade</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #0a0f1a; color: #e5e7eb;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow: hidden; user-select: none;
+  }
+  #wrap {
+    display: flex; flex-direction: column; align-items: center;
+    padding: 10px 10px 0 10px; height: calc(100% - 10px); box-sizing: border-box;
+  }
+  .titlebar { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+  .titlebar h1 {
+    margin: 0; font-size: 20px; color: #fbbf24; letter-spacing: 3px;
+    font-family: "Courier New", monospace;
+  }
+  .titlebar .sub { color: #94a3b8; font-size: 11px; font-style: italic; }
+
+  .stats {
+    display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap;
+    justify-content: center; margin-bottom: 5px;
+  }
+  .stat {
+    background: #0f172a; border: 1px solid #1e293b; border-radius: 6px;
+    padding: 4px 10px; min-width: 78px; text-align: center;
+  }
+  .stat label {
+    display: block; color: #64748b; font-size: 9px; letter-spacing: 0.6px;
+    text-transform: uppercase;
+  }
+  .stat b {
+    color: #fbbf24; font-size: 15px; font-variant-numeric: tabular-nums;
+  }
+  .stat.combo b { color: #f472b6; }
+  .stat b.ok   { color: #22c55e; }
+  .stat b.warn { color: #fbbf24; }
+  .stat b.bad  { color: #ef4444; }
+  .stats button {
+    background: #1e293b; color: #e5e7eb; border: 1px solid #475569;
+    padding: 0 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  }
+  .stats button:hover { background: #334155; }
+
+  .progress {
+    width: 514px; max-width: 92vw; height: 5px; background: #0f172a;
+    border: 1px solid #1e293b; border-radius: 3px; overflow: hidden;
+    margin-bottom: 6px;
+  }
+  #progFill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #f472b6, #fbbf24, #22c55e);
+    transition: width 0.2s;
+  }
+
+  canvas {
+    display: block;
+    background:
+      radial-gradient(circle at 15% 10%, rgba(244,114,182,0.07), transparent 45%),
+      radial-gradient(circle at 85% 90%, rgba(251,191,36,0.06), transparent 45%),
+      #0b1220;
+    border: 1px solid #334155; border-radius: 8px;
+    touch-action: none; cursor: pointer;
+    width: min(514px, 92vw, 58vh); height: auto;
+  }
+
+  #msg {
+    margin-top: 6px; font-size: 12px; color: #94a3b8; min-height: 17px;
+    text-align: center; max-width: 640px;
+  }
+  #msg.good { color: #22c55e; }
+  #msg.bad  { color: #ef4444; }
+  #msg.peg  { color: #a3e635; }
+
+  #legend {
+    display: flex; gap: 9px; flex-wrap: wrap; justify-content: center;
+    margin-top: 4px; font-size: 10px; color: #64748b;
+  }
+  #legend span { white-space: nowrap; }
+  #legend b { color: #cbd5e1; font-weight: normal; }
+  .help {
+    margin-top: 5px; font-size: 10.5px; color: #64748b; text-align: center;
+    max-width: 660px; line-height: 1.6;
+  }
+  .help code {
+    background: #0f172a; border: 1px solid #1e293b; border-radius: 3px;
+    padding: 0 4px; color: #cbd5e1;
+  }
+  .help .peg { color: #a3e635; }
+  .help .pow { color: #fbbf24; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div class="titlebar">
+    <h1>M A S S &nbsp; M A T C H</h1>
+    <span class="sub">swap instruments · match 3 · keep the PEG off your column</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><label>precursors id'd</label><b id="score">0</b></div>
+    <div class="stat"><label>target</label><b id="goal">0</b></div>
+    <div class="stat"><label>batch</label><b id="level">1/10</b></div>
+    <div class="stat"><label>injections left</label><b id="moves">30</b></div>
+    <div class="stat"><label>PEG on column</label><b id="peg" class="ok">0/12</b></div>
+    <div class="stat combo"><label>cascade</label><b id="combo">&times;1.0</b></div>
+    <button id="muteBtn" title="mute (M)">&#128266;</button>
+    <button id="resetBtn" title="restart (R)">Reset</button>
+  </div>
+
+  <div class="progress"><div id="progFill"></div></div>
+
+  <canvas id="board" width="514" height="514"></canvas>
+
+  <div id="msg"></div>
+  <div id="legend"></div>
+  <div class="help">
+    <code>click / drag</code> or <code>&larr;&uarr;&rarr;&darr;</code> + <code>space</code> to swap two neighbours &middot;
+    match 3+ of a kind &middot; match <b>4+</b> forges a <span class="pow">LIB-FREE</span> tile that clears its whole row and column.
+    <br>
+    <span class="peg">PEG</span> tiles can't be swapped and creep to their neighbours — clear one by matching tiles right next to it.
+    12 PEG on the column and the batch is contaminated.
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+// MASS MATCH — STAN Arcade
+//
+// A match-3 where the gems are the instruments in the core. Everything is in
+// this one file on purpose: the dashboard is served locally (and sometimes
+// behind an SSO proxy with a strict CSP), so there are zero external requests
+// — no CDN, no fonts, no images. Tile art is drawn on the canvas; the emoji
+// are only a garnish on top of a distinct shape + colour, so the board still
+// reads fine if a workstation's emoji font is missing a glyph.
+//
+// THE MECHANIC (the bit only a mass spectrometrist will smile at):
+// PEG contamination. Polyethylene glycol turns up in real labs from gloves,
+// tubing, plasticware and Tupperware lids, and shows as that unmistakable
+// ladder of peaks 44 Da apart. Once it's in, it *creeps* — so here it spawns
+// on a timer, spreads to a neighbouring tile, refuses to be swapped, and
+// cannot be matched away. The only way to clean it is to make a match in a
+// cell right next to it (i.e. scrub around it) or nuke it with a LIB-FREE
+// power tile. Let 12 of them accumulate and the batch is contaminated.
+// Clearing a level installs a new column, which flushes the carryover —
+// which is also what you actually end up doing in the lab.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Board geometry ─────────────────────────────────────────────────────────
+const COLS = 8, ROWS = 8, TILE = 62, PAD = 9;
+const BW = COLS * TILE + PAD * 2;   // 514 — canvas is square
+
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+canvas.width = BW; canvas.height = BW;
+
+// ── Tiles ──────────────────────────────────────────────────────────────────
+// Every tile is a real thing that lives in (or haunts) a proteomics core.
+// `shape` matters as much as `color`: shape is what makes the board readable
+// for colour-blind players and if an emoji fails to render.
+const TYPES = [
+  { key:'astral', glyph:'\u{1F30C}', label:'ASTRAL', name:'Orbitrap Astral', color:'#a78bfa', shape:'hex',
+    quip:'Astral at 200 Hz. The precursors just keep coming.' },
+  { key:'tims', glyph:'\u{1F300}', label:'timsTOF', name:'timsTOF HT', color:'#38bdf8', shape:'circle',
+    quip:'PASEF ramp locked. Mobility-resolved and smug about it.' },
+  { key:'waters', glyph:'\u{1F4A7}', label:'P10', name:'Waters P10', color:'#22d3ee', shape:'diamond',
+    quip:'The Waters box did something. Nobody in the core is sure what.' },
+  { key:'exploris', glyph:'\u{1F52D}', label:'480', name:'Exploris 480', color:'#4ade80', shape:'square',
+    quip:'Exploris 480: dependable as a brick, and about as exciting.' },
+  { key:'lumos', glyph:'\u{26A1}', label:'LUMOS', name:'Fusion Lumos', color:'#fbbf24', shape:'star',
+    quip:'Tribrid flex — HCD, CID and ETD, all in one swap.' },
+  { key:'hela', glyph:'\u{1F9EA}', label:'HeLa', name:'HeLa QC standard', color:'#f472b6', shape:'pill',
+    quip:'HeLa QC passed. Again. Forever. Until the end of time.' },
+  // The LTQ is wheeled out of the storage room at batch 3. A 7th tile type
+  // makes matches meaningfully rarer, which is the difficulty knob — and it
+  // is funnier than just making the numbers bigger.
+  { key:'ltq', glyph:'\u{1F5FF}', label:'LTQ', name:'LTQ (the ancient one)', color:'#94a3b8', shape:'triangle',
+    quip:'The LTQ still runs. That has always been the problem.' },
+];
+const LTQ_LEVEL = 3;
+
+// ── Tuning ─────────────────────────────────────────────────────────────────
+const MAX_LEVEL   = 10;
+const PEG_LIMIT   = 12;    // PEG tiles on the board that end the run
+const MOVES       = 30;    // "injections" per batch
+const PT_TILE     = 100;   // precursors per cleared tile
+const PT_PEG      = 250;   // bonus for scrubbing a PEG tile
+const SPARE_BONUS = 200;   // per unused injection at end of batch
+// Hard stop for the cascade loop. Random refills making fresh matches forever
+// has probability ~0, but a game that can hang on an instrument PC is worse
+// than one that occasionally regenerates a board. See resolveSettled().
+const CASCADE_PANIC = 25;
+
+function goalFor(level) { return 3000 + 900 * (level - 1); }
+function pegSpawnEvery(level) { return Math.max(3, 7 - Math.floor(level / 2)); }
+function pegSpreadChance(level) { return Math.min(0.45, 0.12 + 0.035 * level); }
+
+// ── Small helpers ──────────────────────────────────────────────────────────
+const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
+const fmt = n => Math.round(n).toLocaleString('en-US');
+const key = (r, c) => r * COLS + c;
+const kr = k => (k / COLS) | 0;
+const kc = k => k % COLS;
+const inBounds = p => p.r >= 0 && p.r < ROWS && p.c >= 0 && p.c < COLS;
+const DIRS = [[-1,0],[1,0],[0,-1],[0,1]];
+// Well-plate style cell names for the PEG toasts ("PEG bled into C4").
+const cellName = (r, c) => String.fromCharCode(65 + c) + (r + 1);
+
+// ── Audio (tiny inline synth — no files, nothing fetched) ──────────────────
+let actx = null, muted = false;
+function beep(freq, dur, type, gain) {
+  if (muted) return;
+  try {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type || 'sine';
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(gain || 0.05, actx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + (dur || 0.08));
+    o.connect(g); g.connect(actx.destination);
+    o.start();
+    o.stop(actx.currentTime + (dur || 0.08) + 0.02);
+  } catch (_) { /* audio is a nicety, never a dependency */ }
+}
+const MATCH_NOTES = [523, 587, 659, 784, 880, 988, 1175];
+
+// ── DOM refs ───────────────────────────────────────────────────────────────
+const el = {
+  score: document.getElementById('score'),
+  goal: document.getElementById('goal'),
+  level: document.getElementById('level'),
+  moves: document.getElementById('moves'),
+  peg: document.getElementById('peg'),
+  combo: document.getElementById('combo'),
+  prog: document.getElementById('progFill'),
+  msg: document.getElementById('msg'),
+};
+
+// ── State ──────────────────────────────────────────────────────────────────
+let state = null;
+
+function makeCell(type, r, c, fromRow) {
+  return {
+    kind: 'tile',              // 'tile' | 'peg' | 'power'
+    type,                      // index into TYPES; null for PEG
+    px: PAD + c * TILE,
+    py: PAD + (fromRow === undefined ? r : fromRow) * TILE,
+    pop: undefined,            // set 1 -> 0 while a cleared tile shrinks away
+    born: 1,                   // 1 -> 0 spawn/transform pulse
+    wob: Math.random() * Math.PI * 2,
+  };
+}
+
+function activePool() {
+  // Batch 3 onwards the LTQ joins the pool.
+  return state.level >= LTQ_LEVEL ? [0,1,2,3,4,5,6] : [0,1,2,3,4,5];
+}
+
+function typeAt(r, c) {
+  if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return -1;
+  // The opening board is built row by row, so rows below "r" may not exist
+  // yet; during a gravity refill the cells above are still null. Both are
+  // "nothing to match against".
+  const row = state.board[r];
+  if (!row) return -1;
+  return matchType(row[c]);
+}
+
+// Only tiles and power tiles participate in matches. PEG never does — that is
+// the whole point of PEG.
+function matchType(cell) {
+  return (cell && (cell.kind === 'tile' || cell.kind === 'power')) ? cell.type : -1;
+}
+
+// Choose a type that cannot complete a run with the cells already placed.
+// Used for the opening board (fill is row-major, so left/up are known) and
+// for the cascade panic-refill (fill is bottom-up, so down is known).
+function pickSafeType(r, c) {
+  const pool = activePool();
+  const bad = new Set();
+  const l1 = typeAt(r, c - 1), l2 = typeAt(r, c - 2);
+  if (l1 >= 0 && l1 === l2) bad.add(l1);
+  const u1 = typeAt(r - 1, c), u2 = typeAt(r - 2, c);
+  if (u1 >= 0 && u1 === u2) bad.add(u1);
+  const d1 = typeAt(r + 1, c), d2 = typeAt(r + 2, c);
+  if (d1 >= 0 && d1 === d2) bad.add(d1);
+  const ok = pool.filter(t => !bad.has(t));
+  // With >= 6 types at most two can ever be forbidden, so `ok` is never empty.
+  const from = ok.length ? ok : pool;
+  return from[(Math.random() * from.length) | 0];
+}
+
+function randType() {
+  const pool = activePool();
+  return pool[(Math.random() * pool.length) | 0];
+}
+
+function newBoard() {
+  state.board = [];
+  for (let r = 0; r < ROWS; r++) {
+    state.board.push(new Array(COLS).fill(null));
+    for (let c = 0; c < COLS; c++) {
+      // Fill row-major with safe types => the opening board has zero matches.
+      state.board[r][c] = makeCell(0, r, c, r - ROWS - 1);
+      state.board[r][c].type = pickSafeType(r, c);
+    }
+  }
+  // A no-match board can (very rarely) also have no legal swap. Regenerate a
+  // few times, then hand-place a move so this can never soft-lock.
+  for (let attempt = 0; attempt < 40 && !hasValidMove(); attempt++) {
+    for (let r = 0; r < ROWS; r++)
+      for (let c = 0; c < COLS; c++)
+        state.board[r][c].type = pickSafeType(r, c);
+  }
+  if (!hasValidMove()) forceMove();
+}
+
+function newGame() {
+  state = {
+    board: null,
+    level: 1, score: 0, levelBase: 0, goal: goalFor(1), moves: MOVES,
+    busy: true, over: false, won: false, endReason: '',
+    cascade: 0, bestCascade: 0,
+    sel: null, cur: { r: 4, c: 4 }, keyMode: false,
+    pendingSwapCheck: null, pendingSwapBack: false, pendingEndOfMove: false,
+    sinceSpawn: 0,
+    particles: [], texts: [],
+    banner: 'BATCH 1 · fresh column', bannerT: 150,
+    reshuffleGuard: 0,
+    _submitted: false,
+  };
+  newBoard();
+  toast('Match 3 instruments. Watch the PEG.');
+  updateHud();
+}
+
+// ── Match finding ──────────────────────────────────────────────────────────
+// Returns runs of >= 3, horizontal then vertical. A run is
+// { cells:[k,...], type, len, dir }. Runs of 4+ forge a LIB-FREE tile.
+function findRuns() {
+  const runs = [];
+  const b = state.board;
+  for (let r = 0; r < ROWS; r++) {
+    let start = 0;
+    for (let c = 1; c <= COLS; c++) {
+      const prev = matchType(b[r][start]);
+      const cur = c < COLS ? matchType(b[r][c]) : -2;   // -2 never equals a type
+      if (prev < 0 || cur !== prev) {
+        const len = c - start;
+        if (prev >= 0 && len >= 3) {
+          const cells = [];
+          for (let i = start; i < c; i++) cells.push(key(r, i));
+          runs.push({ cells, type: prev, len, dir: 'h' });
+        }
+        start = c;
+      }
+    }
+  }
+  for (let c = 0; c < COLS; c++) {
+    let start = 0;
+    for (let r = 1; r <= ROWS; r++) {
+      const prev = matchType(b[start][c]);
+      const cur = r < ROWS ? matchType(b[r][c]) : -2;
+      if (prev < 0 || cur !== prev) {
+        const len = r - start;
+        if (prev >= 0 && len >= 3) {
+          const cells = [];
+          for (let i = start; i < r; i++) cells.push(key(i, c));
+          runs.push({ cells, type: prev, len, dir: 'v' });
+        }
+        start = r;
+      }
+    }
+  }
+  return runs;
+}
+
+// Would a run of 3 pass through (r,c)? Used for swap legality only.
+function makesRunAt(r, c) {
+  const t = typeAt(r, c);
+  if (t < 0) return false;
+  let n = 1;
+  for (let i = c - 1; i >= 0 && typeAt(r, i) === t; i--) n++;
+  for (let i = c + 1; i < COLS && typeAt(r, i) === t; i++) n++;
+  if (n >= 3) return true;
+  n = 1;
+  for (let i = r - 1; i >= 0 && typeAt(i, c) === t; i--) n++;
+  for (let i = r + 1; i < ROWS && typeAt(i, c) === t; i++) n++;
+  return n >= 3;
+}
+
+function swapInBoard(a, b) {
+  const t = state.board[a.r][a.c];
+  state.board[a.r][a.c] = state.board[b.r][b.c];
+  state.board[b.r][b.c] = t;
+}
+
+function swappable(cell) { return cell && cell.kind !== 'peg'; }
+
+function hasValidMove() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const here = state.board[r][c];
+      if (!swappable(here)) continue;
+      for (const [dr, dc] of [[0,1],[1,0]]) {
+        const nr = r + dr, nc = c + dc;
+        if (nr >= ROWS || nc >= COLS) continue;
+        const there = state.board[nr][nc];
+        if (!swappable(there)) continue;
+        // Any swap that touches a LIB-FREE tile is always a legal move,
+        // because that swap detonates it. So a power tile on the board is
+        // itself a guarantee against a dead board.
+        if (here.kind === 'power' || there.kind === 'power') return true;
+        swapInBoard({r,c}, {r:nr,c:nc});
+        const ok = makesRunAt(r, c) || makesRunAt(nr, nc);
+        swapInBoard({r,c}, {r:nr,c:nc});
+        if (ok) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Last-resort: hand-place a guaranteed swap. Only reachable if 40 random
+// regenerations in a row produced dead boards, which should never happen,
+// but "should never happen" is not the same as "cannot hang".
+function forceMove() {
+  for (let r = 0; r + 1 < ROWS; r++) {
+    for (let c = 0; c + 2 < COLS; c++) {
+      const cells = [state.board[r][c], state.board[r][c+1], state.board[r][c+2], state.board[r+1][c+2]];
+      if (cells.some(x => !x || x.kind === 'peg')) continue;
+      const pool = activePool();
+      const t = pool[0], other = pool[1];
+      cells[0].kind = cells[1].kind = cells[3].kind = 'tile';
+      cells[0].type = cells[1].type = cells[3].type = t;
+      cells[2].kind = 'tile'; cells[2].type = other;
+      return true;
+    }
+  }
+  return false;
+}
+
+function reshuffle() {
+  // Keep the same tile population, just redeal it — PEG and power tiles stay
+  // where they are (a reshuffle shouldn't rescue you from contamination).
+  const spots = [], types = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (state.board[r][c].kind === 'tile') { spots.push(key(r, c)); types.push(state.board[r][c].type); }
+
+  for (let attempt = 0; attempt < 40; attempt++) {
+    for (let i = types.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i + 1)) | 0;
+      const t = types[i]; types[i] = types[j]; types[j] = t;
+    }
+    spots.forEach((k, i) => {
+      const cell = state.board[kr(k)][kc(k)];
+      cell.type = types[i];
+      cell.born = 1;
+    });
+    if (!findRuns().length && hasValidMove()) return;
+  }
+  if (!hasValidMove()) forceMove();
+}
+
+// ── Resolving a match ──────────────────────────────────────────────────────
+function applyClears(runs, swapInfo) {
+  const b = state.board;
+  const toClear = new Set();
+  for (const run of runs) for (const k of run.cells) toClear.add(k);
+
+  // A swap onto/with a LIB-FREE tile detonates it even if it made no run.
+  if (swapInfo) {
+    for (const p of [swapInfo.a, swapInfo.b]) {
+      if (b[p.r][p.c].kind === 'power') toClear.add(key(p.r, p.c));
+    }
+  }
+
+  // Detonate power tiles: each clears its full row and column, and a power
+  // tile caught in that blast detonates too. `detonated` bounds the chain to
+  // one blast per cell, so this always terminates.
+  const detonated = new Set();
+  const queue = [];
+  const isPower = k => b[kr(k)][kc(k)].kind === 'power';
+  const isPeg = k => b[kr(k)][kc(k)].kind === 'peg';
+  const addClear = k => { if (!toClear.has(k)) { toClear.add(k); if (isPower(k)) queue.push(k); } };
+  for (const k of toClear) if (isPower(k)) queue.push(k);
+  let blasts = 0;
+  while (queue.length) {
+    const k = queue.pop();
+    if (detonated.has(k)) continue;
+    detonated.add(k);
+    blasts++;
+    const r = kr(k), c = kc(k);
+    for (let cc = 0; cc < COLS; cc++) addClear(key(r, cc));
+    for (let rr = 0; rr < ROWS; rr++) addClear(key(rr, c));
+    state.texts.push(mkText(PAD + c * TILE + TILE / 2, PAD + r * TILE + TILE / 2, 'LIB-FREE!', '#fbbf24', 46));
+  }
+
+  // PEG is scrubbed by clearing a tile orthogonally next to it (one layer
+  // only — PEG does not chain into more PEG, that would be unwinnable).
+  const pegHit = new Set();
+  for (const k of Array.from(toClear)) {
+    if (isPeg(k)) { pegHit.add(k); continue; }
+    const r = kr(k), c = kc(k);
+    for (const [dr, dc] of DIRS) {
+      const nr = r + dr, nc = c + dc;
+      if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+      if (isPeg(key(nr, nc))) pegHit.add(key(nr, nc));
+    }
+  }
+  for (const k of pegHit) toClear.add(k);
+
+  // Runs of 4+ forge a LIB-FREE tile. Prefer the cell the player actually
+  // swapped (feels intentional), else the middle of the run.
+  const spawns = new Map();
+  for (const run of runs) {
+    if (run.len < 4) continue;
+    let spot = run.cells[(run.len / 2) | 0];
+    if (swapInfo) {
+      for (const p of [swapInfo.a, swapInfo.b]) {
+        if (run.cells.includes(key(p.r, p.c))) { spot = key(p.r, p.c); break; }
+      }
+    }
+    spawns.set(spot, run.type);
+  }
+  for (const k of spawns.keys()) toClear.delete(k);
+
+  // Score. Cascades multiply, because a cascade in a real run is exactly the
+  // feeling of a search finishing with more IDs than you expected.
+  let tiles = 0;
+  for (const k of toClear) if (!isPeg(k)) tiles++;
+  const mult = 1 + 0.5 * state.cascade;
+  const gained = Math.round((tiles * PT_TILE + pegHit.size * PT_PEG) * mult);
+  state.score += gained;
+  state.bestCascade = Math.max(state.bestCascade, state.cascade);
+
+  // Fire the animations.
+  let sx = 0, sy = 0, n = 0;
+  for (const k of toClear) {
+    const r = kr(k), c = kc(k), cell = b[r][c];
+    cell.pop = 1;
+    sx += cell.px + TILE / 2; sy += cell.py + TILE / 2; n++;
+    const col = cell.kind === 'peg' ? '#a3e635' : TYPES[cell.type].color;
+    spawnParticles(cell.px + TILE / 2, cell.py + TILE / 2, col, cell.kind === 'peg' ? 14 : 7);
+  }
+  if (n) {
+    state.texts.push(mkText(sx / n, sy / n, '+' + fmt(gained), '#fbbf24', 40));
+    if (state.cascade > 0) {
+      state.texts.push(mkText(sx / n, sy / n - 20, 'CASCADE ×' + (state.cascade + 1), '#f472b6', 48));
+    }
+  }
+  if (pegHit.size) {
+    toast(pegHit.size + ' PEG tile' + (pegHit.size > 1 ? 's' : '') + ' scrubbed. The 44 Da ladder fades.', 'peg');
+    beep(140, 0.16, 'triangle', 0.05);
+  }
+  for (const [k, type] of spawns) {
+    const cell = b[kr(k)][kc(k)];
+    cell.kind = 'power'; cell.type = type; cell.pop = undefined; cell.born = 1;
+  }
+  if (spawns.size) toast('LIB-FREE tile forged — swap it to nuke a whole row and column.');
+
+  beep(MATCH_NOTES[Math.min(state.cascade, MATCH_NOTES.length - 1)], 0.09, 'sine', 0.045);
+  if (blasts) beep(90, 0.28, 'sawtooth', 0.05);
+  updateHud();
+}
+
+function applyGravity() {
+  for (let c = 0; c < COLS; c++) {
+    let write = ROWS - 1;
+    for (let r = ROWS - 1; r >= 0; r--) {
+      const cell = state.board[r][c];
+      if (!cell) continue;
+      if (write !== r) { state.board[write][c] = cell; state.board[r][c] = null; }
+      write--;
+    }
+    // Refill from above. Cells keep their pixel position, so they fall in.
+    let above = 1;
+    for (let r = write; r >= 0; r--) {
+      const t = state.cascade >= CASCADE_PANIC ? pickSafeType(r, c) : randType();
+      state.board[r][c] = makeCell(t, r, c, -above);
+      above++;
+    }
+  }
+}
+
+// ── PEG ────────────────────────────────────────────────────────────────────
+function pegCount() {
+  let n = 0;
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (state.board[r][c].kind === 'peg') n++;
+  return n;
+}
+
+function toPeg(r, c) {
+  const cell = state.board[r][c];
+  cell.kind = 'peg'; cell.type = null; cell.born = 1; cell.pop = undefined;
+  spawnParticles(cell.px + TILE / 2, cell.py + TILE / 2, '#a3e635', 10);
+  beep(70, 0.2, 'sawtooth', 0.05);
+}
+
+function plainCells() {
+  const out = [];
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (state.board[r][c].kind === 'tile') out.push({ r, c });
+  return out;
+}
+
+function pegTick() {
+  state.sinceSpawn++;
+  if (state.sinceSpawn >= pegSpawnEvery(state.level)) {
+    state.sinceSpawn = 0;
+    const spots = plainCells();
+    if (spots.length) {
+      const p = spots[(Math.random() * spots.length) | 0];
+      toPeg(p.r, p.c);
+      toast('PEG bled into ' + cellName(p.r, p.c) + ' — somebody’s glove box again.', 'peg');
+    }
+  }
+  // Existing contamination creeps sideways. One spread per injection, so the
+  // board degrades steadily instead of exploding.
+  const pegs = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (state.board[r][c].kind === 'peg') pegs.push({ r, c });
+  if (pegs.length && Math.random() < pegSpreadChance(state.level)) {
+    const src = pegs[(Math.random() * pegs.length) | 0];
+    const opts = DIRS
+      .map(([dr, dc]) => ({ r: src.r + dr, c: src.c + dc }))
+      .filter(p => inBounds(p) && state.board[p.r][p.c].kind === 'tile');
+    if (opts.length) {
+      const p = opts[(Math.random() * opts.length) | 0];
+      toPeg(p.r, p.c);
+      toast('PEG spread to ' + cellName(p.r, p.c) + '. It always spreads.', 'peg');
+    }
+  }
+}
+
+function flushPeg() {
+  // New column installed: the carryover goes away. Replace each PEG with a
+  // type that can't immediately match, so a level start is never a freebie.
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = state.board[r][c];
+      if (cell.kind !== 'peg') continue;
+      cell.kind = 'tile'; cell.type = pickSafeType(r, c); cell.born = 1;
+    }
+  }
+}
+
+// ── Turn flow ──────────────────────────────────────────────────────────────
+function trySwap(a, b) {
+  if (state.busy || state.over) return;
+  if (!inBounds(a) || !inBounds(b)) return;
+  const ca = state.board[a.r][a.c], cb = state.board[b.r][b.c];
+  if (!swappable(ca) || !swappable(cb)) {
+    toast('PEG can’t be swapped — clear it by matching tiles right next to it.', 'peg');
+    return;
+  }
+  swapInBoard(a, b);
+  state.busy = true;
+  state.cascade = 0;
+  state.pendingSwapCheck = { a: { r: a.r, c: a.c }, b: { r: b.r, c: b.c } };
+  beep(200, 0.05, 'square', 0.03);
+}
+
+function endOfMove() {
+  state.moves--;
+  pegTick();
+  updateHud();
+  if (state.score >= state.goal) { levelUp(); return; }
+  if (pegCount() >= PEG_LIMIT) {
+    gameOver(false, 'PEG everywhere. 44, 88, 132, 176… the batch is contaminated.');
+    return;
+  }
+  if (state.moves <= 0) {
+    gameOver(false, 'Out of injections. Target missed by ' + fmt(state.goal - state.score) + ' precursors.');
+  }
+}
+
+function levelUp() {
+  const bonus = state.moves * SPARE_BONUS;
+  state.score += bonus;
+  if (state.level >= MAX_LEVEL) {
+    gameOver(true, 'Ten clean batches. Every QC PASSed. You may now write the methods section.');
+    return;
+  }
+  state.level++;
+  state.levelBase = state.score;
+  state.goal = state.levelBase + goalFor(state.level);
+  state.moves = MOVES;
+  state.sinceSpawn = 0;
+  flushPeg();
+  banner('BATCH ' + state.level + ' · new column installed');
+  toast('Batch clear! +' + fmt(bonus) + ' for spare injections. Fresh column, PEG carryover flushed.'
+        + (state.level === LTQ_LEVEL ? ' Someone wheeled the LTQ out of storage.' : ''), 'good');
+  [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => beep(f, 0.12, 'sine', 0.05), i * 90));
+  updateHud();
+}
+
+function gameOver(won, reason) {
+  state.over = true;
+  state.won = won;
+  state.busy = true;
+  state.endReason = reason;
+  state.sel = null;
+  toast(reason, won ? 'good' : 'bad');
+  if (won) [523, 659, 784, 1047, 1319].forEach((f, i) => setTimeout(() => beep(f, 0.16, 'sine', 0.06), i * 110));
+  else [330, 262, 196, 147].forEach((f, i) => setTimeout(() => beep(f, 0.22, 'triangle', 0.06), i * 150));
+  submitScore();
+}
+
+// High-score submission: fire exactly once per game, via postMessage to the
+// parent arcade.html, which relays to the HF Space leaderboard.
+function submitScore() {
+  if (state._submitted) return;
+  state._submitted = true;
+  try {
+    window.parent.postMessage({
+      type: 'arcade-score',
+      game: 'mass_match',
+      score: Math.round(state.score),
+      won: !!state.won,
+      level: state.level,
+    }, '*');
+  } catch (_) {}
+}
+
+// Called once per frame when nothing is animating. Every branch either
+// changes state or hands control back to the player, so this can't spin.
+function resolveSettled() {
+  if (state.pendingSwapBack) { state.pendingSwapBack = false; state.busy = false; return; }
+
+  if (state.pendingSwapCheck) {
+    const { a, b } = state.pendingSwapCheck;
+    state.pendingSwapCheck = null;
+    const runs = findRuns();
+    const powerSwap = state.board[a.r][a.c].kind === 'power' || state.board[b.r][b.c].kind === 'power';
+    if (!runs.length && !powerSwap) {
+      swapInBoard(a, b);                       // undo, animate back
+      state.pendingSwapBack = true;
+      toast('No match there — that swap costs you nothing.');
+      beep(150, 0.07, 'square', 0.03);
+      return;
+    }
+    state.pendingEndOfMove = true;
+    state.cascade = 0;
+    applyClears(runs, { a, b });
+    return;
+  }
+
+  const runs = findRuns();
+  if (runs.length) {
+    state.cascade++;
+    if (state.cascade >= CASCADE_PANIC) {
+      // Should be unreachable. If refills ever chain this far, redeal the
+      // whole board from safe types (zero matches by construction) rather
+      // than risk an endless cascade on a instrument workstation.
+      for (let r = 0; r < ROWS; r++)
+        for (let c = 0; c < COLS; c++)
+          if (state.board[r][c].kind === 'tile') state.board[r][c].type = pickSafeType(r, c);
+      state.cascade = 0;
+      updateHud();
+      return;
+    }
+    applyClears(runs, null);
+    return;
+  }
+
+  if (state.pendingEndOfMove) {
+    state.pendingEndOfMove = false;
+    state.cascade = 0;
+    endOfMove();
+    updateHud();
+    if (state.over) return;
+    return;                                    // next frame re-checks the board
+  }
+
+  if (!hasValidMove()) {
+    state.reshuffleGuard++;
+    if (state.reshuffleGuard > 6) { forceMove(); state.reshuffleGuard = 0; return; }
+    reshuffle();
+    toast('No legal swaps — board redealt while the LC re-equilibrates.');
+    return;
+  }
+  state.reshuffleGuard = 0;
+  state.cascade = 0;
+  state.busy = false;
+  updateHud();
+}
+
+// ── Effects ────────────────────────────────────────────────────────────────
+function mkText(x, y, text, color, life) {
+  return { x, y, text, color, life, maxLife: life };
+}
+function spawnParticles(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    state.particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 6,
+      vy: (Math.random() - 0.5) * 6 - 1,
+      size: 2 + Math.random() * 3,
+      color, life: 18 + Math.random() * 16, maxLife: 34,
+    });
+  }
+}
+function toast(text, cls) {
+  el.msg.textContent = text;
+  el.msg.className = cls || '';
+}
+function banner(text) { state.banner = text; state.bannerT = 130; }
+
+// ── HUD ────────────────────────────────────────────────────────────────────
+function updateHud() {
+  el.score.textContent = fmt(state.score);
+  el.goal.textContent = fmt(state.goal);
+  el.level.textContent = state.level + '/' + MAX_LEVEL;
+  el.moves.textContent = state.moves;
+  const pc = pegCount();
+  el.peg.textContent = pc + '/' + PEG_LIMIT;
+  el.peg.className = pc >= 8 ? 'bad' : pc >= 4 ? 'warn' : 'ok';
+  el.combo.textContent = '×' + (1 + 0.5 * state.cascade).toFixed(1);
+  const span = Math.max(1, state.goal - state.levelBase);
+  el.prog.style.width = (clamp((state.score - state.levelBase) / span, 0, 1) * 100).toFixed(1) + '%';
+}
+
+// ── Drawing ────────────────────────────────────────────────────────────────
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function polyPath(cx, cy, R, n, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const a = rot + i * 2 * Math.PI / n;
+    const x = cx + Math.cos(a) * R, y = cy + Math.sin(a) * R;
+    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+  }
+  ctx.closePath();
+}
+function starPath(cx, cy, R, r, n, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < n * 2; i++) {
+    const rad = i % 2 ? r : R;
+    const a = rot + i * Math.PI / n;
+    const x = cx + Math.cos(a) * rad, y = cy + Math.sin(a) * rad;
+    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+  }
+  ctx.closePath();
+}
+function shapePath(shape, cx, cy, R) {
+  switch (shape) {
+    case 'circle':   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); break;
+    case 'hex':      polyPath(cx, cy, R, 6, Math.PI / 6); break;
+    case 'diamond':  polyPath(cx, cy, R * 1.08, 4, -Math.PI / 2); break;
+    case 'triangle': polyPath(cx, cy, R * 1.12, 3, -Math.PI / 2); break;
+    case 'star':     starPath(cx, cy, R * 1.1, R * 0.5, 5, -Math.PI / 2); break;
+    case 'pill':     roundRect(cx - R, cy - R * 0.78, R * 2, R * 1.56, R * 0.7); break;
+    default:         roundRect(cx - R * 0.92, cy - R * 0.92, R * 1.84, R * 1.84, 9);
+  }
+}
+
+function drawCellBg(r, c) {
+  const x = PAD + c * TILE, y = PAD + r * TILE;
+  ctx.fillStyle = (r + c) % 2 ? 'rgba(30,41,59,0.55)' : 'rgba(15,23,42,0.55)';
+  roundRect(x + 2, y + 2, TILE - 4, TILE - 4, 8);
+  ctx.fill();
+}
+
+function drawTile(cell) {
+  const cx = cell.px + TILE / 2, cy = cell.py + TILE / 2;
+  const pop = cell.pop === undefined ? 1 : Math.max(0, cell.pop);
+  const born = cell.born || 0;
+  const scale = pop * (1 + 0.22 * born);
+  if (scale <= 0.02) return;
+  const R = (TILE / 2 - 7) * scale;
+
+  ctx.save();
+  ctx.globalAlpha = cell.pop === undefined ? 1 : Math.min(1, pop + 0.25);
+
+  if (cell.kind === 'peg') {
+    // PEG: a greasy blob labelled 44 — the polymer repeat everyone recognises
+    // from the ladder of peaks it drops all over the spectrum.
+    const wob = Math.sin(Date.now() * 0.003 + cell.wob) * 1.6;
+    ctx.fillStyle = 'rgba(163,230,53,0.16)';
+    ctx.strokeStyle = '#a3e635';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 12; i++) {
+      const a = i * Math.PI / 6;
+      const rr = R * (0.86 + 0.14 * Math.sin(i * 2.1 + cell.wob + Date.now() * 0.002));
+      const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr + wob * 0.2;
+      if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#a3e635';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 15px "Courier New", monospace';
+    ctx.fillText('PEG', cx, cy - 5 + wob);
+    ctx.font = '10px "Courier New", monospace';
+    ctx.fillStyle = 'rgba(163,230,53,0.8)';
+    ctx.fillText('+44', cx, cy + 10 + wob);
+    ctx.restore();
+    return;
+  }
+
+  const T = TYPES[cell.type];
+
+  if (cell.kind === 'power') {
+    // LIB-FREE: library-free DIA. In the real pipeline it is banned for QC —
+    // far too slow — but it does find everything, so here it clears the whole
+    // row and column.
+    const pulse = 0.5 + 0.5 * Math.sin(Date.now() * 0.006);
+    ctx.shadowColor = '#fbbf24';
+    ctx.shadowBlur = 12 + 10 * pulse;
+    ctx.fillStyle = 'rgba(251,191,36,0.22)';
+    roundRect(cx - R, cy - R, R * 2, R * 2, 10);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 2;
+    roundRect(cx - R, cy - R, R * 2, R * 2, 10);
+    ctx.stroke();
+    // Cross of arrows = "this clears a row and a column".
+    ctx.strokeStyle = 'rgba(251,191,36,' + (0.55 + 0.4 * pulse).toFixed(2) + ')';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - R * 0.8, cy); ctx.lineTo(cx + R * 0.8, cy);
+    ctx.moveTo(cx, cy - R * 0.8); ctx.lineTo(cx, cy + R * 0.8);
+    ctx.stroke();
+    ctx.fillStyle = '#fde68a';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = 'bold 9px "Courier New", monospace';
+    ctx.fillText('LIB', cx, cy - 8);
+    ctx.fillText('FREE', cx, cy + 9);
+    ctx.restore();
+    return;
+  }
+
+  // Normal instrument tile: shape + colour first (readable without emoji),
+  // glyph and short label on top.
+  ctx.fillStyle = T.color + '2e';
+  shapePath(T.shape, cx, cy - 3, R * 0.92);
+  ctx.fill();
+  ctx.strokeStyle = T.color;
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = Math.round(21 * scale) + 'px serif';
+  ctx.fillText(T.glyph, cx, cy - 4);
+  ctx.font = 'bold ' + Math.max(6, Math.round(8 * scale)) + 'px "Courier New", monospace';
+  ctx.fillStyle = T.color;
+  ctx.fillText(T.label, cx, cy + R * 0.72);
+  ctx.restore();
+}
+
+function drawSelection() {
+  if (state.over) return;
+  if (state.sel) {
+    const x = PAD + state.sel.c * TILE, y = PAD + state.sel.r * TILE;
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 3;
+    roundRect(x + 2, y + 2, TILE - 4, TILE - 4, 8);
+    ctx.stroke();
+  }
+  if (state.keyMode) {
+    const x = PAD + state.cur.c * TILE, y = PAD + state.cur.r * TILE;
+    ctx.strokeStyle = '#f472b6';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 4]);
+    roundRect(x + 4, y + 4, TILE - 8, TILE - 8, 7);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+}
+
+function drawOverlay() {
+  if (!state.over) return;
+  ctx.fillStyle = 'rgba(3,7,18,0.85)';
+  ctx.fillRect(0, 0, BW, BW);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = state.won ? '#22c55e' : '#ef4444';
+  ctx.font = 'bold 26px "Courier New", monospace';
+  ctx.fillText(state.won ? 'QC PASSED' : 'RUN FAILED', BW / 2, BW / 2 - 66);
+  ctx.fillStyle = '#e5e7eb';
+  ctx.font = '13px -apple-system, sans-serif';
+  wrapText(state.endReason, BW / 2, BW / 2 - 34, BW - 70, 18);
+  ctx.fillStyle = '#fbbf24';
+  ctx.font = 'bold 17px "Courier New", monospace';
+  ctx.fillText(fmt(state.score) + ' precursors identified', BW / 2, BW / 2 + 22);
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '12px -apple-system, sans-serif';
+  ctx.fillText('batch ' + state.level + ' of ' + MAX_LEVEL
+               + ' · best cascade ×' + (1 + 0.5 * state.bestCascade).toFixed(1), BW / 2, BW / 2 + 46);
+  ctx.fillStyle = '#64748b';
+  ctx.fillText('click the board or press R to run another batch', BW / 2, BW / 2 + 74);
+}
+
+function wrapText(text, cx, y, maxW, lh) {
+  const words = String(text).split(' ');
+  let line = '';
+  const lines = [];
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = w; }
+    else line = test;
+  }
+  if (line) lines.push(line);
+  lines.forEach((l, i) => ctx.fillText(l, cx, y + i * lh));
+}
+
+function draw() {
+  ctx.clearRect(0, 0, BW, BW);
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) drawCellBg(r, c);
+  drawSelection();
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const cell = state.board[r][c];
+    if (cell) drawTile(cell);
+  }
+  for (const p of state.particles) {
+    ctx.globalAlpha = clamp(p.life / p.maxLife, 0, 1);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+  }
+  ctx.globalAlpha = 1;
+  for (const t of state.texts) {
+    ctx.globalAlpha = clamp(t.life / t.maxLife, 0, 1);
+    ctx.fillStyle = t.color;
+    ctx.font = 'bold 15px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(t.text, t.x, t.y);
+  }
+  ctx.globalAlpha = 1;
+  if (state.bannerT > 0) {
+    const a = clamp(state.bannerT / 40, 0, 1);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(3,7,18,0.72)';
+    ctx.fillRect(0, BW / 2 - 26, BW, 52);
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = 'bold 19px "Courier New", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(state.banner, BW / 2, BW / 2 + 6);
+    ctx.globalAlpha = 1;
+  }
+  drawOverlay();
+}
+
+// ── Animation ──────────────────────────────────────────────────────────────
+// One easing rule for everything (swaps, falls, redeals). Each step moves a
+// cell at least MIN_STEP px toward its target and never overshoots, so every
+// animation provably finishes in a bounded number of frames.
+const MIN_STEP = 0.8;
+function ease(cur, target) {
+  const d = target - cur;
+  if (Math.abs(d) <= MIN_STEP) return target;
+  return cur + d * 0.3 + Math.sign(d) * MIN_STEP;
+}
+
+function stepAnimations() {
+  let moving = false, popping = false, dead = false;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = state.board[r][c];
+      if (!cell) continue;
+      const tx = PAD + c * TILE, ty = PAD + r * TILE;
+      if (cell.px !== tx || cell.py !== ty) {
+        cell.px = ease(cell.px, tx);
+        cell.py = ease(cell.py, ty);
+        moving = true;
+      }
+      if (cell.born > 0) cell.born = Math.max(0, cell.born - 0.08);
+      if (cell.pop !== undefined) {
+        cell.pop -= 0.14;
+        if (cell.pop <= 0) dead = true; else popping = true;
+      }
+    }
+  }
+  if (dead && !popping) {
+    for (let r = 0; r < ROWS; r++)
+      for (let c = 0; c < COLS; c++)
+        if (state.board[r][c] && state.board[r][c].pop !== undefined) state.board[r][c] = null;
+    applyGravity();
+    return true;   // treat as still busy this frame
+  }
+
+  for (const p of state.particles) { p.x += p.vx; p.y += p.vy; p.vy += 0.25; p.life--; }
+  state.particles = state.particles.filter(p => p.life > 0);
+  for (const t of state.texts) { t.y -= 0.7; t.life--; }
+  state.texts = state.texts.filter(t => t.life > 0);
+  if (state.bannerT > 0) state.bannerT--;
+
+  return moving || popping || dead;
+}
+
+function loop() {
+  const animating = stepAnimations();
+  if (!animating && state.busy && !state.over) resolveSettled();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// ── Input ──────────────────────────────────────────────────────────────────
+function rawPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - rect.left) * (BW / rect.width),
+    y: (e.clientY - rect.top) * (BW / rect.height),
+  };
+}
+function cellFromEvent(e) {
+  const p = rawPos(e);
+  const c = Math.floor((p.x - PAD) / TILE), r = Math.floor((p.y - PAD) / TILE);
+  return inBounds({ r, c }) ? { r, c } : null;
+}
+const adjacent = (a, b) => Math.abs(a.r - b.r) + Math.abs(a.c - b.c) === 1;
+
+let drag = null;
+canvas.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (state.over) { newGame(); return; }
+  const p = cellFromEvent(e);
+  if (!p || state.busy) return;
+  state.keyMode = false;
+  const cell = state.board[p.r][p.c];
+  if (cell.kind === 'peg') {
+    toast('PEG can’t be swapped — clear it by matching tiles right next to it.', 'peg');
+    state.sel = null;
+    return;
+  }
+  if (state.sel && adjacent(state.sel, p)) {
+    const from = state.sel;
+    state.sel = null; drag = null;
+    trySwap(from, p);
+    return;
+  }
+  state.sel = p;
+  state.cur = { r: p.r, c: p.c };
+  drag = { start: rawPos(e), from: p };
+});
+canvas.addEventListener('pointermove', e => {
+  if (!drag || state.busy || state.over) return;
+  const p = rawPos(e);
+  const dx = p.x - drag.start.x, dy = p.y - drag.start.y;
+  if (Math.hypot(dx, dy) < TILE * 0.45) return;
+  const from = drag.from;
+  const to = Math.abs(dx) > Math.abs(dy)
+    ? { r: from.r, c: from.c + Math.sign(dx) }
+    : { r: from.r + Math.sign(dy), c: from.c };
+  drag = null;
+  state.sel = null;
+  if (inBounds(to)) trySwap(from, to);
+});
+canvas.addEventListener('pointerup', () => { drag = null; });
+canvas.addEventListener('pointercancel', () => { drag = null; });
+
+const KEYDIRS = {
+  ArrowUp: { r: -1, c: 0 }, ArrowDown: { r: 1, c: 0 },
+  ArrowLeft: { r: 0, c: -1 }, ArrowRight: { r: 0, c: 1 },
+};
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') { newGame(); return; }
+  if (e.key === 'm' || e.key === 'M') { toggleMute(); return; }
+  if (state.over) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); newGame(); }
+    return;
+  }
+  const d = KEYDIRS[e.key];
+  if (d) {
+    e.preventDefault();
+    state.keyMode = true;
+    if (state.busy) return;
+    if (state.sel) {
+      // A tile is picked up: the arrow key IS the swap.
+      const from = state.sel;
+      state.sel = null;
+      const to = { r: from.r + d.r, c: from.c + d.c };
+      if (inBounds(to)) { state.cur = to; trySwap(from, to); }
+    } else {
+      state.cur = { r: clamp(state.cur.r + d.r, 0, ROWS - 1), c: clamp(state.cur.c + d.c, 0, COLS - 1) };
+    }
+    return;
+  }
+  if (e.key === ' ' || e.key === 'Enter') {
+    e.preventDefault();
+    state.keyMode = true;
+    if (state.busy) return;
+    const cell = state.board[state.cur.r][state.cur.c];
+    if (cell.kind === 'peg') {
+      toast('PEG can’t be swapped — clear it by matching tiles right next to it.', 'peg');
+      return;
+    }
+    const same = state.sel && state.sel.r === state.cur.r && state.sel.c === state.cur.c;
+    state.sel = same ? null : { r: state.cur.r, c: state.cur.c };
+  }
+});
+
+function toggleMute() {
+  muted = !muted;
+  document.getElementById('muteBtn').innerHTML = muted ? '&#128263;' : '&#128266;';
+}
+document.getElementById('muteBtn').addEventListener('click', toggleMute);
+document.getElementById('resetBtn').addEventListener('click', () => newGame());
+
+// ── Legend (built from TYPES so it can never drift out of sync) ────────────
+(function buildLegend() {
+  const box = document.getElementById('legend');
+  box.innerHTML = '';
+  for (const T of TYPES) {
+    const s = document.createElement('span');
+    s.style.color = T.color;
+    s.textContent = T.glyph + ' ';
+    const b = document.createElement('b');
+    b.textContent = T.name;
+    s.appendChild(b);
+    box.appendChild(s);
+  }
+  const peg = document.createElement('span');
+  peg.style.color = '#a3e635';
+  peg.textContent = 'PEG ';
+  const pb = document.createElement('b');
+  pb.textContent = 'contamination (+44 Da, spreads)';
+  peg.appendChild(pb);
+  box.appendChild(peg);
+})();
+
+newGame();
+loop();
+</script>
+</body>
+</html>

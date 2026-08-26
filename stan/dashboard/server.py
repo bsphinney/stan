@@ -146,12 +146,13 @@ def _get_ui_prefs_watcher() -> ConfigWatcher | None:
 # ── Startup ──────────────────────────────────────────────────────────
 
 # How often the dashboard re-pulls central runs, and whether it does at all.
+# Set to 0 to turn the mirror off entirely.
 PG_REFRESH_SECONDS = int(_os.environ.get("STAN_PG_REFRESH_SECONDS", "300"))
 
 
-# True once a PG pull has succeeded. This -- not STAN_DB_BACKEND -- is what
-# "central mode" means for the dashboard: it reads SQLite either way, so the
-# env var says nothing about whether it is backed by a fleet-wide store.
+# True once a PG pull has succeeded. Kept distinct from ``use_pg()``: a
+# mirror-fed dashboard is central-backed while still reading SQLite, so
+# neither flag implies the other.
 _PG_BACKED = False
 
 
@@ -195,10 +196,34 @@ async def _pg_refresh_loop() -> None:
 
 @app.post("/api/refresh")
 async def api_refresh() -> dict:
-    """Pull from PG right now (the dashboard's ↻ shortcut)."""
+    """Pull from PG right now (the dashboard's ↻ shortcut).
+
+    A no-op when the mirror is off: the panels that matter read PG on
+    every request, so there is nothing to catch up on.
+    """
     import asyncio
+    if not _mirror_enabled():
+        return {"ok": True, "runs": -1, "direct": True}
     n = await asyncio.to_thread(_pull_from_pg_once)
-    return {"ok": n >= 0, "runs": n}
+    return {"ok": n >= 0, "runs": n, "direct": False}
+
+
+def _mirror_enabled() -> bool:
+    """Should the SQLite mirror keep running?
+
+    Yes by default, even in PG-direct mode. The panels that carry the
+    dashboard -- runs, trends, TIC, PEG, drift, sample health -- no
+    longer go through it, but a handful of endpoints still issue raw
+    SQLite SQL against the mirrored ``runs`` table and would freeze at
+    the last pull without it: /api/warnings, /api/today/tic-overview,
+    /api/cirt, /api/utilization, /api/fleet/comparison,
+    /api/fleet/instruments, plus get_column_lifetime and
+    time_since_last_qc. Port those and this can default to off.
+
+    ``STAN_PG_REFRESH_SECONDS=0`` turns it off today for an install that
+    doesn't use those views and wants the PG Farm connection slot back.
+    """
+    return PG_REFRESH_SECONDS > 0
 
 
 @app.on_event("startup")
@@ -206,9 +231,36 @@ async def startup() -> None:
     """Initialize database, then keep it in step with central PG."""
     import asyncio
 
+    from stan.db_pg import use_pg
+
+    # A PG-direct dashboard still touches SQLite for the tables that
+    # haven't been ported (maintenance_events, uploads, scan_cache,
+    # irt_anchor_rts), so the local DB is created either way.
     init_db()
-    if PG_REFRESH_SECONDS > 0:
+    if use_pg():
+        logger.info(
+            "reading PG Farm directly; SQLite mirror %s",
+            "still refreshing for the un-ported views"
+            if _mirror_enabled() else "disabled",
+        )
+    if _mirror_enabled():
         asyncio.create_task(_pg_refresh_loop())
+
+
+def _require_store() -> None:
+    """404 when there is no store to read.
+
+    Was ``if not get_db_path().exists()`` inline in the PEG/drift
+    endpoints. In PG mode a local stan.db is not expected to exist at
+    all, so that check turned a perfectly healthy central install into a
+    404 -- hence the explicit backend test here.
+    """
+    from stan.db import get_db_path
+    from stan.db_pg import use_pg
+    if use_pg():
+        return
+    if not get_db_path().exists():
+        raise HTTPException(status_code=404, detail="database not found")
 
 
 # ── API Routes ───────────────────────────────────────────────────────
@@ -226,11 +278,17 @@ async def api_capabilities() -> dict:
     from stan.db_pg import use_pg
 
     force = (_os.environ.get("STAN_SHOW_CONFIG") or "").strip().lower()
-    central = bool(use_pg()) or _PG_BACKED
+    direct = bool(use_pg())
+    central = direct or _PG_BACKED
     show_config = True if force in ("1", "true", "yes") else not central
     return {
         "central_mode": central,
         "show_config": show_config,
+        # "pg" means every read in this response cycle came from PG Farm;
+        # "sqlite" means the local file, whether or not a mirror fills it.
+        "db_backend": "pg" if direct else "sqlite",
+        "pg_direct": direct,
+        "mirror_active": _mirror_enabled(),
         "version": __version__,
     }
 
@@ -868,30 +926,21 @@ async def api_run_peg(run_id: str, source: str = "runs") -> dict:
         source: "runs" or "sample_health" — which parent table the
             run_id belongs to. Defaults to "runs" (QC rows).
     """
-    import sqlite3
-    from stan.db import get_db_path, get_peg_ion_hits
+    from stan.db import get_detail_summary, get_peg_ion_hits
 
     if source not in ("runs", "sample_health"):
         raise HTTPException(status_code=400, detail="source must be 'runs' or 'sample_health'")
 
-    db_path = get_db_path()
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="database not found")
+    _require_store()
 
     hits = get_peg_ion_hits(run_id=run_id, table=source)
 
     # Pull the summary fields from the parent row so the UI can show
     # "score 62 — 14 ions detected" alongside the chart.
-    summary: dict = {}
-    with sqlite3.connect(str(db_path)) as con:
-        con.row_factory = sqlite3.Row
-        row = con.execute(
-            f"SELECT run_name, peg_score, peg_n_ions_detected, "
-            f"peg_intensity_pct, peg_class FROM {source} WHERE id = ?",
-            (run_id,),
-        ).fetchone()
-        if row is not None:
-            summary = dict(row)
+    summary = get_detail_summary(run_id, source, (
+        "run_name", "peg_score", "peg_n_ions_detected",
+        "peg_intensity_pct", "peg_class",
+    ))
 
     return {"run_id": run_id, "source": source, "summary": summary, "hits": hits}
 
@@ -903,28 +952,19 @@ async def api_run_drift(run_id: str, source: str = "runs") -> dict:
     Powers the dashboard's drift scatter chart. See ``api_run_peg`` for
     the ``source`` parameter semantics.
     """
-    import sqlite3
-    from stan.db import get_db_path, get_drift_window_centroids
+    from stan.db import get_detail_summary, get_drift_window_centroids
 
     if source not in ("runs", "sample_health"):
         raise HTTPException(status_code=400, detail="source must be 'runs' or 'sample_health'")
 
-    db_path = get_db_path()
-    if not db_path.exists():
-        raise HTTPException(status_code=404, detail="database not found")
+    _require_store()
 
     windows = get_drift_window_centroids(run_id=run_id, table=source)
 
-    summary: dict = {}
-    with sqlite3.connect(str(db_path)) as con:
-        con.row_factory = sqlite3.Row
-        row = con.execute(
-            f"SELECT run_name, drift_coverage, drift_median_im, "
-            f"drift_p90_abs_im, drift_class FROM {source} WHERE id = ?",
-            (run_id,),
-        ).fetchone()
-        if row is not None:
-            summary = dict(row)
+    summary = get_detail_summary(run_id, source, (
+        "run_name", "drift_coverage", "drift_median_im",
+        "drift_p90_abs_im", "drift_class",
+    ))
 
     return {"run_id": run_id, "source": source, "summary": summary, "windows": windows}
 
@@ -981,6 +1021,52 @@ def _locate_features_file(raw_path: str | None) -> Path | None:
     return None
 
 
+def _stored_feature_cloud(run_id: str, source: str) -> dict | None:
+    """Build the features-by-charge payload from the ``feature_clouds`` table.
+
+    Returns None when nothing is stored for this run (or the table
+    predates the migration), so the caller can fall through to the
+    on-disk ``.features`` sidecar.
+    """
+    try:
+        from stan.db import get_feature_cloud
+        cloud = get_feature_cloud(run_id=run_id, table=source)
+    except Exception:  # noqa: BLE001 - never take the drift modal down
+        logger.debug("stored feature cloud lookup failed", exc_info=True)
+        return None
+    if not cloud or not cloud.get("mz"):
+        return None
+
+    mz = cloud["mz"]
+    mob = cloud["mobility"]
+    rt = cloud["rt"]
+    charge = cloud["charge"]
+    inten = cloud["intensity"]
+
+    by_charge: dict[str, dict[str, list]] = {}
+    for i, z in enumerate(charge):
+        b = by_charge.setdefault(
+            str(int(z)), {"mz": [], "mobility": [], "rt": [], "intensity": []}
+        )
+        b["mz"].append(mz[i])
+        b["mobility"].append(mob[i])
+        b["rt"].append(rt[i])
+        b["intensity"].append(inten[i])
+
+    return {
+        "run_id": run_id,
+        "source": source,
+        "has_features": True,
+        "from_store": True,
+        "features_path": cloud.get("features_path", ""),
+        "n_features": len(mz),
+        "n_total": cloud.get("n_total") or len(mz),
+        "by_charge": by_charge,
+        "mz_range": [round(min(mz), 2), round(max(mz), 2)],
+        "mobility_range": [round(min(mob), 4), round(max(mob), 4)],
+    }
+
+
 @app.get("/api/runs/{run_id}/features-by-charge")
 async def api_run_features_by_charge(run_id: str, source: str = "runs") -> dict:
     """Return per-charge MS1 feature points from a 4DFF .features file.
@@ -1021,6 +1107,18 @@ async def api_run_features_by_charge(run_id: str, source: str = "runs") -> dict:
             raw_path = row["raw_path"]
             run_name = row["run_name"]
 
+    # v1.0.16: the stored cloud is tried before the sidecar. The
+    # dashboard is a SQLite reader that syncs from PG and generally runs
+    # nowhere near the raw data (Brett's Mac; the .d lives on the
+    # Flinders NFS export, visible only from Hive), so the
+    # file-on-local-disk path is the exception, not the rule. Serving
+    # from the DB first also keeps the view identical everywhere instead
+    # of "works on the box with the mount".
+    stored = _stored_feature_cloud(run_id, source)
+    if stored is not None:
+        stored["run_name"] = run_name
+        return stored
+
     if raw_path is None:
         return {
             "run_id": run_id,
@@ -1037,8 +1135,11 @@ async def api_run_features_by_charge(run_id: str, source: str = "runs") -> dict:
             "run_name": run_name,
             "has_features": False,
             "reason": (
-                "no .features file found next to raw data — "
-                f"run `stan run-4dff {raw_path}` to generate it"
+                "no charge-labeled ion cloud stored for this run, and no "
+                ".features file is reachable from this host — run "
+                f"`stan run-4dff {raw_path}` on the machine that can see "
+                "the raw data, then `stan backfill-feature-cloud` there to "
+                "publish it to every dashboard"
             ),
         }
 
