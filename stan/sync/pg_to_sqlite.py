@@ -114,7 +114,13 @@ def _pull_tic(cur, local, since: str = "") -> int:
 
 
 # Detail tables are identical in both stores, so a plain column copy works.
-_DETAIL_TABLES = ("peg_ion_hits", "drift_window_centroids", "drift_peak_clouds")
+_DETAIL_TABLES = (
+    "peg_ion_hits", "drift_window_centroids", "drift_peak_clouds",
+    # Sample Health moved to PG in v1.0.14. The dashboard still reads
+    # SQLite, so mirror it down like everything else. host_origin exists
+    # only on the PG side; the column intersection below drops it.
+    "sample_health", "health_tic_traces",
+)
 
 
 def _pull_detail_tables(cur, local) -> dict:

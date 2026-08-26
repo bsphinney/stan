@@ -378,6 +378,109 @@ def insert_drift_peak_cloud_pg(
     return n_points
 
 
+# ---------------------------------------------------------------------------
+# Sample Health (monitor pipeline).
+#
+# These were the last tables the Hive pipeline wrote to SQLite. The global
+# stan.db lives on Quobyte and ~100 concurrent SLURM writers corrupted it
+# three times; moving these writes to PG removes the last concurrent writer.
+# SQLite stays fully supported for single-lab installs -- stan.db routes here
+# only when use_pg().
+# ---------------------------------------------------------------------------
+
+_SH_COLUMNS = (
+    "id", "instrument", "run_name", "run_date", "raw_path", "verdict",
+    "reasons", "n_ms1_frames", "n_ms2_frames", "rt_duration_min",
+    "ms1_max_intensity", "ms1_total_tic", "dynamic_range_log10",
+    "dropout_rate_per_100_ms1", "pressure_mean_mbar", "pressure_range_mbar",
+    "median_ms1_acc_ms", "host_origin",
+)
+
+
+def insert_sample_health_pg(row: dict) -> str:
+    """Upsert one Sample Health row into PG. Returns the row id.
+
+    ``row`` is already flattened by ``stan.db.insert_sample_health`` so the
+    rawmeat-summary key mapping lives in exactly one place.
+    """
+    cols = [c for c in _SH_COLUMNS if c in row]
+    placeholders = ",".join(["%s"] * len(cols))
+    updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c != "id")
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO sample_health ({', '.join(cols)}) VALUES ({placeholders}) "
+            f"ON CONFLICT (id) DO UPDATE SET {updates}",
+            tuple(row[c] for c in cols),
+        )
+        pg.commit()
+    return str(row.get("id"))
+
+
+def get_sample_health_pg(
+    instrument: str | None = None,
+    verdict: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """Fetch recent Sample Health rows from PG, newest first."""
+    clauses, args = [], []
+    if instrument:
+        clauses.append("instrument = %s")
+        args.append(instrument)
+    if verdict:
+        clauses.append("verdict = %s")
+        args.append(verdict)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    args.append(limit)
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            f"SELECT * FROM sample_health {where} ORDER BY run_date DESC LIMIT %s",
+            tuple(args),
+        )
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+
+def rolling_median_ms1_max_intensity_pg(
+    instrument: str, days: int = 30,
+) -> float | None:
+    """Median ms1_max_intensity over an instrument's recent health rows.
+
+    run_date is TEXT (ISO 8601) to match SQLite, so compare against an ISO
+    string rather than a PG interval on a timestamp column.
+    """
+    import statistics
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "SELECT ms1_max_intensity FROM sample_health "
+            "WHERE instrument = %s AND ms1_max_intensity IS NOT NULL "
+            "  AND run_date >= %s",
+            (instrument, cutoff),
+        )
+        vals = [r[0] for r in cur.fetchall() if r[0] and r[0] > 0]
+    return statistics.median(vals) if vals else None
+
+
+def insert_health_tic_trace_pg(
+    health_id: str, rt_min: str, intensity: str,
+    n_frames: int, bp_intensity: str | None = None,
+) -> bool:
+    """Store a Sample Health TIC trace in PG. Arrays arrive JSON-encoded."""
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO health_tic_traces (health_id, rt_min, intensity, "
+            "n_frames, bp_intensity) VALUES (%s,%s,%s,%s,%s) "
+            "ON CONFLICT (health_id) DO UPDATE SET rt_min = EXCLUDED.rt_min, "
+            "intensity = EXCLUDED.intensity, n_frames = EXCLUDED.n_frames, "
+            "bp_intensity = EXCLUDED.bp_intensity",
+            (health_id, rt_min, intensity, n_frames, bp_intensity),
+        )
+        pg.commit()
+    return True
+
+
 def insert_run_pg(
     instrument: str,
     run_name: str,

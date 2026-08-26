@@ -1022,6 +1022,34 @@ def insert_sample_health(
         db_path = get_db_path()
     row_id = uuid.uuid4().hex[:12]
     s = rawmeat_summary or {}
+
+    # Flatten once, so both backends store identical data and the
+    # rawmeat-summary key mapping lives in exactly one place.
+    row = {
+        "id": row_id, "instrument": instrument, "run_name": run_name,
+        "run_date": run_date, "raw_path": raw_path, "verdict": verdict,
+        "reasons": json.dumps(reasons or []),
+        "n_ms1_frames": s.get("n_ms1_frames"),
+        "n_ms2_frames": s.get("n_ms2_frames"),
+        "rt_duration_min": s.get("rt_duration_min"),
+        "ms1_max_intensity": s.get("ms1_max_intensity"),
+        "ms1_total_tic": s.get("ms1_total_tic"),
+        "dynamic_range_log10": s.get("dynamic_range_log10"),
+        "dropout_rate_per_100_ms1": s.get("dropout_rate_per_100_ms1"),
+        "pressure_mean_mbar": s.get("pressure_mean_mbar"),
+        "pressure_range_mbar": s.get("pressure_range_mbar"),
+        "median_ms1_acc_ms": s.get("median_ms1_acc_ms"),
+    }
+
+    # PG mode: the monitor pipeline was the last concurrent SQLite writer on
+    # Quobyte, which corrupted the shared stan.db three times. Route to PG
+    # when central; SQLite stays the path for single-lab installs.
+    from stan.db_pg import insert_sample_health_pg, use_pg
+    if use_pg():
+        from stan.db_pg import host_origin_from_instrument
+        row["host_origin"] = host_origin_from_instrument(instrument)
+        return insert_sample_health_pg(row)
+
     with connect(db_path) as con:
         con.execute(
             "INSERT OR REPLACE INTO sample_health "
@@ -1053,6 +1081,10 @@ def get_sample_health(
     """Fetch recent Sample Health rows, newest first."""
     if db_path is None:
         db_path = get_db_path()
+    from stan.db_pg import get_sample_health_pg, use_pg
+    if use_pg():
+        return get_sample_health_pg(
+            instrument=instrument, verdict=verdict, limit=limit)
     if not db_path.exists():
         return []
     clauses = []
@@ -1090,6 +1122,13 @@ def rolling_median_ms1_max_intensity(
     evaluate_sample_health ratio check."""
     if db_path is None:
         db_path = get_db_path()
+    from stan.db_pg import rolling_median_ms1_max_intensity_pg, use_pg
+    if use_pg():
+        try:
+            return rolling_median_ms1_max_intensity_pg(instrument, days=days)
+        except Exception:
+            logger.debug("PG rolling median failed", exc_info=True)
+            return None
     if not db_path.exists():
         return None
     try:
@@ -1665,18 +1704,21 @@ def insert_health_tic_trace(
         else None
     )
 
+    rt_json = json.dumps([round(r, 3) for r in rt_min])
+    int_json = json.dumps([round(v, 0) for v in intensity])
+
+    # PG mode: follows sample_health, whose row this trace hangs off.
+    from stan.db_pg import insert_health_tic_trace_pg, use_pg
+    if use_pg():
+        return insert_health_tic_trace_pg(
+            health_id, rt_json, int_json, n, bp_json)
+
     with connect(db_path) as con:
         con.execute(
             "INSERT OR REPLACE INTO health_tic_traces "
             "(health_id, rt_min, intensity, n_frames, bp_intensity) "
             "VALUES (?, ?, ?, ?, ?)",
-            (
-                health_id,
-                json.dumps([round(r, 3) for r in rt_min]),
-                json.dumps([round(v, 0) for v in intensity]),
-                n,
-                bp_json,
-            ),
+            (health_id, rt_json, int_json, n, bp_json),
         )
 
 
