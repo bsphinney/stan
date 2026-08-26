@@ -226,6 +226,21 @@ def _already_health_processed(db_path: Path, raw_path: Path) -> bool:
     walk-mode dispatcher skips monitor raws that already landed in
     sample_health.
     """
+    # PG mode: sample_health moved to PG in v1.0.14, so checking the local
+    # SQLite would find nothing and re-dispatch every monitor run forever.
+    from stan.db_pg import use_pg
+    if use_pg():
+        try:
+            from stan.db_pg import _connect as _pg_connect
+            with _pg_connect() as pg, pg.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM sample_health WHERE raw_path = %s LIMIT 1",
+                    (str(raw_path),),
+                )
+                return cur.fetchone() is not None
+        except Exception:
+            logger.debug("PG health dedup failed", exc_info=True)
+            return False
     try:
         with sqlite3.connect(str(db_path)) as con:
             row = con.execute(

@@ -34,11 +34,24 @@ The community benchmark uses a frozen FASTA + spectral library so that precursor
 
 | If you... | Use mode | Estimated time | Install doc |
 |---|---|---|---|
-| Have one instrument PC and want auto-QC on it | **A — Local (Windows)** | 5 min | Below |
+| Have one instrument PC and want auto-QC on it | **A — Local (Windows)** ⚠️ *see warning* | 5 min | Below |
 | Have a beefy Windows box that should process raws from multiple instruments | **B — WSL2** | 20 min | [`docs/INSTALL_MODE_B_WSL.md`](docs/INSTALL_MODE_B_WSL.md) |
 | Have HPC access and want centralized compute | **C — SLURM** | 1–3 hours | [`docs/INSTALL_MODE_C_HPC.md`](docs/INSTALL_MODE_C_HPC.md) |
 
-### Mode A — instrument PC (Windows, recommended)
+### Mode A — instrument PC (Windows)
+
+> [!WARNING]
+> **Not recommended for production instruments.** Running searches on the
+> instrument PC has caused **instrument freezes on our timsTOF** at UC Davis.
+> DIA-NN and Sage are memory- and CPU-hungry, and an acquisition PC that
+> stalls mid-run can cost you the run — or the sample.
+>
+> If your instrument PC is the only machine you have, Mode A still works and
+> STAN caps search threads at half the core count for exactly this reason.
+> But if you have any alternative, prefer **Mode B (WSL2)** on a separate box
+> or **Mode C (SLURM/HPC)**. UC Davis runs Mode C: no searching happens on an
+> instrument PC at all.
+
 
 Download [`stan.bat`](https://raw.githubusercontent.com/bsphinney/stan/main/stan.bat), right-click → Save As, double-click. On first run it detects no install, downloads `install-stan.bat` automatically, installs Python if needed, clones STAN from GitHub, auto-installs DIA-NN and Sage, and runs the `stan init` config wizard. On every subsequent run it self-updates from GitHub, starts the dashboard, and supervises the watcher — restarting it on crash.
 
@@ -186,7 +199,7 @@ What ships today vs. what's still planned.
 | Community speclibs | Done | HeLa empirical libraries for timsTOF (`hela_timstof_202604.parquet`) and Orbitrap/Astral (`hela_orbitrap_202604.parquet`) on HF Dataset; MD5-verified at submission time. |
 | Cohort scoring + percentiles | Done | Computed nightly within `(family, SPD, amount)` cohorts. |
 | HF Space community dashboard | Done | Live at `community.stan-proteomics.org`. |
-| Arcade → community leaderboard | Partial | Clients wired (`stan/community/arcade_submit.py`, `arcade.html`); relay endpoints in `stan/community/scripts/relay_arcade.py` are reference pseudo-code **not yet deployed to the HF Space**. Deferred to 1.1. |
+| Arcade → shared leaderboard | Done | Game over prompts for an optional name + affiliation and posts to `POST /api/arcade/score`; scores live in the PG Farm `arcade_scores` table (shared by every install) or local SQLite when there is no PG. The public dashboard reads the board and refuses writes (`STAN_DASHBOARD_READONLY`). The HF Space relay endpoints are still undeployed and are only a read fallback. |
 | Bruker `.d` XML method-tree parser | Done | Reads `<N>.m/submethods.xml`, `hystar.method`, `SampleInfo.xml` for authoritative SPD + Evosep detection. |
 | `validate_spd_from_metadata()` | Done | XML → MethodName → `Frames.Time` span fallback chain. |
 | `detect_lc_system()` | Done | Evosep vs custom from `.d` method tree + TrayType; powers the LC filter on the community TIC overlay. |
