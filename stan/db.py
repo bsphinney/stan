@@ -14,6 +14,86 @@ from stan.config import get_user_config_dir
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# SQLite connection hardening
+#
+# The global stan.db lives on Quobyte, and a Hive backlog drain runs ~100
+# SLURM jobs concurrently that all write it (monitor/sample_health rows; QC
+# runs go to PG instead). Python's default 5 s timeout with no busy_timeout
+# made those collide, and a network filesystem surfaces the collision as
+# SQLITE_IOERR ("disk I/O error") rather than a clean SQLITE_BUSY -- which no
+# amount of waiting inside SQLite will retry on its own. A 2026-08-26 drain
+# lost ~37 monitor jobs this way in 11 minutes.
+#
+# So: wait a long time for locks, and retry the whole transaction on the
+# transient error classes a shared network FS produces.
+# ---------------------------------------------------------------------------
+SQLITE_TIMEOUT_S = 120.0
+_SQLITE_MAX_ATTEMPTS = 5
+_SQLITE_BASE_DELAY_S = 1.5
+_TRANSIENT_SQLITE_MARKERS = (
+    "disk i/o error",
+    "database is locked",
+    "database table is locked",
+    "unable to open database",
+    "attempt to write a readonly database",
+)
+
+
+def connect(db_path: Path | str, *, timeout: float = SQLITE_TIMEOUT_S):
+    """Open stan.db with a lock timeout suited to shared network storage."""
+    con = sqlite3.connect(str(db_path), timeout=timeout)
+    try:
+        con.execute(f"PRAGMA busy_timeout = {int(timeout * 1000)}")
+    except sqlite3.Error:  # pragma: no cover - very old SQLite
+        pass
+    return con
+
+
+def _is_transient_sqlite_error(exc: Exception) -> bool:
+    """True when a SQLite failure is contention, not corruption."""
+    msg = str(exc).lower()
+    return any(m in msg for m in _TRANSIENT_SQLITE_MARKERS)
+
+
+def with_sqlite_retry(fn):
+    """Retry a whole SQLite write on transient network-FS contention.
+
+    Retries the *function*, not just the connect: SQLITE_IOERR can surface
+    mid-transaction, and the ``with sqlite3.connect(...)`` blocks here are
+    single-statement upserts that are safe to replay.
+    """
+    import functools
+    import random
+    import time
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        last: Exception | None = None
+        for attempt in range(1, _SQLITE_MAX_ATTEMPTS + 1):
+            try:
+                return fn(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                last = e
+                if not _is_transient_sqlite_error(e):
+                    raise
+                if attempt == _SQLITE_MAX_ATTEMPTS:
+                    break
+                delay = _SQLITE_BASE_DELAY_S * (2 ** (attempt - 1))
+                delay *= 0.5 + random.random()  # noqa: S311 - jitter, not crypto
+                delay = min(delay, 30.0)
+                logger.warning(
+                    "%s: transient SQLite error (%s) — retry %d/%d in %.1fs",
+                    fn.__name__, str(e).strip()[:80], attempt,
+                    _SQLITE_MAX_ATTEMPTS, delay,
+                )
+                time.sleep(delay)
+        assert last is not None
+        raise last
+
+    return wrapper
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id          TEXT PRIMARY KEY,
@@ -351,7 +431,7 @@ def init_db(db_path: Path | None = None) -> None:
         db_path = get_db_path()
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.executescript(_SCHEMA)
         _migrate(con)
     logger.info("Database initialized: %s", db_path)
@@ -607,7 +687,7 @@ def record_dispatch_attempt(
         db_path = get_db_path()
     now = datetime.now(timezone.utc).isoformat()
     try:
-        with sqlite3.connect(str(db_path)) as con:
+        with connect(db_path) as con:
             # ON CONFLICT bumps attempt_count and replaces the outcome.
             # Past failures stay countable via attempt_count.
             con.execute(
@@ -634,6 +714,7 @@ def record_dispatch_attempt(
         logger.debug("dispatch_attempts write failed: %s", _e)
 
 
+@with_sqlite_retry
 def insert_run(
     instrument: str,
     run_name: str,
@@ -846,7 +927,7 @@ def _insert_runs_row_sqlite(
     # "table runs has no column named ...". The PG writer (insert_run_pg)
     # accepts the full dict because it built the schema to match.
     run_id = row["id"]
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         sqlite_cols = {r[1] for r in con.execute("PRAGMA table_info(runs)")}
         sub = {k: v for k, v in row.items() if k in sqlite_cols}
         cols = ", ".join(sub.keys())
@@ -906,7 +987,7 @@ def insert_irt_anchor_rts(
         (run_id, seq, float(rt), ref_map.get(seq))
         for seq, rt in observed.items()
     ]
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.executemany(
             "INSERT OR REPLACE INTO irt_anchor_rts "
             "(run_id, peptide, observed_rt_min, reference_rt_min) "
@@ -916,6 +997,7 @@ def insert_irt_anchor_rts(
     return len(rows)
 
 
+@with_sqlite_retry
 def insert_sample_health(
     instrument: str,
     run_name: str,
@@ -940,7 +1022,7 @@ def insert_sample_health(
         db_path = get_db_path()
     row_id = uuid.uuid4().hex[:12]
     s = rawmeat_summary or {}
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.execute(
             "INSERT OR REPLACE INTO sample_health "
             "(id, instrument, run_name, run_date, raw_path, verdict, reasons, "
@@ -983,7 +1065,7 @@ def get_sample_health(
         args.append(verdict)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     args.append(limit)
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
             f"SELECT * FROM sample_health {where} "
@@ -1011,7 +1093,7 @@ def rolling_median_ms1_max_intensity(
     if not db_path.exists():
         return None
     try:
-        with sqlite3.connect(str(db_path)) as con:
+        with connect(db_path) as con:
             rows = con.execute(
                 "SELECT ms1_max_intensity FROM sample_health "
                 "WHERE instrument = ? "
@@ -1068,7 +1150,7 @@ def get_cached_scan(path: Path, db_path: Path | None = None) -> dict | None:
     except OSError:
         return None
     try:
-        with sqlite3.connect(str(db_path)) as con:
+        with connect(db_path) as con:
             row = con.execute(
                 "SELECT mtime, size, metadata FROM scan_cache WHERE raw_path = ?",
                 (str(path),),
@@ -1109,7 +1191,7 @@ def cache_scan_metadata(path: Path, metadata: dict,
         else:
             serializable[k] = v
     try:
-        with sqlite3.connect(str(db_path)) as con:
+        with connect(db_path) as con:
             con.execute(
                 "INSERT OR REPLACE INTO scan_cache "
                 "(raw_path, mtime, size, metadata, cached_at) "
@@ -1173,7 +1255,7 @@ def insert_tic_trace(
         else None
     )
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.execute(
             "INSERT OR REPLACE INTO tic_traces "
             "(run_id, rt_min, intensity, n_frames, bp_intensity) "
@@ -1209,7 +1291,7 @@ def update_peg_result(
         db_path = get_db_path()
     if table not in ("runs", "sample_health"):
         raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         cur = con.execute(
             f"UPDATE {table} SET peg_score = ?, peg_n_ions_detected = ?, "
             f"peg_intensity_pct = ?, peg_class = ? WHERE id = ?",
@@ -1238,7 +1320,7 @@ def update_drift_result(
         db_path = get_db_path()
     if table not in ("runs", "sample_health"):
         raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         cur = con.execute(
             f"UPDATE {table} SET drift_coverage = ?, drift_median_im = ?, "
             f"drift_p90_abs_im = ?, drift_class = ? WHERE id = ?",
@@ -1296,7 +1378,7 @@ def insert_peg_ion_hits(
         (run_id, table, mz, intensity, adduct, n, charge, ppm)
         for (n, adduct, charge), (intensity, mz, ppm) in best_per_ion.items()
     ]
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         # Clear any prior hits for this (run_id, source) so re-runs
         # (e.g. backfill-peg --force) replace rather than accumulate.
         con.execute(
@@ -1320,7 +1402,7 @@ def get_peg_ion_hits(
     """Return all PEG ion hits for a run, sorted by m/z."""
     if db_path is None:
         db_path = get_db_path()
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         try:
             return [
@@ -1372,7 +1454,7 @@ def insert_drift_window_centroids(
     if not rows:
         return 0
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         # v0.2.182 migration: add in_peptide_zone column to legacy DBs
         # where the CREATE TABLE IF NOT EXISTS didn't include it.
         try:
@@ -1408,7 +1490,7 @@ def get_drift_window_centroids(
     """Return all drift windows for a run, sorted by window index."""
     if db_path is None:
         db_path = get_db_path()
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         # v0.2.182: defensively check for in_peptide_zone column so
         # read-only legacy DBs (pre-migration) still return sensible
@@ -1466,7 +1548,7 @@ def insert_drift_peak_cloud(
         return 0
 
     import json as _json
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.execute(
             "INSERT OR REPLACE INTO drift_peak_clouds "
             "(run_id, source, mz, im, log_intensity, n_points) "
@@ -1492,7 +1574,7 @@ def get_drift_peak_cloud(
     if db_path is None:
         db_path = get_db_path()
     import json as _json
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         try:
             row = con.execute(
                 "SELECT mz, im, log_intensity, n_points "
@@ -1511,6 +1593,7 @@ def get_drift_peak_cloud(
     }
 
 
+@with_sqlite_retry
 def insert_health_tic_trace(
     health_id: str,
     rt_min: list[float],
@@ -1543,7 +1626,7 @@ def insert_health_tic_trace(
         else None
     )
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.execute(
             "INSERT OR REPLACE INTO health_tic_traces "
             "(health_id, rt_min, intensity, n_frames, bp_intensity) "
@@ -1563,7 +1646,7 @@ def get_tic_trace(run_id: str, db_path: Path | None = None) -> dict | None:
     if db_path is None:
         db_path = get_db_path()
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         row = con.execute(
             "SELECT * FROM tic_traces WHERE run_id = ?", (run_id,)
@@ -1588,7 +1671,7 @@ def get_tic_traces_for_instrument(
     if db_path is None:
         db_path = get_db_path()
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(
             "SELECT t.run_id, t.rt_min, t.intensity, t.n_frames, "
@@ -1677,7 +1760,7 @@ def get_runs(
         params.extend([limit, offset])
 
     try:
-        with sqlite3.connect(str(db_path)) as con:
+        with connect(db_path) as con:
             con.row_factory = sqlite3.Row
             rows = con.execute(query, params).fetchall()
     except sqlite3.OperationalError as e:
@@ -1704,7 +1787,7 @@ def get_run(run_id: str, db_path: Path | None = None) -> dict | None:
         return None
 
     try:
-        with sqlite3.connect(str(db_path)) as con:
+        with connect(db_path) as con:
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
     except sqlite3.OperationalError as e:
@@ -1742,7 +1825,7 @@ def get_trends(
     sql += " ORDER BY run_date ASC LIMIT ?"
     params.append(fetch_limit)
     try:
-        with sqlite3.connect(str(db_path)) as con:
+        with connect(db_path) as con:
             con.row_factory = sqlite3.Row
             rows = con.execute(sql, params).fetchall()
     except sqlite3.OperationalError as e:
@@ -1778,7 +1861,7 @@ def set_run_hidden(
     if not db_path.exists():
         return False
     now = datetime.now(timezone.utc).isoformat() if hidden else None
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         cur = con.execute(
             "UPDATE runs SET hidden = ?, hidden_reason = ?, hidden_at = ? "
             "WHERE id = ?",
@@ -1792,7 +1875,7 @@ def mark_submitted(run_id: str, submission_id: str, db_path: Path | None = None)
     if db_path is None:
         db_path = get_db_path()
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.execute(
             "UPDATE runs SET submitted_to_benchmark = 1, submission_id = ? WHERE id = ?",
             (submission_id, run_id),
@@ -1854,7 +1937,7 @@ def log_event(
         "column_serial": column_serial,
     }
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         cols = ", ".join(row.keys())
         placeholders = ", ".join(f":{k}" for k in row.keys())
         con.execute(f"INSERT INTO maintenance_events ({cols}) VALUES ({placeholders})", row)
@@ -1874,7 +1957,7 @@ def get_events(
     if not db_path.exists():
         return []
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         if instrument:
             rows = con.execute(
@@ -1896,7 +1979,7 @@ def get_last_event(instrument: str, event_type: str, db_path: Path | None = None
     if not db_path.exists():
         return None
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         row = con.execute(
             "SELECT * FROM maintenance_events WHERE instrument = ? AND event_type = ? ORDER BY event_date DESC LIMIT 1",
@@ -1963,7 +2046,7 @@ def get_column_lifetime(instrument: str, db_path: Path | None = None) -> dict:
     last_change = get_last_event(instrument, "column_change", db_path=db_path)
     since_date = last_change["event_date"] if last_change else "1970-01-01"
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         runs = con.execute(
             """SELECT run_name, run_date, n_precursors, n_psms, n_peptides,
@@ -2044,7 +2127,7 @@ def time_since_last_qc(instrument: str, db_path: Path | None = None) -> dict:
     if not db_path.exists():
         return {"hours_ago": None, "status": "critical"}
 
-    with sqlite3.connect(str(db_path)) as con:
+    with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         row = con.execute(
             "SELECT run_name, run_date FROM runs WHERE instrument = ? ORDER BY run_date DESC LIMIT 1",

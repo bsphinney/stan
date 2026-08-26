@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+
+from stan.db import connect as _db_connect
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -61,7 +63,7 @@ def _row_exists(db_path: Path, instrument: str, raw_path: Path) -> str | None:
     if use_pg():
         return raw_run_id_pg(raw_path)
     try:
-        with sqlite3.connect(str(db_path)) as con:
+        with _db_connect(db_path) as con:
             row = con.execute(
                 "SELECT id FROM runs WHERE instrument = ? AND run_name = ? "
                 "AND raw_path = ? LIMIT 1",
