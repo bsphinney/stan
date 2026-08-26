@@ -51,6 +51,15 @@
   }
   button.primary:hover:not(:disabled) { background: #9a3412; }
 
+  /* every icon on the page is a hand-drawn inline <svg>, never an image
+     request — the dashboard can be served behind a strict CSP. */
+  .art { display: block; }
+  .ico-slot {
+    display: inline-block; vertical-align: middle; margin-right: 4px;
+    line-height: 0;
+  }
+  .tcard .ico .ico-slot, #bestiary .e .ico-slot { margin-right: 0; }
+
   canvas {
     display: block; background: #0f172a;
     border: 1px solid #1e293b; border-radius: 8px;
@@ -84,7 +93,7 @@
   .tcard:hover { border-color: #64748b; }
   .tcard.sel { border-color: #fbbf24; box-shadow: 0 0 0 1px #fbbf24 inset; }
   .tcard.poor { opacity: 0.45; }
-  .tcard .ico { font-size: 19px; line-height: 1.1; }
+  .tcard .ico { height: 32px; display: flex; align-items: center; justify-content: center; }
   .tcard .nm { font-size: 10px; color: #e5e7eb; line-height: 1.15; margin-top: 2px; }
   .tcard .cost { font-size: 10px; color: #fbbf24; font-weight: bold; margin-top: 2px; }
   .tcard .key {
@@ -106,7 +115,10 @@
     align-items: flex-start;
   }
   #bestiary .row:last-child { border-bottom: none; }
-  #bestiary .e { font-size: 14px; width: 18px; flex: none; text-align: center; }
+  #bestiary .e {
+    width: 21px; flex: none; display: flex;
+    align-items: flex-start; justify-content: center; padding-top: 1px;
+  }
   #bestiary .n { color: #e5e7eb; font-weight: bold; }
   #bestiary .w { color: #22c55e; }
   #bestiary .r { color: #f87171; }
@@ -158,7 +170,7 @@
 <div id="app">
   <div id="left">
     <div id="topbar">
-      <span class="title">🧬 CORE DEFENSE</span>
+      <span class="title"><span id="titleIcon"></span> CORE DEFENSE</span>
       <span class="sub">nothing gets to the mass spec</span>
       <span class="pill health" id="pHealth">Instrument <b id="vHealth">20</b></span>
       <span class="pill gold" id="pGold">Gold <b id="vGold">250</b></span>
@@ -271,6 +283,738 @@ const SLOTS = [
   [500, 375], [615, 375], [345, 515], [215, 515], [620, 468],
 ];
 
+/* ═══ ARTWORK ═══════════════════════════════════════════════════════════════
+   House style, matching the rest of the arcade (angry-specs.html `drawParts`,
+   karatemass.html `drawFighter`, keratin-invaders.html `drawEnemy`): plain
+   canvas 2D primitives — fillRect, arc, ellipse, the odd linear gradient for
+   a cylinder — flat colour, a dark #0a0f1a outline on anything structural,
+   and small flourishes (accent strips, status LEDs, grille lines, tapers)
+   that suggest the real hardware's anatomy.
+
+   The one deviation from the other games: every art function here takes its
+   context as an argument instead of closing over the page-level `ctx`. That
+   is what lets a single guard-column drawing paint both the board and the
+   little icon in the shop card, so the two can never drift apart.
+
+   Each function draws inside a nominal 24×24 box centred on (0,0), i.e.
+   -12..+12 in both axes. `artFrame` translates and scales it to wherever it
+   is needed. Line widths are authored in that same space and scale with it.
+
+   Two rules the art obeys, in this order:
+     1. SILHOUETTE FIRST. A tower renders at about 30 px on a small hex pad.
+        Detail is wasted there; outline is everything.
+     2. NEVER HUE ALONE. Roughly 8% of the men who will play this are
+        red–green colour blind, so no two towers and no two enemies may be
+        distinguishable only by colour. Guard column is horizontal, trap
+        column vertical, C18 a funnel, HeLa QC capped glassware, the search
+        node a screen on a stand. Enemies: squiggle / bead chain / faceted
+        cubes / sphere / needle / lobed blob / dialog box / bolt / snowflake
+        / ringed calendar / figure.
+
+   Nothing here is loaded from anywhere. The whole page makes zero network
+   requests, which matters because the dashboard may be served behind SSO
+   with a strict Content-Security-Policy where one external reference blanks
+   the game.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── The defended instrument: a photograph ──────────────────────────────────
+   This is Brett's actual timsTOF HT, from the UC Davis Proteomics Core's own
+   website — the lab's instrument and the lab's photograph. It is embedded as
+   a base64 `data:` URI rather than linked, for exactly the reason above: a
+   data URI is not a network request, so it survives a strict CSP that would
+   kill an external image. It is built with `new Image()` in script rather
+   than an image tag, so the file contains no image-source markup at all —
+   the audit grep for external references stays clean.
+
+   `instrPhotoOk` gates it. If the decode fails — a CSP that also forbids
+   data: images, an ancient browser — drawInstrumentBody() draws the mass
+   spec with primitives instead, and the game plays on. */
+const INSTRUMENT_PHOTO = 'data:image/jpeg;base64,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';
+const instrPhoto = new Image();
+let instrPhotoOk = false;
+instrPhoto.onload = function () { instrPhotoOk = true; };
+instrPhoto.onerror = function () { instrPhotoOk = false; };
+instrPhoto.src = INSTRUMENT_PHOTO;
+
+/* Canvas filters give real desaturation on the damaged instrument. Supported
+   everywhere current, but feature-detected because the fallback (plain
+   translucent overlays) still reads fine and a hard failure would not. */
+const CANVAS_FILTER_OK = (function () {
+  try {
+    ctx.filter = 'grayscale(1)';
+    const ok = ctx.filter === 'grayscale(1)';
+    ctx.filter = 'none';
+    return ok;
+  } catch (_) { return false; }
+})();
+
+/* ── shared drawing helpers ─────────────────────────────────────────────── */
+function dot(c, x, y, r, fill) {
+  if (fill) c.fillStyle = fill;
+  c.beginPath();
+  c.arc(x, y, r, 0, Math.PI * 2);
+  c.fill();
+}
+function rr(c, x, y, w, h, r) {            // rounded-rect PATH (caller fills)
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  c.beginPath();
+  c.moveTo(x + r, y);
+  c.lineTo(x + w - r, y); c.quadraticCurveTo(x + w, y, x + w, y + r);
+  c.lineTo(x + w, y + h - r); c.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  c.lineTo(x + r, y + h); c.quadraticCurveTo(x, y + h, x, y + h - r);
+  c.lineTo(x, y + r); c.quadraticCurveTo(x, y, x + r, y);
+  c.closePath();
+}
+function ink(c, lw) {                       // the house dark outline
+  c.strokeStyle = '#0a0f1a';
+  c.lineWidth = lw == null ? 1.2 : lw;
+  c.stroke();
+}
+function inkRect(c, x, y, w, h, lw) {
+  c.strokeStyle = '#0a0f1a';
+  c.lineWidth = lw == null ? 1.2 : lw;
+  c.strokeRect(x, y, w, h);
+}
+function cyl(c, x, y, w, h, vertical) {     // cylindrical shading, as angry-specs
+  const g = vertical
+    ? c.createLinearGradient(x, 0, x + w, 0)
+    : c.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, '#6f7f95');
+  g.addColorStop(0.42, '#e2e9f1');
+  g.addColorStop(1, '#8b9bb0');
+  c.fillStyle = g;
+  c.fillRect(x, y, w, h);
+}
+function crystal(c, cx, cy, s) {            // one isometric salt cube
+  c.fillStyle = '#f8fafc';                                     // top face
+  c.beginPath();
+  c.moveTo(cx, cy - s); c.lineTo(cx + s, cy - s / 2);
+  c.lineTo(cx, cy); c.lineTo(cx - s, cy - s / 2);
+  c.closePath(); c.fill(); ink(c, 0.55);
+  c.fillStyle = '#9fb0c4';                                     // left face
+  c.beginPath();
+  c.moveTo(cx - s, cy - s / 2); c.lineTo(cx, cy);
+  c.lineTo(cx, cy + s); c.lineTo(cx - s, cy + s / 2);
+  c.closePath(); c.fill(); ink(c, 0.55);
+  c.fillStyle = '#cbd5e1';                                     // right face
+  c.beginPath();
+  c.moveTo(cx + s, cy - s / 2); c.lineTo(cx, cy);
+  c.lineTo(cx, cy + s); c.lineTo(cx + s, cy + s / 2);
+  c.closePath(); c.fill(); ink(c, 0.55);
+}
+function arrowDown(c, x, y0, y1, col) {
+  c.strokeStyle = col; c.lineWidth = 1.1;
+  c.beginPath();
+  c.moveTo(x, y0); c.lineTo(x, y1);
+  c.moveTo(x - 1.3, y1 - 1.8); c.lineTo(x, y1); c.lineTo(x + 1.3, y1 - 1.8);
+  c.stroke();
+}
+
+/* Put an art function down at (x, y) rendered `size` px across. */
+function artFrame(c, x, y, size, fn) {
+  c.save();
+  c.translate(x, y);
+  c.scale(size / 24, size / 24);
+  c.lineJoin = 'round';
+  c.lineCap = 'round';
+  fn(c);
+  c.restore();
+}
+
+/* ── TOWERS ─────────────────────────────────────────────────────────────── */
+const TOWER_ART = {
+
+  /* Stainless guard cartridge lying in its holder, a compression fitting
+     swaged on each end, PEEK tubing in and out. Horizontal and long (about
+     2:1) so it can never be confused with the trap column. */
+  guard: function (c) {
+    c.strokeStyle = '#38bdf8'; c.lineWidth = 1.8;
+    c.beginPath();
+    c.moveTo(-11.6, 0); c.lineTo(-9.6, 0);
+    c.moveTo(9.6, 0); c.lineTo(11.6, 0);
+    c.stroke();
+    // Holder legs sit BELOW the cartridge, not behind it — tucked behind the
+    // body they vanish and the base bar reads as a detached floating slab.
+    c.fillStyle = '#6a7c95';
+    c.fillRect(-5.6, 2.6, 2.8, 3); c.fillRect(2.8, 2.6, 2.8, 3);
+    c.fillStyle = '#5a6b84';                                   // holder base
+    c.fillRect(-9.2, 5.4, 18.4, 3.4);
+    c.fillStyle = '#7e90a8'; c.fillRect(-9.2, 5.4, 18.4, 1.1);
+    inkRect(c, -9.2, 5.4, 18.4, 3.4, 1);
+    c.fillStyle = '#8b9bb0';                                   // ferrule nuts
+    c.fillRect(-9.9, -3.7, 3.9, 7.4); c.fillRect(6, -3.7, 3.9, 7.4);
+    c.fillStyle = '#c2cddb';
+    c.fillRect(-9.9, -3.7, 3.9, 1.8); c.fillRect(6, -3.7, 3.9, 1.8);
+    inkRect(c, -9.9, -3.7, 3.9, 7.4, 1);
+    inkRect(c, 6, -3.7, 3.9, 7.4, 1);
+    cyl(c, -6.2, -3, 12.4, 6);                                 // cartridge body
+    inkRect(c, -6.2, -3, 12.4, 6, 1.2);
+    c.strokeStyle = '#7c8ca2'; c.lineWidth = 0.8;              // frit weld
+    c.beginPath(); c.moveTo(1.6, -2.8); c.lineTo(1.6, 2.8); c.stroke();
+  },
+
+  /* Trap cartridge: stubbier and fatter than an analytical column, standing
+     in a clip, with a window on to the packed bed and the coloured identity
+     collar real cartridges carry. Vertical silhouette. */
+  trap: function (c) {
+    c.strokeStyle = '#a78bfa'; c.lineWidth = 1.8;
+    c.beginPath();
+    c.moveTo(0, -11.6); c.lineTo(0, -9.4);
+    c.moveTo(0, 9.4); c.lineTo(0, 11.6);
+    c.stroke();
+    c.fillStyle = '#8b9bb0';
+    c.fillRect(-2.8, -9.6, 5.6, 2.9); c.fillRect(-2.8, 6.7, 5.6, 2.9);
+    inkRect(c, -2.8, -9.6, 5.6, 2.9, 1);
+    inkRect(c, -2.8, 6.7, 5.6, 2.9, 1);
+    c.fillStyle = '#475569';                                   // clip jaws
+    c.fillRect(-7.6, -2.8, 2.6, 5.6); c.fillRect(5, -2.8, 2.6, 5.6);
+    cyl(c, -5, -7, 10, 14, true);                              // cartridge body
+    inkRect(c, -5, -7, 10, 14, 1.2);
+    c.fillStyle = '#efe9ff';                                   // bed window
+    c.fillRect(-3.5, -4.7, 7, 8.6);
+    inkRect(c, -3.5, -4.7, 7, 8.6, 0.8);
+    c.fillStyle = '#7c5cd6';                                   // packed beads
+    const beads = [[-1.7, -2.7], [1.2, -2.2], [-0.5, -0.4], [1.9, 0.5], [-2, 1.3], [0.7, 2.5]];
+    for (const b of beads) dot(c, b[0], b[1], 0.95);
+    c.fillStyle = '#a78bfa';                                   // identity collar
+    c.fillRect(-5.9, 4.2, 11.8, 2.4);
+    inkRect(c, -5.9, 4.2, 11.8, 2.4, 0.8);
+  },
+
+  /* C18 desalting: an SPE cartridge. Wide barrel tapering to a luer tip,
+     green sorbent bed between two frits, eluate leaving the point. A funnel,
+     so it reads as a consumable rather than as plumbing. */
+  c18: function (c) {
+    function barrel() {
+      c.beginPath();
+      c.moveTo(-6, -9); c.lineTo(6, -9); c.lineTo(4.6, 0.2); c.lineTo(1.4, 4.2);
+      c.lineTo(1.2, 8.4); c.lineTo(-1.2, 8.4); c.lineTo(-1.4, 4.2); c.lineTo(-4.6, 0.2);
+      c.closePath();
+    }
+    barrel();
+    c.fillStyle = '#dde6f0'; c.fill();
+    c.save();                          // clip so the liquid follows the taper
+    barrel(); c.clip();
+    c.fillStyle = '#7dd3fc'; c.fillRect(-7, -7.6, 14, 4.2);
+    c.fillStyle = '#22c55e'; c.fillRect(-7, -3.4, 14, 3.6);
+    c.restore();
+    c.strokeStyle = '#64748b'; c.lineWidth = 0.9;              // frits
+    c.beginPath();
+    c.moveTo(-5.4, -3.4); c.lineTo(5.4, -3.4);
+    c.moveTo(-4.5, 0.2); c.lineTo(4.5, 0.2);
+    c.stroke();
+    barrel(); ink(c, 1.2);
+    c.fillStyle = '#b9c6d6';                                   // rim + luer collar
+    c.fillRect(-7.1, -10.5, 14.2, 2.6);
+    inkRect(c, -7.1, -10.5, 14.2, 2.6, 1);
+    c.fillRect(-1.8, 5.4, 3.6, 2);
+    dot(c, 0, 10.3, 1.5, '#22c55e');                           // eluate drop
+  },
+
+  /* HeLa QC standard: an autosampler vial. Septum screw cap, tapered
+     shoulders, hand-written label, pink standard in the bottom. Glassware —
+     the only capped object in the shop. */
+  hela: function (c) {
+    function body() {
+      c.beginPath();
+      c.moveTo(-2.4, -5.6); c.lineTo(2.4, -5.6);
+      c.quadraticCurveTo(4.6, -4.4, 4.6, -1);
+      c.lineTo(4.6, 7.4); c.quadraticCurveTo(4.6, 9.5, 2.6, 9.5);
+      c.lineTo(-2.6, 9.5); c.quadraticCurveTo(-4.6, 9.5, -4.6, 7.4);
+      c.lineTo(-4.6, -1); c.quadraticCurveTo(-4.6, -4.4, -2.4, -5.6);
+      c.closePath();
+    }
+    c.fillStyle = '#b9c6d6'; c.fillRect(-2.8, -11.2, 5.6, 1.5);   // septum
+    c.fillStyle = '#3d4a5e'; c.fillRect(-3.9, -9.9, 7.8, 4.4);    // screw cap
+    inkRect(c, -3.9, -9.9, 7.8, 4.4, 1);
+    c.strokeStyle = '#232d3e'; c.lineWidth = 0.8;                 // cap knurl
+    c.beginPath();
+    for (const kx of [-2, 0, 2]) { c.moveTo(kx, -9.2); c.lineTo(kx, -6.2); }
+    c.stroke();
+    body();
+    c.globalAlpha = 0.34; c.fillStyle = '#dbe7f2'; c.fill(); c.globalAlpha = 1;
+    c.save(); body(); c.clip();
+    c.fillStyle = '#f472b6'; c.fillRect(-5, 1.6, 10, 8.4);        // the standard
+    c.fillStyle = '#f4f7fb'; c.fillRect(-3.9, -1.4, 7.8, 5.2);    // label
+    c.restore();
+    c.strokeStyle = '#5b6a7e'; c.lineWidth = 0.9;                 // label writing
+    c.beginPath(); c.moveTo(-2.9, 0.3); c.lineTo(2.9, 0.3); c.stroke();
+    c.strokeStyle = '#93a2b6';
+    c.beginPath(); c.moveTo(-2.9, 2.1); c.lineTo(1.3, 2.1); c.stroke();
+    c.fillStyle = 'rgba(255,255,255,0.4)'; c.fillRect(-3.1, -3.8, 1.1, 4.6);
+    body(); ink(c, 1.2);
+  },
+
+  /* Clean bench + N₂: laminar-flow hood — HEPA canopy, sash, work surface,
+     downflow arrows — with a nitrogen cylinder parked beside it. An arch,
+     the only open-fronted shape in the set. */
+  bench: function (c) {
+    c.fillStyle = '#48566b'; c.fillRect(-11.2, -9.6, 16.4, 4.6);  // HEPA canopy
+    inkRect(c, -11.2, -9.6, 16.4, 4.6, 1);
+    c.strokeStyle = '#9fb0c4'; c.lineWidth = 0.8;
+    c.beginPath();
+    for (let i = 0; i < 5; i++) { const x = -9.4 + i * 2.8; c.moveTo(x, -8.6); c.lineTo(x, -6); }
+    c.stroke();
+    c.fillStyle = '#334155';                                      // side walls
+    c.fillRect(-11.2, -5, 2.2, 12.6); c.fillRect(3, -5, 2.2, 12.6);
+    c.fillStyle = 'rgba(125,211,252,0.2)'; c.fillRect(-9, -5, 12, 5.4);   // sash
+    c.strokeStyle = 'rgba(125,211,252,0.65)'; c.lineWidth = 0.8;
+    c.strokeRect(-9, -5, 12, 5.4);
+    for (const ax of [-6.6, -3, 0.6]) arrowDown(c, ax, 1.6, 6.4, '#2dd4bf');
+    c.fillStyle = '#64748b'; c.fillRect(-11.8, 7.4, 17.6, 2.2);   // work surface
+    inkRect(c, -11.8, 7.4, 17.6, 2.2, 1);
+    c.fillStyle = '#3d4a5e';                                      // N₂ cylinder
+    c.beginPath();
+    c.moveTo(6.7, 0.4);
+    c.quadraticCurveTo(6.7, -2.8, 8.9, -2.8);
+    c.quadraticCurveTo(11.1, -2.8, 11.1, 0.4);
+    c.lineTo(11.1, 7.8); c.quadraticCurveTo(11.1, 9.4, 9.6, 9.4);
+    c.lineTo(8.2, 9.4); c.quadraticCurveTo(6.7, 9.4, 6.7, 7.8);
+    c.closePath(); c.fill(); ink(c, 1);
+    c.fillStyle = '#2dd4bf'; c.fillRect(6.75, -0.5, 4.3, 1.9);    // shoulder band
+    c.fillStyle = '#93a2b6'; c.fillRect(8.3, -5.4, 1.2, 2.8);     // valve
+    dot(c, 8.9, -5.6, 1.2);
+  },
+
+  /* DIA-NN / Sage node: software, so it is a terminal — a screen on a stand
+     with a chromatogram on it. The only rectangle-on-a-pedestal in the shop,
+     and deliberately the only tower that is not lab hardware. */
+  search: function (c) {
+    c.fillStyle = '#3a4658'; c.fillRect(-10.4, -8.8, 20.8, 13.4);  // bezel
+    inkRect(c, -10.4, -8.8, 20.8, 13.4, 1.2);
+    c.fillStyle = '#080f1e'; c.fillRect(-9, -7.4, 18, 10.2);       // screen
+    c.strokeStyle = '#5b6a7e'; c.lineWidth = 0.9;                  // code lines
+    c.beginPath();
+    c.moveTo(-7.8, -5.6); c.lineTo(-2.6, -5.6);
+    c.moveTo(-7.8, -4); c.lineTo(-4.4, -4);
+    c.stroke();
+    c.strokeStyle = '#3a4658'; c.lineWidth = 0.8;                  // baseline
+    c.beginPath(); c.moveTo(-7.8, 1.6); c.lineTo(8, 1.6); c.stroke();
+    c.strokeStyle = '#fbbf24'; c.lineWidth = 1.3;                  // chromatogram
+    c.beginPath();
+    c.moveTo(-7.8, 1.2); c.lineTo(-5.6, 0.9); c.lineTo(-4.4, -3.4); c.lineTo(-3.2, 0.8);
+    c.lineTo(-0.6, 0.4); c.lineTo(1, -6.4); c.lineTo(2.8, 0.6); c.lineTo(5, 1.1);
+    c.lineTo(8, 1.3);
+    c.stroke();
+    dot(c, 8.2, 3.6, 0.7, '#22c55e');                              // power LED
+    c.fillStyle = '#48566b';                                       // stand neck
+    c.beginPath();
+    c.moveTo(-2, 4.6); c.lineTo(2, 4.6); c.lineTo(3, 7.4); c.lineTo(-3, 7.4);
+    c.closePath(); c.fill();
+    c.fillStyle = '#3a4658'; c.fillRect(-5.8, 7.2, 11.6, 2.2);     // base
+    inkRect(c, -5.8, 7.2, 11.6, 2.2, 1);
+  },
+};
+
+/* ── ENEMIES ────────────────────────────────────────────────────────────── */
+const ENEMY_ART = {
+
+  // A hair strand with a couple of skin flakes. A squiggle.
+  keratin: function (c) {
+    function strand() {
+      c.beginPath();
+      c.moveTo(-9.4, 7.6);
+      c.quadraticCurveTo(-5.6, 0.4, -2.2, 3.4);
+      c.quadraticCurveTo(1.2, 6.4, 3.2, -0.8);
+      c.quadraticCurveTo(4.8, -6.8, 9.4, -8.4);
+    }
+    strand(); c.strokeStyle = '#fde68a'; c.lineWidth = 2.4; c.stroke();
+    strand(); c.strokeStyle = '#fffbeb'; c.lineWidth = 0.9;
+    c.globalAlpha = 0.75; c.stroke(); c.globalAlpha = 1;
+    c.beginPath();
+    c.moveTo(-6.6, 10); c.quadraticCurveTo(-2.4, 6, 1.4, 8);
+    c.strokeStyle = '#fcd34d'; c.lineWidth = 1.6; c.stroke();
+    c.globalAlpha = 0.85;
+    dot(c, 6.4, 5.6, 1.2, '#fef3c7');
+    dot(c, -5.4, -4.6, 0.95, '#fef3c7');
+    c.globalAlpha = 1;
+  },
+
+  // An oily polymer chain — beads on a backbone, sheen around it, a drip.
+  // Round repeating units; nothing else in the game is a chain.
+  peg: function (c) {
+    dot(c, 0, 0.6, 9.4, 'rgba(139,92,246,0.16)');
+    c.beginPath();
+    c.moveTo(-7.6, 3.6);
+    c.quadraticCurveTo(-5, -2.6, -1.6, 0.6);
+    c.quadraticCurveTo(1.8, 3.8, 3.6, -2.2);
+    c.quadraticCurveTo(5, -6.8, 8, -5.2);
+    c.strokeStyle = '#a78bfa'; c.lineWidth = 1.8; c.stroke();
+    const beads = [[-7.6, 3.6, 2.5], [-1.6, 0.6, 2.7], [3.6, -2.2, 2.5], [8, -5.2, 2.1]];
+    for (const b of beads) dot(c, b[0], b[1], b[2], '#c4b5fd');
+    c.globalAlpha = 0.8;
+    for (const b of beads) dot(c, b[0] - b[2] * 0.34, b[1] - b[2] * 0.34, b[2] * 0.32, '#f5f3ff');
+    c.globalAlpha = 1;
+    c.beginPath();                                              // drip
+    c.moveTo(-0.6, 5.6);
+    c.quadraticCurveTo(1.6, 8.4, -0.6, 10.2);
+    c.quadraticCurveTo(-2.8, 8.4, -0.6, 5.6);
+    c.closePath();
+    c.fillStyle = '#c4b5fd'; c.fill();
+  },
+
+  // One 44 Da unit off the ladder: a single bead with its links snapped.
+  peg_frag: function (c) {
+    c.strokeStyle = '#a78bfa'; c.lineWidth = 2;
+    c.beginPath();
+    c.moveTo(-9.4, 0); c.lineTo(-5, 0);
+    c.moveTo(5, 0); c.lineTo(9.4, 0);
+    c.stroke();
+    dot(c, 0, 0, 6.2, '#ddd6fe');
+    c.globalAlpha = 0.75; dot(c, -2.2, -2.2, 1.9, '#ffffff'); c.globalAlpha = 1;
+  },
+
+  // Salt / detergent: crystals. Isometric cubes — the only angular, faceted
+  // mass in the bestiary, so it never reads as a bubble.
+  salt: function (c) {
+    crystal(c, 5.6, -4, 3.4);
+    crystal(c, 5, 5.6, 3);
+    crystal(c, -3.4, 0.4, 5.6);
+  },
+
+  // Air bubble: two hollow spheres with a specular crescent. Perfectly round
+  // and see-through — the opposite of the salt crystal.
+  bubble: function (c) {
+    c.globalAlpha = 0.3; dot(c, -1.4, 1.4, 7.6, '#7dd3fc'); c.globalAlpha = 1;
+    c.beginPath(); c.arc(-1.4, 1.4, 7.6, 0, Math.PI * 2);
+    c.strokeStyle = '#bae6fd'; c.lineWidth = 1.3; c.stroke();
+    c.beginPath(); c.arc(-1.4, 1.4, 5.6, Math.PI * 1.05, Math.PI * 1.5);
+    c.strokeStyle = '#f0f9ff'; c.lineWidth = 1.7; c.stroke();
+    c.globalAlpha = 0.3; dot(c, 6.4, -5.2, 3.3, '#7dd3fc'); c.globalAlpha = 1;
+    c.beginPath(); c.arc(6.4, -5.2, 3.3, 0, Math.PI * 2);
+    c.strokeStyle = '#bae6fd'; c.lineWidth = 1; c.stroke();
+    c.globalAlpha = 0.9; dot(c, 5.2, -6.4, 0.9, '#f0f9ff'); c.globalAlpha = 1;
+  },
+
+  // Clogged emitter: a nanospray tip — stainless union, sleeve, and a
+  // fused-silica taper pulled out to a fine point. Long and thin, so the
+  // silhouette is a needle. The orifice is plugged, the pressure is backed
+  // up behind it, and nothing is spraying.
+  emitter: function (c) {
+    c.fillStyle = '#93a2b6'; c.fillRect(-11.2, -3.1, 4.6, 6.2);   // union
+    inkRect(c, -11.2, -3.1, 4.6, 6.2, 1);
+    c.fillStyle = '#6f7f95'; c.fillRect(-6.8, -1.8, 3.4, 3.6);    // sleeve
+    c.beginPath();                                                // silica taper
+    c.moveTo(-3.6, -1.6); c.lineTo(9.8, -0.25);
+    c.lineTo(9.8, 0.25); c.lineTo(-3.6, 1.6);
+    c.closePath();
+    c.fillStyle = '#cfd9e5'; c.fill();
+    c.strokeStyle = '#8797ab'; c.lineWidth = 0.6; c.stroke();
+    c.globalAlpha = 0.92; dot(c, 3.2, 0, 2.4, '#dc2626'); c.globalAlpha = 1;
+    c.beginPath(); c.arc(3.2, 0, 2.4, 0, Math.PI * 2);
+    c.strokeStyle = '#7f1d1d'; c.lineWidth = 0.8; c.stroke();
+    c.beginPath();                                                // plug in the tip
+    c.moveTo(5.6, -0.5); c.lineTo(9.8, -0.22);
+    c.lineTo(9.8, 0.22); c.lineTo(5.6, 0.5);
+    c.closePath();
+    c.fillStyle = '#450a0a'; c.fill();
+    c.strokeStyle = '#fca5a5'; c.lineWidth = 1.1;                 // backpressure
+    c.beginPath();
+    c.moveTo(10.6, 0); c.lineTo(11.6, 0);
+    c.moveTo(9.6, -1.9); c.lineTo(10.7, -3.3);
+    c.moveTo(9.6, 1.9); c.lineTo(10.7, 3.3);
+    c.stroke();
+  },
+
+  // Trypsin autolysis: the enzyme drawn the way trypsin actually is — two
+  // lobes with the active-site cleft in the groove between them, chewing a
+  // peptide already snapped at the scissile bond. Bilobal rather than one
+  // round blob with a wedge cut out, which just reads as a well-known
+  // arcade ghost-eater.
+  trypsin: function (c) {
+    c.beginPath();                                                // upper lobe
+    c.moveTo(-8.6, -1.4);
+    c.quadraticCurveTo(-9.6, -6.8, -4.5, -8.9);
+    c.quadraticCurveTo(0.7, -11, 3.9, -7.7);
+    c.quadraticCurveTo(5.7, -5.8, 2.9, -3.5);
+    c.lineTo(-3.4, -0.5);
+    c.quadraticCurveTo(-6.6, 0.8, -8.6, -1.4);
+    c.closePath();
+    c.fillStyle = '#fdba74'; c.fill(); ink(c, 0.9);
+    c.beginPath();                                                // lower lobe
+    c.moveTo(-8.6, 1.4);
+    c.quadraticCurveTo(-9.6, 6.8, -4.5, 8.9);
+    c.quadraticCurveTo(0.7, 11, 3.9, 7.7);
+    c.quadraticCurveTo(5.7, 5.8, 2.9, 3.5);
+    c.lineTo(-3.4, 0.5);
+    c.quadraticCurveTo(-6.6, -0.8, -8.6, 1.4);
+    c.closePath();
+    c.fillStyle = '#f59f4c'; c.fill(); ink(c, 0.9);
+    c.strokeStyle = '#fed7aa'; c.lineWidth = 1.2;                 // secondary structure
+    c.beginPath();
+    c.moveTo(-6.4, -4.6); c.quadraticCurveTo(-3.4, -6.4, -0.2, -5.2);
+    c.moveTo(-6.4, 4.6); c.quadraticCurveTo(-3.4, 6.4, -0.2, 5.2);
+    c.stroke();
+    c.globalAlpha = 0.45; dot(c, -3.8, -2.2, 1, '#c2410c'); c.globalAlpha = 1;
+    c.strokeStyle = '#fed7aa'; c.lineWidth = 1.4;                 // the substrate
+    c.beginPath(); c.moveTo(1.2, 0); c.lineTo(10.8, 0); c.stroke();
+    dot(c, 4.8, 0, 1.5, '#fed7aa');
+    dot(c, 8, 0, 1.4, '#fed7aa');
+    dot(c, 10.8, 0, 1.2, '#fed7aa');
+    dot(c, 7.4, 6.4, 1.3, '#fdba74');                             // cleaved off
+  },
+
+  // An autolysis peptide: angular zig-zag backbone with diamond residues.
+  // Drawn heavy on purpose — this renders at 19 px, the smallest thing in
+  // the game, so thin strokes simply disappear.
+  tryp_frag: function (c) {
+    c.strokeStyle = '#fdba74'; c.lineWidth = 2.4;
+    c.beginPath();
+    c.moveTo(-9.4, 5.4); c.lineTo(-3.6, -2.4); c.lineTo(2.6, 4); c.lineTo(8.6, -4.4);
+    c.stroke();
+    const res = [[-3.6, -2.4], [2.6, 4], [8.6, -4.4]];
+    for (const r of res) {
+      c.beginPath();
+      c.moveTo(r[0], r[1] - 2.8); c.lineTo(r[0] + 2.8, r[1]);
+      c.lineTo(r[0], r[1] + 2.8); c.lineTo(r[0] - 2.8, r[1]);
+      c.closePath();
+      c.fillStyle = '#fed7aa'; c.fill();
+      c.strokeStyle = '#f97316'; c.lineWidth = 0.9; c.stroke();
+    }
+  },
+
+  // Forced update: a modal dialog you cannot dismiss — title bar, restart
+  // glyph, and a progress bar that is always about two-thirds done.
+  winupdate: function (c) {
+    c.fillStyle = '#e2e8f0'; c.fillRect(-10.2, -8, 20.4, 15.4);
+    inkRect(c, -10.2, -8, 20.4, 15.4, 1.2);
+    c.fillStyle = '#2563eb'; c.fillRect(-10.2, -8, 20.4, 4.2);    // title bar
+    c.strokeStyle = '#dbeafe'; c.lineWidth = 1;                   // close X
+    c.beginPath();
+    c.moveTo(6.4, -6.6); c.lineTo(8.4, -4.6);
+    c.moveTo(8.4, -6.6); c.lineTo(6.4, -4.6);
+    c.stroke();
+    // Restart glyph. The head is placed on the arc's end point along its
+    // tangent rather than eyeballed, so it always joins the stroke instead of
+    // floating next to a letter C.
+    const cx0 = 1.4, cy0 = 0.4, rad = 3.4, a0 = Math.PI * 1.65, a1 = Math.PI * 0.2;
+    c.strokeStyle = '#1d4ed8'; c.lineWidth = 1.6;
+    c.beginPath(); c.arc(cx0, cy0, rad, a0, a1, true); c.stroke();
+    const ex = cx0 + rad * Math.cos(a1), ey = cy0 + rad * Math.sin(a1);
+    const tx = Math.sin(a1), ty = -Math.cos(a1);                  // anticlockwise tangent
+    c.beginPath();
+    c.moveTo(ex + tx * 2.7, ey + ty * 2.7);
+    c.lineTo(ex - tx * 0.5 + ty * 1.9, ey - ty * 0.5 - tx * 1.9);
+    c.lineTo(ex - tx * 0.5 - ty * 1.9, ey - ty * 0.5 + tx * 1.9);
+    c.closePath(); c.fillStyle = '#1d4ed8'; c.fill();
+    c.strokeStyle = '#94a3b8'; c.lineWidth = 1;                   // text lines
+    c.beginPath();
+    c.moveTo(-8.4, -1.6); c.lineTo(-3.6, -1.6);
+    c.moveTo(-8.4, 0.4); c.lineTo(-4.8, 0.4);
+    c.stroke();
+    c.fillStyle = '#cbd5e1'; c.fillRect(-8.4, 3.6, 16.8, 2.6);    // progress bar
+    c.fillStyle = '#2563eb'; c.fillRect(-8.4, 3.6, 10.6, 2.6);
+    inkRect(c, -8.4, 3.6, 16.8, 2.6, 0.7);
+  },
+
+  // Static discharge: a bolt. Nothing else in the game is a hard zig-zag.
+  static: function (c) {
+    c.beginPath();
+    c.moveTo(1.8, -10.6); c.lineTo(-6.8, 1.6); c.lineTo(-1.4, 1.6);
+    c.lineTo(-3.8, 10.6); c.lineTo(6.6, -2.6); c.lineTo(0.8, -2.6);
+    c.closePath();
+    c.fillStyle = '#fde047'; c.fill();
+    c.strokeStyle = '#a16207'; c.lineWidth = 0.8; c.stroke();
+    c.strokeStyle = '#fef08a'; c.lineWidth = 1.2;                 // sparks
+    c.beginPath();
+    c.moveTo(7.6, -8.4); c.lineTo(9.8, -10);
+    c.moveTo(8.6, 5.4); c.lineTo(10.6, 7);
+    c.moveTo(-9.6, -3.6); c.lineTo(-11, -5.2);
+    c.stroke();
+  },
+
+  // Freezer failure: an ice crystal starting to melt, with the −80 alarm
+  // lamp lit that nobody heard. Radial — a unique silhouette in the set.
+  freezer: function (c) {
+    c.strokeStyle = '#a5f3fc'; c.lineWidth = 1.7;                 // six arms
+    c.beginPath();
+    c.moveTo(0, -8.8); c.lineTo(0, 7.6);
+    c.moveTo(-7.1, -4.7); c.lineTo(7.1, 3.5);
+    c.moveTo(-7.1, 3.5); c.lineTo(7.1, -4.7);
+    c.stroke();
+    c.lineWidth = 1.2;                                            // barbs
+    c.beginPath();
+    c.moveTo(0, -8.8); c.lineTo(-1.6, -6.6); c.moveTo(0, -8.8); c.lineTo(1.6, -6.6);
+    c.moveTo(0, 7.6); c.lineTo(-1.6, 5.4); c.moveTo(0, 7.6); c.lineTo(1.6, 5.4);
+    c.moveTo(-7.1, -4.7); c.lineTo(-4.8, -4.3); c.moveTo(-7.1, -4.7); c.lineTo(-6.2, -6.8);
+    c.moveTo(7.1, 3.5); c.lineTo(4.8, 3.1); c.moveTo(7.1, 3.5); c.lineTo(6.2, 5.6);
+    c.moveTo(-7.1, 3.5); c.lineTo(-6.2, 5.6); c.moveTo(-7.1, 3.5); c.lineTo(-4.8, 3.1);
+    c.moveTo(7.1, -4.7); c.lineTo(6.2, -6.8); c.moveTo(7.1, -4.7); c.lineTo(4.8, -4.3);
+    c.stroke();
+    dot(c, 0, -0.6, 1.8, '#cffafe');
+    c.fillStyle = '#67e8f9'; c.globalAlpha = 0.9;                 // meltwater
+    for (const d of [[-4.4, 8.4], [4.4, 7.6]]) {
+      c.beginPath();
+      c.moveTo(d[0], d[1]);
+      c.quadraticCurveTo(d[0] + 1.6, d[1] + 2.2, d[0], d[1] + 3.4);
+      c.quadraticCurveTo(d[0] - 1.6, d[1] + 2.2, d[0], d[1]);
+      c.closePath(); c.fill();
+    }
+    c.globalAlpha = 1;
+    dot(c, 7.8, -7.6, 2.3, '#ef4444');                            // the alarm
+    c.beginPath(); c.arc(7.8, -7.6, 2.3, 0, Math.PI * 2);
+    c.strokeStyle = '#fecaca'; c.lineWidth = 0.9; c.stroke();
+  },
+
+  // Grant deadline: a calendar page on its rings with the date ringed in
+  // red. The binder rings give it a top edge no other rectangle has.
+  deadline: function (c) {
+    c.fillStyle = '#93a2b6';                                      // binder rings
+    c.fillRect(-4.9, -10.8, 1.7, 4); c.fillRect(3.2, -10.8, 1.7, 4);
+    c.fillStyle = '#f8fafc'; c.fillRect(-9.4, -8.6, 18.8, 17.6);  // page
+    c.fillStyle = '#e11d48'; c.fillRect(-9.4, -8.6, 18.8, 4.8);   // header band
+    c.strokeStyle = '#dbe2ea'; c.lineWidth = 0.8;                 // date grid
+    c.beginPath();
+    c.moveTo(-9.4, 0.2); c.lineTo(9.4, 0.2);
+    c.moveTo(-9.4, 4.4); c.lineTo(9.4, 4.4);
+    c.moveTo(-3.1, -3.8); c.lineTo(-3.1, 9);
+    c.moveTo(3.1, -3.8); c.lineTo(3.1, 9);
+    c.stroke();
+    c.beginPath(); c.arc(0, 2.4, 4.3, 0, Math.PI * 2);            // the date
+    c.strokeStyle = '#e11d48'; c.lineWidth = 1.7; c.stroke();
+    c.fillStyle = '#e11d48'; c.fillRect(-0.75, -0.1, 1.5, 3.2);
+    dot(c, 0.05, 4.4, 0.85);
+    inkRect(c, -9.4, -8.6, 18.8, 17.6, 1.1);
+  },
+
+  // The Evil Administrator: suit, tie, and the clipboard. A humanoid figure
+  // — the only one in the game, which is rather the point.
+  admin: function (c) {
+    dot(c, 0, -6.6, 3.5, '#f2d2c2');                              // head
+    c.beginPath();                                                // hair
+    c.moveTo(-3, -7.6);
+    c.quadraticCurveTo(-2.4, -10, 0, -10);
+    c.quadraticCurveTo(2.6, -10, 3.1, -7.4);
+    c.quadraticCurveTo(1.4, -8.5, -0.2, -8.3);
+    c.quadraticCurveTo(-1.6, -8.1, -3, -7.6);
+    c.closePath();
+    c.fillStyle = '#3f4a5c'; c.fill();
+    c.beginPath();                                                // suit jacket
+    c.moveTo(-8, 10.6); c.lineTo(-8, 3.6);
+    c.quadraticCurveTo(-8, -0.4, -3.4, -1.8);
+    c.lineTo(0, 0.6); c.lineTo(3.4, -1.8);
+    c.quadraticCurveTo(8, -0.4, 8, 3.6);
+    c.lineTo(8, 10.6);
+    c.closePath();
+    c.fillStyle = '#1b2536'; c.fill(); ink(c, 1);
+    c.beginPath();                                                // shirt
+    c.moveTo(-2.4, -1.6); c.lineTo(0, 1.2); c.lineTo(2.4, -1.6);
+    c.lineTo(2.4, 10.6); c.lineTo(-2.4, 10.6);
+    c.closePath();
+    c.fillStyle = '#eef2f7'; c.fill();
+    c.fillStyle = '#111a2a';                                      // lapels
+    c.beginPath();
+    c.moveTo(-2.4, -1.6); c.lineTo(0, 1.4); c.lineTo(-1.8, 5.6); c.lineTo(-4.2, 0);
+    c.closePath(); c.fill();
+    c.beginPath();
+    c.moveTo(2.4, -1.6); c.lineTo(0, 1.4); c.lineTo(1.8, 5.6); c.lineTo(4.2, 0);
+    c.closePath(); c.fill();
+    c.fillStyle = '#be123c';                                      // tie knot
+    c.beginPath();
+    c.moveTo(-1, 0.6); c.lineTo(1, 0.6); c.lineTo(1.4, 2.4); c.lineTo(-1.4, 2.4);
+    c.closePath(); c.fill();
+    c.fillStyle = '#e11d48';                                      // tie
+    c.beginPath();
+    c.moveTo(-0.8, 2.4); c.lineTo(0.8, 2.4); c.lineTo(0.4, 8.6);
+    c.lineTo(0, 9.4); c.lineTo(-0.4, 8.6);
+    c.closePath(); c.fill();
+    c.fillStyle = '#93a2b6'; c.fillRect(4.4, 0.9, 2.8, 1.9);      // clipboard clip
+    c.fillStyle = '#e0a92a'; c.fillRect(1.4, 1.8, 8.8, 9.2);      // clipboard
+    inkRect(c, 1.4, 1.8, 8.8, 9.2, 1);
+    c.fillStyle = '#fdfdfb'; c.fillRect(2.4, 3.2, 6.8, 7.2);
+    c.strokeStyle = '#7c8ca2'; c.lineWidth = 0.9;                 // the paperwork
+    c.beginPath();
+    c.moveTo(3.4, 5); c.lineTo(8.2, 5);
+    c.moveTo(3.4, 6.8); c.lineTo(8.2, 6.8);
+    c.moveTo(3.4, 8.6); c.lineTo(6.4, 8.6);
+    c.stroke();
+  },
+};
+
+/* ── SCENERY ────────────────────────────────────────────────────────────── */
+const SCENE_ART = {
+
+  // Autosampler: vial tray on its rail with the injection needle over it.
+  // Sits at the head of the fluid path — this is where the queue starts.
+  autosampler: function (c) {
+    c.strokeStyle = '#3a4658'; c.lineWidth = 1.8;
+    c.beginPath(); c.moveTo(-10.8, -8); c.lineTo(10.8, -8); c.stroke();
+    c.fillStyle = '#243348'; c.fillRect(-10.6, -0.4, 16.6, 9.4);   // tray
+    inkRect(c, -10.6, -0.4, 16.6, 9.4, 1);
+    for (let row = 0; row < 2; row++) {
+      for (let col = 0; col < 4; col++) {
+        const x = -7.4 + col * 4.1, y = 2.8 + row * 3.6;
+        dot(c, x, y, col === 3 ? 1.2 : 1.5, '#0d1626');
+      }
+    }
+    dot(c, -7.4, 2.8, 0.95, '#38bdf8');
+    dot(c, -3.3, 2.8, 0.95, '#38bdf8');
+    dot(c, 0.8, 6.4, 0.95, '#38bdf8');
+    c.fillStyle = '#48566b'; c.fillRect(6.6, -9.8, 4.6, 3.8);      // injector head
+    inkRect(c, 6.6, -9.8, 4.6, 3.8, 0.9);
+    c.strokeStyle = '#93a2b6'; c.lineWidth = 1.3;                  // needle
+    c.beginPath(); c.moveTo(8.9, -6); c.lineTo(8.9, 10.4); c.stroke();
+    c.fillStyle = '#cfd9e5';
+    c.beginPath();
+    c.moveTo(8.2, 9.4); c.lineTo(9.6, 9.4); c.lineTo(8.9, 11.6);
+    c.closePath(); c.fill();
+  },
+
+  // A small mass spec for the page title — the drawn one, not the photo:
+  // it has to read at 16 px, which no photograph does.
+  massspec: function (c) {
+    c.fillStyle = '#2b3a52'; c.fillRect(-3, -9.4, 12.4, 18.4);
+    inkRect(c, -3, -9.4, 12.4, 18.4, 1);
+    c.fillStyle = '#22d3ee'; c.globalAlpha = 0.85;
+    c.fillRect(-2.4, -8, 2, 15.6);
+    c.globalAlpha = 1;
+    c.fillStyle = '#64748b';
+    for (let i = 0; i < 3; i++) c.fillRect(0.6, -7 + i * 2, 6.4, 0.9);
+    c.fillStyle = '#08111f'; c.fillRect(0.4, 1.2, 7, 5.4);
+    c.strokeStyle = '#22c55e'; c.lineWidth = 1.2;
+    c.beginPath(); c.moveTo(1.4, 4.6); c.lineTo(6.4, 4.6); c.stroke();
+    c.fillStyle = '#3a4658'; c.fillRect(-9.6, -0.4, 7, 7.6);       // source housing
+    inkRect(c, -9.6, -0.4, 7, 7.6, 1);
+    dot(c, -6.1, 3.4, 2.2, '#08111f');
+    dot(c, -6.1, 3.4, 0.9, '#7dd3fc');
+    c.fillStyle = '#1b2536'; c.fillRect(-10.8, 8.4, 21.2, 2.2);    // plinth
+  },
+};
+
+/* ── panel icons ────────────────────────────────────────────────────────────
+   The side panels are built with innerHTML strings, so they emit a
+   placeholder span and fillIcons() drops a real <canvas> into it, painted by
+   the same art function the board uses. Canvas rather than an <img> data URI
+   on purpose: no image-source markup anywhere in this file. */
+function artFor(kind, key) {
+  return (kind === 't' ? TOWER_ART : kind === 'e' ? ENEMY_ART : SCENE_ART)[key];
+}
+function iconTag(kind, key, px) {
+  return '<span class="ico-slot" data-art="' + kind + ':' + key + '" data-px="' + px + '"></span>';
+}
+function fillIcons(root) {
+  if (!root || !root.querySelectorAll) return;
+  const slots = root.querySelectorAll('.ico-slot');
+  for (const s of slots) {
+    if (s.firstChild) continue;                 // already painted
+    const spec = (s.dataset.art || '').split(':');
+    const fn = artFor(spec[0], spec[1]);
+    if (!fn) continue;
+    const px = parseFloat(s.dataset.px) || 16;
+    const dpr = Math.min(3, window.devicePixelRatio || 1);
+    const icv = document.createElement('canvas');
+    icv.width = Math.round(px * dpr);
+    icv.height = Math.round(px * dpr);
+    icv.style.width = px + 'px';
+    icv.style.height = px + 'px';
+    icv.className = 'art';
+    const ic = icv.getContext('2d');
+    ic.scale(dpr, dpr);
+    artFrame(ic, px / 2, px / 2, px * 0.96, fn);
+    s.appendChild(icv);
+  }
+}
+
 /* ── Towers ─────────────────────────────────────────────────────────────────
    Every tower is a real thing that protects a real experiment. `kind`
    controls the firing behaviour:
@@ -281,7 +1025,7 @@ const SLOTS = [
    Damage is multiplied by the target's per-tower resistance (see ENEMIES). */
 const TOWERS = {
   guard: {
-    id: 'guard', name: 'Guard Column', short: 'Guard Col.', icon: '🛡️', color: '#38bdf8', key: '1',
+    id: 'guard', name: 'Guard Column', short: 'Guard Col.', color: '#38bdf8', key: '1',
     kind: 'shot', cost: 70,
     blurb: 'In-line filter + guard cartridge. Cheap, reliable, catches the coarse stuff — hair, particulates. Does nothing about anything dissolved.',
     levels: [
@@ -291,7 +1035,7 @@ const TOWERS = {
     ],
   },
   trap: {
-    id: 'trap', name: 'Trap Column', short: 'Trap Col.', icon: '⏳', color: '#a78bfa', key: '2',
+    id: 'trap', name: 'Trap Column', short: 'Trap Col.', color: '#a78bfa', key: '2',
     kind: 'splash', cost: 90,
     blurb: 'Peptides get parked on the trap while the loading pump runs. In here: a slowing field. Barely scratches anything, but it buys your damage towers time.',
     levels: [
@@ -301,7 +1045,7 @@ const TOWERS = {
     ],
   },
   c18: {
-    id: 'c18', name: 'C18 Desalting', short: 'C18 SPE', icon: '🧪', color: '#22c55e', key: '3',
+    id: 'c18', name: 'C18 Desalting', short: 'C18 SPE', color: '#22c55e', key: '3',
     kind: 'shot', cost: 110,
     blurb: 'Solid-phase cleanup. Salt, detergent and polymer wash straight to waste while peptides stay bound. The single best answer to a dirty sample.',
     levels: [
@@ -311,7 +1055,7 @@ const TOWERS = {
     ],
   },
   hela: {
-    id: 'hela', name: 'HeLa QC Standard', short: 'HeLa QC', icon: '🧬', color: '#f472b6', key: '4',
+    id: 'hela', name: 'HeLa QC Standard', short: 'HeLa QC', color: '#f472b6', key: '4',
     kind: 'aura', cost: 100,
     blurb: 'Does not shoot. A QC standard tells you something is wrong BEFORE you burn the real samples — so neighbouring towers hit harder and further, enemies in the aura lose their armour (you now know exactly what they are), and they take steady chip damage. Administrators take TRIPLE: hard QC data is the only thing that survives contact with management.',
     // Aura radius is sized against the pad spacing: 130 reaches one or two
@@ -323,7 +1067,7 @@ const TOWERS = {
     ],
   },
   bench: {
-    id: 'bench', name: 'Clean Bench + N₂', short: 'Clean bench', icon: '💨', color: '#2dd4bf', key: '5',
+    id: 'bench', name: 'Clean Bench + N₂', short: 'Clean bench', color: '#2dd4bf', key: '5',
     kind: 'splash', cost: 160,
     blurb: 'Laminar-flow bench on a nitrogen supply. Area damage: sweeps whole clouds of keratin, degasses bubbles out of the line, and grounds static.',
     levels: [
@@ -333,7 +1077,7 @@ const TOWERS = {
     ],
   },
   search: {
-    id: 'search', name: 'DIA-NN / Sage node', short: 'DIA-NN', icon: '💻', color: '#fbbf24', key: '6',
+    id: 'search', name: 'DIA-NN / Sage node', short: 'DIA-NN', color: '#fbbf24', key: '6',
     kind: 'beam', cost: 210,
     blurb: 'A compute node running the search engine. Expensive, slow-firing, enormous range and damage — if you can identify it, you can get rid of it. The only thing that meaningfully hurts a forced Windows Update, because software fights software.',
     levels: [
@@ -354,100 +1098,100 @@ const TOWER_ORDER = ['guard', 'trap', 'c18', 'hela', 'bench', 'search'];
    useless against the boss until a HeLa QC aura strips it. */
 const ENEMIES = {
   keratin: {
-    id: 'keratin', name: 'Keratin', icon: '💇', color: '#fde68a',
-    hp: 16, speed: 62, gold: 6, leak: 1, armor: 0, r: 11,
+    id: 'keratin', name: 'Keratin', color: '#fde68a',
+    hp: 16, speed: 62, gold: 5, leak: 1, armor: 0, r: 11,
     // K1/K10/K14 from skin and hair. Individually trivial, but they arrive
     // in clouds and every digest has them.
     joke: 'K1/K10 from somebody\'s hair. Weak alone, never arrives alone.',
     resist: { guard: 1.4, bench: 2.0, search: 0.8 },
   },
   peg: {
-    id: 'peg', name: 'PEG contamination', icon: '🧴', color: '#c4b5fd',
-    hp: 58, speed: 50, gold: 12, leak: 2, armor: 0, r: 13, splits: 'peg_frag',
+    id: 'peg', name: 'PEG contamination', color: '#c4b5fd',
+    hp: 58, speed: 50, gold: 10, leak: 2, armor: 0, r: 13, splits: 'peg_frag',
     // PEG is a polymer: kill one and you get the 44 Da oligomer ladder,
     // which is exactly why it splits into two smaller units on death.
     joke: 'Polyethylene glycol. Kill it and it splits into the 44 Da ladder — because of course it does.',
     resist: { guard: 0.5, c18: 1.8, bench: 0.8 },
   },
   peg_frag: {
-    id: 'peg_frag', name: 'PEG oligomer', icon: '🔵', color: '#ddd6fe',
-    hp: 20, speed: 60, gold: 4, leak: 1, armor: 0, r: 8, child: true,
+    id: 'peg_frag', name: 'PEG oligomer', color: '#ddd6fe',
+    hp: 20, speed: 60, gold: 3, leak: 1, armor: 0, r: 8, child: true,
     joke: '+44, +44, +44… all the way across your gradient.',
     resist: { guard: 0.5, c18: 1.8 },
   },
   salt: {
-    id: 'salt', name: 'Salt / detergent', icon: '🧂', color: '#e2e8f0',
-    hp: 95, speed: 40, gold: 15, leak: 2, armor: 1, r: 13,
+    id: 'salt', name: 'Salt / detergent', color: '#e2e8f0',
+    hp: 95, speed: 40, gold: 12, leak: 2, armor: 1, r: 13,
     // Buffer salts and SDS/Triton suppress ionization. Physical filters do
     // nothing; SPE desalting is the actual fix, hence the 3x.
     joke: 'Suppresses your whole spray. A filter will not save you — desalt it.',
     resist: { c18: 3.0, guard: 0.55, trap: 0.55, search: 0.55, bench: 0.7 },
   },
   bubble: {
-    id: 'bubble', name: 'Air bubble in the LC', icon: '🫧', color: '#7dd3fc',
-    hp: 34, speed: 102, gold: 9, leak: 2, armor: 0, r: 11, slowImmune: true,
+    id: 'bubble', name: 'Air bubble in the LC', color: '#7dd3fc',
+    hp: 34, speed: 102, gold: 8, leak: 2, armor: 0, r: 11, slowImmune: true,
     // A bubble in the line will not be slowed down by anything; you degas
     // the solvent (nitrogen / vacuum degasser) or you live with it.
     joke: 'Sprints through the line and kills your pressure trace. Degas the solvent.',
     resist: { bench: 2.5, guard: 0.5, c18: 0.6, search: 0.7 },
   },
   emitter: {
-    id: 'emitter', name: 'Clogged emitter', icon: '🚧', color: '#fca5a5',
-    hp: 230, speed: 30, gold: 24, leak: 3, armor: 3, r: 15, slowImmune: true,
+    id: 'emitter', name: 'Clogged emitter', color: '#fca5a5',
+    hp: 230, speed: 30, gold: 20, leak: 3, armor: 3, r: 15, slowImmune: true,
     // Already the slowest thing in the lab. An upstream filter is no help
     // once the tip itself is blocked — you backflush it or you replace it.
     joke: 'Already as slow as it gets. Upstream filters do not un-clog a tip — backflush it.',
     resist: { guard: 0.35, trap: 0.5, c18: 0.8, bench: 1.4 },
   },
   trypsin: {
-    id: 'trypsin', name: 'Trypsin autolysis', icon: '✂️', color: '#fdba74',
-    hp: 120, speed: 53, gold: 16, leak: 2, armor: 0, r: 13, spawns: 'tryp_frag',
+    id: 'trypsin', name: 'Trypsin autolysis', color: '#fdba74',
+    hp: 120, speed: 53, gold: 14, leak: 2, armor: 0, r: 13, spawns: 'tryp_frag',
     // Trypsin digests itself. Left running it keeps shedding autolysis
     // peptides, so this one drips out small adds as it walks.
     joke: 'Trypsin digesting trypsin. Keeps shedding autolysis peptides the whole way down the path.',
     resist: { search: 1.3, hela: 1.2, c18: 0.7 },
   },
   tryp_frag: {
-    id: 'tryp_frag', name: 'Autolysis peptide', icon: '🟠', color: '#fed7aa',
+    id: 'tryp_frag', name: 'Autolysis peptide', color: '#fed7aa',
     hp: 18, speed: 67, gold: 3, leak: 1, armor: 0, r: 8, child: true,
     joke: 'VLVK, LGEHNIDVLEGNEQFINAAK… you know them by heart by now.',
     resist: { search: 1.3, c18: 0.7 },
   },
   winupdate: {
-    id: 'winupdate', name: 'Forced Windows Update', icon: '🪟', color: '#93c5fd',
-    hp: 150, speed: 90, gold: 22, leak: 3, armor: 0, r: 14, slowImmune: true,
+    id: 'winupdate', name: 'Forced Windows Update', color: '#93c5fd',
+    hp: 150, speed: 90, gold: 18, leak: 3, armor: 0, r: 14, slowImmune: true,
     // Nothing physical stops IT. Only the compute node touches it properly
     // (software fights software), and even that is a fight.
     joke: 'Nothing physical stops IT. Only the compute node lands real damage — software fights software.',
     resist: { guard: 0.15, trap: 0.15, c18: 0.15, bench: 0.6, search: 1.6 },
   },
   static: {
-    id: 'static', name: 'Static discharge', icon: '⚡', color: '#fde047',
-    hp: 70, speed: 120, gold: 13, leak: 2, armor: 0, r: 11, slowImmune: true,
+    id: 'static', name: 'Static discharge', color: '#fde047',
+    hp: 70, speed: 120, gold: 11, leak: 2, armor: 0, r: 11, slowImmune: true,
     // Dry-room static: fast, unpredictable, fixed by grounding / an ionizer
     // at the bench rather than by anything in the fluid path.
     joke: 'Winter, dry air, nylon lab coat. Ground the bench.',
     resist: { bench: 1.8, guard: 0.7, c18: 0.5, search: 0.9 },
   },
   freezer: {
-    id: 'freezer', name: 'Freezer failure', icon: '🧊', color: '#a5f3fc',
-    hp: 260, speed: 35, gold: 26, leak: 4, armor: 2, r: 15, heals: 6, healR: 90,
+    id: 'freezer', name: 'Freezer failure', color: '#a5f3fc',
+    hp: 260, speed: 35, gold: 22, leak: 4, armor: 2, r: 15, heals: 6, healR: 90,
     // The -80 alarm nobody heard. It keeps everything around it alive,
     // which is exactly the wrong kind of preservation.
     joke: 'The −80 alarm nobody heard. Preserves every enemy around it — kill it first.',
     resist: { guard: 0.85, trap: 0.85, c18: 0.85, search: 0.9, bench: 1.2 },
   },
   deadline: {
-    id: 'deadline', name: 'Grant deadline', icon: '📅', color: '#f9a8d4',
-    hp: 200, speed: 56, gold: 30, leak: 5, armor: 1, r: 14, accel: 7, maxSpeed: 136,
+    id: 'deadline', name: 'Grant deadline', color: '#f9a8d4',
+    hp: 200, speed: 56, gold: 25, leak: 5, armor: 1, r: 14, accel: 7, maxSpeed: 136,
     // Accelerates the whole way in. Preliminary data is what actually
     // defuses a deadline, hence HeLa QC hitting it for 2.2x.
     joke: 'Accelerates the closer it gets. Preliminary data is the only real defence — park it in a QC aura.',
     resist: { hela: 2.2, search: 1.2, guard: 0.6, c18: 0.6, trap: 0.8, bench: 0.8 },
   },
   admin: {
-    id: 'admin', name: 'Evil Administrator', icon: '👔', color: '#fb7185',
-    hp: 900, speed: 27, gold: 160, leak: 1, armor: 8, r: 20, boss: true,
+    id: 'admin', name: 'Evil Administrator', color: '#fb7185',
+    hp: 1150, speed: 27, gold: 140, leak: 1, armor: 8, r: 20, boss: true,
     slowImmune: true, stealsGold: true,
     // The boss. Heavily armoured against every physical defence, immune to
     // being slowed down, and when it reaches the instrument it takes your
@@ -599,13 +1343,19 @@ function spawnEnemy(type, scale, atD) {
 
 /* Damage entry point. Every hit in the game goes through here so the
    resistance table can never be bypassed. */
-function hurt(e, amount, towerType) {
+function hurt(e, amount, towerType, continuous) {
   const def = ENEMIES[e.type];
   const mult = (def.resist && def.resist[towerType] != null) ? def.resist[towerType] : 1;
   const armor = e.strip > 0 ? 0 : (e.armor || 0);
-  // Floor of 1 keeps every tower marginally useful — resistances make a
-  // wrong build slow and expensive, never literally unable to kill.
-  const dmg = Math.max(1, amount * mult - armor);
+  // Discrete hits get a floor of 1 damage, which keeps every tower
+  // marginally useful — resistances make a wrong build slow and expensive,
+  // never literally unable to kill.
+  // Damage-over-time (the QC aura) must NOT take that floor: it is called
+  // once per simulation tick, so a floor of 1 would deal ~30 damage/second
+  // at 30 fps and scale with the frame rate. Ask me how I know.
+  const dmg = continuous
+    ? Math.max(0, amount * mult - armor * amount)
+    : Math.max(1, amount * mult - armor);
   e.hp -= dmg;
   e.hitFlash = 0.12;
   if (e.hp <= 0) killEnemy(e, towerType);
@@ -685,7 +1435,7 @@ function submitScore() {
 function startWave() {
   if (G.phase !== 'build' || G.over) return;
   const w = WAVES[G.wave];
-  const scale = 1 + 0.05 * G.wave;
+  const scale = 1 + 0.10 * G.wave;   // wave 12 arrives at 2.1x base HP
   G.spawnQueue = [];
   for (const grp of w.groups) {
     for (let i = 0; i < grp.n; i++) {
@@ -707,7 +1457,7 @@ function sendEarlyBonus() {
 function finishWave() {
   G.wavesCleared++;
   G.wave++;
-  const bonus = 40 + 15 * G.wavesCleared;
+  const bonus = 35 + 12 * G.wavesCleared;
   G.gold += bonus;
   G.goldEarned += bonus;
   float(430, 300, 'WAVE CLEAR +' + bonus + 'g', '#22c55e');
@@ -829,7 +1579,7 @@ function update(dt) {
         if (st.dps > bestDps) bestDps = st.dps;
       }
     }
-    if (bestDps > 0) hurt(e, bestDps * dt, 'hela');
+    if (bestDps > 0) hurt(e, bestDps * dt, 'hela', true);   // true = damage-over-time
   }
 
   // ── towers
@@ -888,7 +1638,7 @@ function update(dt) {
 
   // ── cleanup + wave end
   G.enemies = G.enemies.filter(e => !e.dead);
-  if (G.phase === 'wave' && G.spawnQueue.length === 0 && G.enemies.length === 0) {
+  if (G.phase === 'wave' && !G.over && G.spawnQueue.length === 0 && G.enemies.length === 0) {
     finishWave();
   }
 
@@ -973,14 +1723,14 @@ function drawPath() {
   strokePath();
   ctx.setLineDash([]);
 
-  // Entry point label — where the sample comes in.
+  // Entry point — the autosampler tray, with its needle dipping into the
+  // line. This is where the queue comes from.
+  artFrame(ctx, 33, 52, 52, SCENE_ART.autosampler);
   ctx.fillStyle = '#475569';
   ctx.font = 'bold 10px sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText('AUTOSAMPLER →', 8, 56);
-  ctx.font = '16px serif';
-  ctx.fillText('🧫', 8, 80);
+  ctx.fillText('AUTOSAMPLER', 8, 16);
 }
 
 function strokePath() {
@@ -990,43 +1740,241 @@ function strokePath() {
   ctx.stroke();
 }
 
-function drawInstrument() {
-  const x = 716, y = 452, w = 128, h = 116;
-  const frac = Math.max(0, G.health) / START_HEALTH;
-  ctx.fillStyle = '#111c33';
-  roundRect(x, y, w, h, 10);
-  ctx.fill();
-  ctx.strokeStyle = G.health <= 6 ? '#f87171' : '#334155';
-  ctx.lineWidth = 2;
-  roundRect(x, y, w, h, 10);
-  ctx.stroke();
+/* Linear blend between two #rrggbb colours, for sooting panels down. */
+function mixHex(a, b, t) {
+  const pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16);
+  const ch = (sh) => Math.round(((pa >> sh) & 255) + ((((pb >> sh) & 255) - ((pa >> sh) & 255)) * t));
+  return 'rgb(' + ch(16) + ',' + ch(8) + ',' + ch(0) + ')';
+}
 
-  // hazard flash when the instrument is nearly gone
-  if (G.health <= 6 && Math.floor(Date.now() / 350) % 2 === 0) {
-    ctx.fillStyle = 'rgba(248,113,113,0.12)';
-    roundRect(x, y, w, h, 10);
-    ctx.fill();
+/* ── The mass spectrometer ──────────────────────────────────────────────────
+   The thing you are defending is a photograph of Brett's actual timsTOF HT,
+   sat on a drawn bench so it belongs to the scene rather than floating in
+   it, with the transfer line from the fluid path plugging into a drawn
+   source union on its left.
+
+   It deteriorates the whole way down, and a real instrument visibly in
+   trouble reads faster than any drawn one:
+
+     100–60%  clean, cyan status strip, steady green board
+      60–30%  desaturating, darkening, first cracks across the panel
+      30–15%  amber beacon turning, smoke venting off the top, red wash
+      15–0%   red strobe, high-voltage arcs at the source
+         0%   dark, grey, SYSTEM FAULT on the board
+
+   The health bar is the instrument's own front-panel readout, on the bench
+   plinth under the photo. */
+const INSTR = { x: 714, y: 424, s: 132 };   // photo tile
+
+/* One fracture: a jagged dark split with a broken glint picked out along it.
+   `steps` are successive [dx, dy] offsets from (x, y). */
+function crack(x, y, steps) {
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  let cx2 = x, cy2 = y;
+  for (const s of steps) { cx2 += s[0]; cy2 += s[1]; ctx.lineTo(cx2, cy2); }
+  ctx.lineJoin = 'miter';
+  ctx.strokeStyle = 'rgba(2,6,23,0.72)';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+  ctx.lineWidth = 0.6;
+  ctx.setLineDash([3, 6]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.lineJoin = 'round';
+}
+
+function drawInstrument() {
+  const frac = Math.max(0, G.health) / START_HEALTH;
+  const t = Date.now() / 1000;
+  const dead = G.health <= 0;
+  const worn = frac <= 0.6;
+  const crit = frac <= 0.3;
+  const dying = frac <= 0.15;
+  const dmg = 1 - frac;
+  const px = INSTR.x, py = INSTR.y, ps = INSTR.s;
+  const hot = frac > 0.5 ? '#22c55e' : (frac > 0.25 ? '#fbbf24' : '#f87171');
+
+  // ── smoke, behind the hardware so it reads as venting off the top
+  if (crit) {
+    const amt = Math.min(1, (0.3 - frac) / 0.3);
+    for (let i = 0; i < 6; i++) {
+      const ph = ((t * 0.34) + i * 0.167) % 1;
+      const sx2 = px + 26 + i * 16 + Math.sin(t * 1.3 + i * 2) * 6;
+      const sy2 = py + 4 - ph * 48;
+      ctx.beginPath();
+      ctx.arc(sx2, sy2, 5 + ph * 14, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(148,163,184,' + (0.28 * (1 - ph) * amt).toFixed(3) + ')';
+      ctx.fill();
+    }
   }
 
-  ctx.fillStyle = '#fbbf24';
-  ctx.font = 'bold 10px sans-serif';
+  // ── nameplate
+  ctx.font = 'bold 9px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('MASS SPECTROMETER', x + w / 2, y + 15);
-  ctx.font = '34px serif';
-  ctx.fillText('🛰️', x + w / 2, y + 50);
+  ctx.fillStyle = frac > 0.5 ? '#94a3b8' : (frac > 0.25 ? '#fbbf24' : '#f87171');
+  ctx.fillText('timsTOF HT', px + ps / 2, py - 10);
 
-  // instrument health bar
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(x + 14, y + 78, w - 28, 10);
-  ctx.fillStyle = frac > 0.5 ? '#22c55e' : (frac > 0.25 ? '#fbbf24' : '#f87171');
-  ctx.fillRect(x + 14, y + 78, (w - 28) * frac, 10);
-  ctx.strokeStyle = '#334155';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(x + 14, y + 78, w - 28, 10);
-  ctx.fillStyle = '#94a3b8';
-  ctx.font = '9px sans-serif';
-  ctx.fillText(Math.max(0, G.health) + ' / ' + START_HEALTH, x + w / 2, y + 100);
+  // ── the instrument itself
+  ctx.save();
+  rr(ctx, px, py, ps, ps, 5);
+  ctx.clip();
+  if (instrPhotoOk) {
+    // Progressive desaturation where canvas filters exist; the overlays
+    // below carry the damage on their own where they do not.
+    if (CANVAS_FILTER_OK && dmg > 0.02) {
+      ctx.filter = 'grayscale(' + (dmg * 0.85).toFixed(2) + ') ' +
+                   'brightness(' + (1 - dmg * 0.3).toFixed(2) + ') ' +
+                   'contrast(' + (1 + dmg * 0.15).toFixed(2) + ')';
+    }
+    ctx.drawImage(instrPhoto, px, py, ps, ps);
+    ctx.filter = 'none';
+  } else {
+    drawInstrumentBody(px, py, ps, dmg);      // data: URI blocked — draw it
+  }
+  // darkening + emergency wash
+  ctx.fillStyle = 'rgba(2,6,23,' + (0.06 + dmg * 0.4).toFixed(3) + ')';
+  ctx.fillRect(px, py, ps, ps);
+  if (crit) {
+    const puls = 0.10 + 0.10 * Math.sin(t * 6);
+    ctx.fillStyle = 'rgba(220,38,38,' + puls.toFixed(3) + ')';
+    ctx.fillRect(px, py, ps, ps);
+  }
+  // Panel cracks. A dark fracture with a broken white glint along it — a
+  // single clean polyline just reads as somebody drew on the photo.
+  if (worn) crack(px + 40, py + 4, [[12, 22], [-9, 8], [17, 24], [-10, 8], [18, 26], [-6, 12]]);
+  if (worn) crack(px + 52, py + 26, [[-14, 10], [-6, 16]]);
+  if (crit) crack(px + 100, py + 92, [[-18, 16], [8, 12], [-14, 18]]);
+  if (crit) crack(px + 18, py + 30, [[14, 12], [-6, 14], [12, 10]]);
+  ctx.restore();
+
+  // frame around the tile
+  rr(ctx, px, py, ps, ps, 5);
+  ctx.strokeStyle = dead ? '#7f1d1d' : (crit ? '#ef4444' : '#334155');
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // ── source union: the transfer line from the path plugs in here
+  ctx.fillStyle = mixHex('#93a2b6', '#3a424e', dmg);
+  ctx.fillRect(px - 10, 514, 14, 12);
+  inkRect(ctx, px - 10, 514, 14, 12, 1.2);
+  ctx.fillStyle = mixHex('#cfd9e5', '#4a525e', dmg);
+  ctx.fillRect(px - 16, 518, 7, 4);
+  // spray status LED on the union
+  dot(ctx, px - 3, 520, 2, dead ? '#450a0a' : (crit ? '#ef4444' : '#7dd3fc'));
+
+  // ── bench plinth + front-panel readout (this IS the health bar)
+  ctx.fillStyle = mixHex('#1b2536', '#080c14', dmg);
+  rr(ctx, px - 8, py + ps, ps + 16, 14, 3);
+  ctx.fill();
+  inkRect(ctx, px - 8, py + ps, ps + 16, 14, 1);
+  // bar on the left, readout on the right — they must not sit on top of
+  // each other or the number becomes unreadable the moment the bar is full
+  ctx.fillStyle = '#050a14';
+  ctx.fillRect(px + 4, py + ps + 3, ps - 46, 8);
+  if (dead) {
+    ctx.font = 'bold 7px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#f87171';
+    ctx.fillText('SYSTEM FAULT', px + 8, py + ps + 7.5);
+  } else {
+    const barW = (ps - 48) * frac;
+    if (barW > 1) {
+      ctx.fillStyle = hot;
+      ctx.fillRect(px + 5, py + ps + 4, barW, 6);
+    }
+  }
+  ctx.font = 'bold 8px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.fillStyle = hot;
+  ctx.fillText(Math.max(0, G.health) + '/' + START_HEALTH, px + ps - 5, py + ps + 7.5);
+  ctx.textAlign = 'center';
+
+  // ── status strip bolted down the left of the bench
+  const strip = dead ? '#7f1d1d'
+    : frac > 0.5 ? '#22d3ee'
+    : frac > 0.25 ? '#f59e0b' : '#ef4444';
+  const lit = frac > 0.25 ? true : (Math.floor(t * 4) % 2 === 0);
+  ctx.fillStyle = lit ? strip : 'rgba(30,41,59,0.9)';
+  ctx.fillRect(px - 6, py + 6, 5, ps - 12);
+  if (lit && !dead) {
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = strip;
+    ctx.fillRect(px - 9, py + 2, 11, ps - 4);
+    ctx.globalAlpha = 1;
+  }
+
+  // ── warning beacon, bolted to the top corner of the instrument
+  if (crit) {
+    const on = Math.floor(t * 2.5) % 2 === 0;
+    ctx.fillStyle = mixHex('#2b3648', '#0b1018', dmg);
+    ctx.fillRect(px + ps - 22, py - 7, 16, 8);
+    dot(ctx, px + ps - 14, py - 4, 4.6, on ? '#fbbf24' : '#4a3a12');
+    if (on) {
+      ctx.globalAlpha = 0.25;
+      dot(ctx, px + ps - 14, py - 4, 15, '#fbbf24');
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // ── high-voltage arcing at the source once it is nearly gone
+  if (dying && !dead) {
+    const seed = Math.floor(t * 9);
+    if (seed % 2 === 0) {
+      ctx.strokeStyle = 'rgba(224,242,254,0.9)';
+      ctx.lineWidth = 1.3;
+      for (let k = 0; k < 2; k++) {
+        const ax = px - 14 + ((seed * 37 + k * 53) % 22);
+        const ay = 500 + ((seed * 17 + k * 29) % 34);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ax + 5, ay + 6);
+        ctx.lineTo(ax + 1, ay + 9);
+        ctx.lineTo(ax + 7, ay + 16);
+        ctx.stroke();
+      }
+    }
+  }
+}
+
+/* Fallback instrument, drawn with primitives in the same house style as the
+   towers. Used when the photograph cannot be decoded — most plausibly a CSP
+   that allows the page but forbids `data:` images, in which case the game
+   still has something to defend. Called already clipped to the tile. */
+function drawInstrumentBody(px, py, ps, dmg) {
+  const k = ps / 132;
+  const bx = px + 34 * k, by = py + 8 * k, bw = 92 * k, bh = 116 * k;
+  ctx.fillStyle = mixHex('#0f1726', '#05080f', dmg);
+  ctx.fillRect(px, py, ps, ps);
+  // analyser stack
+  const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+  g.addColorStop(0, mixHex('#41536f', '#0c1420', dmg));
+  g.addColorStop(0.42, mixHex('#2a3850', '#080e18', dmg));
+  g.addColorStop(1, mixHex('#1a2439', '#05090f', dmg));
+  ctx.fillStyle = g;
+  ctx.fillRect(bx, by, bw, bh);
+  inkRect(ctx, bx, by, bw, bh, 2);
+  // exhaust grille
+  ctx.fillStyle = 'rgba(2,6,23,0.5)';
+  for (let i = 0; i < 5; i++) ctx.fillRect(bx + 12 * k, by + 10 * k + i * 7 * k, bw - 34 * k, 3 * k);
+  // analyser panel
+  ctx.fillStyle = 'rgba(2,6,23,0.45)';
+  ctx.fillRect(bx + 10 * k, by + 52 * k, bw - 20 * k, 24 * k);
+  ctx.beginPath();
+  ctx.ellipse(bx + 32 * k, by + 64 * k, 13 * k, 8 * k, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = mixHex('#7c8ca2', '#2b3446', dmg);
+  ctx.lineWidth = 1.4; ctx.stroke();
+  // source housing
+  ctx.fillStyle = mixHex('#33425c', '#0a111d', dmg);
+  ctx.fillRect(px + 2 * k, py + 62 * k, 34 * k, 50 * k);
+  inkRect(ctx, px + 2 * k, py + 62 * k, 34 * k, 50 * k, 2);
+  dot(ctx, px + 19 * k, py + 87 * k, 11 * k, '#050a14');
+  dot(ctx, px + 19 * k, py + 87 * k, 3 * k, mixHex('#7dd3fc', '#243044', dmg));
+  // front board
+  ctx.fillStyle = '#050a14';
+  ctx.fillRect(bx + 10 * k, by + 84 * k, bw - 20 * k, 22 * k);
 }
 
 function hexPath(cx, cy, r) {
@@ -1115,10 +2063,9 @@ function drawTower(t) {
     ctx.lineWidth = 1.5;
     ctx.stroke();
   }
-  ctx.font = '17px serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(def.icon, t.x, t.y - 1);
+  // the hardware itself — 30 px inside a 21 px hex, which leaves the level
+  // pips and the muzzle stub clear
+  artFrame(ctx, t.x, t.y - 2, 30, TOWER_ART[t.type]);
   // level pips
   for (let i = 0; i < t.level; i++) {
     ctx.beginPath();
@@ -1148,19 +2095,32 @@ function drawEnemy(e) {
     ctx.lineWidth = 1;
     ctx.stroke();
   }
+  // A soft disc of the enemy's own colour behind the drawing: it lifts the
+  // silhouette off the grey fluid line without hiding the shape, which is
+  // what actually tells the enemies apart.
   ctx.beginPath();
-  ctx.arc(e.x, e.y, r, 0, Math.PI * 2);
-  ctx.fillStyle = e.hitFlash > 0 ? '#ffffff' : def.color;
-  ctx.globalAlpha = 0.85;
+  ctx.arc(e.x, e.y, r + 2, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(2,6,23,0.5)';
+  ctx.fill();
+  ctx.globalAlpha = 0.16;
+  ctx.fillStyle = def.color;
   ctx.fill();
   ctx.globalAlpha = 1;
-  ctx.strokeStyle = def.boss ? '#fbbf24' : 'rgba(2,6,23,0.7)';
-  ctx.lineWidth = def.boss ? 2.5 : 1.5;
-  ctx.stroke();
-  ctx.font = (def.boss ? '22px' : (r > 12 ? '15px' : '11px')) + ' serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(def.icon, e.x, e.y + 1);
+  if (def.boss) {
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+  artFrame(ctx, e.x, e.y, r * 2.4, ENEMY_ART[e.type]);
+  // white flash on the frame it takes a hit, the way keratin-invaders does it
+  if (e.hitFlash > 0) {
+    ctx.globalAlpha = Math.min(0.7, e.hitFlash * 5);
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, r + 1, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
 
   // slowed marker
   if (e.slowUntil > 0) {
@@ -1279,6 +2239,8 @@ function drawBanner() {
 }
 
 function roundRect(x, y, w, h, r) {
+  // Clamped so a nearly-empty progress bar (w < 2r) still draws a sane shape.
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.lineTo(x + w - r, y);
@@ -1305,9 +2267,10 @@ function buildShop() {
     card.dataset.id = id;
     card.innerHTML =
       '<span class="key">' + d.key + '</span>' +
-      '<div class="ico">' + d.icon + '</div>' +
+      '<div class="ico">' + iconTag('t', id, 30) + '</div>' +
       '<div class="nm">' + d.short + '</div>' +
       '<div class="cost">' + d.cost + 'g</div>';
+    fillIcons(card);
     card.addEventListener('click', () => {
       G.selType = (G.selType === id) ? null : id;
       G.selTower = null;
@@ -1333,13 +2296,14 @@ function showInfoTower(id) {
   const l = d.levels[0];
   el('infoTitle').textContent = 'Tower';
   el('info').innerHTML =
-    '<div class="nm">' + d.icon + ' ' + d.name + '</div>' +
+    '<div class="nm">' + iconTag('t', id, 15) + d.name + '</div>' +
     '<div class="stat">Cost <b>' + d.cost + 'g</b> · ' +
       (d.kind === 'aura'
         ? 'Aura <b>' + l.range + '</b> · <b>' + l.dps + '</b> dps · buff <b>+' + Math.round(l.buffDmg * 100) + '%</b> dmg'
         : 'Dmg <b>' + l.dmg + '</b> · Range <b>' + l.range + '</b> · <b>' + l.rate.toFixed(2) + '</b>/s') +
     '</div>' +
     '<div style="margin-top:5px">' + d.blurb + '</div>';
+  fillIcons(el('info'));
 }
 
 function showInfoPlaced(t) {
@@ -1348,7 +2312,7 @@ function showInfoPlaced(t) {
   const up = upgradeCost(t);
   el('infoTitle').textContent = 'Selected tower';
   el('info').innerHTML =
-    '<div class="nm">' + d.icon + ' ' + d.name + ' <span style="color:#94a3b8">lvl ' + t.level + '</span></div>' +
+    '<div class="nm">' + iconTag('t', t.type, 15) + d.name + ' <span style="color:#94a3b8">lvl ' + t.level + '</span></div>' +
     '<div class="stat">' +
       (d.kind === 'aura'
         ? 'Aura <b>' + Math.round(st.range) + '</b> · <b>' + st.dps + '</b> dps'
@@ -1361,6 +2325,7 @@ function showInfoPlaced(t) {
         : '<button disabled>Max level</button>') +
       '<button id="btnSell">Sell ' + Math.round(t.invested * SELL_REFUND) + 'g</button>' +
     '</div>';
+  fillIcons(el('info'));
   const bu = el('btnUp');
   if (bu) bu.addEventListener('click', () => { if (upgradeTower(t)) showInfoPlaced(t); refreshShop(); });
   el('btnSell').addEventListener('click', () => {
@@ -1386,7 +2351,7 @@ function buildBestiary() {
     const row = document.createElement('div');
     row.className = 'row';
     row.innerHTML =
-      '<div class="e">' + d.icon + '</div>' +
+      '<div class="e">' + iconTag('e', d.id, 19) + '</div>' +
       '<div><span class="n">' + d.name + '</span>' +
       (d.slowImmune ? ' <span style="color:#a78bfa">unslowable</span>' : '') +
       (d.armor ? ' <span style="color:#94a3b8">armour ' + d.armor + '</span>' : '') +
@@ -1395,6 +2360,7 @@ function buildBestiary() {
       (weak.length && res.length ? '<br>' : '') +
       (res.length ? '<span class="r">resists: ' + res.join(', ') + '</span>' : '') +
       '</div>';
+    fillIcons(row);
     row.addEventListener('mouseenter', () => showInfoEnemy(d));
     list.appendChild(row);
   }
@@ -1409,20 +2375,28 @@ function showInfoEnemy(d) {
   }
   el('infoTitle').textContent = 'Enemy';
   el('info').innerHTML =
-    '<div class="nm">' + d.icon + ' ' + d.name + '</div>' +
+    '<div class="nm">' + iconTag('e', d.id, 15) + d.name + '</div>' +
     '<div class="stat">HP <b>' + d.hp + '</b> · speed <b>' + d.speed + '</b> · bounty <b>' + d.gold + 'g</b> · leak <b>-' + d.leak + '</b></div>' +
     (d.armor ? '<div class="stat">Armour <b>' + d.armor + '</b> (a HeLa QC aura strips it)</div>' : '') +
     (d.slowImmune ? '<div class="stat">Cannot be slowed.</div>' : '') +
     (parts.length ? '<div style="margin-top:4px">' + parts.join(' · ') + '</div>' : '') +
     '<div class="joke" style="margin-top:5px">' + d.joke + '</div>';
+  fillIcons(el('info'));
+}
+
+// Live score projection. endGame() folds the end-of-run bonuses into
+// G.score, so after that point G.score is already the final number and must
+// not have the bonuses added a second time.
+function displayScore() {
+  return Math.round(G.over ? G.score : G.score + G.goldEarned + G.wavesCleared * 120);
 }
 
 function updateHud() {
   el('vHealth').textContent = Math.max(0, G.health);
   el('pHealth').classList.toggle('hurt', G.health <= 6);
   el('vGold').textContent = Math.floor(G.gold);
-  el('vWave').textContent = Math.min(G.wave + (G.phase === 'wave' ? 1 : 1), WAVES.length) + '/' + WAVES.length;
-  el('vScore').textContent = Math.round(G.score + G.goldEarned + G.wavesCleared * 120);
+  el('vWave').textContent = Math.min(G.wave + 1, WAVES.length) + '/' + WAVES.length;
+  el('vScore').textContent = displayScore();
   el('waveLabel').textContent = 'Wave ' + Math.min(G.wave + 1, WAVES.length) + ' of ' + WAVES.length;
   el('waveHint').textContent = G.wave < WAVES.length ? WAVES[G.wave].hint : '';
   const btn = el('btnSend');
@@ -1498,21 +2472,23 @@ cv.addEventListener('mousemove', (evt) => {
   const tip = el('tip');
   if (e) {
     const d = ENEMIES[e.type];
-    tip.innerHTML = '<span class="nm">' + d.icon + ' ' + d.name + '</span>' +
+    tip.innerHTML = '<span class="nm">' + iconTag('e', d.id, 14) + d.name + '</span>' +
       Math.ceil(e.hp) + '/' + e.maxHp + ' hp' +
       (e.slowUntil > 0 ? ' · <span class="good">slowed</span>' : '') +
       (d.armor ? ' · armour ' + (e.strip > 0 ? '<span class="good">stripped</span>' : d.armor) : '') +
       '<div class="joke">' + d.joke + '</div>';
+    fillIcons(tip);
     tip.style.display = 'block';
     tip.style.left = Math.min(window.innerWidth - 262, evt.clientX + 14) + 'px';
     tip.style.top = (evt.clientY + 16) + 'px';
   } else if (G.hoverTower) {
     const t = G.hoverTower, d = TOWERS[t.type], st = tstats(t);
-    tip.innerHTML = '<span class="nm">' + d.icon + ' ' + d.name + ' lvl ' + t.level + '</span>' +
+    tip.innerHTML = '<span class="nm">' + iconTag('t', t.type, 14) + d.name + ' lvl ' + t.level + '</span>' +
       (d.kind === 'aura'
         ? 'aura ' + Math.round(st.range) + ' · ' + st.dps + ' dps · buff +' + Math.round((TOWERS.hela.levels[t.level - 1].buffDmg) * 100) + '% dmg'
         : 'dmg ' + st.dmg.toFixed(1) + ' · range ' + Math.round(st.range) + ' · ' + st.rate.toFixed(2) + '/s') +
       '<div class="joke">Click to upgrade or sell.</div>';
+    fillIcons(tip);
     tip.style.display = 'block';
     tip.style.left = Math.min(window.innerWidth - 262, evt.clientX + 14) + 'px';
     tip.style.top = (evt.clientY + 16) + 'px';
@@ -1636,6 +2612,8 @@ function frame(ts) {
 }
 
 G = newGame();
+el('titleIcon').innerHTML = iconTag('s', 'massspec', 16);
+fillIcons(el('titleIcon'));
 buildShop();
 buildBestiary();
 reset();
@@ -1647,6 +2625,9 @@ window.__CD = {
   get G() { return G; },
   update, startWave, buildTower, upgradeTower, sellTower, reset,
   TOWERS, ENEMIES, WAVES, SLOTS, PATH_LEN, TOWER_ORDER,
+  // artwork, so the harness can prove every tower and enemy has a drawing
+  // and that each one actually issues canvas primitives
+  TOWER_ART, ENEMY_ART, SCENE_ART, artFrame,
 };
 </script>
 </body>

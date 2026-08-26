@@ -135,9 +135,10 @@
 // A match-3 where the gems are the instruments in the core. Everything is in
 // this one file on purpose: the dashboard is served locally (and sometimes
 // behind an SSO proxy with a strict CSP), so there are zero external requests
-// — no CDN, no fonts, no images. Tile art is drawn on the canvas; the emoji
-// are only a garnish on top of a distinct shape + colour, so the board still
-// reads fine if a workstation's emoji font is missing a glyph.
+// — no CDN, no fonts, no images, not one external URL in the whole file. Every
+// instrument on the board is hand-drawn with canvas paths (see "Instrument
+// art" further down): no photographs, no manufacturer logos, just a likeness
+// built from the right proportions and the right family colours.
 //
 // THE MECHANIC (the bit only a mass spectrometrist will smile at):
 // PEG contamination. Polyethylene glycol turns up in real labs from gloves,
@@ -160,26 +161,50 @@ const ctx = canvas.getContext('2d');
 canvas.width = BW; canvas.height = BW;
 
 // ── Tiles ──────────────────────────────────────────────────────────────────
-// Every tile is a real thing that lives in (or haunts) a proteomics core.
-// `shape` matters as much as `color`: shape is what makes the board readable
-// for colour-blind players and if an emoji fails to render.
+// Every tile is a real thing that lives in (or haunts) a proteomics core —
+// and four of them are literally the boxes down the hall.
+//
+// `art` names the drawn routine in INSTRUMENT_ART; `color` drives the tile
+// plate, the label, the burst particles and the legend. Index order is
+// load-bearing: activePool() hands out 0-5 from batch 1 and adds the LTQ at
+// index 6 from batch 3, so don't reorder these.
+//
+// WHY THESE ARE DRAWN AND NOT PHOTOGRAPHED — we tried, properly, and it does
+// not work; please don't redo the experiment. Real photos of this core's
+// timsTOF, Exploris, Lumos and Evosep were inlined as data: URIs, masked to
+// four different outlines, vignetted and colour-washed, and put on the board.
+// At the size a tile actually renders — 57 px at best, 49 px on a laptop —
+// every one of them collapses to two or three blobs of tone. The features
+// that identify these instruments (the 'timsTOF HT' lettering, the 'Orbitrap
+// Exploris 480' panel, the Evotip racks) are all sub-pixel there. Cropping
+// tighter onto the instrument helps at 192 px and does nothing at 49 px;
+// posterising and edge-boosting made it worse. The deeper problem is that
+// match-3 is *scanned*, not studied: four photographs that all resolve to
+// 'pale blob on dark' leave the accent wash and the border doing all the
+// work, which is the exact colour-only failure this board must avoid.
+// Drawn instruments have flat regions, a hard outline and a distinct
+// silhouette, which is what survives at 49 px.
 const TYPES = [
-  { key:'astral', glyph:'\u{1F30C}', label:'ASTRAL', name:'Orbitrap Astral', color:'#a78bfa', shape:'hex',
+  // The core doesn't own an Astral, so this one is drawn.
+  { key:'astral', art:'astral', label:'ASTRAL', name:'Orbitrap Astral', color:'#a78bfa',
     quip:'Astral at 200 Hz. The precursors just keep coming.' },
-  { key:'tims', glyph:'\u{1F300}', label:'timsTOF', name:'timsTOF HT', color:'#38bdf8', shape:'circle',
+  { key:'tims', art:'tims', label:'timsTOF', name:'timsTOF HT', color:'#2dd4bf',
     quip:'PASEF ramp locked. Mobility-resolved and smug about it.' },
-  { key:'waters', glyph:'\u{1F4A7}', label:'P10', name:'Waters P10', color:'#22d3ee', shape:'diamond',
+  // Brett asked for the P10 by name. There is no photo of it, so it stays drawn.
+  { key:'waters', art:'waters', label:'WATERS', name:'Waters P10', color:'#e2e8f0',
     quip:'The Waters box did something. Nobody in the core is sure what.' },
-  { key:'exploris', glyph:'\u{1F52D}', label:'480', name:'Exploris 480', color:'#4ade80', shape:'square',
+  { key:'exploris', art:'exploris', label:'480', name:'Exploris 480', color:'#4ade80',
     quip:'Exploris 480: dependable as a brick, and about as exciting.' },
-  { key:'lumos', glyph:'\u{26A1}', label:'LUMOS', name:'Fusion Lumos', color:'#fbbf24', shape:'star',
+  { key:'lumos', art:'lumos', label:'LUMOS', name:'Fusion Lumos', color:'#fbbf24',
     quip:'Tribrid flex — HCD, CID and ETD, all in one swap.' },
-  { key:'hela', glyph:'\u{1F9EA}', label:'HeLa', name:'HeLa QC standard', color:'#f472b6', shape:'pill',
-    quip:'HeLa QC passed. Again. Forever. Until the end of time.' },
+  // The only non-mass-spec on the board. Drawn, it is the only tile with a tip
+  // rack on the lid; photographed, it is the Evotip racks and the bottles.
+  { key:'evosep', art:'evosep', label:'EVOSEP', name:'Evosep One', color:'#60a5fa',
+    quip:'Evosep One: preformed gradient, no re-equilibration, no drama.' },
   // The LTQ is wheeled out of the storage room at batch 3. A 7th tile type
   // makes matches meaningfully rarer, which is the difficulty knob — and it
   // is funnier than just making the numbers bigger.
-  { key:'ltq', glyph:'\u{1F5FF}', label:'LTQ', name:'LTQ (the ancient one)', color:'#94a3b8', shape:'triangle',
+  { key:'ltq', art:'ltq', label:'LTQ', name:'LTQ (the ancient one)', color:'#d6c39a',
     quip:'The LTQ still runs. That has always been the problem.' },
 ];
 const LTQ_LEVEL = 3;
@@ -196,7 +221,11 @@ const SPARE_BONUS = 200;   // per unused injection at end of batch
 // than one that occasionally regenerates a board. See resolveSettled().
 const CASCADE_PANIC = 25;
 
-function goalFor(level) { return 3000 + 900 * (level - 1); }
+// Curve calibrated against a headless bot that plays uniformly random legal
+// moves: it wins ~3% of campaigns, and dies about 1/3 to PEG and 2/3 to running
+// out of injections. A human who prioritises PEG and builds LIB-FREE tiles is
+// well clear of that. Change these numbers and the whole feel moves — re-measure.
+function goalFor(level) { return 10000 + 1300 * (level - 1); }
 function pegSpawnEvery(level) { return Math.max(3, 7 - Math.floor(level / 2)); }
 function pegSpreadChance(level) { return Math.min(0.45, 0.12 + 0.035 * level); }
 
@@ -838,35 +867,265 @@ function roundRect(x, y, w, h, r) {
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
 }
-function polyPath(cx, cy, R, n, rot) {
-  ctx.beginPath();
-  for (let i = 0; i < n; i++) {
-    const a = rot + i * 2 * Math.PI / n;
-    const x = cx + Math.cos(a) * R, y = cy + Math.sin(a) * R;
-    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
-  }
-  ctx.closePath();
+// ── Instrument art ─────────────────────────────────────────────────────────
+// Seven hand-drawn instruments, canvas paths only. No photographs and no
+// manufacturer logos: press shots are copyrighted, and the dashboard can sit
+// behind an SSO proxy with a strict CSP where one external <img> would blank
+// the whole game. What we are after is a *likeness* — the right stance, the
+// right proportions, the family colours — not a reproduction.
+//
+// Each routine draws into a normalised box: x and y both run -1..1 with the
+// bench at y ≈ 0.95, and the caller supplies the translate + scale, so every
+// number below is in units of "half a tile". Line widths are normalised too
+// (0.05 ≈ 1 px on the board). Keep the detail coarse — anything finer than
+// about 2 px on screen is invisible at the size these actually render.
+//
+// READABILITY RULE — silhouette first, colour second. A match-3 grid is
+// exactly where red/green colour blindness bites, so the seven bodies are
+// separated by profile and aspect ratio before they are separated by hue:
+//
+//   Lumos     tall + narrow, three stacked sections with lit seams (tallest)
+//   Astral    tall + wide, source wing bolted to the left flank
+//   Exploris  compact square benchtop on stubby feet
+//   timsTOF   wide + low, top-left corner chamfered off
+//   Waters P10  wide with a curved front face; the only pale body
+//   LTQ       wide + flat, beige, square corners, vent slots, chunky feet
+//   Evosep    smallest chassis, and the only one with a tip rack on its lid
+//
+// If you add a tile, give it a profile no existing tile has. Two instruments
+// that differ only in colour is the one failure mode that matters here.
+//
+// HOUSE STYLE: this follows the vocabulary the rest of the arcade already
+// uses — see drawParts() in angry-specs.html and drawFighter() in
+// karatemass.html. Stacked rectangles, a hard '#0a0f1a' outline, a brand
+// accent stripe down the left edge of the cabinet, status LEDs as small
+// filled arcs, a linear gradient for anything cylindrical, an ellipse contact
+// shadow. The one departure is that these draw in a normalised box rather
+// than pixel coordinates, because a match-3 tile has to scale with the pop
+// and spawn animations — same drawing vocabulary, different units.
+// Manufacturer wordmarks are left off on purpose: the tile label underneath
+// already says which box it is.
+
+const BODY = {
+  thermoDark:  '#39414e',   // Thermo graphite
+  thermoMid:   '#4b5666',
+  thermoDoor:  '#c2cad6',   // the light front doors
+  thermoDoor2: '#a3adbc',
+  brukerDark:  '#212a38',   // Bruker runs darker than Thermo
+  brukerFace:  '#2f3a4c',
+  watersWhite: '#e9eef5',
+  watersGrey:  '#b3bece',
+  watersBand:  '#5b6879',
+  beige:       '#d3c49c',   // 2005, and it shows
+  beigeDark:   '#b6a67d',
+  beigeShade:  '#8f8261',
+  evoBlue:     '#2f6fe4',
+  evoBlueDark: '#1d4ed8',
+  screen:      '#0e2148',
+  shade:       '#1a212d',
+  outline:     '#0a0f1a',   // the hard outline every game in this arcade uses
+  thermoRed:   '#dc2626',   // brand accent stripes, as in angry-specs.html
+  watersTeal:  '#0f8a9c',
+  ledGreen:    '#22c55e',
+  ledAmber:    '#fbbf24',
+};
+
+// Path/paint helpers. They take the context explicitly (not the module-level
+// `ctx`) because the legend renders the same art into its own little canvases.
+function aRect(g, x, y, w, h, r) {
+  r = Math.min(r || 0, w / 2, h / 2);
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
 }
-function starPath(cx, cy, R, r, n, rot) {
-  ctx.beginPath();
-  for (let i = 0; i < n * 2; i++) {
-    const rad = i % 2 ? r : R;
-    const a = rot + i * Math.PI / n;
-    const x = cx + Math.cos(a) * rad, y = cy + Math.sin(a) * rad;
-    if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
-  }
-  ctx.closePath();
+function aFill(g, col, x, y, w, h, r) {
+  aRect(g, x, y, w, h, r); g.fillStyle = col; g.fill();
 }
-function shapePath(shape, cx, cy, R) {
-  switch (shape) {
-    case 'circle':   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); break;
-    case 'hex':      polyPath(cx, cy, R, 6, Math.PI / 6); break;
-    case 'diamond':  polyPath(cx, cy, R * 1.08, 4, -Math.PI / 2); break;
-    case 'triangle': polyPath(cx, cy, R * 1.12, 3, -Math.PI / 2); break;
-    case 'star':     starPath(cx, cy, R * 1.1, R * 0.5, 5, -Math.PI / 2); break;
-    case 'pill':     roundRect(cx - R, cy - R * 0.78, R * 2, R * 1.56, R * 0.7); break;
-    default:         roundRect(cx - R * 0.92, cy - R * 0.92, R * 1.84, R * 1.84, 9);
+// Strokes whatever path is still current — call it straight after aFill().
+function aEdge(g, col, lw) { g.strokeStyle = col; g.lineWidth = lw; g.stroke(); }
+function aLine(g, col, lw, x1, y1, x2, y2) {
+  g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2);
+  g.strokeStyle = col; g.lineWidth = lw; g.lineCap = 'round'; g.stroke();
+}
+// Status LED — a small filled arc, the same idiom as drawParts() next door.
+function aDot(g, col, x, y, r) {
+  g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2);
+  g.fillStyle = col; g.fill();
+}
+// Contact shadow, so a body reads as standing on a bench rather than floating.
+function aShadow(g, halfWidth) {
+  g.beginPath();
+  g.ellipse(0, 0.99, halfWidth, 0.075, 0, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(0,0,0,0.42)';
+  g.fill();
+}
+
+// Orbitrap Astral — full-height tower, source/turbo wing bolted to the left
+// flank, and a narrower shoulder on top. Deliberately the DARK Thermo tile:
+// the Exploris next to it is the pale one, so the two never read alike even
+// though both are grey boxes with a light door.
+function artAstral(g, acc) {
+  aShadow(g, 0.95);
+  // Source / turbo wing on the left flank, stepped below the tower.
+  aFill(g, BODY.thermoMid, -0.98, -0.28, 0.44, 1.23, 0.07);
+  aEdge(g, BODY.outline, 0.055);
+  aFill(g, BODY.thermoDark, -0.90, -0.18, 0.30, 0.44, 0.05);
+  aFill(g, acc, -0.90, 0.70, 0.30, 0.10, 0.05);
+  // Narrower shoulder on top, with the green "ready" LED the other games use.
+  aFill(g, BODY.thermoDark, -0.52, -0.98, 1.08, 0.30, 0.07);
+  aEdge(g, BODY.outline, 0.055);
+  aDot(g, BODY.ledGreen, 0.30, -0.83, 0.075);
+  // Main tower.
+  aFill(g, BODY.thermoDark, -0.52, -0.74, 1.48, 1.69, 0.09);
+  aEdge(g, BODY.outline, 0.06);
+  // Thermo red stripe down the left edge of the cabinet — the same brand tell
+  // angry-specs.html paints on its Thermo parts, and the only red on the board.
+  aFill(g, BODY.thermoRed, -0.52, -0.62, 0.14, 1.45, 0.04);
+  aFill(g, acc, -0.30, -0.60, 1.14, 0.12, 0.06);               // light bar
+  // One big door and no horizontal banding — that is deliberate. The Lumos
+  // owns stacked bands on this board; if the Astral had them too the two tall
+  // tiles would be a coin flip at tile size.
+  aFill(g, BODY.thermoDoor, -0.30, -0.36, 1.14, 1.08, 0.06);
+  aLine(g, 'rgba(96,108,128,0.75)', 0.07, -0.16, 0.40, 0.66, 0.40);
+  aDot(g, BODY.ledAmber, 0.70, 0.80, 0.06);
+}
+
+// timsTOF — wide and low, and the only body with a chamfered corner.
+function artTims(g, acc) {
+  aShadow(g, 1.0);
+  g.beginPath();
+  g.moveTo(-1.00,  0.86);
+  g.lineTo(-1.00, -0.16);
+  g.lineTo(-0.66, -0.48);       // chamfer across the top-left corner
+  g.lineTo( 0.90, -0.48);
+  g.lineTo( 1.00, -0.38);
+  g.lineTo( 1.00,  0.86);
+  g.closePath();
+  g.fillStyle = BODY.brukerDark; g.fill();
+  aEdge(g, acc, 0.05);
+  aFill(g, BODY.brukerFace, -0.86, -0.26, 1.72, 0.80, 0.06);   // recessed face
+  g.beginPath(); g.arc(-0.48, 0.14, 0.21, 0, Math.PI * 2);     // source port
+  g.fillStyle = BODY.brukerDark; g.fill();
+  aEdge(g, acc, 0.05);
+  aFill(g, acc, -0.86, 0.62, 1.72, 0.12, 0.06);                // full-width bar
+  aFill(g, BODY.shade, -0.80, 0.86, 0.34, 0.09, 0.03);
+  aFill(g, BODY.shade,  0.46, 0.86, 0.34, 0.09, 0.03);
+}
+
+// Waters P10 — pale body whose entire left face is one convex sweep. The
+// curve and the near-white fill are both unique on the board.
+function watersBodyPath(g) {
+  g.beginPath();
+  g.moveTo(-0.22, -0.56);
+  g.lineTo( 0.86, -0.56);
+  g.quadraticCurveTo(1.00, -0.56, 1.00, -0.42);
+  g.lineTo( 1.00,  0.78);
+  g.quadraticCurveTo(1.00, 0.92, 0.86, 0.92);
+  g.lineTo(-0.22,  0.92);
+  g.bezierCurveTo(-1.16, 0.92, -1.16, -0.56, -0.22, -0.56);
+  g.closePath();
+}
+function artWaters(g, acc) {
+  aShadow(g, 0.94);
+  watersBodyPath(g);
+  g.fillStyle = BODY.watersWhite; g.fill();
+  aEdge(g, BODY.outline, 0.06);
+  g.save();
+  watersBodyPath(g); g.clip();          // keep the details on the curved face
+  aFill(g, BODY.watersBand, -1.20, 0.30, 2.40, 0.30, 0.0);
+  // Waters teal stripe along the top edge — brand accent in the same place
+  // and the same weight as the Thermo red on the Astral.
+  aFill(g, BODY.watersTeal, -1.20, -0.56, 2.40, 0.12, 0.0);
+  aFill(g, BODY.watersGrey, -0.78, -0.30, 0.62, 0.50, 0.10);
+  aEdge(g, 'rgba(10,15,26,0.55)', 0.04);
+  aFill(g, acc, 0.10, 0.36, 0.66, 0.10, 0.05);
+  aDot(g, BODY.ledGreen, 0.84, 0.06, 0.065);
+  g.restore();
+}
+
+// Orbitrap Exploris 480 — the compact square benchtop, and the pale Thermo:
+// one big light door across nearly the whole face.
+function artExploris(g, acc) {
+  aShadow(g, 0.72);
+  aFill(g, BODY.thermoMid, -0.68, -0.42, 1.36, 1.28, 0.10);
+  aEdge(g, acc, 0.05);
+  aFill(g, BODY.thermoDoor, -0.56, -0.30, 1.12, 0.86, 0.07);   // one big door
+  aLine(g, 'rgba(96,108,128,0.75)', 0.07, -0.36, 0.20, 0.36, 0.20);
+  aFill(g, acc, -0.56, 0.62, 1.12, 0.12, 0.06);
+  aFill(g, acc, 0.38, -0.20, 0.13, 0.13, 0.065);
+  aFill(g, BODY.shade, -0.52, 0.86, 0.30, 0.09, 0.03);         // stubby feet
+  aFill(g, BODY.shade,  0.22, 0.86, 0.30, 0.09, 0.03);
+}
+
+// Orbitrap Fusion Lumos — tallest, and visibly three boxes stacked. The lit
+// seams between the sections are the tribrid tell.
+function artLumos(g, acc) {
+  aShadow(g, 0.68);
+  const x = -0.66, w = 1.32;
+  aFill(g, BODY.thermoDark, x, -0.98, w, 0.62, 0.08); aEdge(g, acc, 0.045);
+  aFill(g, BODY.thermoDark, x, -0.30, w, 0.58, 0.08); aEdge(g, acc, 0.045);
+  aFill(g, BODY.thermoDark, x,  0.34, w, 0.61, 0.08); aEdge(g, acc, 0.045);
+  aFill(g, BODY.thermoDoor,  x + 0.11, -0.88, w - 0.22, 0.38, 0.05);
+  aFill(g, BODY.thermoDoor2, x + 0.11, -0.20, w - 0.22, 0.34, 0.05);
+  aFill(g, BODY.thermoDoor2, x + 0.11,  0.44, w - 0.22, 0.28, 0.05);
+  aFill(g, acc, x + 0.06, -0.35, w - 0.12, 0.06, 0.03);
+  aFill(g, acc, x + 0.06,  0.29, w - 0.12, 0.06, 0.03);
+}
+
+// LTQ — the beige one nobody will throw out. Square corners, vent slots,
+// chunky feet and a two-line LCD: dated on purpose, that is the joke.
+function artLTQ(g, acc) {
+  aShadow(g, 0.90);
+  aFill(g, BODY.beige, -0.88, -0.16, 1.76, 0.98, 0.03);
+  aEdge(g, BODY.outline, 0.06);
+  aFill(g, BODY.beigeDark, -0.88, -0.16, 1.76, 0.18, 0.03);    // yellowed bezel
+  // Faded Thermo/Finnigan-era red stripe. Same brand tell as the Astral, but
+  // sun-bleached — this thing has been on that bench since 2005.
+  aFill(g, '#9c4b46', -0.88, 0.04, 1.76, 0.09, 0.02);
+  aFill(g, BODY.beigeDark, -1.00, 0.16, 0.20, 0.44, 0.02);     // source housing
+  aEdge(g, BODY.outline, 0.05);
+  for (let i = 0; i < 4; i++) {
+    aLine(g, BODY.beigeShade, 0.06, 0.26, 0.24 + i * 0.15, 0.76, 0.24 + i * 0.15);
   }
+  aFill(g, '#2b2a18', -0.66, 0.24, 0.50, 0.30, 0.02);          // two-line LCD
+  aFill(g, acc, -0.60, 0.30, 0.36, 0.06, 0.01);
+  aFill(g, acc, -0.60, 0.41, 0.24, 0.06, 0.01);
+  aDot(g, BODY.ledAmber, 0.80, 0.72, 0.055);                   // one tired LED
+  aFill(g, BODY.beigeShade, -0.74, 0.82, 0.32, 0.11, 0.02);    // chunky feet
+  aFill(g, BODY.beigeShade,  0.42, 0.82, 0.32, 0.11, 0.02);
+}
+
+// Evosep One — not a mass spec at all, which is why it is the small one. The
+// rack of tips poking off the lid is what identifies it at tile size.
+function artEvosep(g, acc) {
+  aShadow(g, 0.54);
+  for (let i = 0; i < 5; i++) {
+    aFill(g, '#dbe4f5', -0.44 + i * 0.20, -0.44, 0.10, 0.26, 0.04);
+  }
+  aFill(g, '#94a3b8', -0.54, -0.21, 1.08, 0.11, 0.04);         // rack rail
+  aFill(g, BODY.evoBlue, -0.56, -0.10, 1.12, 1.00, 0.09);
+  aEdge(g, acc, 0.05);
+  aFill(g, BODY.evoBlueDark, -0.54, 0.54, 1.08, 0.34, 0.05);   // plinth
+  aFill(g, '#e8edf4', -0.44, 0.06, 0.88, 0.34, 0.06);
+  aFill(g, BODY.screen, -0.36, 0.12, 0.52, 0.22, 0.04);
+  aFill(g, acc, 0.22, 0.14, 0.14, 0.18, 0.04);
+}
+
+const INSTRUMENT_ART = {
+  astral: artAstral, tims: artTims, waters: artWaters, exploris: artExploris,
+  lumos: artLumos, evosep: artEvosep, ltq: artLTQ,
+};
+
+// Draw instrument `T` around the current origin of `g`, filling the -1..1 box.
+// The caller owns translate/scale and must wrap this in save()/restore() —
+// the art routines change fill/stroke/lineCap and do not put them back.
+function drawInstrument(g, T) {
+  const fn = INSTRUMENT_ART[T.art];
+  if (fn) fn(g, T.color);
 }
 
 function drawCellBg(r, c) {
@@ -947,22 +1206,32 @@ function drawTile(cell) {
     return;
   }
 
-  // Normal instrument tile: shape + colour first (readable without emoji),
-  // glyph and short label on top.
-  ctx.fillStyle = T.color + '2e';
-  shapePath(T.shape, cx, cy - 3, R * 0.92);
+  // Normal instrument tile. The drawn body is what identifies it — the tinted
+  // plate behind it and the label under it are the backup, so the board still
+  // reads for a player who can't separate two of the accent hues.
+  ctx.fillStyle = T.color + '24';
+  // Corner radius follows R so the plate keeps its shape while a cleared tile
+  // shrinks away (R goes to 0; a fixed radius would flare out).
+  roundRect(cx - R * 1.08, cy - R * 1.08, R * 2.16, R * 2.16, Math.min(9, R * 0.42));
   ctx.fill();
-  ctx.strokeStyle = T.color;
-  ctx.lineWidth = 1.8;
+  ctx.strokeStyle = T.color + '55';
+  ctx.lineWidth = 1.2;
   ctx.stroke();
+
+  // The art draws in a -1..1 box; sit it high in the tile to leave room for
+  // the label, and let R carry the pop/born animation scale.
+  ctx.save();
+  ctx.translate(cx, cy - R * 0.24);
+  ctx.scale(R * 0.78, R * 0.78);
+  ctx.lineJoin = 'round';
+  drawInstrument(ctx, T);
+  ctx.restore();
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = Math.round(21 * scale) + 'px serif';
-  ctx.fillText(T.glyph, cx, cy - 4);
   ctx.font = 'bold ' + Math.max(6, Math.round(8 * scale)) + 'px "Courier New", monospace';
   ctx.fillStyle = T.color;
-  ctx.fillText(T.label, cx, cy + R * 0.72);
+  ctx.fillText(T.label, cx, cy + R * 0.86);
   ctx.restore();
 }
 
@@ -1214,15 +1483,33 @@ document.getElementById('muteBtn').addEventListener('click', toggleMute);
 document.getElementById('resetBtn').addEventListener('click', () => newGame());
 
 // ── Legend (built from TYPES so it can never drift out of sync) ────────────
+// Each chip is a real render of the same art routine the board uses, into its
+// own little canvas — so the legend physically cannot disagree with the tiles.
+function instrumentChip(T) {
+  const W = 27, H = 22;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const c = document.createElement('canvas');
+  c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+  c.style.width = W + 'px'; c.style.height = H + 'px';
+  c.style.verticalAlign = 'middle';
+  const g = c.getContext('2d');
+  g.scale(dpr, dpr);
+  g.translate(W / 2, H / 2 + 1);
+  g.scale(H / 2.35, H / 2.35);
+  g.lineJoin = 'round';
+  drawInstrument(g, T);
+  return c;
+}
+
 (function buildLegend() {
   const box = document.getElementById('legend');
   box.innerHTML = '';
   for (const T of TYPES) {
     const s = document.createElement('span');
     s.style.color = T.color;
-    s.textContent = T.glyph + ' ';
+    s.appendChild(instrumentChip(T));
     const b = document.createElement('b');
-    b.textContent = T.name;
+    b.textContent = ' ' + T.name;
     s.appendChild(b);
     box.appendChild(s);
   }
