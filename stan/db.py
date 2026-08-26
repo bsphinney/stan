@@ -1291,6 +1291,19 @@ def update_peg_result(
         db_path = get_db_path()
     if table not in ("runs", "sample_health"):
         raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
+    # PG mode: the row lives in the central store, not the local SQLite
+    # file, so the SQLite UPDATE below would match zero rows and silently
+    # throw the result away. Only `runs` is mirrored to PG; sample_health
+    # stays SQLite-local.
+    from stan.db_pg import update_peg_result_pg, use_pg
+    if use_pg() and table == "runs":
+        return update_peg_result_pg(
+            run_id=run_id,
+            peg_score=peg_score,
+            peg_n_ions_detected=peg_n_ions_detected,
+            peg_intensity_pct=peg_intensity_pct,
+            peg_class=peg_class,
+        )
     with connect(db_path) as con:
         cur = con.execute(
             f"UPDATE {table} SET peg_score = ?, peg_n_ions_detected = ?, "
@@ -1320,6 +1333,16 @@ def update_drift_result(
         db_path = get_db_path()
     if table not in ("runs", "sample_health"):
         raise ValueError(f"table must be 'runs' or 'sample_health', got {table!r}")
+    # PG mode: see update_peg_result — same reason.
+    from stan.db_pg import update_drift_result_pg, use_pg
+    if use_pg() and table == "runs":
+        return update_drift_result_pg(
+            run_id=run_id,
+            drift_coverage=drift_coverage,
+            drift_median_im=drift_median_im,
+            drift_p90_abs_im=drift_p90_abs_im,
+            drift_class=drift_class,
+        )
     with connect(db_path) as con:
         cur = con.execute(
             f"UPDATE {table} SET drift_coverage = ?, drift_median_im = ?, "

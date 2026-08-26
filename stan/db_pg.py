@@ -247,6 +247,63 @@ def _connect_with_retry():
     raise last
 
 
+def update_peg_result_pg(
+    run_id: str,
+    peg_score: float,
+    peg_n_ions_detected: int,
+    peg_intensity_pct: float,
+    peg_class: str,
+) -> bool:
+    """Write a PEG detection result onto an existing PG ``runs`` row.
+
+    PG counterpart of ``stan.db.update_peg_result``. Needed because the
+    Hive pipeline inserts the row into PG but computed PEG/drift with
+    SQLite-only helpers, so every UPDATE matched zero rows against an
+    empty local stan.db and the (expensive) result was discarded. That is
+    why timsTOF PEG/drift coverage fell to 0% from 2026-06 -- exactly when
+    PG became the store of record -- while TIC, written inline at insert,
+    kept working.
+
+    Returns True if a row was updated, False if no such id exists.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET peg_score = %s, peg_n_ions_detected = %s, "
+            "peg_intensity_pct = %s, peg_class = %s WHERE id = %s",
+            (peg_score, peg_n_ions_detected, peg_intensity_pct,
+             peg_class, run_id),
+        )
+        n = cur.rowcount
+        pg.commit()
+    return n > 0
+
+
+def update_drift_result_pg(
+    run_id: str,
+    drift_coverage: float,
+    drift_median_im: float,
+    drift_p90_abs_im: float,
+    drift_class: str,
+) -> bool:
+    """Write a DIA window-drift result onto an existing PG ``runs`` row.
+
+    PG counterpart of ``stan.db.update_drift_result``. See
+    ``update_peg_result_pg`` for why this exists.
+
+    Returns True if a row was updated, False if no such id exists.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "UPDATE runs SET drift_coverage = %s, drift_median_im = %s, "
+            "drift_p90_abs_im = %s, drift_class = %s WHERE id = %s",
+            (drift_coverage, drift_median_im, drift_p90_abs_im,
+             drift_class, run_id),
+        )
+        n = cur.rowcount
+        pg.commit()
+    return n > 0
+
+
 def insert_run_pg(
     instrument: str,
     run_name: str,

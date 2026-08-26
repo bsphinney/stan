@@ -304,7 +304,7 @@ def _run_peg_and_drift(
     try:
         spectra = list(read_ms1_any(raw_path))
         peg = detect_peg_in_spectra(spectra)
-        update_peg_result(
+        if not update_peg_result(
             run_id=run_id,
             peg_score=peg.peg_score,
             peg_n_ions_detected=peg.n_ions_detected,
@@ -312,7 +312,14 @@ def _run_peg_and_drift(
             peg_class=peg.peg_class,
             db_path=db_path,
             table="runs",
-        )
+        ):
+            # Zero rows matched means the PEG compute was thrown away.
+            # This failed silently for months once PG became the store of
+            # record — never let it be quiet again.
+            logger.warning(
+                "PEG result NOT persisted (no runs row id=%s) for %s",
+                run_id, raw_path.name,
+            )
         try:
             insert_peg_ion_hits(
                 run_id=run_id, matches=peg.matches,
@@ -320,17 +327,19 @@ def _run_peg_and_drift(
             )
         except Exception:
             logger.debug("PEG breakdown write failed", exc_info=True)
-    except PegReaderUnavailable:
-        logger.warning("alphatims missing — PEG + drift skipped for %s", raw_path.name)
+    except PegReaderUnavailable as e:
+        # Don't name alphatims specifically — Thermo .raw reaches this via
+        # a missing fisher_py, and the wrong library name sends debugging
+        # after a Bruker dependency that was installed all along.
+        logger.warning(
+            "MS1 reader unavailable — PEG + drift skipped for %s (%s)",
+            raw_path.name, e,
+        )
         peg_reader_available = False
-        try:
-            update_peg_result(
-                run_id=run_id, peg_score=0.0,
-                peg_n_ions_detected=0, peg_intensity_pct=0.0,
-                peg_class="unknown", db_path=db_path, table="runs",
-            )
-        except Exception:
-            pass
+        # Deliberately leave peg_* NULL rather than stamping peg_score=0.0
+        # / peg_class="unknown". A run we could not measure is not a clean
+        # run: 0.0 reads as a real "no PEG detected" result downstream,
+        # whereas NULL renders "—" and keeps coverage stats honest.
     except Exception as e:
         logger.warning("PEG detect failed for %s (%s)", raw_path.name, e)
         try:
@@ -347,7 +356,7 @@ def _run_peg_and_drift(
 
     try:
         drift = detect_window_drift(raw_path)
-        update_drift_result(
+        if not update_drift_result(
             run_id=run_id,
             drift_coverage=drift.global_coverage,
             drift_median_im=drift.median_drift_im,
@@ -355,7 +364,11 @@ def _run_peg_and_drift(
             drift_class=drift.drift_class,
             db_path=db_path,
             table="runs",
-        )
+        ):
+            logger.warning(
+                "drift result NOT persisted (no runs row id=%s) for %s",
+                run_id, raw_path.name,
+            )
         if drift.drift_class != "unknown":
             try:
                 insert_drift_window_centroids(
