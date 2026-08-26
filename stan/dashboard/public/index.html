@@ -4912,29 +4912,161 @@
       );
     }
 
+    /* ── Cross-instrument sensitivity ──────────────────────────────
+       Same standard (50 ng HeLa), grouped by SPD. SPD stays a separate
+       row rather than being pooled per instrument because throughput
+       dominates depth — pooling a 30 SPD run with a 100 SPD one would
+       compare gradient length, not sensitivity. */
+    function InstrumentComparison() {
+      const [days, setDays] = useState(90);
+      const [metric, setMetric] = useState('precursors');
+      const { data, loading, error } = useFetch(`/api/fleet/comparison?days=${days}`, [days]);
+
+      const METRICS = [['precursors', 'Precursors'], ['peptides', 'Peptides'], ['proteins', 'Protein groups']];
+
+      if (loading && !data) return <div className="card">Loading comparison…</div>;
+      if (error) return <div className="card" style={{ color: '#c33' }}>Error: {error}</div>;
+      if (!data) return null;
+      const cohorts = (data.cohorts || []).filter(c => (c[metric] || 0) > 0);
+      if (!cohorts.length) {
+        return (
+          <div className="card">
+            <h3>Cross-instrument sensitivity</h3>
+            <div style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+              No cohorts with ≥3 runs at {data.amount_ng} ng in the last {days} days.
+            </div>
+          </div>
+        );
+      }
+      // Colour follows the instrument, never its rank, so filtering the
+      // window can't repaint the survivors.
+      const instruments = Array.from(new Set(data.cohorts.map(c => c.instrument))).sort();
+      const colorOf = i => SERIES[instruments.indexOf(i) % SERIES.length];
+      const max = Math.max(...cohorts.map(c => c[metric] || 0));
+      const fmt = v => v == null ? '—' : Number(v).toLocaleString();
+
+      return (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <h3 style={{ marginBottom: 0 }}>Cross-instrument sensitivity</h3>
+            <div style={{ display: 'flex', gap: '0.4rem', fontSize: '0.8rem' }}>
+              <select value={metric} onChange={e => setMetric(e.target.value)}>
+                {METRICS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+              <select value={days} onChange={e => setDays(Number(e.target.value))}>
+                <option value={30}>30 days</option>
+                <option value={90}>90 days</option>
+                <option value={365}>1 year</option>
+              </select>
+            </div>
+          </div>
+          <div style={{ fontSize: '0.78rem', color: 'var(--muted)', margin: '0.35rem 0 0.7rem' }}>
+            Median {METRICS.find(m => m[0] === metric)[1].toLowerCase()} at {data.amount_ng} ng HeLa, by SPD cohort (≥{data.min_runs} runs).
+            {instruments.map(i => (
+              <span key={i} style={{ marginLeft: '0.7rem' }}>
+                <span style={{ color: colorOf(i) }}>■</span> {i}
+              </span>
+            ))}
+          </div>
+
+          {cohorts.map((c, idx) => {
+            const v = c[metric] || 0;
+            const pct = max > 0 ? (v / max) * 100 : 0;
+            return (
+              <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.32rem' }}>
+                <div style={{ width: '190px', fontSize: '0.78rem', color: 'var(--text)', flexShrink: 0 }}>
+                  {c.instrument} <span style={{ color: 'var(--muted)' }}>· {c.spd ?? '?'} SPD</span>
+                </div>
+                <div style={{ flex: 1, background: 'var(--bg)', borderRadius: '3px', height: '18px', position: 'relative', minWidth: '80px' }}>
+                  <div style={{ width: `${pct}%`, background: colorOf(c.instrument), height: '100%', borderRadius: '3px' }} />
+                </div>
+                <div style={{ width: '76px', textAlign: 'right', fontSize: '0.78rem', fontVariantNumeric: 'tabular-nums' }}>{fmt(v)}</div>
+                <div style={{ width: '52px', textAlign: 'right', fontSize: '0.72rem', color: 'var(--muted)' }}>n={c.n_runs}</div>
+              </div>
+            );
+          })}
+
+          <details style={{ marginTop: '0.8rem' }}>
+            <summary style={{ cursor: 'pointer', color: 'var(--muted)', fontSize: '0.78rem' }}>Table view</summary>
+            <table style={{ marginTop: '0.5rem' }}>
+              <thead><tr>
+                <th>Instrument</th><th>SPD</th><th>Mode</th><th style={{ textAlign: 'right' }}>Runs</th>
+                <th style={{ textAlign: 'right' }}>Precursors</th><th style={{ textAlign: 'right' }}>Peptides</th>
+                <th style={{ textAlign: 'right' }}>Proteins</th><th style={{ textAlign: 'right' }}>IPS</th>
+              </tr></thead>
+              <tbody>
+                {data.cohorts.map((c, i) => (
+                  <tr key={i}>
+                    <td>{c.instrument}</td><td>{c.spd ?? '—'}</td><td>{c.mode || '—'}</td>
+                    <td style={{ textAlign: 'right' }}>{c.n_runs}</td>
+                    <td style={{ textAlign: 'right' }}>{fmt(c.precursors)}</td>
+                    <td style={{ textAlign: 'right' }}>{fmt(c.peptides)}</td>
+                    <td style={{ textAlign: 'right' }}>{fmt(c.proteins)}</td>
+                    <td style={{ textAlign: 'right' }}>{c.ips ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        </div>
+      );
+    }
+
+    /* Ingest freshness from the runs table. This replaced the old
+       instrument-PC heartbeat: all searching happens on Hive now, so the
+       PCs no longer run a watcher and their status.json heartbeats sat
+       permanently stale in red for machines behaving exactly as intended.
+       What matters is whether QC runs are still landing. */
+    function IngestFreshness() {
+      const { data } = useFetch('/api/fleet/instruments', []);
+      if (!data || !(data.instruments || []).length) return null;
+      const ageDays = iso => {
+        if (!iso) return null;
+        const t = new Date(String(iso).replace(' ', 'T'));
+        return isNaN(t) ? null : (Date.now() - t.getTime()) / 86400000;
+      };
+      return (
+        <div className="card">
+          <h3>QC ingest</h3>
+          <table>
+            <thead><tr>
+              <th>Instrument</th><th>Last QC ingested</th>
+              <th style={{ textAlign: 'right' }}>Last 7 days</th>
+              <th style={{ textAlign: 'right' }}>Total runs</th>
+            </tr></thead>
+            <tbody>
+              {data.instruments.map(r => {
+                const age = ageDays(r.last_run_date);
+                const tone = age == null ? 'var(--muted)' : age <= 3 ? '#199e70' : age <= 10 ? 'var(--accent)' : '#d95926';
+                return (
+                  <tr key={r.instrument}>
+                    <td>{r.instrument}</td>
+                    <td style={{ color: tone }}>
+                      {r.last_run_date ? String(r.last_run_date).slice(0, 16) : '—'}
+                      {age != null && <span style={{ color: 'var(--muted)' }}> · {age < 1 ? 'today' : `${age.toFixed(0)}d ago`}</span>}
+                    </td>
+                    <td style={{ textAlign: 'right' }}>{r.n_last_7d}</td>
+                    <td style={{ textAlign: 'right' }}>{r.n_runs.toLocaleString()}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginTop: '0.5rem' }}>
+            Searching runs on Hive, so this tracks ingest into the central DB — not instrument-PC heartbeats.
+          </div>
+        </div>
+      );
+    }
+
     /* ── Fleet tab ─────────────────────────────────────────────────
        Reads <mirror>/<host>/status.json for every instrument mounted
        on the shared drive. Lets the user fire a whitelisted command
        (ping / status / tail_log / export_db_snapshot) and poll the
        result file. Read-only view by default; command buttons are
        hidden behind a toggle so they can't be clicked by accident. */
-    function formatHeartbeat(iso) {
-      if (!iso) return '—';
-      try {
-        const ts = new Date(iso);
-        const ageSec = (Date.now() - ts.getTime()) / 1000;
-        if (ageSec < 60) return `${Math.round(ageSec)}s ago`;
-        if (ageSec < 3600) return `${Math.round(ageSec / 60)}m ago`;
-        if (ageSec < 86400) return `${(ageSec / 3600).toFixed(1)}h ago`;
-        return `${(ageSec / 86400).toFixed(1)}d ago`;
-      } catch (e) { return '—'; }
-    }
-
     function FleetHostRow({ host, expanded, onToggle, onCommand, result }) {
       const s = host.status || {};
-      const hbIso = s.timestamp;
-      const ageSec = hbIso ? (Date.now() - new Date(hbIso).getTime()) / 1000 : Infinity;
-      const stale = ageSec > 30 * 60;
       const last = s.last_run || {};
 
       // v0.2.235: surface watcher crashes from status.json so a
@@ -4961,7 +5093,6 @@
         <>
           <tr style={{ cursor: 'pointer' }} onClick={() => onToggle(host.name)}>
             <td>{expanded ? '▾' : '▸'} {host.name}{crashBadge}</td>
-            <td style={{ color: stale ? '#c77' : '#6b6' }}>{formatHeartbeat(hbIso)}</td>
             <td>{s.stan_version || '—'}</td>
             <td style={{ textAlign: 'right' }}>{s.n_runs ?? '—'}</td>
             <td>{last.run_name || '—'}</td>
@@ -4969,9 +5100,8 @@
           </tr>
           {expanded && (
             <tr>
-              <td colSpan={6} style={{ background: '#fafafa', padding: '0.75rem 1rem' }}>
+              <td colSpan={5} style={{ background: '#fafafa', padding: '0.75rem 1rem' }}>
                 <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
-                  <button onClick={() => onCommand(host.name, 'ping')}>Ping</button>
                   <button onClick={() => onCommand(host.name, 'status')}>Refresh status</button>
                   <button onClick={() => onCommand(host.name, 'tail_log', { name: 'baseline', n: 50 })}>Tail baseline.log (50)</button>
                   <button onClick={() => onCommand(host.name, 'watcher_debug')}>Watcher debug</button>
@@ -5054,9 +5184,12 @@
       }
 
       return (
+        <>
+        <IngestFreshness />
+        <InstrumentComparison />
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-            <h2>Fleet</h2>
+            <h2>Mirror hosts</h2>
             <div style={{ fontSize: '0.8rem', color: '#888' }}>
               <code>{data.root}</code> · {data.hosts.length} host(s) · auto-refresh 30s · <button onClick={reload}>↻</button>
             </div>
@@ -5065,7 +5198,6 @@
             <thead>
               <tr style={{ textAlign: 'left', borderBottom: '1px solid #ddd' }}>
                 <th>Host</th>
-                <th>Heartbeat</th>
                 <th>Version</th>
                 <th style={{ textAlign: 'right' }}>Runs</th>
                 <th>Last run</th>
@@ -5086,10 +5218,187 @@
             </tbody>
           </table>
           <p style={{ fontSize: '0.75rem', color: '#888', marginTop: '1rem' }}>
-            Click a row to expand the command panel. Only read-only actions are wired up.
-            Destructive actions (updater, process kill) are intentionally not exposed yet.
+            Last state each host synced to the mirror. Searching runs on Hive, so these
+            instrument-PC values are historical — see QC ingest above for live status.
+            Click a row to expand the read-only command panel.
           </p>
         </div>
+        </>
+      );
+    }
+
+    /* ── Charting primitives ───────────────────────────────────────
+       Inline SVG, no chart library: the page already pulls React +
+       Babel from a CDN and a third dependency is not worth it for bar
+       charts. Series colours come from the validated dark-surface
+       categorical palette (slots 1/2/3) — see the dataviz palette
+       reference. Never cycle hues; a 4th series would need a new slot. */
+    const SERIES = ['#3987e5', '#d95926', '#199e70'];
+
+    /* Bars with a hover tooltip. `data` is [{label, value}]. A chart in
+       HTML is interactive by default, so every bar carries a hit target
+       and a tooltip rather than relying on an axis read-off. */
+    function BarChart({ data, color = SERIES[0], height = 120, valueFmt = v => v,
+                        refLines = [] }) {
+      const [hover, setHover] = useState(null);
+      if (!data || !data.length) {
+        return <div style={{ color: 'var(--muted)', padding: '1rem 0', fontSize: '0.85rem' }}>No data in range.</div>;
+      }
+      const max = Math.max(...data.map(d => d.value), ...refLines.map(r => r.value), 1);
+      const n = data.length;
+      const gap = n > 60 ? 0 : 2;              // 2px surface gap between bars
+      const barW = Math.max(1, (100 / n));
+      return (
+        <div style={{ position: 'relative' }}>
+          <svg viewBox={`0 0 100 ${height}`} preserveAspectRatio="none"
+               style={{ width: '100%', height: `${height}px`, display: 'block', overflow: 'visible' }}>
+            {refLines.map((r, i) => {
+              const y = height - (r.value / max) * height;
+              return (
+                <g key={`ref${i}`}>
+                  <line x1="0" x2="100" y1={y} y2={y} stroke={r.color || '#a0b4cc'}
+                        strokeWidth="1" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" opacity="0.75" />
+                </g>
+              );
+            })}
+            {data.map((d, i) => {
+              const h = max > 0 ? (d.value / max) * height : 0;
+              const x = i * barW;
+              const isHot = hover && hover.i === i;
+              return (
+                <rect key={i} x={x + gap / 2} y={height - h}
+                      width={Math.max(0.5, barW - gap)} height={h}
+                      rx="1" fill={color} opacity={hover && !isHot ? 0.55 : 1}
+                      onMouseEnter={() => setHover({ i, ...d })}
+                      onMouseLeave={() => setHover(null)} />
+              );
+            })}
+          </svg>
+          {refLines.map((r, i) => (
+            <div key={`rl${i}`} style={{
+              position: 'absolute', right: 0,
+              top: `${height - (r.value / max) * height - 14}px`,
+              fontSize: '0.65rem', color: 'var(--muted)', pointerEvents: 'none',
+            }}>{r.label}</div>
+          ))}
+          {hover && (
+            <div style={{
+              position: 'absolute', top: '-2px', left: `${Math.min(75, (hover.i / n) * 100)}%`,
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: '4px', padding: '2px 7px', fontSize: '0.72rem',
+              color: 'var(--text)', pointerEvents: 'none', whiteSpace: 'nowrap', zIndex: 5,
+            }}>{hover.label}: <strong>{valueFmt(hover.value)}</strong></div>
+          )}
+        </div>
+      );
+    }
+
+    /* A single number is a stat tile, not a chart. */
+    function StatTile({ label, value, sub, tone }) {
+      const color = tone === 'accent' ? 'var(--accent)' : 'var(--text)';
+      return (
+        <div style={{
+          background: 'var(--bg)', border: '1px solid var(--border)',
+          borderRadius: '0.5rem', padding: '0.6rem 0.9rem', minWidth: '120px', flex: '1 1 120px',
+        }}>
+          <div style={{ color: 'var(--muted)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>{label}</div>
+          <div style={{ fontSize: '1.5rem', fontWeight: 700, color, lineHeight: 1.25 }}>{value}</div>
+          {sub && <div style={{ color: 'var(--muted)', fontSize: '0.72rem' }}>{sub}</div>}
+        </div>
+      );
+    }
+
+    /* ── Samples: throughput + utilisation ─────────────────────────
+       Counts come from the Hive-side acquisition counter, not the runs
+       table: STAN only ingests QC/HeLa runs, so `runs` sees a handful of
+       injections a day out of a hundred real ones and would understate
+       utilisation by an order of magnitude. */
+    function UtilizationPanel() {
+      const [days, setDays] = useState(60);
+      const [inst, setInst] = useState('');
+      const { data, loading, error } = useFetch(`/api/utilization?days=${days}`, [days]);
+
+      if (loading && !data) return <div className="card">Loading throughput…</div>;
+      if (error) return <div className="card" style={{ color: '#c33' }}>Error: {error}</div>;
+      if (!data) return null;
+      if (!data.available) {
+        return (
+          <div className="card">
+            <h3>Throughput &amp; utilisation</h3>
+            <div style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+              Not available yet — {data.reason}
+            </div>
+          </div>
+        );
+      }
+      const names = Object.keys(data.instruments || {});
+      if (!names.length) return null;
+      const active = inst && names.includes(inst) ? inst : names[0];
+      const b = data.instruments[active];
+      const daily = Object.entries(b.daily).map(([k, v]) => ({ label: k, value: v }));
+      const weekly = Object.entries(b.weekly).map(([k, v]) => ({ label: k, value: v }));
+      const caps = data.capacities || [100, 60];
+
+      return (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <h3 style={{ marginBottom: 0 }}>Throughput &amp; utilisation</h3>
+            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', fontSize: '0.8rem' }}>
+              <select value={active} onChange={e => setInst(e.target.value)}>
+                {names.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <select value={days} onChange={e => setDays(Number(e.target.value))}>
+                <option value={30}>30 days</option>
+                <option value={60}>60 days</option>
+                <option value={90}>90 days</option>
+                <option value={365}>1 year</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', margin: '0.8rem 0' }}>
+            <StatTile label="Acquisitions" value={b.total.toLocaleString()} sub={`${b.active_days} active days`} />
+            <StatTile label="Mean / active day" value={b.mean_per_active_day} sub={`peak ${b.peak_day}`} />
+            {caps.map(c => (
+              <StatTile key={c} tone="accent"
+                        label={`Utilisation @ ${c} SPD`}
+                        value={`${b.utilization_pct[String(c)]}%`}
+                        sub={`peak ${b.peak_utilization_pct[String(c)]}%`} />
+            ))}
+          </div>
+
+          <div style={{ fontSize: '0.8rem', color: 'var(--muted)', margin: '0.6rem 0 0.2rem' }}>
+            Samples per day
+            <span style={{ marginLeft: '0.6rem', color: SERIES[0] }}>■</span> acquisitions
+            <span style={{ marginLeft: '0.6rem' }}>┈ dashed = SPD capacity</span>
+          </div>
+          <BarChart data={daily} color={SERIES[0]} height={130}
+                    refLines={caps.map(c => ({ value: c, label: `${c} SPD` }))} />
+
+          <div style={{ fontSize: '0.8rem', color: 'var(--muted)', margin: '1rem 0 0.2rem' }}>
+            Samples per week
+            <span style={{ marginLeft: '0.6rem', color: SERIES[1] }}>■</span> acquisitions
+          </div>
+          <BarChart data={weekly} color={SERIES[1]} height={110} />
+
+          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginTop: '0.7rem' }}>
+            Counted on Hive from the Flinders archive — every acquisition, not just QC.
+            Aggregate day counts only; no filenames or sample data leave the cluster.
+            {data.generated_at ? ` Counted ${String(data.generated_at).slice(0, 16).replace('T', ' ')} UTC.` : ''}
+          </div>
+        </div>
+      );
+    }
+
+    /* ── Samples tab ───────────────────────────────────────────────
+       Throughput + utilisation first (the question asked most often),
+       then per-sample health below. */
+    function SamplesTab() {
+      return (
+        <>
+          <UtilizationPanel />
+          <SampleHealthPanel />
+        </>
       );
     }
 
@@ -5117,7 +5426,7 @@
       return (
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.5rem' }}>
-            <h2>Sample Health</h2>
+            <h2>Sample health</h2>
             <div style={{ fontSize: '0.85rem' }}>
               <span style={{ color: verdictColor('pass') }}>✓ {c.pass ?? 0} pass</span>
               {' · '}
@@ -5194,7 +5503,7 @@
             <span className="version">{ver ? `v${ver.version}` : ''}</span>
           </header>
           <div className="tabs">
-            {[['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'], ['health', 'Sample Health'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community'], ['arcade', '🎮 Arcade'], ['museum', '🏛 Museum']].map(([k, label]) =>
+            {[['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'], ['health', 'Samples'], ['fleet', 'Fleet'], ['config', 'Config'], ['community', 'Community'], ['arcade', '🎮 Arcade'], ['museum', '🏛 Museum']].map(([k, label]) =>
               <div key={k} className={`tab ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>{label}</div>
             )}
           </div>
@@ -5202,7 +5511,7 @@
             {tab === 'live' && <LiveRuns />}
             {tab === 'history' && <RunHistory />}
             {tab === 'trends' && <TrendCharts />}
-            {tab === 'health' && <SampleHealthPanel />}
+            {tab === 'health' && <SamplesTab />}
             {tab === 'fleet' && <FleetPanel />}
             {tab === 'config' && <ConfigEditor />}
             {tab === 'community' && <CommunityTab />}

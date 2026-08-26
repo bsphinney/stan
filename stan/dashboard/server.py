@@ -1293,6 +1293,193 @@ async def api_sample_health(
 
 # ── Fleet (stan.control) ─────────────────────────────────────────────
 
+@app.get("/api/utilization")
+async def api_utilization(days: int = 90) -> dict:
+    """Instrument throughput + capacity utilisation from the Hive counter.
+
+    Reads the aggregate JSON written by ``scripts/count_acquisitions.py`` on
+    Hive. That counter walks the Flinders archive and emits **per-day counts
+    only** -- no filenames, paths, or sample data -- because STAN never
+    ingests patient samples, so the ``runs`` table alone would report a
+    handful of QC injections against a hundred real acquisitions.
+
+    Returns per-instrument daily and ISO-weekly counts, plus utilisation
+    against each nominal SPD capacity (a 100 SPD method run flat out is 100
+    acquisitions/day, so 47 of them is 47%).
+    """
+    import json
+    from datetime import date, timedelta
+
+    from stan.config import get_hive_mirror_root
+
+    root = get_hive_mirror_root()
+    path = (root / "utilization.json") if root else None
+    if path is None or not path.exists():
+        return {"available": False, "reason":
+                "utilization.json not found on the Hive mirror — run "
+                "scripts/count_acquisitions.py on Hive.", "instruments": {}}
+    try:
+        raw = json.loads(path.read_text())
+    except Exception as e:  # noqa: BLE001
+        return {"available": False, "reason": f"unreadable: {e}", "instruments": {}}
+
+    cutoff = date.today() - timedelta(days=int(days))
+    caps = raw.get("capacities") or [100, 60]
+    out: dict = {}
+    for name, blk in (raw.get("instruments") or {}).items():
+        daily_all = blk.get("daily") or {}
+        daily = {d: n for d, n in daily_all.items()
+                 if _parse_day(d) and _parse_day(d) >= cutoff}
+        weekly: dict = {}
+        for d, n in daily.items():
+            dt = _parse_day(d)
+            iso = dt.isocalendar()
+            weekly[f"{iso[0]}-W{iso[1]:02d}"] = weekly.get(f"{iso[0]}-W{iso[1]:02d}", 0) + n
+        active = [n for n in daily.values() if n > 0]
+        mean_active = (sum(active) / len(active)) if active else 0.0
+        out[name] = {
+            "daily": dict(sorted(daily.items())),
+            "weekly": dict(sorted(weekly.items())),
+            "total": sum(daily.values()),
+            "active_days": len(active),
+            "mean_per_active_day": round(mean_active, 1),
+            "peak_day": max(daily.values()) if daily else 0,
+            "utilization_pct": {
+                str(c): round(100.0 * mean_active / c, 1) for c in caps
+            },
+            "peak_utilization_pct": {
+                str(c): round(100.0 * (max(daily.values()) if daily else 0) / c, 1)
+                for c in caps
+            },
+        }
+    return {"available": True, "generated_at": raw.get("generated_at"),
+            "capacities": caps, "days": days, "instruments": out}
+
+
+def _parse_day(s: str):
+    """Parse a YYYY-MM-DD key, returning None if it is malformed."""
+    from datetime import datetime as _dt
+    try:
+        return _dt.strptime(s, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+@app.get("/api/fleet/comparison")
+async def api_fleet_comparison(
+    amount_ng: float = 50.0,
+    days: int = 90,
+    min_runs: int = 3,
+) -> dict:
+    """Cross-instrument sensitivity on the same QC standard.
+
+    Groups QC runs by (instrument, spd) and reports median precursor,
+    peptide and protein-group depth so instruments can be compared at
+    matched load. Grouping keeps SPD separate on purpose: throughput is
+    the dominant driver of depth, so pooling a 30 SPD run with a 100 SPD
+    run on the same instrument would compare gradient length, not
+    sensitivity. Medians (not means) because a single failed injection
+    otherwise drags a cohort's depth down.
+
+    Only runs at the same loading (``amount_ng``) are compared -- depth
+    scales with load, so mixing 50 ng and 200 ng would be meaningless.
+    """
+    import sqlite3
+    from stan.db import connect, get_db_path
+
+    db_path = get_db_path()
+    if not db_path.exists():
+        return {"cohorts": [], "amount_ng": amount_ng, "days": days}
+
+    sql = """
+        SELECT instrument, spd, mode, gradient_length_min,
+               n_precursors, n_peptides, n_proteins, ips_score
+        FROM runs
+        WHERE (hidden IS NULL OR hidden = 0)
+          AND n_precursors IS NOT NULL
+          AND amount_ng = ?
+          AND run_date >= date('now', ?)
+    """
+    try:
+        with connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            rows = [dict(r) for r in con.execute(sql, (amount_ng, f"-{int(days)} days"))]
+    except sqlite3.OperationalError as e:
+        logger.warning("fleet comparison query failed: %s", e)
+        return {"cohorts": [], "amount_ng": amount_ng, "days": days}
+
+    def _median(vals: list) -> float | None:
+        vals = sorted(v for v in vals if v is not None)
+        if not vals:
+            return None
+        mid = len(vals) // 2
+        if len(vals) % 2:
+            return float(vals[mid])
+        return (float(vals[mid - 1]) + float(vals[mid])) / 2.0
+
+    buckets: dict = {}
+    for r in rows:
+        key = (r["instrument"], r["spd"])
+        buckets.setdefault(key, []).append(r)
+
+    cohorts = []
+    for (instrument, spd), rs in buckets.items():
+        if len(rs) < min_runs:
+            continue
+        cohorts.append({
+            "instrument": instrument,
+            "spd": spd,
+            "mode": rs[0].get("mode"),
+            "gradient_length_min": _median([r.get("gradient_length_min") for r in rs]),
+            "n_runs": len(rs),
+            "precursors": _median([r.get("n_precursors") for r in rs]),
+            "peptides": _median([r.get("n_peptides") for r in rs]),
+            "proteins": _median([r.get("n_proteins") for r in rs]),
+            "ips": _median([r.get("ips_score") for r in rs]),
+        })
+
+    cohorts.sort(key=lambda c: (-(c["precursors"] or 0), c["instrument"]))
+    return {"cohorts": cohorts, "amount_ng": amount_ng, "days": days,
+            "min_runs": min_runs}
+
+
+@app.get("/api/fleet/instruments")
+async def api_fleet_instruments() -> dict:
+    """Per-instrument ingest freshness, derived from the runs table.
+
+    Replaces the old instrument-PC heartbeat as the Fleet tab's liveness
+    signal. All searching now happens on Hive, so the instrument PCs no
+    longer run a watcher and their status.json heartbeats are
+    permanently stale -- they reported "104d ago" in red for machines
+    that were behaving exactly as intended. What actually matters is
+    whether QC runs are still landing, so report that instead.
+    """
+    import sqlite3
+    from stan.db import connect, get_db_path
+
+    db_path = get_db_path()
+    if not db_path.exists():
+        return {"instruments": []}
+    try:
+        with connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            rows = [dict(r) for r in con.execute("""
+                SELECT instrument,
+                       COUNT(*) AS n_runs,
+                       MAX(run_date) AS last_run_date,
+                       SUM(CASE WHEN run_date >= date('now','-7 days')
+                                THEN 1 ELSE 0 END) AS n_last_7d
+                FROM runs
+                WHERE (hidden IS NULL OR hidden = 0)
+                GROUP BY instrument ORDER BY instrument
+            """)]
+    except sqlite3.OperationalError as e:
+        logger.warning("fleet instruments query failed: %s", e)
+        return {"instruments": []}
+    return {"instruments": rows}
+
+
+
 @app.get("/api/fleet/hosts")
 async def api_fleet_hosts() -> dict:
     """List every host directory on the shared mirror and surface each
@@ -1304,8 +1491,19 @@ async def api_fleet_hosts() -> dict:
     if root is None:
         return {"root": None, "hosts": []}
 
+    # The mirror root also holds shared infrastructure directories
+    # (incoming/, processing/, logs/, scripts/, backlog/, temp_keys/ ...).
+    # Listing every subdirectory rendered those as phantom hosts with empty
+    # heartbeat/version/runs columns. A real host is one that has actually
+    # synced state, so key off the files a host writes.
+    host_markers = ("status.json", "stan.db", "instruments.yml")
+
     hosts = []
-    for h in sorted(p for p in root.iterdir() if p.is_dir()):
+    candidates = [
+        d for d in sorted(root.iterdir())
+        if d.is_dir() and any((d / m).exists() for m in host_markers)
+    ]
+    for h in candidates:
         entry: dict = {"name": h.name, "status": None, "error": None}
         sp = h / "status.json"
         if sp.exists():
