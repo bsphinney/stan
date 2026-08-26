@@ -1771,6 +1771,9 @@ def get_runs(
     if qc_only:
         from stan.watcher.qc_filter import compile_qc_pattern
         pat = compile_qc_pattern()
+        # Keep the LAST `limit` after filtering, not the first: `result` is
+        # ascending, so slicing from the front would hand back the oldest
+        # QC runs in the fetch window rather than the most recent ones.
         result = [
             r for r in result
             if r.get("run_name") and pat.search(Path(r["run_name"]).stem)
@@ -1818,12 +1821,19 @@ def get_trends(
         return []
 
     fetch_limit = limit * 3 if qc_only else limit
-    sql = "SELECT * FROM runs WHERE instrument = ?"
+    # Take the NEWEST `fetch_limit` runs, then hand them back oldest-first
+    # for charting. Selecting `ORDER BY run_date ASC LIMIT n` instead pins
+    # the trend to the oldest rows in the table -- invisible while the local
+    # DB only held an instrument's recent runs, but once it mirrors the
+    # fleet's full history (3+ years) every trend tab renders runs from
+    # 2023 and the UI's "last month" filter then matches nothing.
+    inner = "SELECT * FROM runs WHERE instrument = ?"
     params: list = [instrument]
     if not include_hidden:
-        sql += " AND (hidden IS NULL OR hidden = 0)"
-    sql += " ORDER BY run_date ASC LIMIT ?"
+        inner += " AND (hidden IS NULL OR hidden = 0)"
+    inner += " ORDER BY run_date DESC LIMIT ?"
     params.append(fetch_limit)
+    sql = f"SELECT * FROM ({inner}) ORDER BY run_date ASC"
     try:
         with connect(db_path) as con:
             con.row_factory = sqlite3.Row
@@ -1839,7 +1849,7 @@ def get_trends(
         result = [
             r for r in result
             if r.get("run_name") and pat.search(Path(r["run_name"]).stem)
-        ][:limit]
+        ][-limit:]
     return result
 
 
