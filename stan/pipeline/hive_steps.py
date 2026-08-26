@@ -398,9 +398,27 @@ def step_monitor(
             rolling_median_max_intensity=rolling_median,
         )
 
+        # Acquisition date, NOT processing date. rawmeat only carries
+        # metadata.acquisition_date for some vendors, and falling straight
+        # back to now() stamped every monitor row with the time the backfill
+        # ran — which piled every Sample/Blank run onto a single column in
+        # the dashboard's week-at-a-glance grid. Use the same chain the QC
+        # path uses (hive_process.process_raw): real acquisition timestamp,
+        # then file mtime, and only then give up and use now().
         run_date = rawmeat.get("metadata", {}).get("acquisition_date") or ""
         if not run_date:
-            run_date = datetime.now(timezone.utc).isoformat()
+            try:
+                from stan.watcher.acquisition_date import get_acquisition_date
+                run_date = get_acquisition_date(raw_path) or ""
+            except Exception:
+                logger.debug("acquisition-date lookup failed", exc_info=True)
+        if not run_date:
+            try:
+                run_date = datetime.fromtimestamp(
+                    raw_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+            except OSError:
+                run_date = datetime.now(timezone.utc).isoformat()
 
         health_id = insert_sample_health(
             instrument=instrument,
