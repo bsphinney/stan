@@ -121,6 +121,9 @@ _DETAIL_TABLES = (
     # SQLite, so mirror it down like everything else. host_origin exists
     # only on the PG side; the column intersection below drops it.
     "sample_health", "health_tic_traces",
+    # The maintenance log: what was physically done to an instrument. Mirrored
+    # so a SQLite-reading dashboard still shows it.
+    "maintenance_events",
 )
 
 

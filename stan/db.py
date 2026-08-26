@@ -1836,6 +1836,10 @@ def get_feature_cloud(
     than raising, so an older dashboard keeps serving the rest of the
     drift modal.
     """
+    from stan.db_pg import get_feature_cloud_pg, use_pg
+    if use_pg():
+        return get_feature_cloud_pg(run_id, source=table)
+
     if db_path is None:
         db_path = get_db_path()
     import json as _json
@@ -2266,10 +2270,19 @@ def log_event(
         "column_serial": column_serial,
     }
 
-    with connect(db_path) as con:
-        cols = ", ".join(row.keys())
-        placeholders = ", ".join(f":{k}" for k in row.keys())
-        con.execute(f"INSERT INTO maintenance_events ({cols}) VALUES ({placeholders})", row)
+    # PG mode: the maintenance log must be fleet-wide, not stranded on the
+    # machine the operator happened to log it from.
+    from stan.db_pg import insert_event_pg, use_pg
+    if use_pg():
+        insert_event_pg(row)
+    else:
+        with connect(db_path) as con:
+            cols = ", ".join(row.keys())
+            placeholders = ", ".join(f":{k}" for k in row.keys())
+            con.execute(
+                f"INSERT INTO maintenance_events ({cols}) VALUES ({placeholders})",
+                row,
+            )
 
     logger.info("Logged event %s: %s on %s (%s)", event_id, event_type, instrument, notes[:50])
     return event_id
@@ -2286,6 +2299,9 @@ def get_events(
     if not db_path.exists():
         return []
 
+    from stan.db_pg import get_events_pg, use_pg
+    if use_pg():
+        return get_events_pg(instrument=instrument, limit=limit)
     with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         if instrument:
@@ -2308,6 +2324,9 @@ def get_last_event(instrument: str, event_type: str, db_path: Path | None = None
     if not db_path.exists():
         return None
 
+    from stan.db_pg import get_last_event_pg, use_pg
+    if use_pg():
+        return get_last_event_pg(instrument, event_type)
     with connect(db_path) as con:
         con.row_factory = sqlite3.Row
         row = con.execute(
@@ -2366,27 +2385,47 @@ def get_column_lifetime(instrument: str, db_path: Path | None = None) -> dict:
             depth_trend_pct_per_week: float | None — precursor count trend
         }
     """
+    from stan.db_pg import use_pg
+    pg_mode = use_pg()
+
     if db_path is None:
         db_path = get_db_path()
-    if not db_path.exists():
+    # In PG mode there may be no local SQLite at all (a hosted dashboard has
+    # no Quobyte mount), so don't let a missing file short-circuit the answer.
+    if not pg_mode and not db_path.exists():
         return {"qc_runs_since_change": 0, "runs_since_change": []}
 
     # Find last column change
     last_change = get_last_event(instrument, "column_change", db_path=db_path)
     since_date = last_change["event_date"] if last_change else "1970-01-01"
 
-    with connect(db_path) as con:
-        con.row_factory = sqlite3.Row
-        runs = con.execute(
-            """SELECT run_name, run_date, n_precursors, n_psms, n_peptides,
-                      n_proteins, ips_score, gate_result
-               FROM runs
-               WHERE instrument = ? AND run_date >= ?
-               ORDER BY run_date ASC""",
-            (instrument, since_date),
-        ).fetchall()
-
-    runs_list = [dict(r) for r in runs]
+    _RUN_COLS = ("run_name", "run_date", "n_precursors", "n_psms",
+                 "n_peptides", "n_proteins", "ips_score", "gate_result")
+    if pg_mode:
+        from stan.db_pg import _connect as _pg_connect
+        with _pg_connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                f"SELECT {', '.join(_RUN_COLS)} FROM runs "
+                "WHERE instrument = %s AND run_date >= %s ORDER BY run_date ASC",
+                (instrument, since_date),
+            )
+            runs_list = [dict(zip(_RUN_COLS, r)) for r in cur.fetchall()]
+        # psycopg2 hands back a real datetime for a timestamp column while
+        # SQLite hands back the ISO string this function parses. Normalise so
+        # callers see one shape regardless of backend.
+        for r in runs_list:
+            if not isinstance(r.get("run_date"), str):
+                r["run_date"] = r["run_date"].isoformat() if r.get("run_date") else ""
+    else:
+        with connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            runs_list = [dict(r) for r in con.execute(
+                f"""SELECT {', '.join(_RUN_COLS)}
+                    FROM runs
+                    WHERE instrument = ? AND run_date >= ?
+                    ORDER BY run_date ASC""",
+                (instrument, since_date),
+            ).fetchall()]
 
     result = {
         "column_installed": last_change["event_date"] if last_change else None,

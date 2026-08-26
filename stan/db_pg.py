@@ -554,6 +554,108 @@ def insert_feature_cloud_pg(
     return n_points
 
 
+def get_feature_cloud_pg(run_id: str, source: str = "runs") -> dict | None:
+    """Read one charge-labeled ion cloud straight from PG.
+
+    Needed for the PG-direct dashboard: without it the view silently
+    depends on the SQLite mirror still running, and an install with
+    ``STAN_PG_REFRESH_SECONDS=0`` would show empty ion clouds with no
+    error anywhere to explain why.
+    """
+    import json as _json
+
+    try:
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                "SELECT mz, mobility, rt, charge, intensity, n_points, "
+                "n_total, features_path FROM feature_clouds "
+                "WHERE run_id = %s AND source = %s",
+                (str(run_id), source),
+            )
+            row = cur.fetchone()
+    except Exception as e:  # noqa: BLE001 - table absent / unreachable
+        logger.debug("feature cloud read from PG failed: %s", e)
+        return None
+    if row is None:
+        return None
+
+    def _arr(v):
+        return _json.loads(v) if isinstance(v, str) else (v or [])
+
+    return {
+        "mz": _arr(row[0]),
+        "mobility": _arr(row[1]),
+        "rt": _arr(row[2]),
+        "charge": _arr(row[3]),
+        "intensity": _arr(row[4]),
+        "n_points": row[5],
+        "n_total": row[6],
+        "features_path": row[7] or "",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Maintenance events.
+#
+# The operator's record of what was physically done to an instrument -- column
+# changes, source cleans, PMs, LC service. It is what turns "IPS dropped on the
+# 24th" into "because we swapped the column on the 24th", so it has to be
+# fleet-wide rather than stranded on whichever PC happened to log it.
+#
+# No host_origin here, unlike runs/sample_health: an event is already keyed to
+# a named instrument, and the same instrument can be logged from more than one
+# host, so an origin column would fragment the history we're unifying.
+# ---------------------------------------------------------------------------
+
+_EVENT_COLUMNS = (
+    "id", "instrument", "event_type", "event_date", "notes", "operator",
+    "column_vendor", "column_model", "column_serial",
+)
+
+
+def insert_event_pg(row: dict) -> str:
+    """Insert one maintenance event into PG. Returns the event id."""
+    cols = [c for c in _EVENT_COLUMNS if c in row]
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO maintenance_events ({', '.join(cols)}) "
+            f"VALUES ({', '.join(['%s'] * len(cols))}) "
+            f"ON CONFLICT (id) DO NOTHING",
+            tuple(row[c] for c in cols),
+        )
+        pg.commit()
+    return str(row.get("id"))
+
+
+def get_events_pg(instrument: str | None = None, limit: int = 100) -> list[dict]:
+    """Maintenance events from PG, newest first."""
+    with _connect() as pg, pg.cursor() as cur:
+        if instrument:
+            cur.execute(
+                "SELECT * FROM maintenance_events WHERE instrument = %s "
+                "ORDER BY event_date DESC LIMIT %s", (instrument, limit))
+        else:
+            cur.execute(
+                "SELECT * FROM maintenance_events ORDER BY event_date DESC "
+                "LIMIT %s", (limit,))
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+
+def get_last_event_pg(instrument: str, event_type: str) -> dict | None:
+    """Most recent event of one type for an instrument, or None."""
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "SELECT * FROM maintenance_events WHERE instrument = %s "
+            "AND event_type = %s ORDER BY event_date DESC LIMIT 1",
+            (instrument, event_type))
+        row = cur.fetchone()
+        if not row:
+            return None
+        names = [d[0] for d in cur.description]
+        return dict(zip(names, row))
+
+
 def insert_run_pg(
     instrument: str,
     run_name: str,
