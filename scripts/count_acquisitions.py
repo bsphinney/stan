@@ -239,6 +239,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--hourly-days", type=int, default=14,
                     help="Also emit per-hour counts for this many recent days "
                          "(0 disables). Drives the dashboard's hour heatmap.")
+    ap.add_argument("--no-pg", action="store_true",
+                    help="Skip publishing the snapshot to PG (file only).")
     ap.add_argument("--merge", action="store_true",
                     help="Update only the days recomputed, keeping the rest "
                          "of the existing file. Pair with a small --days for "
@@ -333,6 +335,17 @@ def main(argv: list[str] | None = None) -> int:
     tmp.write_text(json.dumps(out, indent=1))
     tmp.replace(args.out)          # atomic — dashboard may be reading it
     logger.info("wrote %s", args.out)
+
+    # Also publish to PG. The mirror file only reaches hosts that mount
+    # Quobyte; a hosted dashboard has no such mount and would show
+    # "not found on the Hive mirror" forever.
+    if not args.no_pg:
+        try:
+            from stan.db_pg import put_utilization_snapshot
+            put_utilization_snapshot(out.get("generated_at") or "", json.dumps(out))
+            logger.info("published utilization snapshot to PG")
+        except Exception as e:  # noqa: BLE001 - the file write already succeeded
+            logger.warning("could not publish to PG (%s); mirror file still written", e)
     return 0
 
 

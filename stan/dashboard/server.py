@@ -1506,16 +1506,30 @@ async def api_utilization(days: int = 90) -> dict:
 
     from stan.config import get_hive_mirror_root
 
-    root = get_hive_mirror_root()
-    path = (root / "utilization.json") if root else None
-    if path is None or not path.exists():
-        return {"available": False, "reason":
-                "utilization.json not found on the Hive mirror — run "
-                "scripts/count_acquisitions.py on Hive.", "instruments": {}}
+    # PG first: the mirror file only reaches hosts that mount Quobyte, and a
+    # hosted dashboard has none. Fall back to the file so a local install
+    # with no PG still works.
+    raw = None
     try:
-        raw = json.loads(path.read_text())
-    except Exception as e:  # noqa: BLE001
-        return {"available": False, "reason": f"unreadable: {e}", "instruments": {}}
+        from stan.db_pg import get_utilization_snapshot, use_pg
+        if use_pg():
+            blob = get_utilization_snapshot()
+            if blob:
+                raw = json.loads(blob)
+    except Exception:  # noqa: BLE001
+        logger.debug("PG utilization snapshot unavailable", exc_info=True)
+
+    if raw is None:
+        root = get_hive_mirror_root()
+        path = (root / "utilization.json") if root else None
+        if path is None or not path.exists():
+            return {"available": False, "reason":
+                    "no utilization snapshot yet — run "
+                    "scripts/count_acquisitions.py on Hive.", "instruments": {}}
+        try:
+            raw = json.loads(path.read_text())
+        except Exception as e:  # noqa: BLE001
+            return {"available": False, "reason": f"unreadable: {e}", "instruments": {}}
 
     cutoff = date.today() - timedelta(days=int(days))
     caps = raw.get("capacities") or [100, 60]

@@ -656,6 +656,27 @@ def get_last_event_pg(instrument: str, event_type: str) -> dict | None:
         return dict(zip(names, row))
 
 
+def put_utilization_snapshot(generated_at: str, payload: str) -> bool:
+    """Store the acquisition-counter snapshot centrally (single row)."""
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO utilization_snapshot (id, generated_at, payload) "
+            "VALUES ('current', %s, %s) ON CONFLICT (id) DO UPDATE SET "
+            "generated_at = EXCLUDED.generated_at, payload = EXCLUDED.payload",
+            (generated_at, payload),
+        )
+        pg.commit()
+    return True
+
+
+def get_utilization_snapshot() -> str | None:
+    """Return the stored counter JSON, or None if nothing published yet."""
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute("SELECT payload FROM utilization_snapshot WHERE id = 'current'")
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
 def insert_run_pg(
     instrument: str,
     run_name: str,

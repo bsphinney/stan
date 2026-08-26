@@ -5230,16 +5230,27 @@
 
       if (loading && !data) return <div className="card">Loading fleet…</div>;
       if (error) return <div className="card" style={{ color: '#c33' }}>Fleet API error: {error}</div>;
+      // Only the mirror-hosts TABLE needs the Quobyte mount. Instrument
+      // overview, QC ingest and cross-instrument sensitivity all read the
+      // database, so they must still render on a host with no mirror —
+      // which is every hosted deployment. Bailing out here blanked the
+      // entire Fleet tab on Azure even though the data was right there.
       if (!data || !data.root) {
         return (
+          <>
+          <InstrumentOverview />
+          <IngestFreshness />
+          <InstrumentComparison />
           <div className="card">
             <p><strong>No Hive mirror mounted on this machine.</strong></p>
             <p style={{ color: '#666', fontSize: '0.9rem' }}>
               The Fleet view reads <code>status.json</code> from each instrument's subdirectory
               on the shared mirror (default: <code>Y:\STAN\</code> on Windows,
               <code>/Volumes/proteomics-grp/STAN/</code> on macOS). Mount the share and reload.
+              The panels above read the database and are unaffected.
             </p>
           </div>
+          </>
         );
       }
 
