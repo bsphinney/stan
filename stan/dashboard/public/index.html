@@ -2665,58 +2665,6 @@
           {prefs.front_page_view === 'matrix' && (
             <MetricMatrixView runs={runs} allRuns={allRuns} ms1Format={prefs.ms1_format} />
           )}
-          {/* v0.2.154: two-zone layout — instrument cards on the left,
-              WeekHeatmap filling the right. When instrument count >= 4
-              we fall back to the original auto-fill grid (no heatmap)
-              so 4+ cards aren't squeezed into 1/3 of the width. */}
-          {(() => {
-            const instruments = Object.entries(byInstrument);
-            const nInst = instruments.length;
-            const useTwoZone = nInst > 0 && nInst <= 3;
-            const instrumentCards = instruments.map(([name, run]) => (
-              <div className="card" key={name}>
-                <h3 style={{display:'flex', alignItems:'center', gap:'0.5rem', flexWrap:'wrap'}}>
-                  {name}
-                  <LastQcBadge instrument={name} />
-                </h3>
-                <ColumnLifeBadge instrument={name} />
-                <div className="metric"><span className="metric-label">Last run</span><span className="metric-value" title={run.run_name} style={{maxWidth:'60%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{run.run_name}</span></div>
-                <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
-                <div className="metric"><span className="metric-label">IPS</span><span className="badge badge-ips">IPS {run.ips_score || '—'}</span></div>
-                <div className="metric">
-                  <span className="metric-label">PEG / Drift</span>
-                  <span style={{display:'inline-flex', gap:'0.3rem'}}>
-                    <PegBadge run={run} /><DriftBadge run={run} />
-                  </span>
-                </div>
-                {run.mode === 'DIA' && <div className="metric"><span className="metric-label">Precursors</span><span className="metric-value">{run.n_precursors?.toLocaleString()}</span></div>}
-                {run.mode === 'DDA' && <div className="metric"><span className="metric-label">PSMs</span><span className="metric-value">{run.n_psms?.toLocaleString()}</span></div>}
-                <div className="metric"><span className="metric-label">Time</span><span className="metric-value" title={new Date(run.run_date).toLocaleString()}>{new Date(run.run_date).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}</span></div>
-                <MiniSparkline allRuns={allRuns} instrument={name} currentMode={run.mode} />
-                {run.diagnosis && <div className="diagnosis">{run.diagnosis}</div>}
-                <LogEventButton instrument={name} />
-              </div>
-            ));
-
-            if (!useTwoZone) {
-              return <div className="grid">{instrumentCards}</div>;
-            }
-            // Two-zone grid: instrument cards get enough columns for their
-            // count, heatmap fills the rest. The `--inst-cols` var and
-            // `1fr` trailing track mean 1 card takes 33%, 2 cards take
-            // 50%, 3 cards take 66% — heatmap always gets the remainder.
-            const gridTemplate =
-              nInst === 1 ? 'minmax(300px, 380px) 1fr'
-              : nInst === 2 ? 'minmax(300px, 360px) minmax(300px, 360px) 1fr'
-              : 'minmax(280px, 340px) minmax(280px, 340px) minmax(280px, 340px) 1fr';
-            return (
-              <div style={{display:'grid', gridTemplateColumns: gridTemplate,
-                           gap:'1rem', alignItems:'start'}}>
-                {instrumentCards}
-                <WeekHeatmap instruments={instruments.map(([n]) => n)} />
-              </div>
-            );
-          })()}
           <TodayTicOverlay instrument={filters.instrument} />
         </div>
       );
@@ -2899,6 +2847,10 @@
       // operator can focus. Brett 2026-04-21: default 3-up panels are
       // hard to read when only one category matters.
       const [filter, setFilter] = useState('all');
+      // SPD filter, mirroring the community site. Gradient length is the
+      // dominant driver of TIC shape, so overlaying a 30 SPD trace on a
+      // 100 SPD one compares methods, not instrument health.
+      const [spdFilter, setSpdFilter] = useState('__all__');
 
       useEffect(() => {
         // v0.2.349: honor the parent's instrument selector so TIC traces
@@ -2924,7 +2876,17 @@
       // v0.2.132+ returns three faceted buckets. Older API responses
       // only had data.runs (QC) — fall back to that shape so a stale
       // backend doesn't break the UI.
-      const facets = data.facets || { qc: data.runs || [], sample: [], blank: [] };
+      const rawFacets = data.facets || { qc: data.runs || [], sample: [], blank: [] };
+      const spdValues = Array.from(new Set(
+        ['qc', 'sample', 'blank']
+          .flatMap(k => rawFacets[k] || [])
+          .map(r => r.spd)
+          .filter(v => v != null)
+      )).sort((a, b) => a - b);
+      const facets = spdFilter === '__all__' ? rawFacets : Object.fromEntries(
+        ['qc', 'sample', 'blank'].map(k =>
+          [k, (rawFacets[k] || []).filter(r => String(r.spd) === String(spdFilter))])
+      );
       const totalRuns = (facets.qc?.length || 0)
                       + (facets.sample?.length || 0)
                       + (facets.blank?.length || 0);
@@ -3006,6 +2968,20 @@
                   }}>{lab}</button>
                 ))}
               </div>
+              {/* SPD filter, mirroring the community site. Only shown
+                  when the runs in view actually span >1 gradient —
+                  a one-method day doesn't need a chooser. */}
+              {spdValues.length > 1 && (
+                <select value={spdFilter}
+                        onChange={e => setSpdFilter(e.target.value)}
+                        title="Overlay only runs acquired at this samples-per-day gradient. Traces from different gradients aren't directly comparable."
+                        style={{fontSize:'0.75rem', padding:'0.15rem 0.3rem'}}>
+                  <option value="__all__">All SPD</option>
+                  {spdValues.map(v => (
+                    <option key={v} value={v}>{v} SPD</option>
+                  ))}
+                </select>
+              )}
               {/* TIC | BPC toggle — only rendered when at least one
                   trace in view has a base-peak array. Bruker timsTOF
                   runs ingested after v0.2.300 carry it; Thermo runs
@@ -4912,6 +4888,79 @@
       );
     }
 
+    /* ── Instrument overview (moved off the front page) ────────────
+       Instrument cards + Week-at-a-glance. These describe the fleet, so
+       they live at the top of the Fleet tab rather than competing with
+       "This Week's QCs" for the landing page. Self-fetching so it can be
+       dropped in without threading LiveRuns' state through. */
+    function InstrumentOverview() {
+      const { data: allRuns, loading, reload } = useFetch('/api/runs?limit=200&qc_only=True');
+      useEffect(() => { const t = setInterval(reload, 30000); return () => clearInterval(t); }, [reload]);
+
+      if (loading && !allRuns) return <div className="card">Loading instruments…</div>;
+      if (!Array.isArray(allRuns) || allRuns.length === 0) return null;
+
+      // Most recent run per instrument.
+      const byInstrument = {};
+      for (const r of allRuns) {
+        if (!byInstrument[r.instrument]) byInstrument[r.instrument] = r;
+      }
+
+      return (
+        <>
+          {(() => {
+          const instruments = Object.entries(byInstrument);
+          const nInst = instruments.length;
+          const useTwoZone = nInst > 0 && nInst <= 3;
+          const instrumentCards = instruments.map(([name, run]) => (
+            <div className="card" key={name}>
+              <h3 style={{display:'flex', alignItems:'center', gap:'0.5rem', flexWrap:'wrap'}}>
+                {name}
+                <LastQcBadge instrument={name} />
+              </h3>
+              <ColumnLifeBadge instrument={name} />
+              <div className="metric"><span className="metric-label">Last run</span><span className="metric-value" title={run.run_name} style={{maxWidth:'60%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{run.run_name}</span></div>
+              <div className="metric"><span className="metric-label">Mode</span><span className="metric-value">{run.mode}</span></div>
+              <div className="metric"><span className="metric-label">IPS</span><span className="badge badge-ips">IPS {run.ips_score || '—'}</span></div>
+              <div className="metric">
+                <span className="metric-label">PEG / Drift</span>
+                <span style={{display:'inline-flex', gap:'0.3rem'}}>
+                  <PegBadge run={run} /><DriftBadge run={run} />
+                </span>
+              </div>
+              {run.mode === 'DIA' && <div className="metric"><span className="metric-label">Precursors</span><span className="metric-value">{run.n_precursors?.toLocaleString()}</span></div>}
+              {run.mode === 'DDA' && <div className="metric"><span className="metric-label">PSMs</span><span className="metric-value">{run.n_psms?.toLocaleString()}</span></div>}
+              <div className="metric"><span className="metric-label">Time</span><span className="metric-value" title={new Date(run.run_date).toLocaleString()}>{new Date(run.run_date).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})}</span></div>
+              <MiniSparkline allRuns={allRuns} instrument={name} currentMode={run.mode} />
+              {run.diagnosis && <div className="diagnosis">{run.diagnosis}</div>}
+              <LogEventButton instrument={name} />
+            </div>
+          ));
+
+          if (!useTwoZone) {
+            return <div className="grid">{instrumentCards}</div>;
+          }
+          // Two-zone grid: instrument cards get enough columns for their
+          // count, heatmap fills the rest. The `--inst-cols` var and
+          // `1fr` trailing track mean 1 card takes 33%, 2 cards take
+          // 50%, 3 cards take 66% — heatmap always gets the remainder.
+          const gridTemplate =
+            nInst === 1 ? 'minmax(300px, 380px) 1fr'
+            : nInst === 2 ? 'minmax(300px, 360px) minmax(300px, 360px) 1fr'
+            : 'minmax(280px, 340px) minmax(280px, 340px) minmax(280px, 340px) 1fr';
+          return (
+            <div style={{display:'grid', gridTemplateColumns: gridTemplate,
+                         gap:'1rem', alignItems:'start'}}>
+              {instrumentCards}
+              <WeekHeatmap instruments={instruments.map(([n]) => n)} />
+            </div>
+          );
+          
+          })()}
+        </>
+      );
+    }
+
     /* ── Cross-instrument sensitivity ──────────────────────────────
        Same standard (50 ng HeLa), grouped by SPD. SPD stays a separate
        row rather than being pooled per instrument because throughput
@@ -5185,6 +5234,7 @@
 
       return (
         <>
+        <InstrumentOverview />
         <IngestFreshness />
         <InstrumentComparison />
         <div className="card">
