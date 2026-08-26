@@ -15,13 +15,12 @@ set -euo pipefail
 
 SINCE="${1:-2026-05-13}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-SECRET=/Volumes/proteomics-grp/brett/.pgfarm_secret.json
-TOKEN=/tmp/.stan_pgfarm_push_token
+# The credential file holds the long-lived service-account secret;
+# stan.db_pg._resolve_pgpassword() exchanges it for a fresh JWT per connect
+# (v1.0.3+), so there is nothing to refresh here. See docs/PG_FARM_ACCESS.md.
+CRED=/Volumes/proteomics-grp/brett/.pgfarm_token
 
-python3 "$REPO/scripts/pgfarm_refresh_token.py" \
-    --secret-file "$SECRET" --token-file "$TOKEN" --max-age-days 0 >/dev/null
-
-export PGPASSWORD="$(cat "$TOKEN")"
+export PGPASSWORD="$(cat "$CRED")"
 export STAN_DB_BACKEND=pg
 
 echo "Dry-run first (run_date >= $SINCE):"
@@ -35,5 +34,4 @@ else
     echo "Aborted — nothing submitted."
 fi
 
-rm -f "$TOKEN"
 unset PGPASSWORD

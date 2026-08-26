@@ -139,6 +139,23 @@ stan <command> --backend pg
 
 ---
 
+## Making the local dashboard show PG data
+
+`stan dashboard` (http://localhost:8421) reads **SQLite only** — it has no PG
+backend. Once the fleet moved to PG, `~/.stan/stan.db` went empty and the
+dashboard served an empty Runs/Trends view. Repopulate it:
+
+```bash
+export PGPASSWORD="$(cat /Volumes/proteomics-grp/brett/.pgfarm_token)"
+python scripts/pull_pg_to_sqlite.py          # copies runs -> ~/.stan/stan.db
+stan dashboard                                # http://localhost:8421
+```
+
+Re-run the pull whenever you want fresh data; it upserts by `id`. Only `runs`
+is copied because it is the only table in PG — the per-run detail tabs
+(TIC traces, drift clouds, PEG) read tables that live wherever the SLURM job
+wrote them, so those stay empty locally.
+
 ## Useful starter queries
 
 ```sql
