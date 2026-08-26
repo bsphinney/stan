@@ -2668,7 +2668,7 @@
           {prefs.front_page_view === 'matrix' && (
             <MetricMatrixView runs={runs} allRuns={allRuns} ms1Format={prefs.ms1_format} />
           )}
-          <TodayTicOverlay instrument={filters.instrument} />
+          <TodayTicOverlay instrument={filters.instrument} days={filters.sinceDays} />
         </div>
       );
     }
@@ -2835,7 +2835,7 @@
     // joining sample_health to a future tic-for-health-rows table.
     // That's Ship B follow-up work; the MVP is the QC overlay because
     // it uses data we already extract in baseline.py.
-    function TodayTicOverlay({ instrument }) {
+    function TodayTicOverlay({ instrument, days = 7 }) {
       const [data, setData] = useState(null);
       const [normalize, setNormalize] = useState(true);
       // v0.2.301: TIC | BPC toggle. 'intensity' = summed (TIC),
@@ -2858,7 +2858,10 @@
       useEffect(() => {
         // v0.2.349: honor the parent's instrument selector so TIC traces
         // don't span every instrument when the operator drilled into one.
-        let url = '/api/today/tic-overview?days=7';
+        // days comes from the page's range control. It used to be hardcoded
+        // to 7 with [instrument] as the only dependency, so changing the
+        // range updated every other panel and silently left this one alone.
+        let url = '/api/today/tic-overview?days=' + (days || 7);
         if (instrument && instrument !== '__all__') {
           url += '&instrument=' + encodeURIComponent(instrument);
         }
@@ -2866,7 +2869,7 @@
           .then(r => r.json())
           .then(setData)
           .catch(() => setData({ runs: [], n_runs: 0, n_with_tic: 0 }));
-      }, [instrument]);
+      }, [instrument, days]);
 
       if (!data) {
         return (
@@ -2951,7 +2954,7 @@
         <div className="card" style={{marginTop:'1rem'}}>
           <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'0.5rem'}}>
             <h3 style={{margin:0}}>
-              This Week's TIC overlay ({totalWithTic} trace{totalWithTic === 1 ? '' : 's'})
+              Last {days} day{days === 1 ? '' : 's'} · TIC overlay ({totalWithTic} trace{totalWithTic === 1 ? '' : 's'})
             </h3>
             <div style={{display:'flex', alignItems:'center', gap:'0.6rem', flexWrap:'wrap'}}>
               {/* Facet filter: All / QC / Sample / Blank */}
