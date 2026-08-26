@@ -24,21 +24,58 @@ and Hive. The main table is `runs`.
 
 ---
 
-## Auth model (two tiers)
+## Auth model (mint on demand — v1.0.3+)
 
-1. **Long-lived secret** — `service-account.json` = `{username, secret}` (512-char
-   secret), downloaded from the PG Farm UI "rotate" button. chmod 600 at:
-   - Hive: `/quobyte/proteomics-grp/brett/.pgfarm_secret.json`
-   - Mac:  `/Volumes/proteomics-grp/brett/.pgfarm_secret.json`
-2. **7-day token** = the actual Postgres password. Minted from the secret by
-   POSTing `{username, secret}` to
-   `https://pgfarm.library.ucdavis.edu/auth/service-account/login`
-   (response field `access_token`). You normally **don't mint it yourself** —
-   the Hive cron refreshes it and writes the token file:
+1. **Long-lived secret** — the 512-char service-account secret, downloaded from
+   the PG Farm UI "rotate" button. It lives, raw (not JSON), in the credential
+   file — the same file both STAN and FRAN read:
    - Hive: `/quobyte/proteomics-grp/brett/.pgfarm_token`
    - Mac:  `/Volumes/proteomics-grp/brett/.pgfarm_token`
+   - FRAN: `/quobyte/proteomics-grp/de-limp/fran_refresh/.pgfarm_token`
+2. **7-day JWT** = the actual Postgres password, minted from that secret by
+   POSTing `{username, secret}` to
+   `https://pgfarm.library.ucdavis.edu/auth/service-account/login`
+   (response field `access_token`).
 
-So in practice: **read the token file, use it as the password.** Done.
+`_resolve_pgpassword()` accepts **either form** and mints on demand: a value
+that looks like a JWT (`eyJ…` with two dots) is used as-is; anything else is
+treated as the secret and exchanged for a fresh JWT on every connect. This is
+the same pattern FRAN's `_token()` has used reliably for months.
+
+So in practice: **read the credential file and hand it to STAN — it sorts out
+the rest.** There is no refresh cron to babysit.
+
+> **Do not "helpfully" write a minted JWT back into `.pgfarm_token`.** That
+> replaces the long-lived secret with a value that dies in 7 days and re-couples
+> PG access to a cron tick succeeding. That precise mistake took STAN's PG
+> writes down from 2026-06-10 to 2026-08-26 (see *Postmortem* below).
+
+### Rotation is shared — it invalidates other copies
+
+`genome-proteomics-service-account` is used by **both** STAN and FRAN, and PG
+Farm's "rotate" button invalidates the previous secret. Rotating for one
+project silently breaks every stale copy. After any rotation, write the new
+secret to **all** the paths above.
+
+### Postmortem: the 2026-06→08 PG outage
+
+Three failures stacked, and each one hid the next:
+
+1. The Flinders dispatch cron was installed on 2026-06-10 but **never fired
+   once**. `/etc/profile.d/modules.sh` dereferences `LOGNAME`, which cron does
+   not set; under the script's `set -u` that killed the shell at the first
+   line — before the log file was created, so the failure was totally silent.
+2. Nothing refreshed the JWT, so it expired ~7 days later and every PG write
+   started failing.
+3. A rotation for FRAN on ~2026-06-29 invalidated the secret still sitting in
+   STAN's `.pgfarm_secret.json`, so the refresh script could no longer mint
+   even when run by hand (`HTTP 400: No access_token received from auth
+   server`).
+
+Net effect: `runs` took no timsTOF row between 2026-06-09 and 2026-08-26, and
+135 QC acquisitions went unsearched. Fixes: `LOGNAME`/`USER` seeded and the
+profile sourcing moved outside `set -u`; the refresh step deleted; auth made
+mint-on-demand.
 
 ---
 
@@ -49,6 +86,10 @@ So in practice: **read the token file, use it as the password.** Done.
 1. `$PGPASSWORD` env var (if set, wins)
 2. file at `$STAN_PGFARM_TOKEN_FILE`, default
    `/quobyte/proteomics-grp/brett/.pgfarm_token`
+
+Whichever it finds, it then mints if needed: a JWT is passed through, a secret
+is exchanged for a fresh JWT (`_is_jwt()` / `_mint_jwt()`). Override the
+account name with `$STAN_PGFARM_USER` if it ever changes.
 
 To make STAN write to PG instead of SQLite, also set `STAN_DB_BACKEND=pg`.
 

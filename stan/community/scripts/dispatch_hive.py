@@ -384,14 +384,14 @@ def _render_sbatch(
     bruker_ff_dir = "/quobyte/proteomics-grp/brett/bruker_ff"
     out_log_stem = raw_stem if step == "full" else f"{step}-{raw_stem}"
     return f"""#!/bin/bash
-#SBATCH --job-name={job_name}
+#SBATCH --job-name="{job_name}"
 #SBATCH --partition={slurm['partition']}
 #SBATCH --qos={slurm['qos']}
 #SBATCH --account={slurm['account']}
 #SBATCH --time={slurm['time']}
 #SBATCH --cpus-per-task={slurm['cpus']}
 #SBATCH --mem={slurm['mem']}
-#SBATCH --output={sbatch_log_dir}/{out_log_stem}_%j.out
+#SBATCH --output="{sbatch_log_dir}/{out_log_stem}_%j.out"
 {dep_directive}
 set -euo pipefail
 
@@ -483,14 +483,14 @@ def _render_monitor_sbatch(
     cmd = " ".join(argv)
 
     return f"""#!/bin/bash
-#SBATCH --job-name={job_name}
+#SBATCH --job-name="{job_name}"
 #SBATCH --partition={slurm['partition']}
 #SBATCH --qos={slurm['qos']}
 #SBATCH --account={slurm['account']}
 #SBATCH --time={slurm['time']}
 #SBATCH --cpus-per-task={slurm['cpus']}
 #SBATCH --mem={slurm['mem']}
-#SBATCH --output={monitor_log_dir}/{raw_stem}_%j.out
+#SBATCH --output="{monitor_log_dir}/{raw_stem}_%j.out"
 #SBATCH --requeue
 
 set -euo pipefail

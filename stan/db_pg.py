@@ -75,20 +75,70 @@ def host_origin_from_instrument(instrument: str) -> str:
     return s.split()[0] if s else "hive"
 
 
+PGFARM_LOGIN_URL = "https://pgfarm.library.ucdavis.edu/auth/service-account/login"
+PGFARM_SERVICE_ACCOUNT = "genome-proteomics-service-account"
+
+
+def _is_jwt(value: str) -> bool:
+    """True if ``value`` looks like a JWT (header.payload.signature)."""
+    return value.startswith("eyJ") and value.count(".") == 2
+
+
+def _mint_jwt(secret: str) -> str:
+    """Exchange the long-lived service-account secret for a fresh JWT.
+
+    The secret never leaves this process and is never logged.
+    """
+    import json
+    import urllib.request
+
+    body = json.dumps({
+        "username": os.environ.get("STAN_PGFARM_USER", PGFARM_SERVICE_ACCOUNT),
+        "secret": secret,
+    }).encode()
+    req = urllib.request.Request(
+        PGFARM_LOGIN_URL, data=body,
+        headers={"Content-Type": "application/json"}, method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        token = json.loads(resp.read().decode()).get("access_token")
+    if not token:
+        raise RuntimeError("PG Farm login returned no access_token")
+    return token
+
+
 def _resolve_pgpassword() -> str:
-    """Find the PG Farm token, $PGPASSWORD first then the token file."""
+    """Find the PG Farm password, $PGPASSWORD first then the token file.
+
+    The credential file may hold **either** a short-lived JWT or the
+    long-lived 512-char service-account secret. A JWT is used as-is; a
+    secret is exchanged for a fresh JWT on the spot.
+
+    Minting on demand (the pattern FRAN's ``_token()`` has used
+    reliably) is what makes this self-healing. The previous
+    cron-refresh-only design coupled STAN's ability to reach PG to a
+    cron tick succeeding every <7 days: when the dispatch cron died on
+    2026-06-10 the JWT expired a week later and every PG write failed.
+    It also broke on rotation — rotating the shared service-account
+    secret for FRAN on ~2026-06-29 silently invalidated the copy in
+    STAN's ``.pgfarm_secret.json``, so the refresh script itself could
+    no longer mint. Accepting either form fixes both failure modes.
+    """
     pwd = os.environ.get("PGPASSWORD", "").strip()
     if pwd:
-        return pwd
+        return pwd if _is_jwt(pwd) else _mint_jwt(pwd)
     token_file = Path(os.environ.get(
         "STAN_PGFARM_TOKEN_FILE",
         "/quobyte/proteomics-grp/brett/.pgfarm_token",
     ))
     if token_file.exists():
         try:
-            return token_file.read_text().strip()
+            raw = token_file.read_text().strip()
         except OSError as e:
             logger.warning("could not read %s: %s", token_file, e)
+        else:
+            if raw:
+                return raw if _is_jwt(raw) else _mint_jwt(raw)
     raise RuntimeError(
         "no PG Farm password — set PGPASSWORD or place a token at "
         f"{token_file} (chmod 600)"

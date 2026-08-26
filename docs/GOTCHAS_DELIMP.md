@@ -110,3 +110,14 @@ Note: `Frames.Time` is retention time in seconds from acquisition start. The dif
 | spectrum_utils filter doesn't sync extra arrays | `filter_intensity`/`set_mz_range` only filter mz+intensity. Cascadia's rt/level/im/fragment arrays need manual sync. Patched in primitives.py. |
 | Casanovo env missing deps | `pip check` and install: PyJWT, urllib3, Deprecated, rich |
 | Casanovo CLI version differences | Installed version uses `-o` (output prefix), not `-d` (directory). Check source, not docs. |
+
+## Hive cron + SLURM dispatch (learned 2026-08-26)
+
+| Problem | Solution |
+|---------|----------|
+| Cron job installed, entry visible in `crontab -l`, but **zero output ever** | `/etc/profile.d/modules.sh` dereferences `LOGNAME`, which cron does not set. Under `set -u` the shell dies at that line, *before* any log redirect is set up — so it fails completely silently. Seed `LOGNAME`/`USER` from `id -un` and source system profiles outside `set -u`. FRAN hit the identical bug via `$USER`. |
+| "Did cron actually run, or did a human run it?" | Check the tick timestamp against the schedule. A `*/15` cron can only produce `:00/:15/:30/:45`. A log stamped `13:59:57` was a manual run — that one detail is what exposed the cron had never fired. |
+| `sbatch: error: Invalid directive found in batch script: <word>` | An unquoted `#SBATCH` value containing a space. Raw filenames like `5222026_100 spd_HeLa Ctrl_….d` break `--job-name=` and `--output=`. Quote them: `#SBATCH --output="{dir}/{stem}_%j.out"`. `shlex.quote` on the *argv* does not help — SBATCH directives are parsed by SLURM, not bash. |
+| PG Farm auth dies ~7 days after any cron outage | Don't cache a minted JWT to disk. Store the long-lived secret and mint per connect (`_resolve_pgpassword()`). See `docs/PG_FARM_ACCESS.md`. |
+| PG Farm "rotate" silently breaks the *other* project | STAN and FRAN share `genome-proteomics-service-account`. Rotating invalidates every older copy of the secret. Update all credential paths after a rotation. |
+| Dispatcher re-submits runs that are already done | Dedup is keyed on the **resolved** `/nfs` path, not the `/quobyte/.../incoming` symlink. `_walk_raws` resolves before checking; don't bypass it. Verify with a bulk `raw_path` set-compare before a large drain. |
