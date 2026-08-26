@@ -832,10 +832,19 @@ def extract_dda_metrics(
                 median_peak_width_sec = estimated_peak_width
                 median_points_across_peak = estimated_peak_width / median_cycle
 
+    # v1.0.6: DDA rows were shipping with peak_capacity NULL because
+    # this return dict never called _peak_capacity, unlike the DIA path.
+    # The relay's v1.0 completeness check rejects those submissions with
+    # "Missing: peak_capacity" — 22 Sage rows were stuck on it. Both
+    # inputs are already in scope here, so compute it the same way DIA
+    # does rather than leaving Track A permanently un-submittable.
+    peak_cap = _peak_capacity(median_peak_width_sec, gradient_min)
+
     return {
         "n_psms": n_psms,
         "n_peptides_dda": n_peptides,
         "n_proteins": n_proteins,
+        "peak_capacity": peak_cap,
         "median_hyperscore": median_score,
         "pct_hyperscore_gt30": pct_score_gt30,
         "ms2_scan_rate": ms2_scan_rate,
