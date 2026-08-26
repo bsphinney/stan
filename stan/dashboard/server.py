@@ -265,6 +265,16 @@ def _require_store() -> None:
 
 # ── API Routes ───────────────────────────────────────────────────────
 
+# Read-only gate for public hosting. A no-op unless STAN_DASHBOARD_READONLY
+# is set, so a local operator install is unaffected. See
+# stan/dashboard/readonly.py for why this exists — in short, server.py's
+# Origin middleware assumes a 127.0.0.1 listener, and that assumption is
+# false the moment the app is published.
+from stan.dashboard.readonly import install_readonly_gate, is_readonly  # noqa: E402
+
+install_readonly_gate(app)
+
+
 @app.get("/api/capabilities")
 async def api_capabilities() -> dict:
     """What this install can do, so the UI hides what doesn't apply.
@@ -283,7 +293,8 @@ async def api_capabilities() -> dict:
     show_config = True if force in ("1", "true", "yes") else not central
     return {
         "central_mode": central,
-        "show_config": show_config,
+        "show_config": show_config and not is_readonly(),
+        "readonly": is_readonly(),
         # "pg" means every read in this response cycle came from PG Farm;
         # "sqlite" means the local file, whether or not a mirror fills it.
         "db_backend": "pg" if direct else "sqlite",
