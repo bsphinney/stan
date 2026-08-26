@@ -149,6 +149,12 @@ def _get_ui_prefs_watcher() -> ConfigWatcher | None:
 PG_REFRESH_SECONDS = int(_os.environ.get("STAN_PG_REFRESH_SECONDS", "300"))
 
 
+# True once a PG pull has succeeded. This -- not STAN_DB_BACKEND -- is what
+# "central mode" means for the dashboard: it reads SQLite either way, so the
+# env var says nothing about whether it is backed by a fleet-wide store.
+_PG_BACKED = False
+
+
 def _pull_from_pg_once() -> int:
     """Copy central PG data into the local SQLite the dashboard reads.
 
@@ -160,8 +166,10 @@ def _pull_from_pg_once() -> int:
         from stan.sync.pg_to_sqlite import pull_from_pg
     except Exception:
         return -1
+    global _PG_BACKED
     try:
         written = pull_from_pg()
+        _PG_BACKED = True
         logger.info(
             "PG refresh: %s",
             ", ".join(f"{k}={v}" for k, v in written.items()),
@@ -204,6 +212,28 @@ async def startup() -> None:
 
 
 # ── API Routes ───────────────────────────────────────────────────────
+
+@app.get("/api/capabilities")
+async def api_capabilities() -> dict:
+    """What this install can do, so the UI hides what doesn't apply.
+
+    A Hive/PG-backed dashboard is a read-only window onto a fleet whose
+    searching happens on the cluster; there is no local watcher to configure
+    and the instruments.yml it would edit isn't the one in force. Editing it
+    there is at best inert and at worst misleading, so the Config tab is
+    hidden. Override with STAN_SHOW_CONFIG=1.
+    """
+    from stan.db_pg import use_pg
+
+    force = (_os.environ.get("STAN_SHOW_CONFIG") or "").strip().lower()
+    central = bool(use_pg()) or _PG_BACKED
+    show_config = True if force in ("1", "true", "yes") else not central
+    return {
+        "central_mode": central,
+        "show_config": show_config,
+        "version": __version__,
+    }
+
 
 @app.get("/api/version")
 async def api_version() -> dict:
@@ -1387,6 +1417,23 @@ async def api_utilization(days: int = 90) -> dict:
             dt = _parse_day(d)
             iso = dt.isocalendar()
             weekly[f"{iso[0]}-W{iso[1]:02d}"] = weekly.get(f"{iso[0]}-W{iso[1]:02d}", 0) + n
+        # Hour-of-week grid: 7 rows (days) x 24 cols (hours), most recent
+        # week. Counts, not booleans -- "did anything run" and "was it busy"
+        # are different questions and the heatmap can answer both.
+        hourly_all = blk.get("hourly") or {}
+        grid_days: list = []
+        if hourly_all:
+            last_day = max(k[:10] for k in hourly_all)
+            end = _parse_day(last_day) or date.today()
+            for back in range(6, -1, -1):
+                d = end - timedelta(days=back)
+                ds = d.isoformat()
+                grid_days.append({
+                    "date": ds,
+                    "dow": d.strftime("%a"),
+                    "hours": [hourly_all.get(f"{ds}T{h:02d}", 0) for h in range(24)],
+                })
+
         active = [n for n in daily.values() if n > 0]
         mean_active = (sum(active) / len(active)) if active else 0.0
         out[name] = {
@@ -1399,6 +1446,7 @@ async def api_utilization(days: int = 90) -> dict:
             "utilization_pct": {
                 str(c): round(100.0 * mean_active / c, 1) for c in caps
             },
+            "hour_grid": grid_days,
             "peak_utilization_pct": {
                 str(c): round(100.0 * (max(daily.values()) if daily else 0) / c, 1)
                 for c in caps

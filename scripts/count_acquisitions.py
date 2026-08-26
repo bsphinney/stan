@@ -101,6 +101,25 @@ def _acq_date_bruker(d: Path) -> str | None:
     return str(row[0])[:10]
 
 
+def _acq_ts_bruker(d: Path) -> str | None:
+    """Full acquisition timestamp (``YYYY-MM-DDTHH``) from a Bruker .d."""
+    tdf = d / "analysis.tdf"
+    if not tdf.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{tdf}?mode=ro", uri=True, timeout=5)
+        row = con.execute(
+            "SELECT Value FROM GlobalMetadata WHERE Key = ?",
+            ("AcquisitionDateTime",),
+        ).fetchone()
+        con.close()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    return str(row[0])[:13]          # YYYY-MM-DDTHH
+
+
 def _acq_date_thermo(f: Path) -> str | None:
     """Acquisition date parsed from a Thermo .raw filename, or None.
 
@@ -167,6 +186,48 @@ def _resolve(p: Path, reader, cache: dict, stats: dict, since_epoch: float):
     yield day
 
 
+def _hourly_counts(root: Path, since_epoch: float, cache: dict) -> dict:
+    """Per-hour acquisition counts for a recent window.
+
+    The day-level cache stores ``YYYY-MM-DD`` only, so hours need their own
+    pass. It is scoped to a short window (a week or two), which is a few
+    hundred files, so re-reading the Bruker metadata for them is cheap.
+    Thermo falls back to mtime here: its filename convention carries a date
+    but no time.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        keep = []
+        for d in dirnames:
+            if not d.lower().endswith(".d"):
+                keep.append(d)
+                continue
+            p = Path(dirpath) / d
+            try:
+                if p.stat().st_mtime < since_epoch - 40 * 86400:
+                    continue
+            except OSError:
+                continue
+            key = "H:" + str(p)
+            ts = cache.get(key) or _acq_ts_bruker(p)
+            if ts:
+                cache[key] = ts
+                counts[ts] += 1
+        dirnames[:] = keep
+        for f in filenames:
+            if not f.lower().endswith(".raw"):
+                continue
+            p = Path(dirpath) / f
+            try:
+                mt = p.stat().st_mtime
+            except OSError:
+                continue
+            if mt < since_epoch:
+                continue
+            counts[datetime.fromtimestamp(mt, timezone.utc).strftime("%Y-%m-%dT%H")] += 1
+    return dict(sorted(counts.items()))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path,
@@ -175,6 +236,9 @@ def main(argv: list[str] | None = None) -> int:
                     help="Only count acquisitions newer than this many days.")
     ap.add_argument("--instrument", default="",
                     help="Limit to one instrument (substring match).")
+    ap.add_argument("--hourly-days", type=int, default=14,
+                    help="Also emit per-hour counts for this many recent days "
+                         "(0 disables). Drives the dashboard's hour heatmap.")
     ap.add_argument("--merge", action="store_true",
                     help="Update only the days recomputed, keeping the rest "
                          "of the existing file. Pair with a small --days for "
@@ -220,7 +284,16 @@ def main(argv: list[str] | None = None) -> int:
         cutoff_day = datetime.fromtimestamp(since_epoch, timezone.utc).strftime("%Y-%m-%d")
         daily = defaultdict(int, {d: n for d, n in daily.items() if d >= cutoff_day})
         total = sum(daily.values())
-        out["instruments"][name] = {"daily": dict(sorted(daily.items())), "total": total}
+        hourly = {}
+        if args.hourly_days > 0:
+            h_since = time.time() - args.hourly_days * 86400
+            for sub in _recent_month_dirs(root, h_since):
+                for k, v in _hourly_counts(sub, h_since, cache).items():
+                    hourly[k] = hourly.get(k, 0) + v
+        out["instruments"][name] = {
+            "daily": dict(sorted(daily.items())), "total": total,
+            "hourly": dict(sorted(hourly.items())),
+        }
         logger.info("%-24s %6d acquisitions across %4d days (%.0fs) "
                     "[parsed=%d cached=%d mtime_fallback=%d]",
                     name, total, len(daily), time.time() - t0,
@@ -237,9 +310,12 @@ def main(argv: list[str] | None = None) -> int:
             for name, blk in prev.get("instruments", {}).items():
                 merged = dict(blk.get("daily") or {})
                 merged.update(out["instruments"].get(name, {}).get("daily", {}))
+                merged_h = dict(blk.get("hourly") or {})
+                merged_h.update(out["instruments"].get(name, {}).get("hourly", {}))
                 out["instruments"][name] = {
                     "daily": dict(sorted(merged.items())),
                     "total": sum(merged.values()),
+                    "hourly": dict(sorted(merged_h.items())),
                 }
             out["window_days"] = max(prev.get("window_days", 0), args.days)
             logger.info("merged into existing counts from %s", prev.get("generated_at"))
