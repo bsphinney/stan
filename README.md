@@ -86,7 +86,7 @@ Open `http://localhost:8421` after `stan dashboard`. Nine tabs:
 - **Sample Health** — non-QC Bruker `.d` acquisitions monitored for TIC dropout and injection failures.
 - **Fleet** — all instruments on the shared drive in one view; send remote commands.
 - **Config** — live view of `instruments.yml` and `thresholds.yml`.
-- **Community** — your benchmark standing within your cohort, submission log, TIC overlay vs. community runs.
+- **Community** — your benchmark standing within your cohort, submission log, TIC overlay vs. community runs, and a **Sync** button that pushes eligible runs to the public benchmark (pseudonym generated on first use; the count shown is what would actually be sent).
 - **Arcade** — retro mini-games with global community leaderboard (opt-in).
 - **Museum** — interactive historical QC archive: 999 BSA injections from 2005–2022 across every instrument era the UC Davis Proteomics Core has operated, searched with Sage v0.14.7. Timeline, trend chart, coverage maps, and "Then vs Now" comparison panel. See `docs/MUSEUM_DEPLOY.md` to deploy the standalone page to the community HF Space.
 
@@ -194,6 +194,8 @@ What ships today vs. what's still planned.
 | Baseline builder | Done | Recursive discovery, auto-detect gradient/LC, pre-flight DIA-NN/Sage tests, resume on interrupt, scheduling (now / tonight / weekend). |
 | Windows installer + updater | Done | `stan.bat` — single entry point: installs on first run, self-updates on every run, supervises the watcher. `install-stan.bat` handles the one-time install step internally. |
 | Community submission | Done | Hard gates, soft flags, asset MD5 verification, no HF token needed (relay). |
+| Community sync button | Done | Dashboard Community tab; mints a pseudonym if the install has none. Refused on the public read-only host. |
+| Community sync cron | Done | Hive, every 6 h (`scripts/cron_community_sync.sh`). Idempotent via `submitted_to_benchmark`. |
 | Community auth token | Done | `stan setup` claims a pseudonym via email; relay enforces `X-STAN-Auth` on PATCH. |
 | Community FASTA | Done | UniProt human + universal contaminants, MD5-verified, auto-downloaded on first need. |
 | Community speclibs | Done | HeLa empirical libraries for timsTOF (`hela_timstof_202604.parquet`) and Orbitrap/Astral (`hela_orbitrap_202604.parquet`) on HF Dataset; MD5-verified at submission time. |
