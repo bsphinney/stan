@@ -4905,19 +4905,33 @@
             Publishes aggregate QC metrics only — never raw files, never sample
             or patient metadata. You appear under a pseudonym.
           </p>
-          <div style={{display:'flex', gap:'0.5rem', alignItems:'center', flexWrap:'wrap'}}>
+          <div style={{display:'flex', gap:'0.5rem', alignItems:'center',
+                       flexWrap:'wrap', marginBottom:'0.9rem'}}>
             <label style={{fontSize:'0.85rem', color:'var(--muted)'}}>Lab name</label>
             <input value={name} onChange={e => setName(e.target.value)}
                    maxLength={60}
                    style={{background:'var(--bg)', color:'var(--text)',
                            border:'1px solid var(--border)', borderRadius:'0.35rem',
                            padding:'0.35rem 0.6rem', minWidth:'210px'}} />
-            <button onClick={doSync} disabled={busy || pending === 0}>
-              {busy ? 'Syncing…'
-                    : pending > 0 ? `Sync ${pending} run${pending === 1 ? '' : 's'}`
-                    : 'Nothing to sync'}
-            </button>
           </div>
+          {/* The primary action of this tab, so it is sized like one: full
+              width and unmissable rather than a button among buttons. It is
+              disabled when there is nothing to send, so the label always
+              states what pressing it would actually do. */}
+          <button onClick={doSync} disabled={busy || pending === 0}
+                  style={{width:'100%', padding:'0.95rem 1rem',
+                          fontSize:'1.05rem', fontWeight:600,
+                          borderRadius:'0.5rem', cursor: (busy || pending === 0) ? 'default' : 'pointer',
+                          border:'none', letterSpacing:'0.01em',
+                          color: pending > 0 && !busy ? '#04180f' : 'var(--muted)',
+                          background: busy ? 'var(--border)'
+                                    : pending > 0 ? 'linear-gradient(180deg,#5ee9a4,#34c98a)'
+                                    : 'var(--border)'}}>
+            {busy ? 'Syncing to public STAN…'
+                  : pending > 0
+                    ? `Sync ${pending} run${pending === 1 ? '' : 's'} to public STAN`
+                    : 'Nothing new to sync'}
+          </button>
           {result && (
             <div style={{marginTop:'0.7rem', fontSize:'0.85rem',
                          color: result.ok ? '#4ade80' : '#f87171'}}>

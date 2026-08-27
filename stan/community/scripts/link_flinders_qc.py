@@ -51,6 +51,7 @@ import logging
 import os
 import re
 import sys
+import subprocess
 import time
 from pathlib import Path
 
@@ -99,7 +100,122 @@ def _load_instruments(config_path: Path) -> list[dict]:
     return out
 
 
-def _qc_raws(src: Path, pattern: str, since_days: float | None) -> list[Path]:
+# Directories under the instrument's raw_data root that are not
+# acquisitions. The export mixes real month directories in with method
+# libraries, reports and engineer service folders, and walking those wastes
+# NFS stats and — worse — feeds non-acquisition files into the dispatcher.
+# `Service/` is the concrete case: its post-digitizer-replacement tune files
+# were being submitted as monitor jobs on every tick and failing every time,
+# because a tune file has no analysis.tdf to read.
+#
+# Deliberately NOT excluded: `QC` and `HeLSTDs`, which plausibly hold real
+# HeLa standard acquisitions. Excluding a directory silently drops data, so
+# the list stays limited to names that cannot be acquisitions.
+_NON_DATA_DIRS = {
+    "libraries", "msmeth", "reports", "diann", "evoseplcmeth",
+    "service", "servicebrukerengineers",
+}
+
+
+def _recent_month_dirs(
+    src: Path, window_days: float, keep_newest: int = 2
+) -> set[str] | None:
+    """Names of ``src``'s immediate subdirs worth walking, by creation date.
+
+    The Flinders export is organised into one directory per month, and new
+    acquisitions only ever land in the current one. Walking all of them cost
+    an NFS ``stat()`` on every ``.d`` in the archive — ~15,000 stats at ~6 ms
+    each, which is the ~90 s the linker was spending per tick to notice that
+    nothing had changed in 2025.
+
+    Selection is by **creation time** (``st_birthtime``), not by name and not
+    by mtime:
+
+    - Names are unusable. The export holds ``Aug26``, ``JUL26``, ``july26``,
+      ``June26``, ``may26``, ``jan25AndPM``,
+      ``Bruker_FAS_Promega_samples_Mar26``, ``Libraries``, ``QC``, ``Service``
+      and ``desktop.ini``. Any parser over that is a future outage.
+    - mtime is misleading. A directory's mtime bumps whenever anything is
+      added or removed, so a bulk relink touches decade-old months: on
+      2026-08-27 five stale month dirs shared yesterday's mtime, and a
+      30-day mtime filter kept 20 of 32 dirs. Creation time kept 2.
+
+    ``keep_newest`` dirs are always retained regardless of the window, so a
+    month boundary can never select nothing — if September's directory has
+    not been created yet, August's is still walked.
+
+    Returns None when creation time is unavailable (not every filesystem
+    reports it), which makes the caller walk everything as before. Slow is
+    an acceptable failure mode here; silently skipping new data is not.
+    """
+    cutoff = time.time() - window_days * 86400
+    try:
+        children = [
+            c for c in src.iterdir()
+            if c.is_dir() and c.name.lower() not in _NON_DATA_DIRS
+        ]
+    except OSError:
+        logger.warning("could not list %s for month pruning", src, exc_info=True)
+        return None
+    if not children:
+        return None
+
+    # Creation time has to come from `stat -c %W`, not os.stat(): CPython
+    # exposes st_birthtime on macOS/BSD but not on Linux before 3.12, and
+    # Hive runs 3.11 — reading it in Python there returns nothing at all and
+    # would silently disable this pruning, leaving the full walk in place.
+    # One subprocess covers every candidate, so the cost is a single fork.
+    dated: list[tuple[float, str]] = []
+    undated: set[str] = set()
+    try:
+        proc = subprocess.run(
+            ["stat", "-c", "%W|%n", *[str(c) for c in children]],
+            capture_output=True, text=True, timeout=60, check=False,
+        )
+        for line in proc.stdout.splitlines():
+            born_s, _, path_s = line.partition("|")
+            name = Path(path_s).name
+            try:
+                born = float(born_s)
+            except ValueError:
+                born = 0.0
+            if born > 0:
+                dated.append((born, name))
+            else:
+                undated.add(name)
+    except (OSError, subprocess.SubprocessError):
+        logger.warning("stat -c %%W failed under %s", src, exc_info=True)
+        return None
+
+    # A directory whose creation time we cannot read is always walked. One
+    # odd entry should cost a little extra work, not silently switch the
+    # whole archive back to the full walk — and must never cause new data
+    # to be skipped.
+    seen = {n for _, n in dated} | undated
+    undated |= {c.name for c in children if c.name not in seen}
+
+    if not dated:
+        logger.info("no creation times under %s — walking all", src)
+        return None
+
+    if not dated:
+        return None
+
+    dated.sort(reverse=True)
+    keep = {name for born, name in dated if born >= cutoff}
+    keep.update(name for _, name in dated[:keep_newest])
+    keep |= undated
+    logger.info(
+        "month pruning: walking %d of %d dirs under %s (%s)",
+        len(keep), len(dated), src.name, ", ".join(sorted(keep)),
+    )
+    return keep
+
+
+def _qc_raws(
+    src: Path, pattern: str, since_days: float | None,
+    month_window_days: float = 45.0,
+) -> list[Path]:
     """Recursively yield QC ``.d`` dirs and ``.raw`` files under ``src``.
 
     Prunes into ``.d`` directories (never descends past a Bruker run).
@@ -117,7 +233,14 @@ def _qc_raws(src: Path, pattern: str, since_days: float | None) -> list[Path]:
     cutoff = time.time() - since_days * 86400 if since_days else None
     out: list[Path] = []
 
+    # Only descend into recently-created month dirs. Skipped when the caller
+    # asked for no time window at all (a full backfill), which must still
+    # see the whole archive.
+    recent = _recent_month_dirs(src, month_window_days) if since_days else None
+
     for dirpath, dirnames, filenames in os.walk(src):
+        if recent is not None and Path(dirpath) == src:
+            dirnames[:] = [d for d in dirnames if d in recent]
         # Identify .d run directories at this level and prune them so we
         # don't walk their internals.
         d_runs = [d for d in dirnames if d.lower().endswith(".d")]

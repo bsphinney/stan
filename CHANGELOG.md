@@ -11,6 +11,46 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.29] — 2026-08-27
+
+### Fixed
+- **The Flinders linker walked the entire archive every tick: 122 s -> 1 s.**
+  `_qc_raws()` ran `os.walk()` over all 33 month directories and called
+  `stat()` on every `.d` it found. The export holds **9,310 `.d`
+  directories** — a bare `find` over the tree takes 132 s — so each cron
+  tick spent 80-122 s of NFS round-trips to establish that nothing had
+  changed in 2025.
+  - `_recent_month_dirs()` now prunes the walk to recently-**created**
+    directories. Measured after: 2 of 25 dirs under `tTOF_HT`, and the same
+    walk completes in ~1 s.
+  - Selection is by creation time, deliberately not by name or mtime. The
+    names are unparseable (`Aug26`, `JUL26`, `july26`, `jan25AndPM`,
+    `Bruker_FAS_Promega_samples_Mar26`, `desktop.ini`), and mtime is
+    misleading — a bulk relink bumps decade-old months, so a 30-day mtime
+    filter kept 20 of 32 dirs where creation time kept 2.
+  - Creation time is read with `stat -c %W`, **not** `os.stat()`: CPython
+    does not expose `st_birthtime` on Linux before 3.12 and Hive runs 3.11,
+    so the Python attribute is simply absent there and reading it would have
+    silently disabled the whole optimisation.
+  - Safety: the newest directories are always kept so a month boundary can
+    never select nothing; a directory whose creation time cannot be read is
+    kept rather than skipped; and with no window (a full backfill) the walk
+    is unrestricted as before.
+- **Non-acquisition directories are no longer walked or dispatched.**
+  `Libraries`, `MSmeth`, `Reports`, `diaNN`, `EvoSepLCmeth`, `Service` and
+  `ServiceBrukerEngineers` sit beside the month dirs under the instrument's
+  `raw_data` root. `Service/` is why post-digitizer-replacement tune files
+  were being submitted as monitor jobs every tick and failing every time — a
+  tune file has no `analysis.tdf`. `QC` and `HeLSTDs` are deliberately kept,
+  since they may hold real HeLa standards.
+
+### Added
+- **Prominent "Sync to public STAN" button.** The Community tab's sync
+  control is now the full-width primary action of the panel rather than a
+  button among buttons, labelled with the number of runs it would send.
+
+---
+
 ## [1.0.28] — 2026-08-27
 
 ### Changed
