@@ -11,6 +11,33 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.28] — 2026-08-27
+
+### Changed
+- **Hive dispatch cron now runs every 5 minutes** (was 15), so a raw that
+  robocopy lands is picked up in minutes rather than up to a quarter hour.
+  `flock -n` still means a slow tick is skipped rather than stacked.
+
+### Fixed
+- **The dispatch walk issued three DB queries per raw.** `_already_processed`,
+  `_already_health_processed` and `_failed_too_many` were each called inside
+  the per-file loop, and in PG mode every one is a separate round-trip to PG
+  Farm over SSL. Scanning ~2,500 files meant ~2,500 remote queries per tick,
+  all against the instance FRAN shares.
+  - Measured on 2026-08-27: the linker phase took ~2 min while the full tick
+    took 10-25 min, so `flock` skipped four consecutive 5-minute slots. The
+    schedule was never the limit — the tick duration was.
+  - `_preload_dedup_sets()` now loads the three key sets in **three queries
+    total** and the walk tests membership in memory. The tables are only
+    thousands of rows, so this is both far faster and much gentler on PG.
+  - Falls back to the original per-file queries if the preload fails for any
+    reason: a tick must never be lost to an optimisation.
+  - `tests/test_dispatch_preload.py` asserts the preload returns identical
+    verdicts to the three functions it replaces, including the
+    `max_attempts` threshold behaviour.
+
+---
+
 ## [1.0.27] — 2026-08-27
 
 ### Fixed

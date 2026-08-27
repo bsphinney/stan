@@ -219,6 +219,72 @@ def _classify_raw(raw_name: str, qc_pattern: str = DEFAULT_QC_PATTERN) -> str:
     return "monitor"
 
 
+def _preload_dedup_sets(db_path: Path, max_attempts: int) -> dict | None:
+    """Load every dedup key up front, so the walk costs 3 queries not 3xN.
+
+    The scan used to call ``_already_processed`` / ``_already_health_processed``
+    / ``_failed_too_many`` once per raw. In PG mode each of those is its own
+    round-trip to PG Farm over SSL, so a tick scanning ~2,500 files issued
+    ~2,500 remote queries. Measured 2026-08-27: the linker phase took ~2 min
+    while the whole tick took 10-25 min, and every one of those queries also
+    lands on the instance FRAN shares.
+
+    These tables are small (thousands of rows), so pulling the key columns
+    once and testing membership in memory is both far faster and much
+    gentler on PG.
+
+    Returns None if the bulk load fails for any reason — the caller then
+    falls back to the original per-file queries, which are slow but correct.
+    A dispatch tick must never be lost to an optimisation.
+    """
+    try:
+        from stan.db_pg import use_pg
+        if use_pg():
+            from stan.db_pg import _connect as _pg_connect
+            with _pg_connect() as pg, pg.cursor() as cur:
+                cur.execute("SELECT raw_path FROM runs WHERE raw_path IS NOT NULL")
+                processed = {r[0] for r in cur.fetchall()}
+                cur.execute(
+                    "SELECT raw_path FROM sample_health WHERE raw_path IS NOT NULL"
+                )
+                health = {r[0] for r in cur.fetchall()}
+                cur.execute(
+                    "SELECT raw_path FROM dispatch_attempts "
+                    "WHERE status = 'failed' AND attempt_count >= %s",
+                    (max_attempts,),
+                )
+                capped = {r[0] for r in cur.fetchall()}
+        else:
+            with sqlite3.connect(str(db_path)) as con:
+                processed = {
+                    r[0] for r in con.execute(
+                        "SELECT raw_path FROM runs WHERE raw_path IS NOT NULL")
+                }
+                health = {
+                    r[0] for r in con.execute(
+                        "SELECT raw_path FROM sample_health "
+                        "WHERE raw_path IS NOT NULL")
+                }
+                capped = {
+                    r[0] for r in con.execute(
+                        "SELECT raw_path FROM dispatch_attempts "
+                        "WHERE status = 'failed' AND attempt_count >= ?",
+                        (max_attempts,))
+                }
+    except Exception:
+        logger.warning(
+            "dedup preload failed; falling back to per-file queries",
+            exc_info=True,
+        )
+        return None
+
+    logger.info(
+        "dedup preload: %d processed, %d health, %d capped",
+        len(processed), len(health), len(capped),
+    )
+    return {"processed": processed, "health": health, "capped": capped}
+
+
 def _already_health_processed(db_path: Path, raw_path: Path) -> bool:
     """True if the raw already has a row in ``sample_health`` (monitor pipeline).
 
@@ -612,6 +678,10 @@ def dispatch_all(
     }
     submitted_total = 0
 
+    # One bulk load instead of three queries per raw. `None` means the
+    # preload failed and the per-file path below is used instead.
+    dedup = _preload_dedup_sets(db_path, max_attempts)
+
     for inst in cfg["instruments"]:
         if instrument_filter and instrument_filter.lower() not in inst["name"].lower():
             continue
@@ -642,22 +712,35 @@ def dispatch_all(
             # not matching qc_pattern — now we dispatch both classes.
             raw_class = _classify_raw(raw.name, qc_pattern)
 
-            # Check the right table for idempotency.
-            if raw_class == "monitor":
-                if _already_health_processed(db_path, raw):
+            # Check the right table for idempotency. Membership in the
+            # preloaded sets when available; the per-file queries are the
+            # fallback for when the preload could not run.
+            if dedup is not None:
+                key = str(raw)
+                seen = dedup["health"] if raw_class == "monitor" else dedup["processed"]
+                if key in seen:
                     per_inst["skipped_processed"] += 1
                     summary["totals"]["skipped_processed"] += 1
                     continue
+                if key in dedup["capped"]:
+                    per_inst["skipped_max_attempts"] += 1
+                    summary["totals"]["skipped_max_attempts"] += 1
+                    continue
             else:
-                if _already_processed(db_path, raw):
+                if raw_class == "monitor":
+                    if _already_health_processed(db_path, raw):
+                        per_inst["skipped_processed"] += 1
+                        summary["totals"]["skipped_processed"] += 1
+                        continue
+                elif _already_processed(db_path, raw):
                     per_inst["skipped_processed"] += 1
                     summary["totals"]["skipped_processed"] += 1
                     continue
 
-            if _failed_too_many(db_path, raw, max_attempts):
-                per_inst["skipped_max_attempts"] += 1
-                summary["totals"]["skipped_max_attempts"] += 1
-                continue
+                if _failed_too_many(db_path, raw, max_attempts):
+                    per_inst["skipped_max_attempts"] += 1
+                    summary["totals"]["skipped_max_attempts"] += 1
+                    continue
 
             if _job_already_queued(raw.stem):
                 per_inst["skipped_in_flight"] += 1
