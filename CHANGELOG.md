@@ -11,6 +11,49 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.32] — 2026-08-27
+
+### Fixed
+- **Week-at-a-glance attributed runs to the wrong day, and dropped today's
+  evening runs entirely.** The 7-day columns are built from **local**
+  midnight, but each run was bucketed with `d.toISOString().slice(0,10)`,
+  which converts to **UTC** first. West of Greenwich every acquisition after
+  17:00 local therefore landed in the next day's column, and a run later
+  today produced a key with no matching column at all, so the `k in grid`
+  guard discarded it silently. Totals were conserved, which is why this read
+  as "half the runs are missing" rather than as an obvious error — the counts
+  were real, just under the wrong headings.
+  - Replaced with a shared `localDay()` helper used everywhere a calendar day
+    is derived. The same `toISOString()` mistake was also pre-filling
+    *tomorrow's* date into the maintenance-event form after 17:00 local, and
+    those events drive LC-column age, so it is fixed there too.
+- **Non-QC acquisitions were never ingested, so the Samples views were
+  empty.** `cron_flinders_dispatch.sh` called the linker without
+  `--all-runs`, which symlinks QC raws only. Customer samples and blanks
+  never reached a watch dir, never got a monitor job, and never appeared in
+  `sample_health`. The rows that did exist were there only because someone
+  ran the linker by hand with the flag on 2026-08-26 16:32 — ingestion of
+  sample health was effectively manual, and stopped the moment that run
+  finished. Verified: of 60 non-QC timsTOF acquisitions on Aug 26-27, **0**
+  were linked.
+  - Safe by construction: `_classify_raw()` routes non-QC raws to the
+    lightweight monitor pipeline (rawmeat metadata only, no search engine)
+    and they are never submitted to the community benchmark.
+  - The catch-up is 429 files and self-throttling — `max_submissions_per_run`
+    caps each tick at 50, and the month pruning from v1.0.29 bounds the walk.
+
+### Notes
+- `sample_health.run_date` is TEXT in PG while `runs.run_date` is
+  `timestamptz`. It was **not** dropping rows: the server compares with
+  `substr(run_date, 1, 10)`, and all 117 rows in the Aug 21-27 window match
+  that clause. Worth migrating for consistency, but it is not a live defect.
+- An earlier disk count in this session (72 acquisitions on Aug 26) was
+  wrong: it used `.d` **directory** mtime, which is bumped by writing
+  `.features` sidecars into the directory. Counting `analysis.tdf_bin` mtime
+  gives the true figure of 36.
+
+---
+
 ## [1.0.31] — 2026-08-27
 
 ### Added

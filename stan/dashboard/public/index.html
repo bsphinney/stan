@@ -88,6 +88,13 @@
 
     const API = '';
 
+    /* YYYY-MM-DD in the VIEWER's timezone. Never use toISOString() for a
+       calendar day: it converts to UTC first, so west of Greenwich every
+       evening lands on tomorrow's date. That silently mis-bucketed the
+       week-at-a-glance grid and pre-filled tomorrow into the maintenance
+       date field after 17:00 local. */
+    const localDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
     function useFetch(url, deps = []) {
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -1695,7 +1702,7 @@
     function LogEventButton({ instrument, onSaved }) {
       const [open, setOpen] = useState(false);
       const [eventType, setEventType] = useState('column_change');
-      const [eventDate, setEventDate] = useState(new Date().toISOString().slice(0, 10));
+      const [eventDate, setEventDate] = useState(localDay(new Date()));
       const [notes, setNotes] = useState('');
       const [operator, setOperator] = useState('');
       const [colVendor, setColVendor] = useState('');
@@ -1738,7 +1745,7 @@
             setColVendor('');
             setColModel('');
             setColSerial('');
-            setEventDate(new Date().toISOString().slice(0, 10));
+            setEventDate(localDay(new Date()));
             if (onSaved) onSaved();
             setTimeout(() => { setStatus(''); setOpen(false); }, 1200);
           } else {
@@ -2694,7 +2701,13 @@
         d.setDate(d.getDate() - i);
         days.push(d);
       }
-      const dayKey = d => d.toISOString().slice(0, 10);
+      // Local, NOT toISOString(): the `days` columns above are built from
+      // LOCAL midnight, so keying runs by their UTC date put every
+      // acquisition after 17:00 PDT into the next day's column -- and a run
+      // later today got a key with no column at all, so the `k in grid` guard
+      // below dropped it silently. Totals were conserved but attributed to
+      // the wrong day, which is why the grid looked like it was missing runs.
+      const dayKey = localDay;
 
       // Collect runs from all three facets, tagged with class.
       const allFaceted = [];

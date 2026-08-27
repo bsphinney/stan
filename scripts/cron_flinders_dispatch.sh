@@ -57,8 +57,19 @@ LOG="/quobyte/proteomics-grp/STAN/logs/cron_flinders_$(date +%Y%m%d).log"
   # Re-adding a refresh here would overwrite that secret with a 7-day JWT and
   # re-couple PG access to this cron succeeding -- the exact failure that took
   # STAN's PG writes down from 2026-06-10 to 2026-08-26.
-  echo "--- link Flinders QC (rolling 30d) ---"
-  "$PY" "$LINKER" --config "$CONFIG" --since-days 30 2>&1 | grep -E "DONE|ERROR" || true
+  # --all-runs links NON-QC acquisitions too. Without it the linker only
+  # symlinks HeLa QC raws, so customer samples and blanks never reach a watch
+  # dir, never get a monitor job, and never appear in sample_health -- which
+  # is why the Samples panel and the week-at-a-glance grid showed nothing for
+  # timsTOF after 2026-08-26 16:32 (the last time someone ran the linker by
+  # hand with this flag). Sample-health ingestion was effectively manual.
+  #
+  # Safe: dispatch_hive._classify_raw() routes non-QC raws to the lightweight
+  # monitor pipeline -- rawmeat metadata only, no search engine, and they are
+  # never submitted to the community benchmark. The catch-up is self-throttling
+  # because the dispatcher submits at most max_submissions_per_run (50) a tick.
+  echo "--- link Flinders raws (rolling 30d, QC + samples) ---"
+  "$PY" "$LINKER" --config "$CONFIG" --since-days 30 --all-runs 2>&1 | grep -E "DONE|ERROR" || true
   echo "--- dispatch (cap 50) ---"
   "$STAN" hive-dispatch --config "$CONFIG" 2>&1 | tail -2 || true
   echo
