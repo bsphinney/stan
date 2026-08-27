@@ -1529,19 +1529,24 @@ def _load_community_cfg() -> dict:
 
 
 @app.get("/api/community/sync-status")
-async def api_community_sync_status() -> dict:
+async def api_community_sync_status(request: Request) -> dict:
     """What a community sync would do right now, without doing it.
 
     Powers the Sync button's label so the operator sees the size of the
     action before taking it.
     """
     from stan.community.pseudonym import generate_pseudonym
+    from stan.dashboard.auth import caller_email, is_privileged
+    from stan.dashboard.readonly import LOGIN_URL
 
-    if is_readonly():
-        # The public host cannot publish on a lab's behalf, so counting
-        # eligible runs and minting a name is wasted work.
+    if is_readonly() and not is_privileged(request):
+        # Public visitor on the hosted dashboard. Counting eligible runs and
+        # minting a name is wasted work, but hand back the login URL so the
+        # UI can offer a way in rather than a dead end.
         return {"display_name": None, "suggested_name": None,
-                "pending": 0, "readonly": True}
+                "pending": 0, "readonly": True,
+                "can_sign_in": True, "login_url": LOGIN_URL,
+                "signed_in_as": caller_email(request)}
 
     cfg = _load_community_cfg()
     name = (cfg.get("display_name") or "").strip()
@@ -1555,7 +1560,10 @@ async def api_community_sync_status() -> dict:
         "display_name": name or None,
         "suggested_name": name or generate_pseudonym(),
         "pending": pending,
-        "readonly": is_readonly(),
+        # False here means "this caller may sync", which on the hosted
+        # dashboard is true only for a signed-in, allow-listed operator.
+        "readonly": False,
+        "signed_in_as": caller_email(request),
     }
 
 

@@ -4874,13 +4874,31 @@
 
       if (!status) return null;
       if (status.readonly) {
+        /* Public visitor on the hosted dashboard. Publishing acts on the
+           lab's behalf, so it needs a signed-in operator — offer the login
+           rather than a dead end. Anyone can still read the whole site. */
         return (
           <div className="card" style={{marginBottom:'1rem'}}>
             <h3>Community sync</h3>
-            <p style={{color:'var(--muted)', fontSize:'0.85rem'}}>
-              This is the public read-only dashboard — it can't publish on a
-              lab's behalf. Sync from your own STAN install.
+            <p style={{color:'var(--muted)', fontSize:'0.85rem', marginBottom:'0.8rem'}}>
+              Publishing this lab's runs needs an authorized operator. Everything
+              else on this dashboard is public — signing in only unlocks the sync.
             </p>
+            {status.can_sign_in && (
+              <a href={status.login_url || '/.auth/login/aad?post_login_redirect_uri=/'}
+                 style={{display:'inline-block', padding:'0.75rem 1.4rem',
+                         fontSize:'1rem', fontWeight:600, borderRadius:'0.5rem',
+                         background:'linear-gradient(180deg,#5ee9a4,#34c98a)',
+                         color:'#04180f', textDecoration:'none'}}>
+                Sign in with UC Davis
+              </a>
+            )}
+            {status.signed_in_as && (
+              <p style={{color:'var(--muted)', fontSize:'0.78rem', marginTop:'0.7rem'}}>
+                Signed in as {status.signed_in_as}, but not on this dashboard's
+                operator list. Ask Brett to add you.
+              </p>
+            )}
           </div>
         );
       }

@@ -35,6 +35,20 @@ logger = logging.getLogger(__name__)
 #: Methods that can change state. HEAD/GET/OPTIONS are always allowed.
 _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+#: Where Easy Auth sends a caller to sign in. Handed back on a 403 so the UI
+#: can offer the link rather than leaving a dead end.
+LOGIN_URL = "/.auth/login/aad?post_login_redirect_uri=/"
+
+#: The only writes a signed-in operator may perform on the hosted dashboard.
+#: An explicit allow-list, not "everything except X": publishing this lab's
+#: runs is a deliberate, reviewable action, whereas the fleet-command and
+#: config-write routes are remote code execution against instrument PCs and
+#: stay refused on a public host no matter who is signed in. Widen this only
+#: with a reason.
+_PRIVILEGED_PATHS = frozenset({
+    "/api/community/sync",
+})
+
 #: Introspection surfaces that leak route shapes or internals. Hidden rather
 #: than 403'd so a scanner sees "not here" instead of "here but forbidden".
 _HIDDEN_PATHS = frozenset({
@@ -60,12 +74,24 @@ def install_readonly_gate(app) -> bool:
 
     from fastapi.responses import JSONResponse
 
+    from stan.dashboard.auth import caller_email, is_privileged
+
     @app.middleware("http")
     async def _readonly_gate(request, call_next):
         path = request.url.path.rstrip("/") or "/"
         if path in _HIDDEN_PATHS:
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         if request.method.upper() in _MUTATING:
+            # A signed-in, allow-listed operator gets write access back. This
+            # is the only way through the gate, and it is decided per request
+            # from the platform-verified Easy Auth principal — never from a
+            # process-wide flag that a misconfiguration could leave on.
+            if path in _PRIVILEGED_PATHS and is_privileged(request):
+                logger.info(
+                    "read-only: allowing %s %s for %s",
+                    request.method, path, caller_email(request) or "authorized caller",
+                )
+                return await call_next(request)
             # Log enough to notice a probe, but never the body.
             logger.warning(
                 "read-only: refused %s %s from %s",
@@ -74,7 +100,8 @@ def install_readonly_gate(app) -> bool:
             )
             return JSONResponse(
                 {"detail": "This STAN dashboard is read-only. "
-                           "State-changing requests are disabled."},
+                           "Sign in as an authorized operator to publish.",
+                 "login_url": LOGIN_URL},
                 status_code=403,
             )
         return await call_next(request)

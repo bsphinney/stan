@@ -11,6 +11,37 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.31] — 2026-08-27
+
+### Added
+- **Sign-in on the hosted dashboard, unlocking the community Sync button.**
+  The public site stays open — anyone may read the QC data — but publishing
+  acts on the lab's behalf under its pseudonym, so it now requires a
+  signed-in, allow-listed operator. Visitors see a "Sign in with UC Davis"
+  button instead of a dead-end message.
+  - `stan/dashboard/auth.py` mirrors FRAN's `corpus_browser/app/auth.py`
+    deliberately: same platform (App Service Easy Auth in
+    allow-unauthenticated mode), same UC Davis tenant — which is what puts
+    CAS + Duo in front of the login — and the same header contract, so there
+    is one pattern to reason about across both deployments.
+  - Authorization is per request from the platform-verified
+    `X-MS-CLIENT-PRINCIPAL` blob, never a process-wide flag. Either
+    `STAN_ALLOWED_USERS` (comma-separated UPNs) or `STAN_REQUIRED_GROUP`
+    (Entra group object id) grants access.
+  - **Fail-closed throughout.** No principal, an undecodable principal, the
+    `-NAME` header without the signed blob, or *neither gate configured*
+    all resolve to read-only. Authenticated never implies authorized —
+    anyone can obtain a Microsoft account.
+  - Sign-in unlocks **only** `/api/community/sync`. The fleet-command and
+    config-write routes remain refused on a public host no matter who is
+    signed in, because they are remote code execution against instrument
+    PCs. `_PRIVILEGED_PATHS` is an explicit allow-list, not
+    "everything except".
+  - 11 tests in `tests/test_dashboard_auth.py`, including that a signed-in
+    operator still cannot reach `/api/fleet/command`.
+
+---
+
 ## [1.0.30] — 2026-08-27
 
 ### Fixed
