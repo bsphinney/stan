@@ -230,3 +230,61 @@ def test_existing_qc_tic_traces_unaffected(tmp_path: Path):
 
     assert qc_row is not None and qc_row[0] == run_id
     assert h_row is not None and h_row[0] == health_id
+
+
+def test_cirt_anchors_roundtrip_sqlite(tmp_path: Path):
+    """insert_irt_anchor_rts -> get_cirt_history works on the SQLite backend.
+
+    PG is opt-in; single-lab installs must keep getting the cIRT panel
+    straight out of SQLite with no PG Farm in sight.
+    """
+    from stan.db import get_cirt_history, insert_irt_anchor_rts
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    run_id = insert_run(
+        instrument="timsTOF HT", run_name="HeLa_60spd_001.d",
+        raw_path="/data/HeLa_60spd_001.d", mode="diaPASEF",
+        metrics={"n_precursors": 90000}, spd=60,
+        db_path=db_path, run_date="2026-05-01T09:00:00",
+    )
+
+    panel = [("DDEYDYLFK", 14.24), ("DAVLLVFANK", 16.40)]
+    n = insert_irt_anchor_rts(
+        run_id, {"DDEYDYLFK": 14.5, "DAVLLVFANK": 16.2}, panel, db_path=db_path,
+    )
+    assert n == 2
+
+    rows = get_cirt_history("timsTOF HT", db_path=db_path)
+    assert len(rows) == 2
+    by_pep = {r["peptide"]: r for r in rows}
+    assert by_pep["DDEYDYLFK"]["observed_rt_min"] == 14.5
+    assert by_pep["DDEYDYLFK"]["reference_rt_min"] == 14.24
+    assert by_pep["DAVLLVFANK"]["spd"] == 60
+    assert get_cirt_history("Orbitrap Exploris 480", db_path=db_path) == []
+
+
+def test_cirt_history_limit_keeps_newest(tmp_path: Path):
+    """The row cap must drop the oldest runs, never the recent end.
+
+    Capping an ascending scan directly would hide exactly the drift the
+    chart exists to show once an instrument's history outgrows the limit.
+    """
+    from stan.db import get_cirt_history, insert_irt_anchor_rts
+
+    db_path = tmp_path / "test.db"
+    init_db(db_path)
+    panel = [("DDEYDYLFK", 14.24)]
+    for day in range(1, 6):
+        run_id = insert_run(
+            instrument="timsTOF HT", run_name=f"HeLa_{day}.d",
+            raw_path=f"/data/HeLa_{day}.d", mode="diaPASEF",
+            metrics={}, spd=60, db_path=db_path,
+            run_date=f"2026-05-0{day}T09:00:00",
+        )
+        insert_irt_anchor_rts(
+            run_id, {"DDEYDYLFK": 14.0 + day}, panel, db_path=db_path,
+        )
+
+    rows = get_cirt_history("timsTOF HT", limit=2, db_path=db_path)
+    assert [r["run_name"] for r in rows] == ["HeLa_4.d", "HeLa_5.d"]

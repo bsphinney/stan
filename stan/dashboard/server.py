@@ -1508,6 +1508,26 @@ class ArcadeScoreBody(BaseModel):
     affiliation: str = ""      # optional — never required, never prompted twice
 
 
+def _load_community_cfg() -> dict:
+    """`load_community()`, but a missing file is an empty config.
+
+    `load_community()` raises FileNotFoundError when no community.yml
+    exists. That is the normal state of a fresh install and of the public
+    read-only host, and it is precisely the case the sync flow exists to
+    handle — it mints a pseudonym and writes the file. Letting the raise
+    escape turned sync-status into a 500 on the public dashboard and made
+    the first sync from a new install impossible.
+    """
+    try:
+        from stan.config import load_community
+        return load_community() or {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logger.warning("could not read community.yml", exc_info=True)
+        return {}
+
+
 @app.get("/api/community/sync-status")
 async def api_community_sync_status() -> dict:
     """What a community sync would do right now, without doing it.
@@ -1516,9 +1536,14 @@ async def api_community_sync_status() -> dict:
     action before taking it.
     """
     from stan.community.pseudonym import generate_pseudonym
-    from stan.config import load_community
 
-    cfg = load_community() or {}
+    if is_readonly():
+        # The public host cannot publish on a lab's behalf, so counting
+        # eligible runs and minting a name is wasted work.
+        return {"display_name": None, "suggested_name": None,
+                "pending": 0, "readonly": True}
+
+    cfg = _load_community_cfg()
     name = (cfg.get("display_name") or "").strip()
     try:
         from stan.db import get_runs
@@ -1537,11 +1562,24 @@ async def api_community_sync_status() -> dict:
 def _pending_community_runs(rows: list[dict]) -> list[dict]:
     """Runs eligible for the community benchmark, mirroring `stan submit-all`.
 
-    Same two exclusions the CLI applies, kept in step deliberately: washes
-    and blanks are not QC, and a run with zero identifications is a failed
-    search that would only pollute the cohort percentiles.
+    All three exclusions the CLI applies, kept in step deliberately, so the
+    count on the Sync button is what would actually be pushed rather than a
+    larger number the operator then sees silently shrink:
+
+    1. not a QC file at all (the instrument's own QC naming pattern),
+    2. washes and blanks, which are not QC results,
+    3. zero identifications — a failed search, which would only pollute the
+       cohort percentiles.
     """
     import re
+
+    try:
+        from stan.watcher.qc_filter import compile_qc_pattern, is_qc_file
+        qc_pat = compile_qc_pattern()
+    except Exception:
+        logger.debug("QC pattern unavailable; counting on name rules alone",
+                     exc_info=True)
+        qc_pat = is_qc_file = None
 
     skip = re.compile(r"(?i)(wash|blank|blnk|blk|DELETE)")
     out = []
@@ -1549,6 +1587,8 @@ def _pending_community_runs(rows: list[dict]) -> list[dict]:
         if r.get("submitted_to_benchmark"):
             continue
         name = str(r.get("run_name") or "")
+        if is_qc_file is not None and not is_qc_file(Path(name), qc_pat):
+            continue
         if skip.search(name):
             continue
         if (r.get("n_precursors") or 0) + (r.get("n_psms") or 0) <= 0:
@@ -1575,10 +1615,10 @@ async def api_community_sync(body: dict | None = None) -> dict:
 
         from stan.community.pseudonym import generate_pseudonym
         from stan.community.submit import submit_to_benchmark
-        from stan.config import get_user_config_dir, load_community
+        from stan.config import get_user_config_dir
         from stan.db import get_runs
 
-        cfg = load_community() or {}
+        cfg = _load_community_cfg()
         if display_name:
             cfg["display_name"] = display_name
         elif not (cfg.get("display_name") or "").strip():

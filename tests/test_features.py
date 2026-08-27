@@ -247,3 +247,30 @@ def test_install_4dff_mocked(tmp_path, monkeypatch):
     assert binary.name == "uff-cmdline2"
     # is_4dff_installed should now report True (with patched SHAs).
     assert feat_mod.is_4dff_installed(platform="linux") is True
+
+
+# ─────────────────────────────────────────────────────────────
+#  run_4dff pre-flight guards (v1.0.16)
+# ─────────────────────────────────────────────────────────────
+
+def test_run_4dff_rejects_d_without_tdf(tmp_path):
+    """No analysis.tdf at all — not a Bruker TDF .d."""
+    from stan.metrics.features import run_4dff
+    d = tmp_path / "notbruker.d"
+    d.mkdir()
+    with pytest.raises(FileNotFoundError, match="analysis.tdf"):
+        run_4dff(d, platform="linux")
+
+
+def test_run_4dff_rejects_d_missing_tdf_bin(tmp_path):
+    """Archived .d keeps the metadata SQLite but loses the spectra.
+
+    4DFF segfaults on these with a C++ stack trace that never names the
+    missing file, so the guard has to say it instead.
+    """
+    from stan.metrics.features import run_4dff
+    d = tmp_path / "archived.d"
+    d.mkdir()
+    (d / "analysis.tdf").write_bytes(b"")
+    with pytest.raises(FileNotFoundError, match="analysis.tdf_bin"):
+        run_4dff(d, platform="linux")

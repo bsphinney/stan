@@ -11,6 +11,39 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.25] — 2026-08-26
+
+### Fixed
+- **`/api/community/sync-status` 500'd wherever no `community.yml` exists.**
+  `load_community()` raises `FileNotFoundError` when the file is absent, and
+  that is the normal state of both the public read-only host and a brand-new
+  install. Worse, the same raise sat in the sync POST *ahead of* the
+  pseudonym-minting branch, so the very first sync from a fresh install —
+  precisely the case that feature exists for — could never run. Both now go
+  through `_load_community_cfg()`, which treats a missing file as an empty
+  config. The read-only host also short-circuits: it cannot publish on a
+  lab's behalf, so counting runs and minting a name there was wasted work.
+- **The Sync button's count was too high.** `_pending_community_runs()`
+  applied two of the three exclusions `stan submit-all` applies, omitting the
+  QC-filename check, so non-QC files inflated the number the operator saw and
+  it would then silently shrink during the sync. All three are applied now
+  (668 rather than 679 eligible on this install).
+
+### Added
+- `tests/test_community_sync_endpoints.py` — regression cover for the missing
+  config, the read-only short-circuit, and agreement between the button's
+  count and the CLI's skip rules.
+
+### Deployed
+- Azure (`ucd.stan-proteomics.org`) was still serving **v1.0.19**, so the
+  arcade endpoints added in 1.0.22 did not exist there. That is why the
+  community site's leaderboard was empty: it proxies
+  `ucd.stan-proteomics.org/api/arcade/leaderboard`, which was returning 404
+  (`{"scores":[],"read_only":true,"reason":"upstream 404"}`). Redeployed to
+  current; the proxy now answers 200.
+
+---
+
 ## [1.0.24] — 2026-08-26
 
 ### Fixed

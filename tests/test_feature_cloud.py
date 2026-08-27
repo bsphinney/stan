@@ -315,3 +315,60 @@ def test_by_charge_shape_matches_endpoint_contract() -> None:
     )
     bucket = cloud.by_charge()["2"]
     assert sorted(bucket) == ["intensity", "mobility", "mz", "rt"]
+
+
+# ─────────────────────────────────────────────────────────────
+#  publish_feature_cloud — the ingest-path hook
+# ─────────────────────────────────────────────────────────────
+
+def test_publish_stores_cloud_for_a_bruker_d(tmp_path: Path) -> None:
+    from stan.metrics.feature_cloud import publish_feature_cloud
+
+    d = tmp_path / "run.d"
+    d.mkdir()
+    _make_features_db(d / "run.d.features", [
+        (400.5, 2, 600.0, 0.90, 1e5),
+        (800.2, 1, 800.0, 1.25, 5e4),
+    ])
+    db_path = tmp_path / "stan.db"
+    stan_db.init_db(db_path=db_path)
+
+    assert publish_feature_cloud(d, "run-1", db_path=db_path) == 2
+    got = stan_db.get_feature_cloud("run-1", db_path=db_path)
+    assert got["charge"] == [2, 1]
+
+
+def test_publish_is_a_noop_without_a_sidecar(tmp_path: Path) -> None:
+    """No sidecar is the normal case mid-4DFF — must not raise."""
+    from stan.metrics.feature_cloud import publish_feature_cloud
+
+    d = tmp_path / "run.d"
+    d.mkdir()
+    db_path = tmp_path / "stan.db"
+    stan_db.init_db(db_path=db_path)
+    assert publish_feature_cloud(d, "run-1", db_path=db_path) == 0
+
+
+def test_publish_skips_thermo_and_never_raises(tmp_path: Path) -> None:
+    """This sits in the ingest path; it may not fail a run for any reason."""
+    from stan.metrics.feature_cloud import publish_feature_cloud
+
+    thermo = tmp_path / "run.raw"
+    thermo.write_bytes(b"")
+    assert publish_feature_cloud(thermo, "run-1", db_path=tmp_path / "s.db") == 0
+    # Nonexistent path, unwritable DB target — still 0, still no exception.
+    assert publish_feature_cloud(tmp_path / "gone.d", "run-1") == 0
+
+
+def test_default_cap_matches_the_drift_cloud_budget() -> None:
+    """Both ion clouds share one storage budget — keep them in step.
+
+    ``feature_clouds`` and ``drift_peak_clouds`` hold the same kind of
+    thing for the same run, so letting their point caps drift apart makes
+    a run's storage cost depend on which view happened to produce it.
+    Raising this is a deliberate call (it is the biggest lever on table
+    size: ~70 KB/run in PG at 5,000, ~3x that at 15,000), not something
+    to bump in passing.
+    """
+    from stan.metrics.feature_cloud import DEFAULT_MAX_POINTS
+    assert DEFAULT_MAX_POINTS == 5_000
