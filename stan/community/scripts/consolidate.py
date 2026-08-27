@@ -29,6 +29,45 @@ HF_DATASET_REPO = "brettsp/stan-benchmark"
 COHORT_MINIMUM = 5
 
 
+def _dedupe_by_fingerprint(df: pl.DataFrame) -> pl.DataFrame:
+    """Collapse re-submissions of the same run, keeping the newest.
+
+    `fingerprint` is the relay's own identity for an acquisition — it
+    already refuses a duplicate at submit time with "fingerprint ...
+    already exists". Consolidation did not honour it, so any run that
+    reached the dataset more than once (a ``--force`` repopulate, a retry
+    storm) counted once per copy in :func:`_compute_cohort_percentiles`.
+    On 2026-08-26 that was 1,024 of 4,095 rows: 749 runs duplicated up to
+    6x, every copy carrying identical metrics and differing only in
+    ``submission_id`` and ``submitted_at``. A run weighted 6x skews the
+    very percentile distribution the benchmark exists to publish.
+
+    Keeps the newest submission per fingerprint: when a lab re-submits a
+    run after re-searching it, the latest result is the one that should
+    count. Rows with no fingerprint are passed through untouched rather
+    than collapsed together — a null is not evidence of sameness.
+    """
+    if "fingerprint" not in df.columns:
+        return df
+
+    before = df.height
+    keyed = df.filter(pl.col("fingerprint").is_not_null())
+    unkeyed = df.filter(pl.col("fingerprint").is_null())
+    if "submitted_at" in df.columns:
+        keyed = keyed.sort("submitted_at", nulls_last=False)
+    keyed = keyed.unique(subset=["fingerprint"], keep="last", maintain_order=True)
+
+    out = pl.concat([keyed, unkeyed], how="diagonal_relaxed")
+    dropped = before - out.height
+    if dropped:
+        logger.info(
+            "Deduplicated %d re-submission(s) by fingerprint: %d -> %d rows "
+            "(%d without a fingerprint kept as-is)",
+            dropped, before, out.height, unkeyed.height,
+        )
+    return out
+
+
 def main() -> None:
     """Run nightly consolidation."""
     token = os.environ.get("HF_TOKEN", "")
@@ -73,6 +112,8 @@ def main() -> None:
 
     all_submissions = pl.concat(dfs, how="diagonal_relaxed")
     logger.info("Total submissions: %d", all_submissions.height)
+
+    all_submissions = _dedupe_by_fingerprint(all_submissions)
 
     # 3. v1.0 normalization — splits into v1 / historical / quarantine.
     # Shared with migrate_v1.py so the nightly run stays in lockstep with

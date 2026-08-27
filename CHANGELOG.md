@@ -11,6 +11,35 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.26] — 2026-08-26
+
+### Fixed
+- **The community benchmark counted duplicated runs, skewing cohort
+  percentiles.** `consolidate.py` concatenated every `submissions/*.parquet`
+  with no deduplication, so a run that reached the dataset more than once —
+  a `--force` repopulate, a retry storm — contributed one row per copy to
+  `_compute_cohort_percentiles`. In the published file that was **1,024 of
+  4,095 rows**: 749 runs duplicated up to 6x. Every copy in every one of
+  those 749 groups carried identical metrics, differing only in
+  `submission_id` and `submitted_at` (one storm put six copies of the same
+  run in a 52-second window), so the duplicates were pure weight with no
+  added information — and a run weighted 6x distorts the very distribution
+  the benchmark publishes.
+  - Consolidation now collapses on `fingerprint`, which is the relay's own
+    identity for an acquisition and what it already uses to refuse a
+    duplicate at submit time (*"fingerprint ... already exists"*). Honouring
+    it here brings consolidation in line with the relay instead of leaving
+    the two disagreeing.
+  - Keeps the **newest** submission per fingerprint, so a re-searched run
+    supersedes its stale result rather than losing to it.
+  - Rows with no fingerprint pass through untouched: a null is not evidence
+    that two rows are the same run.
+  - The drop is logged with before/after counts rather than being silent.
+  - Extracted as `_dedupe_by_fingerprint()` with regression tests
+    (`tests/test_consolidate_dedup.py`).
+
+---
+
 ## [1.0.25] — 2026-08-26
 
 ### Fixed
