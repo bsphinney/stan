@@ -2,11 +2,19 @@
 # STAN Hive cron: pull new Flinders QC raws into the dispatcher watch dirs,
 # then submit up to max_submissions_per_run (50) SLURM search jobs.
 #
-# Installed in brettsp's Hive crontab, every 15 min, wrapped in flock so
+# Installed in brettsp's Hive crontab, every 5 min, wrapped in flock so
 # overlapping ticks are skipped:
 #
-#   */15 * * * * flock -n /tmp/stan_flinders_cron.lock \
+#   */5 * * * * flock -n /tmp/stan_flinders_cron.lock \
 #       /quobyte/proteomics-grp/STAN/cron_flinders_dispatch.sh
+#
+# 5 min (was 15, changed 2026-08-27) so a raw that robocopy lands is
+# searched within minutes instead of up to a quarter hour later. A tick
+# costs ~80-105 s, nearly all of it the rolling-30d walk of the Flinders
+# export; narrowing the window does not help much (--since-days 2 still
+# takes 64 s), because the cost is walking the tree, not the date filter.
+# That is a ~30% duty cycle of stat() calls on the login node -- IO, not
+# compute -- and flock means a slow tick is skipped rather than stacked.
 #
 # Login-node-safe: only walks the filesystem, creates symlinks, and calls
 # sbatch. All real compute lands inside SLURM (partition `low` per
