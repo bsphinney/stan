@@ -1518,14 +1518,25 @@ def _load_community_cfg() -> dict:
     escape turned sync-status into a 500 on the public dashboard and made
     the first sync from a new install impossible.
     """
+    cfg: dict = {}
     try:
         from stan.config import load_community
-        return load_community() or {}
+        cfg = load_community() or {}
     except FileNotFoundError:
-        return {}
+        cfg = {}
     except Exception:
         logger.warning("could not read community.yml", exc_info=True)
-        return {}
+        cfg = {}
+
+    # A hosted deployment has no ~/.stan/community.yml — it is a container
+    # reading PG, not a lab install. Without this it would fall through to
+    # minting a NEW pseudonym and publish this lab's runs under a second
+    # identity, splitting them from the ones already on the community site.
+    # STAN_DISPLAY_NAME carries the real name in that environment.
+    env_name = (_os.environ.get("STAN_DISPLAY_NAME") or "").strip()
+    if env_name and not (cfg.get("display_name") or "").strip():
+        cfg["display_name"] = env_name
+    return cfg
 
 
 @app.get("/api/community/sync-status")
@@ -1550,15 +1561,30 @@ async def api_community_sync_status(request: Request) -> dict:
 
     cfg = _load_community_cfg()
     name = (cfg.get("display_name") or "").strip()
+    # One read serves both the pending count and the "has this lab published
+    # before?" question, so the status endpoint stays a single query.
+    published_before = True
     try:
         from stan.db import get_runs
-        pending = len(_pending_community_runs(get_runs(limit=100000)))
+        rows = get_runs(limit=100000)
+        pending = len(_pending_community_runs(rows))
+        published_before = any(r.get("submitted_to_benchmark") for r in rows)
     except Exception:
         logger.debug("sync-status count failed", exc_info=True)
         pending = -1
+
+    # Only invent a pseudonym for a genuinely new install. Offering one to a
+    # lab that already publishes would quietly start a SECOND identity on the
+    # community site, and nothing in the UI would tell the operator that the
+    # pre-filled name was not theirs. Erring toward an empty box makes them
+    # type the real name instead of accepting a plausible-looking wrong one.
+    suggested = name
+    if not suggested and not published_before:
+        suggested = generate_pseudonym()
+
     return {
         "display_name": name or None,
-        "suggested_name": name or generate_pseudonym(),
+        "suggested_name": suggested or None,
         "pending": pending,
         # False here means "this caller may sync", which on the hosted
         # dashboard is true only for a signed-in, allow-listed operator.

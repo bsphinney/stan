@@ -36,20 +36,58 @@ def _no_community_yml(monkeypatch):
     monkeypatch.setattr("stan.config.load_community", _boom)
 
 
-def test_sync_status_without_community_yml(client, monkeypatch):
-    """No community.yml must not 500 — it's a fresh install, not an error."""
+def test_fresh_install_is_offered_a_pseudonym(client, monkeypatch):
+    """No community.yml and nothing published yet: mint a name.
+
+    Must not 500 — an absent config is a fresh install, not an error — and
+    a name is offered so the operator never publishes as "anonymous" purely
+    for having skipped setup.
+    """
     from stan.dashboard import server
 
     monkeypatch.setattr(server, "is_readonly", lambda: False)
+    monkeypatch.delenv("STAN_DISPLAY_NAME", raising=False)
     _no_community_yml(monkeypatch)
+    monkeypatch.setattr("stan.db.get_runs", lambda **kw: [])
     r = client.get("/api/community/sync-status")
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["display_name"] is None
-    # A name is offered so the operator never publishes as "anonymous"
-    # merely for having skipped setup.
-    assert body["suggested_name"]
+    assert body["suggested_name"], "a new install should get a pseudonym"
     assert body["readonly"] is False
+
+
+def test_lab_that_already_published_is_not_offered_a_new_name(client, monkeypatch):
+    """Never invent a name for a lab that already has an identity.
+
+    The hosted dashboard has no community.yml, so it fell through to
+    minting a fresh pseudonym and pre-filled it into the Sync box. Clicking
+    Sync there would have published this lab's runs under a SECOND identity,
+    splitting them from the ones already on the community site — with
+    nothing in the UI to show the name was wrong.
+    """
+    from stan.dashboard import server
+
+    monkeypatch.setattr(server, "is_readonly", lambda: False)
+    monkeypatch.delenv("STAN_DISPLAY_NAME", raising=False)
+    _no_community_yml(monkeypatch)
+    monkeypatch.setattr("stan.db.get_runs",
+                        lambda **kw: [{"id": "a", "submitted_to_benchmark": 1}])
+    body = client.get("/api/community/sync-status").json()
+    assert body["suggested_name"] is None, "must not invent a second identity"
+
+
+def test_display_name_comes_from_env_when_there_is_no_config(client, monkeypatch):
+    """The hosted container carries the real lab name in STAN_DISPLAY_NAME."""
+    from stan.dashboard import server
+
+    monkeypatch.setattr(server, "is_readonly", lambda: False)
+    _no_community_yml(monkeypatch)
+    monkeypatch.setenv("STAN_DISPLAY_NAME", "Clogged PeakTail")
+    monkeypatch.setattr("stan.db.get_runs", lambda **kw: [])
+    body = client.get("/api/community/sync-status").json()
+    assert body["display_name"] == "Clogged PeakTail"
+    assert body["suggested_name"] == "Clogged PeakTail"
 
 
 def test_sync_status_readonly_host_short_circuits(client, monkeypatch):
