@@ -11,6 +11,31 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.27] — 2026-08-27
+
+### Fixed
+- **Monitor raws were re-dispatched on every cron tick, forever.**
+  `step_monitor` returned early on its three terminal error paths — raw not
+  on Hive, unknown vendor, empty rawmeat — without calling
+  `record_dispatch_attempt`. The Hive dispatcher's `_failed_too_many()`
+  reads `dispatch_attempts` to stop retrying a broken raw, so with nothing
+  ever written the `max_attempts: 3` cap could not engage. On 2026-08-27
+  that produced **860 SLURM jobs for 28 distinct files**: 26 raws submitted
+  33 times each, once per tick, every one failing in about a second.
+  - The stuck files are `.d` directories with no `analysis.tdf`
+    (`rawmeat: analysis.tdf not found`), so they can never succeed however
+    often they are retried — exactly what the cap exists to stop.
+  - The QC path (`step_extract`) already recorded both outcomes; the
+    monitor path now matches it. Success records `ok` too, which clears an
+    earlier `failed` via the existing `ON CONFLICT` update, so a raw that
+    starts working again (a `.d` that had not finished copying) is not
+    left permanently capped.
+  - The outer `except` records as well: an unexpected crash was another
+    silent path back into the same loop.
+  - Regression cover in `tests/test_monitor_dispatch_attempts.py`.
+
+---
+
 ## [1.0.26] — 2026-08-26
 
 ### Fixed

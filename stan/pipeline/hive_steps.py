@@ -358,7 +358,7 @@ def step_monitor(
     (~30s instead of 5-10 min).
     """
     from stan.db import (
-        init_db, insert_sample_health,
+        init_db, insert_sample_health, record_dispatch_attempt,
         rolling_median_ms1_max_intensity,
     )
     from stan.metrics.rawmeat import (
@@ -374,10 +374,34 @@ def step_monitor(
         "error": None,
     }
 
+    def _fail(message: str, error_type: str) -> dict:
+        """Record a terminal monitor failure, then return the record.
+
+        These paths used to just `return record`, which left no row in
+        `dispatch_attempts`. The Hive dispatcher's `_failed_too_many()`
+        reads that table to stop retrying a broken raw, so with nothing
+        written the cap could never engage and every tick re-submitted the
+        same files forever. On 2026-08-27 that was 26 raws x 33 ticks =
+        860 SLURM jobs in one day, all failing in ~1 s, for 28 distinct
+        files — mostly `.d` directories with no `analysis.tdf`, which can
+        never succeed no matter how often they are retried.
+
+        The QC path (`step_extract`) already records both outcomes; this
+        brings the monitor path in line with it.
+        """
+        record["error"] = message
+        try:
+            record_dispatch_attempt(
+                raw_path=str(raw_path), status="failed",
+                error=message, error_type=error_type, db_path=db_path,
+            )
+        except Exception:  # never let bookkeeping mask the real failure
+            logger.debug("dispatch attempt record failed", exc_info=True)
+        return record
+
     try:
         if not raw_path.exists():
-            record["error"] = f"raw not on Hive: {raw_path}"
-            return record
+            return _fail(f"raw not on Hive: {raw_path}", "MissingRaw")
 
         init_db(db_path)
 
@@ -386,12 +410,10 @@ def step_monitor(
         elif vendor == "thermo":
             rawmeat = extract_rawmeat_thermo(raw_path)
         else:
-            record["error"] = f"unknown vendor: {vendor}"
-            return record
+            return _fail(f"unknown vendor: {vendor}", "UnknownVendor")
 
         if not rawmeat:
-            record["error"] = "rawmeat extraction returned empty"
-            return record
+            return _fail("rawmeat extraction returned empty", "EmptyRawmeat")
 
         rolling_median = rolling_median_ms1_max_intensity(
             instrument, db_path=db_path,
@@ -467,10 +489,32 @@ def step_monitor(
                 pass
 
         record["status"] = "ok"
+        # Mirrors step_extract: the QC path records both outcomes, so the
+        # dispatcher's attempt history is complete for monitor raws too.
+        # A success also clears any earlier "failed" status via the
+        # ON CONFLICT update, so a raw that starts working again (a .d
+        # that finished copying, say) is not left permanently capped.
+        try:
+            record_dispatch_attempt(
+                raw_path=str(raw_path), status="ok", db_path=db_path,
+            )
+        except Exception:
+            logger.debug("dispatch attempt record failed", exc_info=True)
         return record
 
     except Exception as e:
         logger.exception("step_monitor failed for %s", raw_path)
+        # Unexpected crashes must count against max_attempts as well, or a
+        # raw that reliably explodes here is re-dispatched on every tick
+        # for as long as it sits in the watch directory.
+        try:
+            record_dispatch_attempt(
+                raw_path=str(raw_path), status="failed",
+                error=f"{type(e).__name__}: {e}",
+                error_type=type(e).__name__, db_path=db_path,
+            )
+        except Exception:
+            logger.debug("dispatch attempt record failed", exc_info=True)
         record["error"] = f"{type(e).__name__}: {e}"
         return record
 
