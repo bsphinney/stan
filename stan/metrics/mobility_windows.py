@@ -151,7 +151,7 @@ def _apply_scan_to_mobility(
     """
     try:
         # Get column names to check what's available
-        cols = {r[1] for r in con.execute("PRAGMA table_info(Frames)").fetchall()}
+        _cols = {r[1] for r in con.execute("PRAGMA table_info(Frames)").fetchall()}
 
         # Try to read TIMS calibration from Properties table
         prop_tables = {

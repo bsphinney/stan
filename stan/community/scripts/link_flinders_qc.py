@@ -110,7 +110,10 @@ def _qc_raws(src: Path, pattern: str, since_days: float | None) -> list[Path]:
         logger.warning("Flinders source missing: %s", src)
         return []
 
-    qc_re = re.compile(pattern)
+    # An empty pattern means "take everything" (--all-runs): non-QC
+    # acquisitions still get linked so the Sample Health monitor can report
+    # instrument health on real samples, not just HeLa standards.
+    qc_re = re.compile(pattern) if pattern else None
     cutoff = time.time() - since_days * 86400 if since_days else None
     out: list[Path] = []
 
@@ -132,13 +135,13 @@ def _qc_raws(src: Path, pattern: str, since_days: float | None) -> list[Path]:
     return out
 
 
-def _is_qc_candidate(p: Path, qc_re: re.Pattern, cutoff: float | None) -> bool:
+def _is_qc_candidate(p: Path, qc_re: "re.Pattern | None", cutoff: float | None) -> bool:
     """True when ``p`` is a QC raw newer than the cutoff and not a junk marker."""
     name = p.name
     low = name.lower()
     if any(low.endswith(s) for s in _SKIP_SUFFIXES):
         return False
-    if not qc_re.search(name):
+    if qc_re is not None and not qc_re.search(name):
         return False
     if cutoff is not None:
         try:
@@ -227,6 +230,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Report what would be linked; create no symlinks.",
     )
     ap.add_argument(
+        "--all-runs", action="store_true",
+        help="Link NON-QC acquisitions too, so the Sample Health monitor can "
+             "report instrument health on real samples. The monitor reads "
+             "rawmeat metadata only (frame counts, TIC, pressure, dropouts); "
+             "it never searches these and they never enter the community "
+             "benchmark.",
+    )
+    ap.add_argument(
         "--log-dir", type=Path,
         default=Path("/quobyte/proteomics-grp/STAN/logs"),
         help="Where to write the run log (shared FS, survives for remote debug).",
@@ -258,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         s = link_family(
             family=inst["family"],
             watch_dir=inst["watch_dir"],
-            pattern=DEFAULT_QC_PATTERN,
+            pattern=("" if args.all_runs else DEFAULT_QC_PATTERN),
             since_days=since,
             dry_run=args.dry_run,
         )

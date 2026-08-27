@@ -40,11 +40,19 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Points kept per run. 4DFF emits ~40-60 k features for a 30-100 SPD
-# HeLa gradient, so this is usually a 3-4x downsample — dense enough to
-# read the +2 ridge and the +1 contamination band, small enough that the
-# JSON payload stays around 400 KB per run in PG and in the browser.
-DEFAULT_MAX_POINTS = 15_000
+# Points kept per run. Matches the house convention set by
+# ``stan.db.insert_drift_peak_cloud`` — keep the two clouds on the same
+# budget so a run's storage cost doesn't depend on which view produced
+# it. 4DFF emits ~25-45 k features for a 30-100 SPD HeLa gradient, so
+# this is typically a 5-9x downsample; a run's dominant +2 ridge still
+# lands ~3,500 points, and the +1 contamination band ~270, which is
+# enough to read both.
+#
+# Measured cost at this cap: ~70 KB per run on disk in PG (the JSON
+# TOAST-compresses roughly 3x), so a fully backfilled 1,639-run fleet is
+# ~110 MB. Raising it is a one-flag change (`--max-points`), but raise it
+# deliberately: it is the single biggest lever on this table's size.
+DEFAULT_MAX_POINTS = 5_000
 
 
 @dataclass

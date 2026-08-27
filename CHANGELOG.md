@@ -11,6 +11,87 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.23] — 2026-08-26
+
+### Added
+- **Sync button on the local dashboard.** The Community tab now carries a
+  *Community sync* panel: it shows how many runs are eligible, pre-fills the
+  lab name, and pushes them to the public benchmark on one click. If the
+  install has no `display_name` yet, a pseudonym is generated
+  (`generate_pseudonym()`, e.g. *Oxidized Cottrell*) and offered as the
+  default, so nobody publishes as "anonymous" purely for having skipped setup.
+  - `GET /api/community/sync-status` → `{display_name, suggested_name,
+    pending, readonly}`; `POST /api/community/sync` runs the submissions and
+    persists the chosen name to `community.yml`.
+  - The eligible-run count reuses `_pending_community_runs()`, which mirrors
+    `stan submit-all`'s own skip rules (washes/blanks, zero-ID runs), so the
+    number on the button matches what the CLI would actually push.
+  - On the public read-only dashboard the panel renders an explanatory note
+    instead of a button — the read-only gate would 403 the POST anyway.
+
+- **Hive cron for community sync** (`scripts/cron_community_sync.sh`, every
+  6 h at :25). Newly-processed runs now reach the public site without anyone
+  pushing from the Mac.
+  - Login-node safe: HTTP POSTs over PG-resident rows — no raw-file IO, no
+    search, no meaningful CPU.
+  - Idempotent by construction: `submit-all --backend pg` selects
+    `submitted_to_benchmark = 0` and sets it to 1 on success, so a tick with
+    nothing new costs one query.
+  - Seeds `LOGNAME`/`USER` and sources the profile scripts outside `set -u` —
+    the exact omission that kept the Flinders dispatch cron silent from
+    2026-06-10 to 2026-08-26.
+
+### Fixed
+- **Nightly benchmark consolidation was disabled**, which is why no QC newer
+  than 2026-05-21 appeared on the community site even after runs were
+  submitted: 4,091 submission parquets existed against 3,843 consolidated
+  rows. Re-enabled the workflow and re-ran it.
+- **`ruff check stan/` passes again.** CI's lint step had failed on every push
+  today, so the gate was effectively off. All 23 findings were style-only
+  (unused bindings, late imports, one-line compound statements). Unused
+  bindings whose right-hand side has side effects (`subprocess.run`,
+  `urlopen`, a validating `yaml.safe_load`) were renamed rather than deleted;
+  only `needs_install`, a flag assigned in four branches and never read, was
+  removed outright.
+
+### Notes
+- Hive had no `~/.stan/community.yml` at all, so its first sync exited early
+  with "community_submit is not enabled". Created it with the same
+  `display_name`/`auth_token` as the Mac so runs attribute to one lab, and
+  deliberately **without** `email_reports` so Hive does not duplicate the
+  daily and weekly reports the Mac already sends.
+
+---
+
+## [1.0.22] — 2026-08-26
+
+### Added
+- **Shared arcade leaderboard.** Game over now prompts for a name and a
+  lab/affiliation — **both optional**, blank scores as `anonymous` — and posts
+  to the new `POST /api/arcade/score`. `GET /api/arcade/leaderboard?game=&limit=`
+  serves the board. Scores land in the central PG Farm `arcade_scores` table
+  (`migrations/2026-08-26_arcade_scores.sql`) when the install has PG, so every
+  STAN and the hosted dashboard share one board; installs without PG Farm get
+  the same table in local SQLite and keep a working arcade.
+  - Prompt + POST live in `public/arcade.html` alone. Games are unchanged: they
+    still `postMessage({type:'arcade-score', game, score, won, level})`, so a
+    new game gets the whole flow for free.
+  - Name/affiliation are remembered in `localStorage` — a repeat player hits
+    Enter.
+  - The board is read local-first, with the (still undeployed) HF Space relay
+    as a read-only fallback. The old client-side relay POST is gone; it 404'd.
+
+### Security / privacy
+- Name and affiliation are player-typed, world-readable on the PG board, and
+  therefore untrusted: capped server-side at 40 / 60 characters, control
+  characters flattened, stored verbatim and HTML-escaped at every render site.
+  `submitted_by_host` is kept for moderation and never returned by the reader.
+- `POST /api/arcade/score` is refused with 403 on a publicly-hosted dashboard
+  (`STAN_DASHBOARD_READONLY=1`); the client says so instead of erroring. No
+  exemption — a public instance cannot tell a player from a script.
+
+---
+
 ## [1.0.2] — 2026-06-10
 
 ### Changed

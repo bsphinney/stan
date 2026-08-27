@@ -68,10 +68,14 @@ def host_origin_from_instrument(instrument: str) -> str:
     space aligned with the per-instrument SQLite cron sync.
     """
     s = (instrument or "").lower()
-    if "lumos" in s: return "lumos"
-    if "exploris" in s: return "exploris"
-    if "timstof" in s or "tims-tof" in s: return "timstof"
-    if "astral" in s: return "astral"
+    if "lumos" in s:
+        return "lumos"
+    if "exploris" in s:
+        return "exploris"
+    if "timstof" in s or "tims-tof" in s:
+        return "timstof"
+    if "astral" in s:
+        return "astral"
     return s.split()[0] if s else "hive"
 
 
@@ -378,6 +382,32 @@ def insert_drift_peak_cloud_pg(
     return n_points
 
 
+def insert_irt_anchor_rts_pg(run_id: str, rows: list) -> int:
+    """Replace the cIRT anchor RTs for one run in PG. Returns rows written.
+
+    ``rows`` are ``(run_id, peptide, observed_rt_min, reference_rt_min)``
+    tuples, already assembled by ``stan.db.insert_irt_anchor_rts`` so both
+    backends store identical data.
+
+    Deletes first so a re-derived panel (different peptide set) doesn't
+    leave orphaned anchors behind that the chart would draw as flat lines.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute("DELETE FROM irt_anchor_rts WHERE run_id = %s", (run_id,))
+        if rows:
+            cur.executemany(
+                "INSERT INTO irt_anchor_rts "
+                "(run_id, peptide, observed_rt_min, reference_rt_min) "
+                "VALUES (%s,%s,%s,%s) "
+                "ON CONFLICT (run_id, peptide) DO UPDATE SET "
+                "observed_rt_min = EXCLUDED.observed_rt_min, "
+                "reference_rt_min = EXCLUDED.reference_rt_min",
+                rows,
+            )
+        pg.commit()
+    return len(rows)
+
+
 # ---------------------------------------------------------------------------
 # Sample Health (monitor pipeline).
 #
@@ -675,6 +705,72 @@ def get_utilization_snapshot() -> str | None:
         cur.execute("SELECT payload FROM utilization_snapshot WHERE id = 'current'")
         row = cur.fetchone()
     return row[0] if row else None
+
+
+# ---------------------------------------------------------------------------
+# Arcade leaderboard (migrations/2026-08-26_arcade_scores.sql)
+#
+# Rows arrive already flattened + sanitized by ``stan.db.insert_arcade_score``
+# so the name/affiliation truncation lives in exactly one place and both
+# backends store identical data.
+# ---------------------------------------------------------------------------
+
+_ARCADE_COLUMNS = (
+    "id", "game", "score", "level", "won", "player_name", "affiliation",
+    "submitted_by_host", "created_at",
+)
+
+#: What a reader is allowed to see. ``submitted_by_host`` is provenance for
+#: moderation/de-dup, not board content — selecting the public subset here
+#: rather than filtering at the API means no future endpoint can leak it by
+#: forgetting to pop the key.
+_ARCADE_PUBLIC_COLUMNS = (
+    "id", "game", "score", "level", "won", "player_name", "affiliation",
+    "created_at",
+)
+
+
+def insert_arcade_score_pg(row: dict) -> str:
+    """Insert one arcade high score into PG. Returns the row id.
+
+    ``id`` is a client-generated uuid hex, so a retry of the same
+    submission is a no-op rather than a duplicate board entry.
+    """
+    cols = [c for c in _ARCADE_COLUMNS if c in row]
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO arcade_scores ({', '.join(cols)}) "
+            f"VALUES ({', '.join(['%s'] * len(cols))}) "
+            f"ON CONFLICT (id) DO NOTHING",
+            tuple(row[c] for c in cols),
+        )
+        pg.commit()
+    return str(row.get("id"))
+
+
+def get_arcade_leaderboard_pg(game: str | None = None, limit: int = 10) -> list[dict]:
+    """Top arcade scores from PG, highest first.
+
+    Ties break on ``created_at`` ascending so whoever got there first
+    keeps the higher rank. ``game=None`` returns the top scores across
+    every game, which is only useful for admin/debug — the arcade page
+    asks per game.
+    """
+    cols = ", ".join(_ARCADE_PUBLIC_COLUMNS)
+    with _connect() as pg, pg.cursor() as cur:
+        if game:
+            cur.execute(
+                f"SELECT {cols} FROM arcade_scores WHERE game = %s "
+                f"ORDER BY score DESC, created_at ASC LIMIT %s",
+                (game, limit),
+            )
+        else:
+            cur.execute(
+                f"SELECT {cols} FROM arcade_scores "
+                f"ORDER BY score DESC, created_at ASC LIMIT %s",
+                (limit,),
+            )
+        return _rows(cur)
 
 
 def insert_run_pg(
@@ -1033,6 +1129,37 @@ def get_peg_ion_hits_pg(run_id: str, source: str = "runs") -> list[dict]:
     except Exception as e:  # noqa: BLE001 - table not migrated yet
         logger.warning("get_peg_ion_hits_pg: %s", e)
         return []
+
+
+def get_cirt_history_pg(instrument: str, limit: int = 500) -> list[dict]:
+    """cIRT anchor observations joined to their runs, oldest-first.
+
+    Same shape as the SQLite half in ``stan.db.get_cirt_history``:
+    one row per (run, anchor peptide), capped newest-first and then
+    re-sorted ascending so a long history loses its oldest rows rather
+    than the recent end the chart is about. ``run_date`` comes back as
+    an ISO string via ``_rows`` -- psycopg2 hands back ``datetime``
+    where SQLite hands back text, and the dashboard slices it as text.
+    """
+    try:
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM ("
+                "  SELECT r.id AS run_id, r.run_name, r.run_date, r.spd,"
+                "         a.peptide, a.observed_rt_min, a.reference_rt_min"
+                "  FROM runs r JOIN irt_anchor_rts a ON a.run_id = r.id"
+                "  WHERE r.instrument = %s"
+                "  ORDER BY r.run_date DESC LIMIT %s"
+                ") t ORDER BY run_date ASC",
+                (instrument, limit),
+            )
+            rows = _rows(cur)
+    except Exception as e:  # noqa: BLE001 - table not migrated yet
+        logger.warning("get_cirt_history_pg: %s", e)
+        return []
+    for r in rows:
+        r["run_id"] = str(r["run_id"])
+    return rows
 
 
 def get_drift_window_centroids_pg(run_id: str, source: str = "runs") -> list[dict]:

@@ -17,7 +17,7 @@ CONFIG_POLL_INTERVAL = 30  # seconds between mtime checks
 _PACKAGE_CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 # User config directory — visible location on Windows, hidden on Unix
-import platform as _plat
+import platform as _plat  # noqa: E402
 if _plat.system() == "Windows":
     _USER_CONFIG_DIR = Path.home() / "STAN"
 else:

@@ -4857,9 +4857,91 @@
       );
     }
 
+    /* Sync panel: publish this lab's QC runs to the community benchmark.
+       The lab identity is a pseudonym ("Clogged PeakTail"), never a real
+       name — see stan/community/pseudonym.py. One is minted on first sync
+       if the install has none, so nobody publishes as "anonymous" forever
+       just because they skipped a setup step. */
+    function CommunitySync() {
+      const { data: status, reload } = useFetch('/api/community/sync-status', []);
+      const [name, setName] = useState('');
+      const [busy, setBusy] = useState(false);
+      const [result, setResult] = useState(null);
+
+      useEffect(() => {
+        if (status && !name) setName(status.suggested_name || '');
+      }, [status]);
+
+      if (!status) return null;
+      if (status.readonly) {
+        return (
+          <div className="card" style={{marginBottom:'1rem'}}>
+            <h3>Community sync</h3>
+            <p style={{color:'var(--muted)', fontSize:'0.85rem'}}>
+              This is the public read-only dashboard — it can't publish on a
+              lab's behalf. Sync from your own STAN install.
+            </p>
+          </div>
+        );
+      }
+
+      const pending = status.pending;
+      const doSync = () => {
+        setBusy(true); setResult(null);
+        fetch(API + '/api/community/sync', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ display_name: name }),
+        })
+          .then(r => r.json())
+          .then(d => { setResult(d); setBusy(false); reload(); })
+          .catch(e => { setResult({ok:false, error:String(e)}); setBusy(false); });
+      };
+
+      return (
+        <div className="card" style={{marginBottom:'1rem'}}>
+          <h3>Community sync</h3>
+          <p style={{color:'var(--muted)', fontSize:'0.85rem', marginBottom:'0.6rem'}}>
+            Publishes aggregate QC metrics only — never raw files, never sample
+            or patient metadata. You appear under a pseudonym.
+          </p>
+          <div style={{display:'flex', gap:'0.5rem', alignItems:'center', flexWrap:'wrap'}}>
+            <label style={{fontSize:'0.85rem', color:'var(--muted)'}}>Lab name</label>
+            <input value={name} onChange={e => setName(e.target.value)}
+                   maxLength={60}
+                   style={{background:'var(--bg)', color:'var(--text)',
+                           border:'1px solid var(--border)', borderRadius:'0.35rem',
+                           padding:'0.35rem 0.6rem', minWidth:'210px'}} />
+            <button onClick={doSync} disabled={busy || pending === 0}>
+              {busy ? 'Syncing…'
+                    : pending > 0 ? `Sync ${pending} run${pending === 1 ? '' : 's'}`
+                    : 'Nothing to sync'}
+            </button>
+          </div>
+          {result && (
+            <div style={{marginTop:'0.7rem', fontSize:'0.85rem',
+                         color: result.ok ? '#4ade80' : '#f87171'}}>
+              {result.ok
+                ? `Submitted ${result.submitted}${result.failed ? `, ${result.failed} failed` : ''} as ${result.display_name}.`
+                : `Sync failed: ${String(result.error || '').slice(0, 160)}`}
+              {result.ok && result.errors && result.errors.length > 0 && (
+                <ul style={{marginTop:'0.4rem', color:'var(--muted)', fontSize:'0.78rem'}}>
+                  {result.errors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              )}
+            </div>
+          )}
+          <p style={{color:'var(--muted)', fontSize:'0.75rem', marginTop:'0.6rem'}}>
+            Runs appear on the public site after the nightly consolidation.
+          </p>
+        </div>
+      );
+    }
+
     function CommunityTab() {
       return (
         <div>
+          <CommunitySync />
           <div className="card" style={{marginBottom:'1rem'}}>
             <h3>Community Benchmark</h3>
             <p style={{marginBottom:'0.75rem'}}>

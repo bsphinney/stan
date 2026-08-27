@@ -515,7 +515,8 @@ Mac:   feature_clouds (SQLite) → /api/runs/{id}/features-by-charge
 ```
 
 - `stan/metrics/feature_cloud.py` does the extraction: a deterministic
-  `rowid % step` stride down to `DEFAULT_MAX_POINTS` (15,000), which
+  `rowid % step` stride down to `DEFAULT_MAX_POINTS` (5,000 — the same
+  budget `drift_peak_clouds` uses), which
   preserves relative density so the cloud still *looks* like the run.
 - Storage is a **separate table from `drift_peak_clouds`** on purpose.
   That one holds raw MS1 peaks from `detect_window_drift`; this one holds
@@ -533,6 +534,22 @@ Mac:   feature_clouds (SQLite) → /api/runs/{id}/features-by-charge
   cache at `/quobyte/proteomics-grp/STAN/feature_clouds/<run_id>.json`
   (visible on the Mac as `/Volumes/...`), loadable with
   `stan backfill-feature-cloud --from-cache <dir>`.
+
+**Hive-side scripts** (canonical copies in `scripts/`, running copies in
+`/quobyte/proteomics-grp/STAN/`). They exist because the Hive checkout at
+`/quobyte/proteomics-grp/brett/stan` is a patched fork that is never
+pulled, so it will not pick up the in-repo CLI or the inline publish:
+
+| Script | Does |
+|---|---|
+| `feature_cloud_backfill.py` + `.sbatch` | Extract + publish clouds from sidecars that already exist. Cheap (~80 s for a full 1,600-run scan), idempotent, 4 shards on `low`. |
+| `feature_cloud_4dff.py` + `.sbatch` | Generate the *missing* sidecars with 4DFF first, then publish. Expensive (minutes + ~100 MB per run). |
+| `cron_ioncloud.sh` | Hourly tick that submits the cheap one. **Staged, not installed** — add the crontab line at the top of the file to enable. |
+
+Anything new placed on Hive must go under `/quobyte/proteomics-grp/STAN/`,
+**not** `/quobyte/proteomics-grp/brett/` — Python puts the script's own
+directory first on `sys.path` and the `stan/` checkout there shadows the
+installed package, so `import stan` picks up a bare source tree.
 
 Plotly is loaded from `cdn.plot.ly/plotly-2.35.2.min.js` — pure client-side,
 same CDN pattern as React + Babel. No build step needed. If the CDN is

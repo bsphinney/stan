@@ -1,5 +1,15 @@
 # STAN Arcade — Community Leaderboard Relay Spec
 
+> **Superseded for the client, v1.0.22.** The arcade no longer POSTs to the
+> relay. Scores go to the dashboard's own `POST /api/arcade/score` and land in
+> the shared PG Farm `arcade_scores` table (or local SQLite on an install with
+> no PG Farm) — see `docs/PG_FARM.md` and `docs/user_guide.md`. `arcade.html`
+> reads its board from `GET /api/arcade/leaderboard` and only falls back to the
+> relay endpoints below, which were never deployed and so 404. This document is
+> kept as the spec for the Space should the public site ever accept writes; a
+> relay that does would need spam controls the local API doesn't (the local
+> dashboard is 127.0.0.1-bound, the Space is not).
+
 The arcade games (`keratin-invaders`, `angry_specs`, `mzork`) submit
 high scores to the public HF Space relay so other STAN users can see
 which labs hold the top spot. The dashboard's Arcade tab fetches and

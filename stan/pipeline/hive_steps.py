@@ -244,8 +244,10 @@ def _apply_pegdrift_jsons(
             )
             # peg_ion_hits requires PegMatch objects — recreate
             # lightweight duck-typed objects from the JSON dicts.
-            class _Ion: pass
-            class _M: pass
+            class _Ion:
+                pass
+            class _M:
+                pass
             matches = []
             for d in peg.get("matches") or []:
                 ion = _Ion()
@@ -295,7 +297,8 @@ def _apply_pegdrift_jsons(
             )
             if drift["drift_class"] != "unknown":
                 # per_window list re-create as duck-typed objects
-                class _W: pass
+                class _W:
+                    pass
                 per_window = []
                 for w in drift.get("per_window") or []:
                     pw = _W()
@@ -456,7 +459,7 @@ def step_monitor(
         # window concept doesn't exist on Orbitrap). Best-effort.
         if health_id:
             try:
-                from stan.pipeline.hive_process import _run_peg_and_drift_table
+                from stan.pipeline.hive_process import _run_peg_and_drift_table  # noqa: F401
             except ImportError:
                 # Fallback: reuse hive_process._run_peg_and_drift on
                 # runs table — but we want sample_health here. Skip

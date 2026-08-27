@@ -73,7 +73,17 @@ stan backfill-cirt                            # uses fresh panels
 stan backfill-window-drift --force            # Bruker only
 ```
 
-Each step is idempotent. After this, `stan list-stale --before
+Each step is idempotent. `backfill-cirt` follows the store of record: with
+`STAN_DB_BACKEND=pg` it queues from PG and writes anchors back to PG. On
+Hive the search outputs are not under `~/.stan/baseline_output`, so point it
+at them:
+
+```bash
+stan backfill-cirt --output-base /quobyte/proteomics-grp/STAN/processing
+```
+
+(or export `STAN_OUTPUT_BASE`). It skips runs that already have anchors
+unless you pass `--force`. After this, `stan list-stale --before
 1.0.0` should report **zero stale rows** with `diann_version >= 2.3`.
 
 ---

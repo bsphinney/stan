@@ -124,6 +124,10 @@ _DETAIL_TABLES = (
     # The maintenance log: what was physically done to an instrument. Mirrored
     # so a SQLite-reading dashboard still shows it.
     "maintenance_events",
+    # cIRT anchor RTs behind the Trends "cIRT anchor RT drift" panel. Written
+    # centrally by `stan backfill-cirt` on Hive; mirrored so SQLite-reading
+    # dashboards get the chart too.
+    "irt_anchor_rts",
 )
 
 

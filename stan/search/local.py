@@ -295,7 +295,7 @@ def run_diann_local(
             return None
         params = _build_local_diann_params(fasta_path, lib_path, vendor=vendor)
 
-    report_path = output_dir / "report.parquet"
+    _report_path = output_dir / "report.parquet"
 
     # Work around DIA-NN's double-dash filename parsing bug by creating
     # a junction/symlink with a safe name when necessary.
@@ -354,7 +354,7 @@ def run_diann_local(
     log_file = output_dir / "diann.log"
     try:
         with open(log_file, "w") as lf:
-            result = subprocess.run(
+            _result = subprocess.run(
                 cmd,
                 check=True,
                 stdout=lf,

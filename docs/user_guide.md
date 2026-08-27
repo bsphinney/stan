@@ -161,40 +161,45 @@ A summary of your current `instruments.yml` settings: watch directories, LC colu
 
 ### Community
 
-Shows your community benchmark opt-in status and a log of recent submissions. From here you can also manually trigger a submission or check whether any runs are queued. The "ID depth" chart compares your instrument's precursor/PSM counts against the community distribution for the same instrument family and throughput bucket (SPD).
+Shows your community benchmark opt-in status and a log of recent submissions. The **Community sync** panel at the top pushes eligible runs to the public benchmark on one click and shows how many are waiting; see [The community benchmark](#the-community-benchmark) for what gets sent. The "ID depth" chart compares your instrument's precursor/PSM counts against the community distribution for the same instrument family and throughput bucket (SPD).
 
 ### Arcade
 
-Retro mini-games (Keratin Invaders, Angry Mass Specs, m/zork) playable directly in the dashboard. Scores can be submitted to a global community leaderboard so labs can compare.
+Retro mini-games (Keratin Invaders, m/zork, KarateMass, Mass Match, Core Defense) playable directly in the dashboard. Scores can be put on a shared leaderboard so labs can compare.
 
-#### Community Arcade Leaderboard
+#### Shared Arcade Leaderboard
 
-When `community_submit: true` is set in `~/.stan/community.yml`, arcade scores are automatically submitted to the community relay after each game. The top 5 scores per game are shown in the **Community high scores** panel at the top of the Arcade tab, pulled live from the relay.
+When a game ends, STAN asks for a **name** and a **lab / affiliation**. Both
+are optional — leave them blank and the score goes on the board as
+`anonymous`. Whatever you type is remembered in this browser, so the next
+game is just Enter. Press Escape (or **Skip**) to keep the score off the
+board entirely.
 
-**What gets sent** (privacy-first, same rules as QC submissions):
-- Game name, numeric score, win/loss flag
-- Your lab pseudonym (`display_name` from `community.yml`)
-- Instrument *family* only (`timsTOF`, `Exploris`, `Lumos` — never the full model name or serial number)
-- STAN version and timestamp
+The score is posted to this dashboard's own `POST /api/arcade/score`, and
+where it lands depends on the install:
 
-**Nothing else.** No raw files, no sample metadata, no patient identifiers.
+| Install | Board |
+|---------|-------|
+| PG Farm configured (`STAN_DB_BACKEND=pg`) | Central `arcade_scores` table — one board shared by every STAN and the hosted dashboard. |
+| No PG Farm | Local SQLite `arcade_scores` table — a board for this install only. Everything still works. |
+| Public / hosted dashboard | **Read-only.** The board is visible, but score posts are refused (403) because a public instance can't tell a player from a script. Play on a lab install. |
 
-**To opt in without enabling QC submissions**, add to `~/.stan/community.yml`:
+The top 5 per game appear in the **Community high scores** panel at the top
+of the Arcade tab.
 
-```yaml
-arcade_submit: true
-```
+**What gets stored:** game name, score, level, win/loss flag, the name and
+affiliation you typed, and the hostname that posted it (kept for moderation,
+never displayed). **Nothing else** — no email, no institutional ID, no raw
+files, no sample metadata, no instrument serial numbers.
 
-**To opt out of arcade submissions only** while keeping QC submissions on:
+Because the PG board is readable by every lab running STAN, treat the name
+field as public. Names are capped at 40 characters and affiliations at 60,
+and both are HTML-escaped everywhere they are rendered.
 
-```yaml
-community_submit: true
-arcade_submit: false
-```
-
-**Rate limit:** the relay accepts up to 5 score submissions per lab per game per hour to prevent spam. Duplicate submissions within 60 seconds are silently deduplicated.
-
-The relay-side implementation is documented in `stan/community/scripts/relay_arcade.py` — this reference file describes the API contract Brett uses to deploy the endpoints on the HF Space.
+The older per-lab pseudonym flow (`stan claim-name`, `arcade_submit` in
+`~/.stan/community.yml`, `stan/community/arcade_submit.py`) targeted HF Space
+relay endpoints that were never deployed. The pseudonym is now only used to
+prefill the name box; the relay is a read-only fallback for the board.
 
 ### Museum
 
@@ -253,6 +258,21 @@ stan submit-all
 ```
 
 This walks the local database and submits any runs not yet in the community benchmark.
+
+**Or use the Sync button.** The dashboard's Community tab has a *Community
+sync* panel that does the same thing without the terminal. It shows how many
+runs are eligible, lets you set the lab name, and pushes them on one click.
+The count on the button applies the same rules as `stan submit-all`, so it is
+what would actually be pushed — washes, blanks, and runs with zero
+identifications are already excluded.
+
+Your lab appears under a **pseudonym**, not your real name. If you have not
+set one, the panel generates one for you (e.g. *Oxidized Cottrell*) and
+pre-fills it; edit it to whatever you like before syncing. Whatever you
+confirm is saved to `~/.stan/community.yml` and reused from then on.
+
+Newly submitted runs do not appear on the public site instantly — the public
+dashboard reads a consolidated file that is rebuilt nightly, so allow a day.
 
 **The public dashboard** is at `https://huggingface.co/spaces/brettsp/stan`. It shows the community leaderboard, SPD-bucketed ID depth comparisons, and cross-lab TIC overlays. Your instrument appears under its family and throughput bucket; no lab name or location is shown unless you choose to add one.
 
@@ -477,7 +497,7 @@ stan backfill-feature-cloud    # publish the clouds to the database
 ```
 
 `backfill-feature-cloud` walks your runs newest-first, reads each
-sidecar, and stores a downsampled charge-labeled cloud (15,000 points by
+sidecar, and stores a downsampled charge-labeled cloud (5,000 points by
 default) in the `feature_clouds` table. Once it's there, every dashboard
 shows the Plotly view — one trace per charge state, click the legend to
 hide `+1` contamination. Runs without a cloud fall back to the older

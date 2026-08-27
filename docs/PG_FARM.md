@@ -83,6 +83,18 @@ Indexes (set up by the migration script):
 - `idx_runs_run_date`   on `run_date`
 - `idx_runs_host`       on `host_origin`
 
+### `arcade_scores` (v1.0.22)
+
+The one table here that is not QC data. It holds arcade high scores plus an
+optional player name and affiliation, and every lab running STAN can read it
+— see the privacy notes at the top of
+`migrations/2026-08-26_arcade_scores.sql` before extending it. Both name
+fields are optional (blank → `anonymous`), capped at 40 / 60 characters on
+write, and must be HTML-escaped wherever they are rendered.
+`submitted_by_host` is provenance for moderation and is never returned to a
+reader. Written through `stan.db.insert_arcade_score`, which falls back to
+the local SQLite table when PG is unreachable so a score is never lost.
+
 ---
 
 ## Code entry points
@@ -95,6 +107,8 @@ All PG-related code lives in `stan/db_pg.py`. Read that file when in doubt
 | `insert_run_pg(...)`              | Upsert one row. Same kwargs as `stan.db.insert_run`. |
 | `row_exists_pg(...)`              | Existence check by `(host_origin, instrument, raw_path)`. |
 | `host_origin_from_family(family)` | `'Lumos' → 'lumos'`, etc.                            |
+| `insert_arcade_score_pg(row)`     | One arcade high score into `arcade_scores`.          |
+| `get_arcade_leaderboard_pg(...)`  | Top scores for one game (or all), highest first.     |
 | `use_pg()`                        | Returns True iff `STAN_DB_BACKEND=pg` is set.        |
 | `_connect()`                      | Module-level cached connection — reuses across calls.|
 
@@ -220,6 +234,57 @@ Per-day log:
 
 launchd stdout/err:
 `/Users/brettphinney/Library/Logs/stan-pgfarm-sync.{out,err}`
+
+---
+
+## Community sync cron (PG → public benchmark)
+
+`scripts/cron_community_sync.sh`, installed on Hive, every 6 h at :25:
+
+```
+25 */6 * * * flock -n /tmp/stan_community_sync.lock \
+    /quobyte/proteomics-grp/STAN/cron_community_sync.sh
+```
+
+It runs `stan submit-all --backend pg`, which POSTs to the community relay.
+Per-day log: `/quobyte/proteomics-grp/STAN/logs/cron_community_sync_YYYYMMDD.log`.
+
+**Why this one is allowed on the login node.** Point 1 of the section above
+still stands for anything that computes. This job does not: it is HTTP POSTs
+over rows already in PG — no raw-file IO, no search, no parsing. It is the
+same shape as a `curl`. It is on Hive rather than the Mac because Hive is
+always up, and because Hive *can* reach the relay: despite Hive having no
+general internet egress, both `community.stan-proteomics.org/api/submit` and
+`brettsp-stan.hf.space/api/submit` answer (verified 2026-08-26 — an HTTP 422
+on an empty body proves the connection, where a blocked host gives 000).
+
+**Idempotency is structural, not a flag.** `submit-all --backend pg` selects
+`WHERE submitted_to_benchmark = 0 OR submitted_to_benchmark IS NULL` and, on
+success, issues its own `UPDATE runs SET submitted_to_benchmark = 1` straight
+against PG. A tick with nothing new costs one query. This matters: without the
+write-back the cron would re-push the whole corpus at the relay every 6 hours.
+
+**Hive needs its own `~/.stan/community.yml`.** It had none, so the first run
+exited immediately with *"community_submit is not enabled in community.yml"* —
+exit code 0, so a less careful check would have called it a success. It must
+carry the same `display_name` and `auth_token` as the Mac or runs attribute to
+a second lab. Leave `email_reports` out: the Mac already sends the daily and
+weekly reports.
+
+**Submissions ≠ visible on the site.** The relay stores each submission as its
+own `submissions/<uuid>.parquet`; the public dashboard reads the consolidated
+`benchmark_latest.parquet`, which is rebuilt only by the
+`consolidate_benchmark.yml` GitHub Action. GitHub disables scheduled workflows
+on inactivity — it had disabled this one, so 248 submitted runs stayed
+invisible and the site appeared frozen at 2026-05-21. If recent QCs are
+missing from the community site, **check that workflow is enabled before
+re-submitting anything**:
+
+```bash
+gh workflow list --all | grep -i consolidat     # 'disabled_inactivity'?
+gh workflow enable consolidate_benchmark.yml
+gh workflow run consolidate_benchmark.yml --ref main
+```
 
 ---
 

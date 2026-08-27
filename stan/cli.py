@@ -110,7 +110,7 @@ def doctor() -> None:
     emit("-" * 70)
     numpy_ver = pkg_version("numpy")
     alphatims_ver = pkg_version("alphatims")
-    polars_ver = pkg_version("polars")
+    _polars_ver = pkg_version("polars")
     if alphatims_ver.startswith("1.0.9"):
         emit("  [red]alphatims 1.0.9 is BROKEN (polars 1.35+ incompat).[/red]")
         emit("  Fix: stan install-peg-deps")
@@ -3022,7 +3022,7 @@ def backfill_metrics(
                     },
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib.request.urlopen(req, timeout=15) as _resp:
                     pushed += 1
             except Exception:
                 pass  # non-fatal
@@ -3448,7 +3448,7 @@ def backfill_feature_cloud(
     ),
     max_points: int = typer.Option(
         0, "--max-points",
-        help="Points kept per run (0 = module default, 15000).",
+        help="Points kept per run (0 = module default, 5000).",
     ),
     since: str = typer.Option(
         "", "--since",
@@ -3929,7 +3929,7 @@ def recover_search_outputs(
 
     moved = 0
     skipped_not_search = 0
-    skipped_already_there = 0
+    _skipped_already_there = 0
     collisions = 0
 
     for entry in sorted(src_dir.iterdir()):
@@ -4046,19 +4046,16 @@ def install_peg_deps() -> None:
 
     if installed_ver is None:
         console.print("alphatims not installed - installing alphatims<1.0.9 + numpy<2...")
-        needs_install = True
     elif installed_ver.startswith("1.0.9"):
         console.print(
             f"[yellow]alphatims {installed_ver} is BROKEN against polars 1.35+ - "
             f"forcing downgrade to <1.0.9...[/yellow]"
         )
-        needs_install = True
     elif numpy_bad:
         console.print(
             f"[yellow]numpy {numpy_ver} is 2.0+ - strict searchsorted side= "
             f"breaks alphatims {installed_ver}. Pinning numpy<2...[/yellow]"
         )
-        needs_install = True
     elif any(installed_ver.startswith(v) for v in ("1.0.5", "1.0.6", "1.0.7", "1.0.8")):
         console.print(
             f"[green]alphatims {installed_ver} + numpy {numpy_ver} "
@@ -4069,7 +4066,6 @@ def install_peg_deps() -> None:
         console.print(
             f"alphatims {installed_ver} - unknown version, reinstalling pinned..."
         )
-        needs_install = True
 
     # v0.2.166: also pin numpy<2. alphatims 1.0.8 uses
     # np.searchsorted with side values that numpy 2.0+ rejects as
@@ -4355,52 +4351,131 @@ def backfill_cirt(
     verbose: bool = typer.Option(
         False, "--verbose", help="Log per-run extraction details.",
     ),
+    output_base: Optional[str] = typer.Option(
+        None, "--output-base",
+        help="Directory holding <run_stem>/report.parquet. Defaults to "
+             "$STAN_OUTPUT_BASE, else ~/.stan/baseline_output. On Hive the "
+             "search outputs live in /quobyte/proteomics-grp/STAN/processing.",
+    ),
+    instrument: Optional[str] = typer.Option(
+        None, "--instrument", help="Limit to one instrument name.",
+    ),
+    limit: int = typer.Option(
+        0, "--limit", help="Process at most N runs (0 = all). Newest first.",
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Re-extract runs that already have anchors stored.",
+    ),
 ) -> None:
     """Extract cIRT anchor retention times for every run with a report.parquet.
 
     Reads the panel seeded in stan/metrics/cirt.py keyed on (instrument_family,
-    spd), finds each run's report.parquet under ~/.stan/baseline_output/<run_name>/,
+    spd), finds each run's report.parquet under <output-base>/<run_stem>/,
     extracts the observed RT for each anchor peptide, and writes rows to the
     `irt_anchor_rts` table. Runs are skipped when: there's no panel for their
     (family, spd), their report.parquet is missing, or they're non-DIA (only
     DIA reports have DIA-NN RT columns).
 
-    Safe to re-run; INSERT OR REPLACE on the composite PK overwrites existing
-    rows for the same (run_id, peptide).
+    Backend follows the store of record: with STAN_DB_BACKEND=pg the work
+    queue comes from PG and the anchors are written back to PG. Reading the
+    local SQLite on Hive queued zero rows, which is why this chart stayed
+    empty there. SQLite installs are unaffected.
+
+    Safe to re-run; the write is an upsert on (run_id, peptide) in both
+    backends.
     """
+    import os
     import sqlite3
 
     from stan.config import get_user_config_dir
     from stan.db import get_db_path, init_db, insert_irt_anchor_rts
+    from stan.db_pg import use_pg
     from stan.metrics.cirt import extract_anchor_rts, get_panel
     from stan.community.submit import _instrument_family
 
-    init_db()
+    if output_base:
+        base = Path(output_base)
+    elif os.environ.get("STAN_OUTPUT_BASE"):
+        base = Path(os.environ["STAN_OUTPUT_BASE"])
+    else:
+        base = get_user_config_dir() / "baseline_output"
+    if not base.is_dir():
+        console.print(f"[red]--output-base not found: {base}[/red]")
+        raise typer.Exit(1)
+
+    # Row source follows the store of record — same split as
+    # backfill-feature-clouds. `have` lets --force be the only way to
+    # redo work that is already stored.
+    rows: list[dict] = []
+    have: set[str] = set()
     db_path = get_db_path()
-    output_base = get_user_config_dir() / "baseline_output"
+    if use_pg():
+        from stan.db_pg import _connect
+        with _connect() as pg, pg.cursor() as cur:
+            sql = "SELECT id, run_name, instrument, mode, spd FROM runs"
+            params: list = []
+            if instrument:
+                sql += " WHERE instrument = %s"
+                params.append(instrument)
+            sql += " ORDER BY run_date DESC"
+            if limit > 0:
+                sql += f" LIMIT {int(limit)}"
+            cur.execute(sql, tuple(params))
+            rows = [
+                {"id": str(r[0]), "run_name": r[1], "instrument": r[2],
+                 "mode": r[3], "spd": r[4]}
+                for r in cur.fetchall()
+            ]
+            if not force:
+                try:
+                    cur.execute("SELECT DISTINCT run_id FROM irt_anchor_rts")
+                    have = {str(r[0]) for r in cur.fetchall()}
+                except Exception:
+                    have = set()
+    else:
+        init_db()
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            sql = "SELECT id, run_name, instrument, mode, spd FROM runs"
+            sq_params: list = []
+            if instrument:
+                sql += " WHERE instrument = ?"
+                sq_params.append(instrument)
+            sql += " ORDER BY run_date DESC"
+            if limit > 0:
+                sql += f" LIMIT {int(limit)}"
+            rows = [dict(r) for r in con.execute(sql, sq_params).fetchall()]
+            if not force:
+                try:
+                    have = {
+                        r[0] for r in con.execute(
+                            "SELECT DISTINCT run_id FROM irt_anchor_rts"
+                        ).fetchall()
+                    }
+                except sqlite3.OperationalError:
+                    have = set()
 
-    with sqlite3.connect(str(db_path)) as con:
-        con.row_factory = sqlite3.Row
-        rows = con.execute(
-            "SELECT id, run_name, instrument, mode, spd FROM runs"
-        ).fetchall()
-
-    console.print(f"[bold]{len(rows)} runs in DB[/bold]")
+    console.print(f"[bold]{len(rows)} runs in "
+                  f"{'PG' if use_pg() else 'SQLite'}[/bold] (reports under {base})")
 
     processed = 0
     no_panel = 0
     no_report = 0
     non_dia = 0
     no_anchors = 0
+    already = 0
     total_anchors = 0
 
-    for row in rows:
-        run = dict(row)
+    for run in rows:
         # Match any DIA flavor: "DIA" (Thermo), "diaPASEF" (Bruker),
         # "dia_foo" (hypothetical). The original exact-equality check
         # skipped every Bruker run because "diaPASEF" != "dia".
         if not (run.get("mode") or "").lower().startswith("dia"):
             non_dia += 1
+            continue
+        if run["id"] in have:
+            already += 1
             continue
         family = _instrument_family(run.get("instrument") or "")
         spd = run.get("spd")
@@ -4412,7 +4487,7 @@ def backfill_cirt(
             continue
         # Report dir name drops the .d / .raw extension
         stem = Path(run["run_name"]).stem
-        report = output_base / stem / "report.parquet"
+        report = base / stem / "report.parquet"
         if not report.exists():
             no_report += 1
             if verbose:
@@ -4434,7 +4509,8 @@ def backfill_cirt(
     console.print(f"[bold]Extracted cIRT anchors from {processed} runs[/bold] "
                   f"({total_anchors} anchor-RT rows written)")
     console.print(f"  Skipped: {non_dia} non-DIA, {no_panel} no-panel, "
-                  f"{no_report} no-report, {no_anchors} no-anchors-detected")
+                  f"{no_report} no-report, {no_anchors} no-anchors-detected, "
+                  f"{already} already-done")
 
 
 @app.command("derive-cirt-panel")
@@ -5550,7 +5626,7 @@ def _test_extract_pipeline(
                 )},
             }
             # UPDATE runs row
-            cols = [k for k in m.keys() if k not in ('instrument_family',)]
+            _cols = [k for k in m.keys() if k not in ('instrument_family',)]
             with sqlite3.connect(str(db_path)) as con:
                 # Discover which columns exist
                 runs_cols = {r[1] for r in con.execute('PRAGMA table_info(runs)').fetchall()}

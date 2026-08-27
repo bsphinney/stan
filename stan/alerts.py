@@ -68,7 +68,7 @@ def send_slack_alert(
     if not webhook:
         return
 
-    emoji = {":x:": "FAIL", ":warning:": "WARN"}.get(decision.result.value, "")
+    _emoji = {":x:": "FAIL", ":warning:": "WARN"}.get(decision.result.value, "")
     icon = ":x:" if decision.result == GateResult.FAIL else ":warning:"
     lines = [
         f"{icon} *QC {decision.result.value.upper()} on {instrument}*",

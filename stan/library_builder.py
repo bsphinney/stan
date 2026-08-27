@@ -72,7 +72,7 @@ def _get_raw_paths_from_reports(reports: list[Path]) -> list[Path]:
             # The "Run" column in DIA-NN 2.x has the raw file basename
             # But we need the full path — use the directory structure
             # report is at: baseline_output/{run_stem}/report.parquet
-            run_stem = rp.parent.name
+            _run_stem = rp.parent.name
             # Look for the raw file in the report's own metadata
             df = pl.read_parquet(rp, columns=["Run"], n_rows=1)
             if df.height > 0:
@@ -197,7 +197,7 @@ def build_instrument_library(
 
         log_file = output_path.parent / "build_library.log"
         with open(log_file, "w") as lf:
-            result = subprocess.run(
+            _result = subprocess.run(
                 cmd,
                 check=True,
                 stdout=lf,

@@ -69,6 +69,7 @@
     color: #64748b; min-width: 18px;
   }
   .lb-game li .lab { color: #cbd5e1; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .lb-game li .lab .affil { color: #64748b; font-size: 10px; display: block; }
   .lb-game li .score { color: #fbbf24; font-weight: bold; font-variant-numeric: tabular-nums; }
   .lb-game li.you .lab { color: #22c55e; }
   .lb-game .empty {
@@ -109,6 +110,48 @@
   .footer {
     margin-top: 22px; color: #64748b; font-size: 11px; text-align: center;
   }
+  /* Game-over score prompt. Lives here, not in each game, so every
+     game — including ones not written yet — gets the same flow. */
+  #scoreModal {
+    display: none; position: fixed; inset: 0; z-index: 50;
+    background: rgba(2, 6, 23, 0.82);
+    align-items: center; justify-content: center;
+  }
+  #scoreModal.show { display: flex; }
+  .sm-card {
+    background: #0f172a; border: 1px solid #fbbf24; border-radius: 10px;
+    padding: 22px; width: 340px; max-width: calc(100vw - 40px);
+    box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+  }
+  .sm-card h3 { margin: 0 0 2px 0; color: #fbbf24; font-size: 17px; }
+  .sm-game { color: #94a3b8; font-size: 12px; margin-bottom: 12px; }
+  .sm-score {
+    font-size: 30px; color: #22c55e; font-weight: bold;
+    font-variant-numeric: tabular-nums; margin-bottom: 2px;
+  }
+  .sm-sub { color: #64748b; font-size: 11px; margin-bottom: 14px; }
+  .sm-card label {
+    display: block; color: #cbd5e1; font-size: 11px; margin-bottom: 3px;
+  }
+  .sm-card input {
+    width: 100%; box-sizing: border-box; margin-bottom: 12px;
+    background: #1e293b; border: 1px solid #334155; border-radius: 4px;
+    color: #e5e7eb; padding: 7px 9px; font-size: 13px;
+    font-family: inherit;
+  }
+  .sm-card input:focus { outline: none; border-color: #fbbf24; }
+  .sm-optional { color: #64748b; font-style: italic; }
+  .sm-buttons { display: flex; gap: 8px; }
+  .sm-buttons button {
+    flex: 1; padding: 8px 10px; border-radius: 4px; font-size: 13px;
+    cursor: pointer; font-family: inherit;
+  }
+  .sm-submit { background: #fbbf24; border: 1px solid #fbbf24; color: #0a0f1a; font-weight: bold; }
+  .sm-skip { background: transparent; border: 1px solid #475569; color: #94a3b8; }
+  .sm-note { color: #94a3b8; font-size: 11px; margin-top: 10px; min-height: 14px; }
+  .sm-note.bad { color: #f87171; }
+  .sm-note.good { color: #22c55e; }
+  .sm-privacy { color: #475569; font-size: 10px; margin-top: 10px; line-height: 1.4; }
 </style>
 </head>
 <body>
@@ -170,10 +213,47 @@
   </div>
 </div>
 <iframe id="gameFrame" allow="autoplay"></iframe>
+
+<div id="scoreModal">
+  <div class="sm-card">
+    <h3>Game over</h3>
+    <div class="sm-game" id="smGame"></div>
+    <div class="sm-score" id="smScore">0</div>
+    <div class="sm-sub" id="smSub"></div>
+
+    <label for="smName">Name <span class="sm-optional">(optional)</span></label>
+    <input id="smName" maxlength="40" autocomplete="off" spellcheck="false"
+           placeholder="leave blank for anonymous" />
+
+    <label for="smAffil">Lab / affiliation <span class="sm-optional">(optional)</span></label>
+    <input id="smAffil" maxlength="60" autocomplete="off" spellcheck="false"
+           placeholder="optional" />
+
+    <div class="sm-buttons">
+      <button class="sm-submit" id="smSubmit" onclick="submitPendingScore()">Submit score</button>
+      <button class="sm-skip" onclick="dismissScoreModal()">Skip</button>
+    </div>
+    <div class="sm-note" id="smNote"></div>
+    <div class="sm-privacy">
+      Name and affiliation are optional and shown on a leaderboard other labs
+      can read. Nothing else is sent — no email, no instrument data.
+    </div>
+  </div>
+</div>
+
 <script>
-// Relay points for arcade leaderboard. The endpoints are documented in
-// docs/RELAY_ARCADE_API.md and added on the brettsp/stan HF Space.
+// v1.0.22: the board is served by this dashboard's own
+// /api/arcade/leaderboard, backed by the shared PG Farm table when the
+// install has PG (so every STAN sees the same scores) and by local
+// SQLite when it doesn't. The HF Space relay stays as a read-only
+// fallback for a page served from somewhere with no STAN API — its
+// /api/arcade/* endpoints were never deployed, so in practice it 404s
+// and the board simply shows "no scores yet".
 const RELAY = 'https://brettsp-stan.hf.space';
+const LOCAL_API = '/api/arcade';
+// Remembered between games so a repeat player just hits enter.
+const LS_NAME = 'stan.arcade.player_name';
+const LS_AFFIL = 'stan.arcade.affiliation';
 const GAMES = [
   { id: 'keratin_invaders', title: '💇 Keratin Invaders' },
   { id: 'angry_specs',      title: '🧪 Angry Mass Specs' },
@@ -185,6 +265,21 @@ const GAMES = [
 
 let LAB_NAME = 'anonymous';
 let LAB_CLAIMED = false;
+// True once a board read reports this dashboard refuses writes (the
+// public Azure/Space deployment sets STAN_DASHBOARD_READONLY=1).
+let READ_ONLY = false;
+// Name this browser last played under — used only to highlight your own
+// row and to prefill the prompt.
+let MY_NAME = '';
+
+// localStorage throws in a sandboxed iframe / private mode. A remembered
+// name is a convenience, never a requirement, so failures are silent.
+function lsGet(key) {
+  try { return localStorage.getItem(key) || ''; } catch (e) { return ''; }
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(key, value); } catch (e) { /* not fatal */ }
+}
 
 // v0.2.309: HTML-escape any string before interpolating into innerHTML.
 // The leaderboard at /api/arcade/leaderboard returns display_name strings
@@ -205,24 +300,65 @@ function escapeHtml(s) {
     .replaceAll("'", '&#39;');
 }
 
-async function loadIdentity() {
+function renderIdentityBar() {
   const bar = document.getElementById('identityBar');
+  bar.classList.toggle('anon', !MY_NAME);
+  if (READ_ONLY) {
+    bar.classList.add('anon');
+    bar.innerHTML = 'This dashboard is <b>read-only</b> · you can see the ' +
+                    'community board here, but scores have to be posted from ' +
+                    'a lab install.';
+    return;
+  }
+  if (MY_NAME) {
+    bar.innerHTML = `Last played as <b>${escapeHtml(MY_NAME)}</b> · ` +
+                    'when a game ends you can keep that name or change it.';
+  } else {
+    bar.innerHTML = 'When a game ends you can put a name on the board — ' +
+                    '<b>both fields are optional</b>, blank scores as anonymous.';
+  }
+}
+
+async function loadIdentity() {
+  MY_NAME = lsGet(LS_NAME);
+  renderIdentityBar();
+  // The lab pseudonym from `stan claim-name` is only a default suggestion
+  // now that players type their own name; a missing identity endpoint (or
+  // an unclaimed lab) is not an error any more.
   try {
     const r = await fetch('/api/community/identity');
     const d = await r.json();
     LAB_NAME = d.display_name || 'anonymous';
     LAB_CLAIMED = !!d.claimed;
-    if (LAB_CLAIMED) {
-      bar.innerHTML = `Playing as <b>${escapeHtml(LAB_NAME)}</b> · scores submit to the community leaderboard automatically.`;
-    } else {
-      bar.classList.add('anon');
-      bar.innerHTML = `Playing as <b>anonymous</b> · run <code>stan claim-name</code> to put your lab name on the leaderboard.`;
+  } catch (e) {
+    LAB_NAME = 'anonymous';
+    LAB_CLAIMED = false;
+  }
+}
+
+// Fetch one game's board: this STAN first, community relay as fallback.
+// Returns {rows, readOnly} — rows is [] when neither source has anything.
+async function fetchBoard(gameId) {
+  let readOnly = false;
+  try {
+    const r = await fetch(`${LOCAL_API}/leaderboard?game=${encodeURIComponent(gameId)}&limit=5`);
+    if (r.ok) {
+      const d = await r.json();
+      readOnly = !!d.read_only;
+      const rows = d.scores || [];
+      if (rows.length) return { rows, readOnly };
     }
   } catch (e) {
-    bar.classList.add('anon');
-    bar.innerHTML = `Could not load identity (offline?). Scores will not submit.`;
-    LAB_NAME = 'anonymous';
+    // No STAN API on this origin (e.g. the page served standalone).
   }
+  try {
+    const r = await fetch(`${RELAY}/api/arcade/leaderboard?game=${encodeURIComponent(gameId)}&limit=5`);
+    if (r.ok) {
+      const d = await r.json();
+      return { rows: d.scores || d.leaderboard || [], readOnly };
+    }
+  } catch (e) { /* relay endpoint isn't deployed; empty board is fine */ }
+  return { rows: [], readOnly };
 }
 
 async function loadLeaderboard() {
@@ -235,35 +371,35 @@ async function loadLeaderboard() {
     const list = document.createElement('ol');
     cell.appendChild(list);
     grid.appendChild(cell);
-    try {
-      const r = await fetch(`${RELAY}/api/arcade/leaderboard?game=${g.id}&limit=5`);
-      if (!r.ok) {
-        list.innerHTML = `<div class="empty">Leaderboard endpoint not deployed yet (${r.status}).</div>`;
-        continue;
-      }
-      const d = await r.json();
-      const rows = d.scores || d.leaderboard || [];
-      if (!rows.length) {
-        list.innerHTML = `<div class="empty">No scores yet — be the first.</div>`;
-        continue;
-      }
-      for (const row of rows) {
-        const li = document.createElement('li');
-        const isMe = (row.display_name || '').toLowerCase() === LAB_NAME.toLowerCase();
-        if (isMe) li.className = 'you';
-        // v0.2.309: escapeHtml on display_name — relay-controlled
-        // string from arbitrary other labs. See loadIdentity comment
-        // for the threat model. formatScore returns a number string,
-        // not user-controlled, so it's left raw.
-        const lab = escapeHtml((row.display_name || 'anonymous').slice(0, 28));
-        li.innerHTML = `<span class="lab">${lab}</span>` +
-                       `<span class="score">${formatScore(g.id, row.score)}</span>`;
-        list.appendChild(li);
-      }
-    } catch (e) {
-      list.innerHTML = `<div class="empty">Offline.</div>`;
+    const { rows, readOnly } = await fetchBoard(g.id);
+    READ_ONLY = READ_ONLY || readOnly;
+    if (!rows.length) {
+      list.innerHTML = `<div class="empty">No scores yet — be the first.</div>`;
+      continue;
+    }
+    for (const row of rows) {
+      const li = document.createElement('li');
+      // player_name is what a player typed on this board; display_name
+      // is the older relay shape (a lab pseudonym). Either way it is
+      // somebody else's text.
+      const rawName = row.player_name || row.display_name || 'anonymous';
+      if (rawName.toLowerCase() === (MY_NAME || '').toLowerCase() && MY_NAME) li.className = 'you';
+      // v0.2.309: escapeHtml on every player-controlled string. Any lab
+      // can type any name, and this board is shared across labs — an
+      // unescaped name like
+      // `<img src=x onerror="fetch('/api/fleet/command',{method:'POST',...})">`
+      // would fire inside the next operator's dashboard. The score goes
+      // through escapeHtml too: it is a number from our own API, but on
+      // the relay fallback path it is whatever that server sends.
+      const name = escapeHtml(String(rawName).slice(0, 28));
+      const affil = escapeHtml(String(row.affiliation || '').slice(0, 34));
+      li.innerHTML = `<span class="lab">${name}` +
+                     (affil ? `<span class="affil">${affil}</span>` : '') +
+                     `</span><span class="score">${escapeHtml(formatScore(g.id, row.score))}</span>`;
+      list.appendChild(li);
     }
   }
+  renderIdentityBar();   // a board read is how we learn we're read-only
 }
 
 function formatScore(game, score) {
@@ -296,27 +432,123 @@ function backToMenu() {
   loadLeaderboard();
 }
 
-// Listen for high-score submission events from game iframes via postMessage.
-// Each game posts {type:'arcade-score', game, score, won} when the game
-// ends. arcade.html relays it to the HF Space.
-window.addEventListener('message', async (e) => {
-  if (!e.data || e.data.type !== 'arcade-score') return;
-  if (LAB_NAME === 'anonymous') return;  // skip submission for unclaimed labs
+// ── Game-over score prompt ───────────────────────────────────────────
+// Games post {type:'arcade-score', game, score, won, level} to their
+// parent when they end and know nothing about names, storage or HTTP.
+// The prompt and the POST live here, once, so every game — including
+// ones not written yet — gets the same flow for free.
+
+let PENDING = null;   // the score waiting on a name
+
+function gameTitle(id) {
+  const g = GAMES.find(x => x.id === id);
+  return g ? g.title : id;
+}
+
+function openScoreModal(data) {
+  PENDING = data;
+  document.getElementById('smGame').textContent = gameTitle(data.game);
+  document.getElementById('smScore').textContent = formatScore(data.game, data.score);
+  const bits = [];
+  if (data.won) bits.push('you won');
+  if (data.level != null) bits.push(`level ${data.level}`);
+  document.getElementById('smSub').textContent = bits.join(' · ');
+  const note = document.getElementById('smNote');
+  note.className = 'sm-note';
+  note.textContent = READ_ONLY
+    ? 'This dashboard is read-only — the score can be seen but not saved.'
+    : '';
+  // Prefill: whatever this browser used last, else the lab pseudonym.
+  const name = document.getElementById('smName');
+  const affil = document.getElementById('smAffil');
+  name.value = lsGet(LS_NAME) || (LAB_CLAIMED ? LAB_NAME : '');
+  affil.value = lsGet(LS_AFFIL);
+  const submit = document.getElementById('smSubmit');
+  submit.disabled = false;
+  submit.textContent = 'Submit score';
+  submit.onclick = submitPendingScore;   // a failed attempt repurposes it as Close
+  document.getElementById('scoreModal').classList.add('show');
+  name.focus();
+  name.select();
+}
+
+function dismissScoreModal() {
+  PENDING = null;
+  document.getElementById('scoreModal').classList.remove('show');
+  loadLeaderboard();
+}
+
+async function submitPendingScore() {
+  if (!PENDING) { dismissScoreModal(); return; }
+  const note = document.getElementById('smNote');
+  const submit = document.getElementById('smSubmit');
+  // Both fields are optional. Blank name is stored as "anonymous" —
+  // never block a submission on either one.
+  const playerName = document.getElementById('smName').value.trim().slice(0, 40);
+  const affiliation = document.getElementById('smAffil').value.trim().slice(0, 60);
+  lsSet(LS_NAME, playerName);
+  lsSet(LS_AFFIL, affiliation);
+  MY_NAME = playerName;
+
+  submit.disabled = true;
+  submit.textContent = 'Saving…';
+  note.className = 'sm-note';
+  note.textContent = 'Saving…';
   try {
-    await fetch(`${RELAY}/api/arcade/submit`, {
+    const r = await fetch(`${LOCAL_API}/score`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        game: e.data.game,
-        score: e.data.score,
-        won: e.data.won || false,
-        display_name: LAB_NAME,
-        ts: new Date().toISOString(),
+        game: PENDING.game,
+        score: PENDING.score,
+        level: PENDING.level == null ? null : PENDING.level,
+        won: !!PENDING.won,
+        player_name: playerName,
+        affiliation: affiliation,
       }),
     });
-  } catch (_) {
-    // Relay endpoint may not exist yet. Fail silently.
+    if (r.status === 403) {
+      // Expected on the public dashboard: readonly.py refuses every
+      // mutating route there. Not an error worth alarming anyone about.
+      READ_ONLY = true;
+      renderIdentityBar();
+      note.className = 'sm-note bad';
+      note.textContent = 'This leaderboard is read-only here — score not saved.';
+      submit.textContent = 'Close';
+      submit.disabled = false;
+      submit.onclick = dismissScoreModal;
+      return;
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    note.className = 'sm-note good';
+    note.textContent = `Saved as ${d.player_name || 'anonymous'}` +
+                       (d.backend === 'sqlite' ? ' (this install only).' : ' on the community board.');
+    setTimeout(dismissScoreModal, 1200);
+  } catch (err) {
+    note.className = 'sm-note bad';
+    note.textContent = 'Could not reach the leaderboard — score not saved.';
+    submit.textContent = 'Close';
+    submit.disabled = false;
+    submit.onclick = dismissScoreModal;
   }
+}
+
+window.addEventListener('message', (e) => {
+  if (!e.data || e.data.type !== 'arcade-score') return;
+  openScoreModal({
+    game: String(e.data.game || '').slice(0, 32),
+    score: Number(e.data.score) || 0,
+    won: !!e.data.won,
+    level: (e.data.level == null ? null : Number(e.data.level)),
+  });
+});
+
+// Enter submits from either field; Escape skips.
+document.addEventListener('keydown', (e) => {
+  if (!PENDING) return;
+  if (e.key === 'Enter') { e.preventDefault(); submitPendingScore(); }
+  else if (e.key === 'Escape') { e.preventDefault(); dismissScoreModal(); }
 });
 
 // Bootstrap

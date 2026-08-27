@@ -435,6 +435,34 @@ CREATE TABLE IF NOT EXISTS uploads (
 
 CREATE INDEX IF NOT EXISTS idx_uploads_status
     ON uploads(status, started_at);
+
+-- Arcade high scores (v1.0.22). Mirror of the central PG table in
+-- migrations/2026-08-26_arcade_scores.sql, so a lab with no PG Farm
+-- account still gets a working (local-only) leaderboard instead of a
+-- game that can't record anything.
+--
+-- player_name / affiliation are OPTIONAL free text typed by whoever
+-- just played, so they are UNTRUSTED and world-readable once PG is in
+-- play. They are length-capped on write (see insert_arcade_score) and
+-- must be HTML-escaped at every render site — public/arcade.html has
+-- the escapeHtml() helper and the incident history behind it.
+-- submitted_by_host is provenance for moderation; never displayed.
+CREATE TABLE IF NOT EXISTS arcade_scores (
+    id                TEXT PRIMARY KEY,   -- uuid hex, generated client-side
+    game              TEXT NOT NULL,      -- 'mass_match' | 'core_defense' | ...
+    score             INTEGER NOT NULL,
+    level             INTEGER,
+    won               INTEGER,            -- 0/1; PG stores a real BOOLEAN
+    player_name       TEXT,               -- optional, free text, UNTRUSTED
+    affiliation       TEXT,               -- optional, free text, UNTRUSTED
+    submitted_by_host TEXT,               -- provenance; not displayed
+    created_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_arcade_game_score
+    ON arcade_scores(game, score DESC);
+CREATE INDEX IF NOT EXISTS idx_arcade_created
+    ON arcade_scores(created_at DESC);
 """
 
 
@@ -1015,6 +1043,12 @@ def insert_irt_anchor_rts(
         (run_id, seq, float(rt), ref_map.get(seq))
         for seq, rt in observed.items()
     ]
+    # PG mode: the parent run lives centrally, so the anchors must too or
+    # the Trends cIRT panel has nothing to draw. Row assembly above is
+    # shared, so both backends store identical rows.
+    from stan.db_pg import insert_irt_anchor_rts_pg, use_pg
+    if use_pg():
+        return insert_irt_anchor_rts_pg(run_id, rows)
     with connect(db_path) as con:
         con.executemany(
             "INSERT OR REPLACE INTO irt_anchor_rts "
@@ -1023,6 +1057,56 @@ def insert_irt_anchor_rts(
             rows,
         )
     return len(rows)
+
+
+def get_cirt_history(
+    instrument: str,
+    limit: int = 500,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Anchor RT observations for one instrument, joined to their runs.
+
+    Backs ``/api/cirt/{instrument}``. One row per (run, anchor peptide),
+    oldest-first so the dashboard can chart straight through. ``limit``
+    caps *anchor rows*, not runs -- callers over-fetch because each run
+    contributes up to a full panel (10) of them.
+
+    The cap is applied newest-first inside a subquery and only then
+    re-sorted ascending. Capping an ascending scan directly would throw
+    away the most recent runs the moment an instrument's history exceeds
+    the limit, which is exactly the end of the series this chart exists
+    to show.
+
+    Returns [] rather than raising when the table hasn't been created
+    yet (user never ran ``stan backfill-cirt``, or the PG side hasn't
+    been migrated).
+    """
+    from stan.db_pg import get_cirt_history_pg, use_pg
+    if use_pg():
+        return get_cirt_history_pg(instrument, limit)
+
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return []
+    try:
+        with connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            return [
+                dict(r) for r in con.execute(
+                    "SELECT * FROM ("
+                    "  SELECT r.id AS run_id, r.run_name, r.run_date, r.spd, "
+                    "         a.peptide, a.observed_rt_min, a.reference_rt_min "
+                    "  FROM runs r JOIN irt_anchor_rts a ON a.run_id = r.id "
+                    "  WHERE r.instrument = ? "
+                    "  ORDER BY r.run_date DESC LIMIT ?"
+                    ") ORDER BY run_date ASC",
+                    (instrument, limit),
+                ).fetchall()
+            ]
+    except sqlite3.OperationalError as e:
+        logger.warning("get_cirt_history: %s", e)
+        return []
 
 
 @with_sqlite_retry
@@ -2531,3 +2615,194 @@ def time_since_last_qc(instrument: str, db_path: Path | None = None) -> dict:
         "hours_ago": round(hours, 1),
         "status": status,
     }
+
+
+# ── Arcade leaderboard ───────────────────────────────────────────────
+#
+# One board shared by every STAN: PG Farm when the install has it, the
+# local SQLite table otherwise. Unlike everything else in this module the
+# rows hold a person's typed-in name and affiliation, so read the privacy
+# notes in migrations/2026-08-26_arcade_scores.sql before extending them.
+
+#: Length caps for the two player-supplied fields. Enforced here, not in
+#: the API layer, so a CLI or a future relay path cannot bypass them.
+ARCADE_NAME_MAX = 40
+ARCADE_AFFILIATION_MAX = 60
+
+#: Columns a leaderboard reader gets back. `submitted_by_host` is
+#: provenance for moderation and de-duplication — never board content.
+ARCADE_PUBLIC_COLUMNS = (
+    "id", "game", "score", "level", "won", "player_name", "affiliation",
+    "created_at",
+)
+
+
+def sanitize_arcade_text(value: str | None, max_len: int) -> str:
+    """Normalize one player-typed field for storage.
+
+    Strips control characters (a newline in a name breaks every list
+    layout, and a NUL breaks the driver), collapses whitespace runs, and
+    truncates. Deliberately does NOT strip ``<``/``>``/quotes: mangling
+    them here would corrupt legitimate names and, worse, would invite the
+    belief that stored text is safe to interpolate. It is not — escape at
+    the render site. See the escapeHtml() comment in public/arcade.html.
+
+    Args:
+        value: Raw text as typed by the player, or None.
+        max_len: Hard cap on the stored length.
+
+    Returns:
+        Cleaned single-line string, possibly empty.
+    """
+    s = "" if value is None else str(value)
+    s = "".join(" " if (ch < " " or ch == "\x7f") else ch for ch in s)
+    s = " ".join(s.split())
+    return s[:max_len].strip()
+
+
+def sanitize_arcade_game(game: str | None) -> str:
+    """Normalize a game identifier to its stored form (may be empty).
+
+    Lowercased and trimmed only — the caller decides whether an id it has
+    never heard of is acceptable. The dashboard keeps that policy loose on
+    purpose so a new game works without a server change.
+    """
+    return sanitize_arcade_text(game, 32).lower().replace(" ", "_")
+
+
+def _normalize_arcade_row(row: dict) -> dict:
+    """Coerce one stored row to the shape the API and UI expect."""
+    out = {k: row.get(k) for k in ARCADE_PUBLIC_COLUMNS}
+    out["score"] = int(out["score"] or 0)
+    out["won"] = bool(out["won"])
+    out["level"] = None if out.get("level") is None else int(out["level"])
+    out["player_name"] = out.get("player_name") or "anonymous"
+    out["affiliation"] = out.get("affiliation") or ""
+    return out
+
+
+def insert_arcade_score(
+    game: str,
+    score: int,
+    level: int | None = None,
+    won: bool = False,
+    player_name: str = "",
+    affiliation: str = "",
+    submitted_by_host: str | None = None,
+    score_id: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """Record one arcade high score.
+
+    Returns ``{"id", "backend", "player_name", "affiliation"}`` — the
+    name fields as actually stored, so a caller can show the player the
+    truncated form rather than what they typed.
+
+    Both name fields are optional; a blank name is stored as
+    ``anonymous`` so the board reads honestly no matter which client
+    posted it. Text is length-capped here (see ``sanitize_arcade_text``).
+
+    Backend choice follows the store of record: PG Farm under
+    ``STAN_DB_BACKEND=pg`` so every install shares one board, SQLite
+    otherwise. If PG is configured but unreachable the score falls back
+    to the local table rather than being thrown away — a lost connection
+    should not cost somebody their run.
+    """
+    import socket
+
+    if db_path is None:
+        db_path = get_db_path()
+    row = {
+        "id": score_id or uuid.uuid4().hex,
+        "game": sanitize_arcade_game(game),
+        "score": int(score),
+        "level": None if level is None else int(level),
+        "won": bool(won),
+        "player_name": sanitize_arcade_text(player_name, ARCADE_NAME_MAX) or "anonymous",
+        "affiliation": sanitize_arcade_text(affiliation, ARCADE_AFFILIATION_MAX),
+        "submitted_by_host": submitted_by_host or socket.gethostname(),
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+
+    stored = {
+        "id": row["id"],
+        "player_name": row["player_name"],
+        "affiliation": row["affiliation"],
+    }
+
+    from stan.db_pg import insert_arcade_score_pg, use_pg
+    if use_pg():
+        try:
+            insert_arcade_score_pg(row)
+            return dict(stored, backend="pg")
+        except Exception as e:  # noqa: BLE001 - a game-over must never crash
+            logger.warning(
+                "arcade: PG insert failed (%s) — keeping the score locally",
+                str(e).strip().splitlines()[0][:120],
+            )
+
+    init_db(db_path)  # older stan.db files predate the arcade_scores table
+    sqlite_row = dict(row, won=1 if row["won"] else 0)
+    with connect(db_path) as con:
+        cols = ", ".join(sqlite_row.keys())
+        placeholders = ", ".join(f":{k}" for k in sqlite_row)
+        con.execute(
+            f"INSERT OR IGNORE INTO arcade_scores ({cols}) VALUES ({placeholders})",
+            sqlite_row,
+        )
+    return dict(stored, backend="sqlite")
+
+
+def get_arcade_leaderboard(
+    game: str | None = None,
+    limit: int = 10,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Top arcade scores, highest first.
+
+    Ties break on ``created_at`` ascending, so whoever set the score
+    first keeps the higher rank. Never raises: an unreachable PG Farm or
+    a stan.db predating the table returns an empty board, which the
+    arcade renders as "no scores yet" instead of an error.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    limit = max(1, min(int(limit or 10), 100))
+    game = sanitize_arcade_game(game) if game else None
+
+    from stan.db_pg import get_arcade_leaderboard_pg, use_pg
+    if use_pg():
+        try:
+            return [
+                _normalize_arcade_row(r)
+                for r in get_arcade_leaderboard_pg(game=game, limit=limit)
+            ]
+        except Exception as e:  # noqa: BLE001 - board is not worth a 500
+            logger.warning(
+                "arcade: PG leaderboard unavailable (%s)",
+                str(e).strip().splitlines()[0][:120],
+            )
+            return []
+
+    if not db_path.exists():
+        return []
+    cols = ", ".join(ARCADE_PUBLIC_COLUMNS)
+    try:
+        with connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            if game:
+                rows = con.execute(
+                    f"SELECT {cols} FROM arcade_scores WHERE game = ? "
+                    f"ORDER BY score DESC, created_at ASC LIMIT ?",
+                    (game, limit),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    f"SELECT {cols} FROM arcade_scores "
+                    f"ORDER BY score DESC, created_at ASC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+    except sqlite3.OperationalError as e:  # table not created yet
+        logger.debug("arcade: no local leaderboard (%s)", e)
+        return []
+    return [_normalize_arcade_row(dict(r)) for r in rows]

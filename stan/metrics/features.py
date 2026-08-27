@@ -326,6 +326,23 @@ def run_4dff(
     if not d_path.exists() or not d_path.is_dir():
         raise FileNotFoundError(f".d directory not found: {d_path}")
 
+    # An archived/half-synced .d keeps analysis.tdf (the small metadata
+    # SQLite) but loses analysis.tdf_bin (the multi-GB spectra). 4DFF on
+    # one of those segfaults inside setParameters and prints ~100 lines
+    # of C++ stack trace with no mention of the missing file, which reads
+    # like a broken binary rather than absent data. Check first so the
+    # failure names the actual cause.
+    if not (d_path / "analysis.tdf").exists():
+        raise FileNotFoundError(
+            f"{d_path.name} has no analysis.tdf — not a Bruker TDF .d"
+        )
+    if not (d_path / "analysis.tdf_bin").exists():
+        raise FileNotFoundError(
+            f"{d_path.name} is missing analysis.tdf_bin — the spectra were "
+            "never synced or have been archived away. 4DFF cannot run on "
+            "metadata alone; restore the raw data first."
+        )
+
     plat = _detect_platform(platform)
     if not is_4dff_installed(plat):
         raise FileNotFoundError(

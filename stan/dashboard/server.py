@@ -56,7 +56,7 @@ _DASHBOARD_ORIGINS_BASE = (
 # before launching `stan dashboard`. Multiple origins separated by
 # commas. No wildcards — explicit allowlist remains the security
 # property the gate provides.
-import os as _os
+import os as _os  # noqa: E402
 _extra = [
     o.strip() for o in (_os.environ.get("STAN_DASHBOARD_EXTRA_ORIGINS") or "").split(",")
     if o.strip()
@@ -216,9 +216,10 @@ def _mirror_enabled() -> bool:
     longer go through it, but a handful of endpoints still issue raw
     SQLite SQL against the mirrored ``runs`` table and would freeze at
     the last pull without it: /api/warnings, /api/today/tic-overview,
-    /api/cirt, /api/utilization, /api/fleet/comparison,
-    /api/fleet/instruments, plus get_column_lifetime and
-    time_since_last_qc. Port those and this can default to off.
+    /api/utilization, /api/fleet/comparison, /api/fleet/instruments,
+    plus get_column_lifetime and time_since_last_qc. Port those and
+    this can default to off. (/api/cirt was one of them until
+    ``stan.db.get_cirt_history`` gave it a PG path.)
 
     ``STAN_PG_REFRESH_SECONDS=0`` turns it off today for an install that
     doesn't use those views and wants the PG Farm connection slot back.
@@ -234,8 +235,8 @@ async def startup() -> None:
     from stan.db_pg import use_pg
 
     # A PG-direct dashboard still touches SQLite for the tables that
-    # haven't been ported (maintenance_events, uploads, scan_cache,
-    # irt_anchor_rts), so the local DB is created either way.
+    # haven't been ported (maintenance_events, uploads, scan_cache), so
+    # the local DB is created either way.
     init_db()
     if use_pg():
         logger.info(
@@ -879,32 +880,17 @@ async def api_cirt(instrument: str, limit: int = 500) -> dict:
     each peptide's observed RT over time with the run metadata it needs
     (run_date, spd, run_name). Grouped per peptide on the server side
     for convenience — the UI just picks an SPD bucket and iterates.
+
+    Backend-agnostic: ``get_cirt_history`` answers from PG when
+    ``use_pg()``, SQLite otherwise. Reading sqlite3 directly here meant
+    the panel stayed empty on the Hive/PG dashboard even with anchors
+    populated centrally.
     """
-    import sqlite3
-    from stan.db import get_db_path
+    from stan.db import get_cirt_history
 
-    db_path = get_db_path()
-    if not db_path.exists():
-        return {"peptides": {}, "n_runs": 0}
-
-    try:
-        with sqlite3.connect(str(db_path)) as con:
-            con.row_factory = sqlite3.Row
-            rows = con.execute(
-                """
-                SELECT r.id AS run_id, r.run_name, r.run_date, r.spd,
-                       a.peptide, a.observed_rt_min, a.reference_rt_min
-                FROM runs r
-                JOIN irt_anchor_rts a ON a.run_id = r.id
-                WHERE r.instrument = ?
-                ORDER BY r.run_date ASC
-                LIMIT ?
-                """,
-                (instrument, limit * 30),  # x30 because each run has up to 10 anchors
-            ).fetchall()
-    except sqlite3.OperationalError:
-        # Table may not exist yet if user never ran `stan backfill-cirt`
-        return {"peptides": {}, "n_runs": 0}
+    # x30 because each run contributes up to a full 10-anchor panel and
+    # `limit` is expressed in runs.
+    rows = get_cirt_history(instrument, limit=limit * 30)
 
     peptides: dict[str, dict] = {}
     run_ids: set[str] = set()
@@ -1257,7 +1243,7 @@ class ThresholdsUpdate(BaseModel):
 async def api_update_thresholds(body: ThresholdsUpdate) -> dict:
     """Update thresholds.yml from the dashboard UI."""
     try:
-        data = yaml.safe_load(body.yaml_content)
+        _data = yaml.safe_load(body.yaml_content)
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
 
@@ -1483,6 +1469,229 @@ async def api_sample_health(
         if v in counts:
             counts[v] += 1
     return {"rows": rows, "counts": counts}
+
+
+# ── Arcade leaderboard ───────────────────────────────────────────────
+#
+# The arcade used to POST straight to the HF Space relay, which never
+# grew the endpoint — every board read 404. Scores now go to the store
+# of record (PG Farm when the install has it, local SQLite otherwise),
+# so a local install, the hosted dashboard and the community Space all
+# read one board.
+#
+# Everything a player types here is UNTRUSTED and, on PG, world-readable
+# by every lab running STAN. Names are length-capped on write in
+# stan.db.insert_arcade_score and HTML-escaped on render in
+# public/arcade.html. Neither is optional; see the escapeHtml() comment
+# there for the incident that made this explicit.
+
+#: Game ids are not whitelisted — a new game should work without a
+#: server change — but they must be a boring slug, since the id is a
+#: query-string value and a grouping key.
+_ARCADE_GAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_-")
+
+#: Well clear of any real score, well inside PG's BIGINT.
+_ARCADE_SCORE_MAX = 10 ** 12
+_ARCADE_LEVEL_MAX = 10 ** 6
+
+
+def _valid_arcade_game(game: str) -> bool:
+    return bool(game) and len(game) <= 32 and set(game) <= _ARCADE_GAME_CHARS
+
+
+class ArcadeScoreBody(BaseModel):
+    game: str
+    score: float
+    level: int | None = None
+    won: bool = False
+    player_name: str = ""      # optional — blank is stored as "anonymous"
+    affiliation: str = ""      # optional — never required, never prompted twice
+
+
+@app.get("/api/community/sync-status")
+async def api_community_sync_status() -> dict:
+    """What a community sync would do right now, without doing it.
+
+    Powers the Sync button's label so the operator sees the size of the
+    action before taking it.
+    """
+    from stan.community.pseudonym import generate_pseudonym
+    from stan.config import load_community
+
+    cfg = load_community() or {}
+    name = (cfg.get("display_name") or "").strip()
+    try:
+        from stan.db import get_runs
+        pending = len(_pending_community_runs(get_runs(limit=100000)))
+    except Exception:
+        logger.debug("sync-status count failed", exc_info=True)
+        pending = -1
+    return {
+        "display_name": name or None,
+        "suggested_name": name or generate_pseudonym(),
+        "pending": pending,
+        "readonly": is_readonly(),
+    }
+
+
+def _pending_community_runs(rows: list[dict]) -> list[dict]:
+    """Runs eligible for the community benchmark, mirroring `stan submit-all`.
+
+    Same two exclusions the CLI applies, kept in step deliberately: washes
+    and blanks are not QC, and a run with zero identifications is a failed
+    search that would only pollute the cohort percentiles.
+    """
+    import re
+
+    skip = re.compile(r"(?i)(wash|blank|blnk|blk|DELETE)")
+    out = []
+    for r in rows:
+        if r.get("submitted_to_benchmark"):
+            continue
+        name = str(r.get("run_name") or "")
+        if skip.search(name):
+            continue
+        if (r.get("n_precursors") or 0) + (r.get("n_psms") or 0) <= 0:
+            continue
+        out.append(r)
+    return out
+
+
+@app.post("/api/community/sync")
+async def api_community_sync(body: dict | None = None) -> dict:
+    """Submit un-submitted QC runs to the community benchmark.
+
+    One HTTP POST per run, so this runs in a thread and reports counts when
+    done. The read-only gate refuses it on a public host — a public
+    dashboard must not publish on someone else's behalf.
+    """
+    import asyncio
+
+    body = body or {}
+    display_name = str(body.get("display_name") or "").strip()[:60]
+
+    def _run() -> dict:
+        import yaml
+
+        from stan.community.pseudonym import generate_pseudonym
+        from stan.community.submit import submit_to_benchmark
+        from stan.config import get_user_config_dir, load_community
+        from stan.db import get_runs
+
+        cfg = load_community() or {}
+        if display_name:
+            cfg["display_name"] = display_name
+        elif not (cfg.get("display_name") or "").strip():
+            # First sync from a fresh install: mint a pseudonym rather than
+            # publishing as "anonymous" forever.
+            cfg["display_name"] = generate_pseudonym()
+        cfg["community_submit"] = True
+        try:
+            path = get_user_config_dir() / "community.yml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+        except Exception:
+            logger.warning("could not persist community.yml", exc_info=True)
+
+        runs = _pending_community_runs(get_runs(limit=100000))
+        sent = failed = 0
+        errors: list[str] = []
+        for run in runs:
+            try:
+                submit_to_benchmark(
+                    run,
+                    spd=run.get("spd"),
+                    gradient_length_min=run.get("gradient_length_min"),
+                    amount_ng=run.get("amount_ng") or 50.0,
+                    diann_version=run.get("diann_version"),
+                )
+                sent += 1
+            except Exception as e:  # noqa: BLE001 - one bad run must not stop the rest
+                failed += 1
+                if len(errors) < 5:
+                    errors.append(f"{str(run.get('run_name'))[:40]}: {str(e)[:90]}")
+        return {"submitted": sent, "failed": failed,
+                "display_name": cfg.get("display_name"), "errors": errors}
+
+    try:
+        result = await asyncio.to_thread(_run)
+    except Exception as e:  # noqa: BLE001
+        logger.exception("community sync failed")
+        return {"ok": False, "error": str(e)[:200]}
+    return {"ok": True, **result}
+
+
+@app.get("/api/arcade/leaderboard")
+async def api_arcade_leaderboard(game: str | None = None, limit: int = 10) -> dict:
+    """Top scores for one game (or across all games when `game` is omitted).
+
+    Never fails hard: an unreachable PG Farm or a stan.db that predates
+    the table returns an empty board rather than a 500, and the arcade
+    treats an empty local board as its cue to try the community relay.
+    """
+    from stan.db import get_arcade_leaderboard
+    from stan.db_pg import use_pg
+
+    if game is not None and not _valid_arcade_game(game.strip().lower()):
+        raise HTTPException(status_code=400, detail="invalid game id")
+    rows = get_arcade_leaderboard(game=game, limit=max(1, min(limit, 50)))
+    return {
+        "game": game,
+        "scores": rows,
+        "count": len(rows),
+        "backend": "pg" if use_pg() else "sqlite",
+        # Lets the page say "read-only here" up front instead of
+        # discovering it from a 403 after somebody types their name.
+        "read_only": is_readonly(),
+    }
+
+
+@app.post("/api/arcade/score")
+async def api_arcade_score(body: ArcadeScoreBody) -> dict:
+    """Record one game-over score.
+
+    Refused with 403 on a publicly-hosted dashboard — see
+    stan/dashboard/readonly.py. That is deliberate: the public instance
+    has no way to tell a player from a script, so it reads the board
+    without accepting writes.
+    """
+    import math
+
+    from stan.db import insert_arcade_score
+
+    game = (body.game or "").strip().lower().replace(" ", "_")
+    if not _valid_arcade_game(game):
+        raise HTTPException(status_code=400, detail="invalid game id")
+    if not math.isfinite(body.score) or not (0 <= body.score <= _ARCADE_SCORE_MAX):
+        raise HTTPException(status_code=400, detail="score out of range")
+    level = body.level
+    if level is not None:
+        level = max(0, min(int(level), _ARCADE_LEVEL_MAX))
+
+    try:
+        stored = insert_arcade_score(
+            game=game,
+            score=int(body.score),
+            level=level,
+            won=bool(body.won),
+            player_name=body.player_name,
+            affiliation=body.affiliation,
+        )
+    except Exception as e:  # noqa: BLE001 - a game-over must never 500
+        logger.warning("arcade: could not store score: %s",
+                       str(e).strip().splitlines()[0][:160])
+        raise HTTPException(
+            status_code=503, detail="leaderboard store unavailable") from e
+
+    # Echo back what was actually stored, so the page shows the
+    # truncated name rather than what was typed.
+    return {
+        "ok": True,
+        "id": stored["id"],
+        "backend": stored["backend"],
+        "player_name": stored["player_name"],
+        "affiliation": stored["affiliation"],
+    }
 
 
 # ── Fleet (stan.control) ─────────────────────────────────────────────
