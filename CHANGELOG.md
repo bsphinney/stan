@@ -11,6 +11,25 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.24] — 2026-08-26
+
+### Fixed
+- **CI's lint step is green again — the real cause was a floating
+  dependency.** `dev` depended on unpinned `ruff`, and 0.16 widened the
+  *default* rule selection to include isort, bugbear, bandit, pylint and
+  pyupgrade. CI installed 0.16.4 and reported **633 findings on code nobody
+  had touched**, while a local 0.15.9 reported none. Fixed by declaring the
+  rule set explicitly (`[tool.ruff.lint] select = ["E4", "E7", "E9", "F"]` —
+  what STAN has actually been linted against) and pinning `ruff>=0.15,<0.17`.
+  A ruff upgrade is now a deliberate change instead of a surprise build break.
+  Verified by running 0.16.4, the exact version CI installs, against the new
+  config: `All checks passed!`
+  - The 633 findings are mostly style opinions (blind `except`,
+    `try/except/pass`, naive `datetime.now()`); adopting any of those families
+    is a separate decision, not something a dependency bump should impose.
+
+---
+
 ## [1.0.23] — 2026-08-26
 
 ### Added

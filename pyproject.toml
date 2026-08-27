@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stan-proteomics"
-version = "1.0.23"
+version = "1.0.24"
 description = "STAN — Standardized proteomic Throughput ANalyzer"
 readme = "README.md"
 license = { text = "STAN Academic License" }
@@ -31,7 +31,7 @@ hpc = ["paramiko>=3.0"]
 thermo = ["fisher_py>=2.0"]  # optional: enables full TIC trace for Thermo .raw (needs .NET)
 peg = ["alphatims>=1.0,<1.0.9", "numpy<2"]     # alphatims + numpy<2. alphatims 1.0.9 breaks against polars 1.35+ (search_sorted); alphatims 1.0.8 breaks against numpy 2.0+ (strict searchsorted side=). Brett timsTOF 2026-04-22: numpy 2.4.4 + alphatims 1.0.8 still produced ValueErrors. Pin both.
 full = ["fisher_py>=2.0", "alphatims>=1.0,<1.0.9", "numpy<2"]
-dev = ["pytest", "pytest-asyncio", "ruff", "mypy"]
+dev = ["pytest", "pytest-asyncio", "ruff>=0.15,<0.17", "mypy"]
 
 [project.scripts]
 stan = "stan.cli:app"
@@ -49,6 +49,16 @@ include = ["stan*"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# Pin the rule set explicitly. Ruff's *default* selection is not stable
+# across releases: 0.16 widened it to include isort, bugbear, bandit,
+# pylint and pyupgrade families, which turned a green CI red overnight
+# with 633 findings on untouched code. These four are the set STAN has
+# actually been linted against, so declaring them keeps `ruff check`
+# meaningful and makes a ruff upgrade a deliberate change rather than a
+# surprise build break.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pytest.ini_options]
 markers = [
