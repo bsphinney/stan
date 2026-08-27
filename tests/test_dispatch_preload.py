@@ -76,3 +76,44 @@ def test_preload_returns_none_when_it_cannot_load(tmp_path, monkeypatch):
     """A failed preload must fall back, never crash the tick."""
     monkeypatch.setattr("stan.db_pg.use_pg", lambda: False)
     assert _preload_dedup_sets(tmp_path / "does_not_exist.db", 3) is None
+
+
+def test_pg_mode_reads_dispatch_attempts_from_sqlite(db, monkeypatch):
+    """dispatch_attempts lives only in SQLite, even when the backend is PG.
+
+    It was never migrated, which is why _failed_too_many() reads SQLite
+    unconditionally. The first version of the preload queried all three
+    tables in PG, so PG raised 'relation "dispatch_attempts" does not
+    exist' and the whole preload took its fallback path -- leaving the
+    per-file queries in place and the optimisation silently doing nothing
+    in the only environment that needed it.
+    """
+    import stan.db_pg as db_pg
+
+    class _Cur:
+        def __init__(self): self.rows = []
+        def execute(self, sql, args=None):
+            assert "dispatch_attempts" not in sql, (
+                "dispatch_attempts must not be queried in PG: " + sql)
+            if "sample_health" in sql:
+                self.rows = [("/data/pg_monitor.d",)]
+            else:
+                self.rows = [("/data/pg_qc.d",)]
+        def fetchall(self): return self.rows
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(db_pg, "use_pg", lambda: True)
+    monkeypatch.setattr(db_pg, "_connect", lambda *a, **k: _Conn())
+
+    sets = _preload_dedup_sets(db, max_attempts=3)
+    assert sets is not None, "PG preload must not fall back"
+    assert "/data/pg_qc.d" in sets["processed"]
+    assert "/data/pg_monitor.d" in sets["health"]
+    # capped still comes from SQLite
+    assert "/data/broken.d" in sets["capped"]

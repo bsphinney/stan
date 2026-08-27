@@ -219,6 +219,26 @@ def _classify_raw(raw_name: str, qc_pattern: str = DEFAULT_QC_PATTERN) -> str:
     return "monitor"
 
 
+def _capped_from_sqlite(db_path: Path, max_attempts: int) -> set[str]:
+    """Raws that have failed too often, read from SQLite in one query.
+
+    Mirrors ``_failed_too_many``'s predicate exactly. Lives in SQLite in
+    both backends because ``dispatch_attempts`` was never migrated to PG.
+    A missing table means nothing has been recorded yet, which is an empty
+    set rather than an error.
+    """
+    try:
+        with sqlite3.connect(str(db_path)) as con:
+            return {
+                r[0] for r in con.execute(
+                    "SELECT raw_path FROM dispatch_attempts "
+                    "WHERE status = 'failed' AND attempt_count >= ?",
+                    (max_attempts,))
+            }
+    except sqlite3.OperationalError:
+        return set()
+
+
 def _preload_dedup_sets(db_path: Path, max_attempts: int) -> dict | None:
     """Load every dedup key up front, so the walk costs 3 queries not 3xN.
 
@@ -248,12 +268,14 @@ def _preload_dedup_sets(db_path: Path, max_attempts: int) -> dict | None:
                     "SELECT raw_path FROM sample_health WHERE raw_path IS NOT NULL"
                 )
                 health = {r[0] for r in cur.fetchall()}
-                cur.execute(
-                    "SELECT raw_path FROM dispatch_attempts "
-                    "WHERE status = 'failed' AND attempt_count >= %s",
-                    (max_attempts,),
-                )
-                capped = {r[0] for r in cur.fetchall()}
+            # dispatch_attempts is SQLite-only — it was never migrated to PG,
+            # which is why _failed_too_many() reads SQLite unconditionally
+            # while the other two predicates switch on the backend. Querying
+            # it in PG raises 'relation "dispatch_attempts" does not exist',
+            # and because the whole preload shares one try block that took the
+            # fallback path with it, leaving the per-file queries in place and
+            # the optimisation silently doing nothing.
+            capped = _capped_from_sqlite(db_path, max_attempts)
         else:
             with sqlite3.connect(str(db_path)) as con:
                 processed = {
@@ -265,12 +287,7 @@ def _preload_dedup_sets(db_path: Path, max_attempts: int) -> dict | None:
                         "SELECT raw_path FROM sample_health "
                         "WHERE raw_path IS NOT NULL")
                 }
-                capped = {
-                    r[0] for r in con.execute(
-                        "SELECT raw_path FROM dispatch_attempts "
-                        "WHERE status = 'failed' AND attempt_count >= ?",
-                        (max_attempts,))
-                }
+            capped = _capped_from_sqlite(db_path, max_attempts)
     except Exception:
         logger.warning(
             "dedup preload failed; falling back to per-file queries",

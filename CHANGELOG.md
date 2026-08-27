@@ -11,6 +11,37 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.30] — 2026-08-27
+
+### Fixed
+- **The dedup preload silently never ran in PG mode: dispatch 559 s -> 6 s.**
+  `dispatch_attempts` lives only in SQLite — it was never migrated to PG,
+  which is exactly why `_failed_too_many()` reads SQLite unconditionally
+  while the other two predicates switch on the backend. v1.0.28's preload
+  queried all three tables in PG, so PG raised `relation
+  "dispatch_attempts" does not exist`; because the three queries shared one
+  `try`, the whole preload took its fallback path and left the per-file
+  queries in place. The fallback kept results correct, so the only symptom
+  was that the optimisation did nothing in the one environment that needed
+  it — visible solely as a `dedup preload failed` warning that the cron's
+  `tail -2` discarded.
+  - `runs` and `sample_health` come from PG; `dispatch_attempts` comes from
+    SQLite via `_capped_from_sqlite()`, matching `_failed_too_many()`.
+  - `tests/test_dispatch_preload.py` now asserts the PG path never issues a
+    `dispatch_attempts` query and does not fall back.
+
+### Performance summary for the dispatch tick
+| Phase | Before | After |
+|---|---|---|
+| Flinders walk (v1.0.29) | 122 s | 1 s |
+| Dispatch (this release) | 559 s | 6 s |
+
+A tick now completes in seconds rather than 10-25 minutes, so the 5-minute
+cron schedule set in v1.0.28 actually delivers 5-minute latency instead of
+being skipped by `flock`.
+
+---
+
 ## [1.0.29] — 2026-08-27
 
 ### Fixed
