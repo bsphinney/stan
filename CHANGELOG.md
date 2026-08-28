@@ -11,6 +11,68 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.34] — 2026-08-28
+
+### Added
+- **Maintenance log works on the hosted dashboard, behind UC Davis sign-in.**
+  Reading events already worked; the "Log event" button returned 403 because
+  the read-only gate refused every write. The events route is now reachable
+  by a signed-in, allow-listed operator. The gate learned anchored path
+  patterns for this (`_PRIVILEGED_PATTERNS`), with a test asserting the
+  pattern does not also open `/api/instruments/{x}/config` or the
+  fleet-command route.
+- **Entries record who logged them and when.** The table had `operator` (who
+  did the work, free text) but nothing about who *recorded* the line.
+  `created_by` now holds the authenticated Easy Auth identity and
+  `created_at` the server timestamp. These entries drive LC-column age, so an
+  entry nobody can trace is worse than none.
+- **Downtime is a first-class event type with a span.** An instrument being
+  down is an interval, not an instant: `event_type='downtime'` plus
+  `end_date`. `DOWNTIME_EVENT_TYPES` gives the reliability maths one
+  definition to read. The API rejects an `end_date` before the start.
+- **Maintenance tab with a calendar and a "Mark downtime" form.** Downtime
+  renders as a span across its days; point events as markers. New
+  `GET /api/maintenance/calendar?days=` returns the whole fleet in one call
+  rather than fanning out per instrument.
+
+### Groundwork
+- **Community downtime / reliability leaderboard** (README "Planned"): the
+  schema now carries what it needs — downtime spans, attribution, and a
+  per-entry `share_community` flag. Sharing is **opt-in and off by default**
+  because maintenance notes can name people and customers. Still to build:
+  the relay endpoint, the MTBF / availability / recovery-time maths, and
+  heartbeat-gap detection to complement manually-marked downtime.
+
+### Notes
+- The new columns need `migrations/2026-08-28_maintenance_downtime.sql`, which
+  must run as the table owner (the service account gets `must be owner of
+  table`). `log_event()` probes for the columns and omits them when absent, so
+  logging keeps working before that migration is applied.
+- Arcade score posts are now accepted without a login — the single entry in
+  `_PUBLIC_WRITE_PATHS`. A leaderboard shared across the community site and
+  every local STAN is pointless if only signed-in operators can add to it, and
+  the payload is a game score with no lab data. Lengths are truncated
+  server-side, as they already were.
+
+---
+
+## [1.0.33] — 2026-08-27
+
+### Fixed
+- **The hosted dashboard invented a lab identity.** With no
+  `~/.stan/community.yml` (a container reading PG is not a lab install),
+  sync-status fell through to `generate_pseudonym()` and pre-filled a brand
+  new name into the Sync box. Publishing from there would have created a
+  SECOND identity on the community site, splitting the runs from the 3,388
+  already there — with nothing in the UI showing the name was wrong.
+  - `STAN_DISPLAY_NAME` supplies the real name in a hosted container.
+  - A pseudonym is now offered **only when nothing has ever been published**
+    from that database. Where a lab already has an identity the box is left
+    empty, so the operator types the real name instead of accepting a
+    plausible-looking wrong one.
+
+---
+
 ## [1.0.32] — 2026-08-27
 
 ### Fixed
