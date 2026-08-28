@@ -2401,6 +2401,11 @@ def log_event(
     # and that has to be applied by the table owner, so they are added only
     # when present -- a lab that has not migrated keeps logging events as
     # before rather than getting an UndefinedColumn error on every save.
+    # Normalise the span end to the same shape as the start, so downstream
+    # string comparisons (the API's own start<=end check, and any ORDER BY on
+    # these TEXT columns) stay valid whichever form the caller sent.
+    if end_date and event_date and len(str(end_date)) == 10 < len(str(event_date)):
+        end_date = str(end_date) + str(event_date)[10:]
     optional = {
         "end_date": end_date,
         "created_by": created_by,

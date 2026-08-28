@@ -129,3 +129,35 @@ def test_pattern_does_not_open_neighbouring_routes(gated_app, monkeypatch):
                  "/api/fleet/command"):
         assert not ro._is_privileged_path(path), path
     assert ro._is_privileged_path("/api/instruments/timsTOF HT/events")
+
+
+def test_same_day_span_is_not_rejected(monkeypatch):
+    """A one-day outage must be accepted however the dates are shaped.
+
+    event_date is TEXT with mixed shapes in the wild: the older Trends form
+    writes "2026-08-10T12:00:00Z" while a date input yields a bare
+    "2026-08-10". A raw string compare calls that pair end-before-start,
+    because "2026-08-10" < "2026-08-10T12:00:00Z".
+    """
+    captured = {}
+    monkeypatch.setattr("stan.db_pg.use_pg", lambda: True)
+    monkeypatch.setattr("stan.db_pg.insert_event_pg", lambda r: captured.update(r))
+    monkeypatch.setattr("stan.db._event_column_exists", lambda n, p=None: True)
+
+    from stan.db import log_event
+    log_event(instrument="timsTOF HT", event_type="downtime",
+              event_date="2026-08-10T12:00:00Z", end_date="2026-08-10")
+    assert captured["end_date"] == "2026-08-10T12:00:00Z", (
+        "a bare end date must be normalised to the start's shape")
+
+
+def test_span_end_left_alone_when_shapes_already_match(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("stan.db_pg.use_pg", lambda: True)
+    monkeypatch.setattr("stan.db_pg.insert_event_pg", lambda r: captured.update(r))
+    monkeypatch.setattr("stan.db._event_column_exists", lambda n, p=None: True)
+
+    from stan.db import log_event
+    log_event(instrument="timsTOF HT", event_type="downtime",
+              event_date="2026-08-10", end_date="2026-08-12")
+    assert captured["end_date"] == "2026-08-12"

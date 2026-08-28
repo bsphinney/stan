@@ -1317,7 +1317,11 @@ async def api_log_event(
     from stan.db import EVENT_TYPES, log_event
     if body.event_type not in EVENT_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid event type. Valid: {EVENT_TYPES}")
-    if body.end_date and body.end_date < body.event_date:
+    # Compare on the calendar-day prefix only. event_date is TEXT with mixed
+    # shapes in the wild -- the older Trends form writes "2026-08-10T12:00:00Z"
+    # while a date input yields a bare "2026-08-10" -- so a raw string compare
+    # rejects a same-day span ("2026-08-10" < "2026-08-10T12:00:00Z" is True).
+    if body.end_date and str(body.end_date)[:10] < str(body.event_date or "")[:10]:
         raise HTTPException(status_code=400, detail="end_date is before the start date")
     event_id = log_event(
         instrument=instrument,
