@@ -123,6 +123,10 @@ def readonly_client(monkeypatch):
     async def _cmd():
         return {"ok": True}
 
+    @app.post("/api/arcade/score")
+    async def _score():
+        return {"ok": True}
+
     assert ro.install_readonly_gate(app) is True
     return TestClient(app)
 
@@ -156,3 +160,24 @@ def test_fleet_command_stays_refused_even_when_authorized(readonly_client, monke
                  "x-ms-client-principal-name": "bsphinney@ucdavis.edu"},
     )
     assert r.status_code == 403
+
+
+def test_arcade_score_is_accepted_without_login(readonly_client):
+    """A shared leaderboard needs public writes, or nobody can post to it."""
+    r = readonly_client.post("/api/arcade/score", json={})
+    assert r.status_code != 403, "the arcade score post must not need a login"
+
+
+def test_public_write_list_stays_narrow():
+    """Guard against widening the public hole beyond the arcade score.
+
+    Anything touching QC data, instruments or config must stay behind the
+    gate no matter how convenient it would be to open.
+    """
+    import importlib
+
+    import stan.dashboard.readonly as ro
+    importlib.reload(ro)
+    assert ro._PUBLIC_WRITE_PATHS == {"/api/arcade/score"}
+    assert "/api/fleet/command" not in ro._PUBLIC_WRITE_PATHS
+    assert "/api/community/sync" not in ro._PUBLIC_WRITE_PATHS

@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from stan import __version__
 from stan.config import (
@@ -1287,30 +1287,80 @@ async def api_events(instrument: str, limit: int = 50) -> list[dict]:
 class LogEventRequest(BaseModel):
     event_type: str
     event_date: str | None = None
-    notes: str = ""
-    operator: str = ""
-    column_vendor: str | None = None
-    column_model: str | None = None
-    column_serial: str | None = None
+    #: Downtime is an interval, not an instant. Set for event_type
+    #: "downtime"; left null for point events like a source clean.
+    end_date: str | None = None
+    notes: str = Field(default="", max_length=2000)
+    operator: str = Field(default="", max_length=80)
+    column_vendor: str | None = Field(default=None, max_length=80)
+    column_model: str | None = Field(default=None, max_length=120)
+    column_serial: str | None = Field(default=None, max_length=120)
+    #: Opt-in per entry. Maintenance notes can name people and customers, so
+    #: nothing reaches the community reliability leaderboard unless someone
+    #: deliberately ticks this. Defaults off.
+    share_community: bool = False
 
 
 @app.post("/api/instruments/{instrument}/events")
-async def api_log_event(instrument: str, body: LogEventRequest) -> dict:
-    """Log a maintenance event from the dashboard UI."""
-    from stan.db import log_event, EVENT_TYPES
+async def api_log_event(
+    instrument: str, body: LogEventRequest, request: Request
+) -> dict:
+    """Log a maintenance event from the dashboard UI.
+
+    On the hosted dashboard this route is reachable only by a signed-in,
+    allow-listed operator (see readonly._PRIVILEGED_PATTERNS), and the
+    authenticated identity is recorded on the row. These entries drive
+    LC-column age and the planned reliability leaderboard, so an unsigned
+    entry that nobody can trace is worse than no entry.
+    """
+    from stan.dashboard.auth import caller_email
+    from stan.db import EVENT_TYPES, log_event
     if body.event_type not in EVENT_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid event type. Valid: {EVENT_TYPES}")
+    if body.end_date and body.end_date < body.event_date:
+        raise HTTPException(status_code=400, detail="end_date is before the start date")
     event_id = log_event(
         instrument=instrument,
         event_type=body.event_type,
         event_date=body.event_date,
+        end_date=body.end_date,
         notes=body.notes,
         operator=body.operator,
         column_vendor=body.column_vendor,
         column_model=body.column_model,
         column_serial=body.column_serial,
+        created_by=caller_email(request),
+        share_community=body.share_community,
     )
     return {"event_id": event_id, "status": "logged"}
+
+
+@app.get("/api/maintenance/calendar")
+async def api_maintenance_calendar(days: int = 90) -> dict:
+    """Every instrument's maintenance and downtime over a window.
+
+    One call for the whole fleet so the calendar does not fan out per
+    instrument. Downtime carries an end_date and is rendered as a span;
+    everything else is a point event.
+    """
+    from stan.db import DOWNTIME_EVENT_TYPES, get_events
+    from datetime import datetime, timedelta, timezone
+
+    days = max(1, min(int(days), 730))
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    out = []
+    for ev in get_events(limit=5000) or []:
+        d = dict(ev)
+        start = str(d.get("event_date") or "")
+        # Compare on the date prefix: event_date is TEXT with mixed formats
+        # (with/without timezone), so only YYYY-MM-DD is reliably orderable.
+        if start[:10] < cutoff[:10]:
+            continue
+        d["is_downtime"] = d.get("event_type") in DOWNTIME_EVENT_TYPES
+        out.append(d)
+    out.sort(key=lambda e: str(e.get("event_date") or ""), reverse=True)
+    return {"days": days, "events": out,
+            "downtime_types": sorted(DOWNTIME_EVENT_TYPES)}
 
 
 @app.get("/api/instruments/{instrument}/column-life")
@@ -1500,6 +1550,12 @@ def _valid_arcade_game(game: str) -> bool:
 
 
 class ArcadeScoreBody(BaseModel):
+    # This is the one write the PUBLIC dashboard accepts without a login (a
+    # shared leaderboard is useless if only signed-in operators can post).
+    # Deliberately NOT length-validated here: the handler already truncates
+    # to ARCADE_NAME_MAX / ARCADE_AFFILIATION_MAX, and truncating is the
+    # right behaviour for a game score -- rejecting the whole submission
+    # because someone typed a long lab name would just lose their score.
     game: str
     score: float
     level: int | None = None

@@ -224,7 +224,8 @@ What ships today vs. what's still planned.
 | Front-page view selector | Done | Gauges / Weekly table / Metric matrix on This Week's QCs. |
 | Test fixtures (real DIA-NN / Sage output) | Planned | `tests/fixtures/` is mostly empty. |
 | Outlier detection (amount / SPD mismatch) | Planned | Flag submissions whose metrics don't match the declared cohort. |
-| Community downtime / reliability leaderboard | Planned | MTBF / availability / recovery-time per instrument model. |
+| Maintenance & downtime log | Done | Calendar view; downtime recorded as a span. Hosted writes need UC Davis sign-in and record who logged it and when. |
+| Community downtime / reliability leaderboard | Groundwork | Schema carries downtime spans + a per-entry `share_community` opt-in. MTBF / availability / recovery-time and the relay side are still to build. |
 | PyPI release | Planned | `pip install stan-proteomics` not yet published. |
 | Auto-start `stan watch` as a Windows service | Planned | `stan.bat` supervises the watcher when running, but still requires the operator to double-click it. A Windows Scheduled Task (`stan install-service`) that starts at login/boot without any manual step is not yet shipped. |
 | Mobile PWA (install) | Partial | Installable PWA shipped — `manifest.json` + icons + iOS "Add to Home Screen" meta (full-screen, app icon). Service worker (offline) + push-on-FAIL not yet shipped. Setup in `docs/user_guide.md`. |
@@ -269,6 +270,14 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 - [ ] **Migration-keyed `backfill-tic` sentinel** instead of version-keyed (so trivial bumps don't re-force the whole sweep).
 - [ ] **Install wizard for shared-drive selection.** First-run prompt for the fleet root (SMB path / HF Space URL / none). Today: ships as `stan/fleet_setup.py` but isn't surfaced from `stan init` yet.
 - [ ] **Community downtime / reliability leaderboard** — heartbeat-gap detection, MTBF, recovery time, availability normalized by `institution_type`.
+  - Groundwork landed v1.0.34: `maintenance_events` records downtime as a
+    span (`event_date`..`end_date`, `event_type='downtime'`), plus
+    `created_by`/`created_at` for attribution and a per-entry
+    `share_community` flag. Sharing is **opt-in per entry and off by
+    default** because maintenance notes can name people and customers.
+  - Still to build: the relay endpoint that accepts shared entries, the
+    MTBF/availability/recovery-time maths, and automatic heartbeat-gap
+    detection to complement manually-marked downtime.
 
 ---
 

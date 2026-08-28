@@ -95,6 +95,91 @@
        date field after 17:00 local. */
     const localDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+    /* Calendar-day helpers for the maintenance calendar. The events API
+       hands back event_date / end_date as TEXT in mixed shapes
+       ("2026-08-12" or "2026-08-12T00:00:00+00:00"), so only the
+       YYYY-MM-DD prefix is trustworthy. Slice that prefix and rebuild a
+       LOCAL midnight from the parts — never `new Date(iso)` and then
+       localDay(), because a "...T00:00:00Z" value lands on the previous
+       day everywhere west of Greenwich. That is the same bug localDay
+       exists to stop, one layer up. */
+    const dayKeyOf = v => (v == null ? '' : String(v).slice(0, 10));
+    const dateFromDayKey = k => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(k || ''));
+      return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+    };
+    const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+    /* Whole days from a to b. Rounded because the millisecond gap between
+       two local midnights is 23h or 25h across a DST boundary. */
+    const daysBetween = (a, b) => Math.round((b - a) / 86400000);
+
+    /* Maintenance vocabulary, shared by the log table, the trend-chart
+       markers and the calendar so a new event type is named in one place.
+       Keep in step with EVENT_TYPES in stan/db.py. */
+    const MAINT_TYPE_LABELS = {
+      column_change: 'Column Change',
+      source_clean: 'Source Clean',
+      calibration: 'Calibration',
+      pm: 'PM',
+      lc_service: 'LC Service',
+      downtime: 'Downtime',
+      other: 'Other',
+    };
+    const MAINT_TYPE_COLORS = {
+      column_change: '#60a5fa',
+      source_clean: '#22c55e',
+      calibration: '#eab308',
+      pm: '#a78bfa',
+      lc_service: '#f472b6',
+      /* Downtime is the only type that means "instrument not usable", so it
+         owns red and no routine-maintenance type may reuse it: a red bar
+         always reads as lost availability, never as work done. */
+      downtime: 'var(--fail)',
+      other: '#94a3b8',
+    };
+    const maintLabel = t => MAINT_TYPE_LABELS[t] || String(t || 'event');
+    const maintColor = t => MAINT_TYPE_COLORS[t] || '#94a3b8';
+
+    /* [startKey, endKey] for an event, inclusive. end_date is set only for
+       downtime spans, so a point event is one day long. Swapped if a row
+       somehow has end before start — the POST route rejects that, but rows
+       can also arrive from PG sync or a backfill. */
+    function eventSpan(ev) {
+      const start = dayKeyOf(ev && ev.event_date);
+      const end = dayKeyOf(ev && ev.end_date) || start;
+      return (end && start && end < start) ? [end, start] : [start, end];
+    }
+
+    /* created_at is a real UTC timestamp, so new Date() is right for it —
+       unlike the calendar-day fields above. */
+    const fmtStamp = v => {
+      if (!v) return '';
+      const t = new Date(String(v).replace(' ', 'T'));
+      if (!isNaN(t.getTime())) return t.toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'});
+      const d = dateFromDayKey(dayKeyOf(v));
+      return d ? d.toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'}) : '';
+    };
+
+    /* "logged by bsphinney@ucdavis.edu on Aug 28". created_by is the
+       authenticated identity that recorded the row — null on local installs
+       and on rows written before attribution existed, so say that plainly
+       rather than printing a by-line with a hole in it. */
+    const loggedByText = ev => {
+      const who = (ev && ev.created_by) ? String(ev.created_by) : '';
+      const when = fmtStamp(ev && ev.created_at);
+      if (who && when) return `logged by ${who} on ${when}`;
+      if (who) return `logged by ${who}`;
+      if (when) return `logged on ${when} (author not recorded)`;
+      return 'author not recorded';
+    };
+
+    /* Only ever hand an href a same-origin or https target. login_url comes
+       from our own server today, but an href is the one place where a
+       string from the network could become javascript:. */
+    const safeLoginUrl = u =>
+      (typeof u === 'string' && (u.startsWith('/') || u.startsWith('https://')))
+        ? u : '/.auth/login/aad?post_login_redirect_uri=/';
+
     function useFetch(url, deps = []) {
       const [data, setData] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -3885,6 +3970,7 @@
         calibration: 'Calibration',
         pm: 'PM',
         lc_service: 'LC service',
+        downtime: 'Downtime',
         other: 'Other',
       };
       const typeColors = {
@@ -3893,6 +3979,7 @@
         calibration: 'var(--warn)',
         pm: '#a78bfa',
         lc_service: '#f472b6',
+        downtime: 'var(--fail)',
         other: 'var(--muted)',
       };
       const color = typeColors[event.event_type] || 'var(--muted)';
@@ -3939,23 +4026,6 @@
         return <div style={{color:'var(--muted)', fontSize:'0.85rem', padding:'0.5rem 0'}}>No maintenance events recorded.</div>;
       }
 
-      const typeLabels = {
-        column_change: 'Column Change',
-        source_clean: 'Source Clean',
-        calibration: 'Calibration',
-        pm: 'PM',
-        lc_service: 'LC Service',
-        other: 'Other',
-      };
-      const typeColors = {
-        column_change: '#60a5fa',
-        source_clean: '#22c55e',
-        calibration: '#eab308',
-        pm: '#a78bfa',
-        lc_service: '#f472b6',
-        other: '#94a3b8',
-      };
-
       return (
         <div style={{overflowX:'auto'}}>
           <table style={{fontSize:'0.8rem'}}>
@@ -3966,31 +4036,699 @@
                 <th>Notes</th>
                 <th>Column Info</th>
                 <th>Operator</th>
+                <th>Recorded</th>
               </tr>
             </thead>
             <tbody>
               {events.slice(0, 20).map(ev => {
-                const color = typeColors[ev.event_type] || '#94a3b8';
+                const color = maintColor(ev.event_type);
                 const colInfo = [ev.column_vendor, ev.column_model, ev.column_serial].filter(Boolean).join(' / ');
+                const [sKey, eKey] = eventSpan(ev);
+                const sDate = dateFromDayKey(sKey);
+                const eDate = dateFromDayKey(eKey);
+                const dOpts = {year:'2-digit', month:'short', day:'numeric'};
                 return (
                   <tr key={ev.id}>
-                    <td style={{whiteSpace:'nowrap'}}>{new Date(ev.event_date).toLocaleDateString([], {year:'2-digit', month:'short', day:'numeric'})}</td>
+                    <td style={{whiteSpace:'nowrap'}}>
+                      {sDate ? sDate.toLocaleDateString([], dOpts) : '\u2014'}
+                      {eDate && eKey !== sKey && ` \u2192 ${eDate.toLocaleDateString([], dOpts)}`}
+                    </td>
                     <td>
                       <span style={{
                         display:'inline-block', padding:'0.1rem 0.4rem', borderRadius:'999px',
                         fontSize:'0.72rem', fontWeight:600, background:color, color:'#000',
                       }}>
-                        {typeLabels[ev.event_type] || ev.event_type}
+                        {maintLabel(ev.event_type)}
                       </span>
                     </td>
-                    <td style={{maxWidth:'300px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}} title={ev.notes}>{ev.notes || '\u2014'}</td>
+                    <td style={{maxWidth:'300px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}} title={ev.notes || ''}>{ev.notes || '\u2014'}</td>
                     <td style={{color:'var(--muted)', fontSize:'0.75rem'}}>{colInfo || '\u2014'}</td>
                     <td style={{color:'var(--muted)'}}>{ev.operator || '\u2014'}</td>
+                    {/* Who recorded the row and when — distinct from the
+                        operator who did the work. Null on local installs. */}
+                    <td style={{color:'var(--muted)', fontSize:'0.72rem'}}>{loggedByText(ev)}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
+        </div>
+      );
+    }
+
+    /* ── Maintenance & Downtime Calendar ──────────────────────────── */
+
+    /* Downtime is an interval, not an instant, and an interval is only
+       legible when time runs along one axis: the per-instrument timeline
+       draws a 9-day outage as one bar you can compare against the lane
+       above it, where a month grid has to break it across two rows. So the
+       timeline is the default. The month grid is still here behind a toggle
+       because "what happened in June" is a question people ask a calendar,
+       and it draws its spans as overlay bars across each week row rather
+       than as one chip per day, so a span still reads as a span.
+
+       Both views feed the same detail list below, which is the actual log:
+       every entry carries who recorded it and when (created_by /
+       created_at) — that attribution is what makes these rows usable as the
+       raw material for the community reliability leaderboard (MTBF /
+       availability / recovery time) in the README. */
+
+    const MAINT_WINDOWS = [[30, '30 days'], [90, '90 days'], [180, '6 months'], [365, '1 year']];
+
+    /* One-line tooltip for a bar or marker. Rendered into a title
+       attribute, so React escapes it — never build markup from these. */
+    function maintTip(ev) {
+      const [s, e] = eventSpan(ev);
+      const sd = dateFromDayKey(s), ed = dateFromDayKey(e);
+      const dOpts = {month: 'short', day: 'numeric'};
+      let when = sd ? sd.toLocaleDateString([], dOpts) : '(no date)';
+      if (ed && e !== s) {
+        when += ` → ${ed.toLocaleDateString([], dOpts)} (${daysBetween(sd, ed) + 1} days)`;
+      }
+      const bits = [`${maintLabel(ev.event_type)} · ${ev.instrument || 'unknown instrument'}`, when];
+      if (ev.notes) bits.push(String(ev.notes));
+      if (ev.operator) bits.push(`by ${ev.operator}`);
+      bits.push(loggedByText(ev));
+      return bits.join('\n');
+    }
+
+    function MaintLegend({ types }) {
+      return (
+        <div style={{display:'flex', flexWrap:'wrap', gap:'0.75rem', alignItems:'center',
+                     fontSize:'0.72rem', color:'var(--muted)', marginTop:'0.6rem'}}>
+          <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+            <span style={{width:'22px', height:'8px', borderRadius:'2px', background:'var(--fail)'}} />
+            Downtime (span)
+          </span>
+          {types.map(t => (
+            <span key={t} style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+              <span style={{width:'8px', height:'8px', transform:'rotate(45deg)', background:maintColor(t)}} />
+              {maintLabel(t)}
+            </span>
+          ))}
+          <span style={{display:'inline-flex', alignItems:'center', gap:'0.3rem'}}>
+            <span style={{width:'2px', height:'12px', background:'var(--accent)'}} />
+            today
+          </span>
+        </div>
+      );
+    }
+
+    /* Per-instrument horizontal timeline. One lane per instrument, spans
+       drawn as bars and point events as diamonds. */
+    function MaintTimeline({ instruments, events, start, nDays, today, isDown, onPick, pickedId }) {
+      const pctOf = d => (daysBetween(start, d) / nDays) * 100;
+
+      // Month gridlines/labels. Always label the window start so a short
+      // window that contains no 1st-of-month is still readable.
+      const ticks = [];
+      const firstOfNext = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+      for (let m = firstOfNext; daysBetween(start, m) < nDays; m = new Date(m.getFullYear(), m.getMonth() + 1, 1)) {
+        ticks.push({key: localDay(m), pct: pctOf(m), label: m.toLocaleDateString([], {month: 'short'})});
+      }
+      const startLabel = start.toLocaleDateString([], {month: 'short', day: 'numeric'});
+      const todayPct = Math.min(100, Math.max(0, pctOf(addDays(today, 1))));
+
+      const laneEvents = name => events.filter(ev => (ev.instrument || '') === name);
+
+      return (
+        <div style={{marginTop:'0.75rem'}}>
+          <div style={{display:'flex', alignItems:'flex-end', marginBottom:'0.2rem'}}>
+            <div style={{width:'132px', flex:'none', fontSize:'0.68rem', color:'var(--muted)'}}>{startLabel}</div>
+            <div style={{flex:1, position:'relative', height:'0.9rem'}}>
+              {ticks.map(t => (
+                <span key={t.key} style={{position:'absolute', left:`${t.pct}%`, fontSize:'0.68rem',
+                                          color:'var(--muted)', whiteSpace:'nowrap'}}>{t.label}</span>
+              ))}
+            </div>
+          </div>
+          {instruments.map(name => {
+            const evs = laneEvents(name);
+            return (
+              <div key={name} style={{display:'flex', alignItems:'center', gap:'0.5rem', marginBottom:'0.3rem'}}>
+                <div title={name} style={{width:'132px', flex:'none', fontSize:'0.78rem',
+                                          overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>
+                  {name}
+                </div>
+                <div style={{flex:1, position:'relative', height:'30px', background:'var(--bg)',
+                             border:'1px solid var(--border)', borderRadius:'0.35rem'}}>
+                  {ticks.map(t => (
+                    <div key={t.key} style={{position:'absolute', left:`${t.pct}%`, top:0, bottom:0,
+                                             width:'1px', background:'var(--border)'}} />
+                  ))}
+                  <div title="today" style={{position:'absolute', left:`${todayPct}%`, top:0, bottom:0,
+                                             width:'2px', background:'var(--accent)', opacity:0.75}} />
+                  {evs.map(ev => {
+                    const [sKey, eKey] = eventSpan(ev);
+                    const sd = dateFromDayKey(sKey);
+                    if (!sd) return null;
+                    const ed = dateFromDayKey(eKey) || sd;
+                    const picked = pickedId === ev.id;
+                    if (isDown(ev)) {
+                      const l = Math.max(0, pctOf(sd));
+                      const r = Math.min(100, pctOf(addDays(ed, 1)));
+                      if (r <= 0 || l >= 100) return null;
+                      return (
+                        <div key={ev.id} title={maintTip(ev)} onClick={() => onPick(ev)}
+                             style={{position:'absolute', left:`${l}%`, width:`${Math.max(r - l, 0.7)}%`,
+                                     top:'8px', height:'14px', borderRadius:'3px',
+                                     background:'var(--fail)', opacity: picked ? 1 : 0.82,
+                                     border: picked ? '2px solid var(--accent)' : '1px solid rgba(0,0,0,0.35)',
+                                     cursor:'pointer'}} />
+                      );
+                    }
+                    const mid = pctOf(sd) + (0.5 / nDays) * 100;
+                    if (mid < 0 || mid > 100) return null;
+                    return (
+                      <div key={ev.id} title={maintTip(ev)} onClick={() => onPick(ev)}
+                           style={{position:'absolute', left:`${mid}%`, top:'50%', width:'10px', height:'10px',
+                                   marginLeft:'-5px', marginTop:'-5px', transform:'rotate(45deg)',
+                                   background:maintColor(ev.event_type),
+                                   border: picked ? '2px solid var(--accent)' : '1px solid rgba(0,0,0,0.35)',
+                                   cursor:'pointer'}} />
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    /* Month grid. Spans are drawn as an overlay layer per week row rather
+       than as a chip per day, so a multi-day outage stays one continuous
+       bar instead of dissolving into seven identical squares. */
+    function MaintMonthGrid({ month, events, today, isDown, onPick, pickedId }) {
+      const first = new Date(month.getFullYear(), month.getMonth(), 1);
+      const nInMonth = new Date(month.getFullYear(), month.getMonth() + 1, 0).getDate();
+      const gridStart = addDays(first, -first.getDay());
+      const nWeeks = Math.ceil((first.getDay() + nInMonth) / 7);
+      const todayKey = localDay(today);
+      const downs = events.filter(isDown);
+      const points = events.filter(ev => !isDown(ev));
+      const dow = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+      return (
+        <div style={{marginTop:'0.75rem'}}>
+          <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:'2px', marginBottom:'2px'}}>
+            {dow.map(d => (
+              <div key={d} style={{fontSize:'0.68rem', color:'var(--muted)', textAlign:'center'}}>{d}</div>
+            ))}
+          </div>
+          {Array.from({length: nWeeks}, (_, w) => {
+            const weekStart = addDays(gridStart, w * 7);
+            const weekEndKey = localDay(addDays(weekStart, 6));
+            const weekStartKey = localDay(weekStart);
+            const bars = downs
+              .map(ev => {
+                const [s, e] = eventSpan(ev);
+                const sd = dateFromDayKey(s);
+                if (!sd) return null;
+                const ed = dateFromDayKey(e) || sd;
+                if (s > weekEndKey || localDay(ed) < weekStartKey) return null;
+                const l = Math.max(0, daysBetween(weekStart, sd));
+                const r = Math.min(7, daysBetween(weekStart, ed) + 1);
+                return {ev, left: (l / 7) * 100, width: ((r - l) / 7) * 100};
+              })
+              .filter(Boolean);
+            return (
+              <div key={weekStartKey} style={{position:'relative', marginBottom:'2px'}}>
+                <div style={{display:'grid', gridTemplateColumns:'repeat(7,1fr)', gap:'2px'}}>
+                  {Array.from({length: 7}, (_, i) => {
+                    const d = addDays(weekStart, i);
+                    const key = localDay(d);
+                    const inMonth = d.getMonth() === month.getMonth();
+                    const dayPoints = points.filter(ev => dayKeyOf(ev.event_date) === key);
+                    const covered = bars.some(b => {
+                      const [s, e] = eventSpan(b.ev);
+                      return key >= s && key <= (e || s);
+                    });
+                    return (
+                      <div key={key} style={{
+                        minHeight: `${34 + Math.max(bars.length, 1) * 9}px`,
+                        border: key === todayKey ? '1px solid var(--accent)' : '1px solid var(--border)',
+                        borderRadius:'0.3rem', padding:'0.2rem 0.25rem',
+                        /* Translucent wash composites over whatever --bg is,
+                           so the tint works in either theme without naming
+                           a background colour. */
+                        background: covered ? 'rgba(239,68,68,0.14)' : 'var(--bg)',
+                        opacity: inMonth ? 1 : 0.4,
+                      }}>
+                        <div style={{fontSize:'0.68rem', color:'var(--muted)'}}>{d.getDate()}</div>
+                        <div style={{display:'flex', flexWrap:'wrap', gap:'2px', marginTop:'auto'}}>
+                          {dayPoints.map(ev => (
+                            <span key={ev.id} title={maintTip(ev)} onClick={() => onPick(ev)}
+                                  style={{width:'9px', height:'9px', transform:'rotate(45deg)',
+                                          display:'inline-block', margin:'2px',
+                                          background:maintColor(ev.event_type),
+                                          border: pickedId === ev.id ? '2px solid var(--accent)' : 'none',
+                                          cursor:'pointer'}} />
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{position:'absolute', left:0, right:0, top:'20px', pointerEvents:'none'}}>
+                  {bars.map((b, i) => (
+                    <div key={b.ev.id} title={maintTip(b.ev)} onClick={() => onPick(b.ev)}
+                         style={{position:'absolute', left:`${b.left}%`, width:`${b.width}%`,
+                                 top:`${i * 9}px`, height:'7px', borderRadius:'2px',
+                                 background:'var(--fail)', pointerEvents:'auto', cursor:'pointer',
+                                 border: pickedId === b.ev.id ? '2px solid var(--accent)' : 'none',
+                                 opacity:0.9}} />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    /* The log itself. Every row names who recorded it and when. */
+    function MaintEntryList({ events, isDown, onPick, pickedId }) {
+      if (!events.length) {
+        return (
+          <div style={{color:'var(--muted)', fontSize:'0.85rem', padding:'0.75rem 0'}}>
+            Nothing logged in this window. Use “Mark downtime” above to record an outage.
+          </div>
+        );
+      }
+      const dOpts = {month: 'short', day: 'numeric', year: 'numeric'};
+      return (
+        <div>
+          {events.map(ev => {
+            const [sKey, eKey] = eventSpan(ev);
+            const sd = dateFromDayKey(sKey), ed = dateFromDayKey(eKey);
+            const span = sd && ed && eKey !== sKey
+              ? `${sd.toLocaleDateString([], dOpts)} → ${ed.toLocaleDateString([], dOpts)} · ${daysBetween(sd, ed) + 1} days`
+              : (sd ? sd.toLocaleDateString([], dOpts) : 'no date');
+            const picked = pickedId === ev.id;
+            return (
+              <div key={ev.id} onClick={() => onPick(ev)}
+                   style={{display:'flex', gap:'0.6rem', padding:'0.5rem 0.4rem',
+                           borderBottom:'1px solid var(--border)', cursor:'pointer',
+                           background: picked ? 'rgba(218,170,0,0.10)' : 'transparent'}}>
+                <div style={{width:'5px', flex:'none', borderRadius:'3px',
+                             background:maintColor(ev.event_type)}} />
+                <div style={{flex:1, minWidth:0}}>
+                  <div style={{display:'flex', flexWrap:'wrap', gap:'0.4rem', alignItems:'center'}}>
+                    <span style={{display:'inline-block', padding:'0.1rem 0.4rem', borderRadius:'999px',
+                                  fontSize:'0.7rem', fontWeight:700, color:'#000',
+                                  background:maintColor(ev.event_type)}}>
+                      {maintLabel(ev.event_type)}
+                    </span>
+                    <span style={{fontSize:'0.82rem', fontWeight:600}}>{ev.instrument || 'unknown instrument'}</span>
+                    <span style={{fontSize:'0.78rem', color:'var(--muted)'}}>{span}</span>
+                    {ev.share_community
+                      ? <span style={{fontSize:'0.68rem', color:'var(--pass)'}}>shared with community</span>
+                      : null}
+                  </div>
+                  {ev.notes && (
+                    <div style={{fontSize:'0.8rem', marginTop:'0.15rem', wordBreak:'break-word'}}>{ev.notes}</div>
+                  )}
+                  <div style={{fontSize:'0.7rem', color:'var(--muted)', marginTop:'0.15rem'}}>
+                    {ev.operator ? `worked by ${ev.operator} · ` : ''}{loggedByText(ev)}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    /* Mark-downtime form. Downtime-first, but every event type is here so
+       this is also the one place to log a source clean for an instrument
+       you are not currently looking at in Trends. */
+    function MarkDowntimeForm({ instruments, sync, onSaved }) {
+      const [open, setOpen] = useState(false);
+      const [instrument, setInstrument] = useState('');
+      const [eventType, setEventType] = useState('downtime');
+      const [startDate, setStartDate] = useState(localDay(new Date()));
+      const [endDate, setEndDate] = useState(localDay(new Date()));
+      const [notes, setNotes] = useState('');
+      const [operator, setOperator] = useState('');
+      const [share, setShare] = useState(false);
+      const [busy, setBusy] = useState(false);
+      const [status, setStatus] = useState(null);   // {kind:'ok'|'err'|'auth', msg, loginUrl}
+
+      useEffect(() => {
+        if (!instrument && instruments.length) setInstrument(instruments[0]);
+      }, [instruments]);
+
+      const isDowntime = eventType === 'downtime';
+      const readonly = !!(sync && sync.readonly);
+
+      const inputStyle = {
+        width: '100%', padding: '0.35rem 0.5rem', background: 'var(--bg)',
+        color: 'var(--text)', border: '1px solid var(--border)', borderRadius: '0.35rem',
+        fontSize: '0.8rem', marginTop: '0.25rem',
+      };
+      const labelStyle = {fontSize: '0.75rem', color: 'var(--muted)'};
+
+      async function submit() {
+        if (!instrument) { setStatus({kind:'err', msg:'Pick an instrument.'}); return; }
+        if (!startDate) { setStatus({kind:'err', msg:'A start date is required.'}); return; }
+        if (isDowntime && endDate && endDate < startDate) {
+          setStatus({kind:'err', msg:'End date is before the start date.'});
+          return;
+        }
+        setBusy(true);
+        setStatus({kind:'ok', msg:'Saving…'});
+        /* Noon-UTC suffix, same as the Trends log form: the server only
+           ever reads the YYYY-MM-DD prefix, and noon keeps that prefix
+           equal to the day the operator picked in every timezone. */
+        const payload = {
+          event_type: eventType,
+          event_date: startDate + 'T12:00:00Z',
+          end_date: isDowntime && endDate ? endDate + 'T12:00:00Z' : null,
+          notes,
+          operator,
+          share_community: share,
+        };
+        try {
+          const r = await fetch(API + `/api/instruments/${encodeURIComponent(instrument)}/events`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+          });
+          if (r.status === 403) {
+            /* Hosted dashboard, no signed-in operator. The gate hands back
+               a login_url precisely so this is a door, not a dead end. */
+            let body = {};
+            try { body = await r.json(); } catch (e) { body = {}; }
+            setStatus({
+              kind: 'auth',
+              msg: typeof body.detail === 'string'
+                ? body.detail
+                : 'Recording maintenance needs a signed-in operator.',
+              loginUrl: safeLoginUrl(body.login_url || (sync && sync.login_url)),
+            });
+            setBusy(false);
+            return;
+          }
+          if (!r.ok) {
+            let body = {};
+            try { body = await r.json(); } catch (e) { body = {}; }
+            const detail = typeof body.detail === 'string' ? body.detail : `HTTP ${r.status}`;
+            setStatus({kind:'err', msg: detail});
+            setBusy(false);
+            return;
+          }
+          setStatus({kind:'ok', msg:'Logged.'});
+          setNotes('');
+          setBusy(false);
+          if (onSaved) onSaved();
+          setTimeout(() => { setStatus(null); setOpen(false); }, 1200);
+        } catch (e) {
+          setStatus({kind:'err', msg: String(e.message || e)});
+          setBusy(false);
+        }
+      }
+
+      if (readonly) {
+        return (
+          <div style={{padding:'0.75rem', border:'1px solid var(--border)', borderRadius:'0.5rem',
+                       background:'var(--bg)', marginBottom:'0.75rem'}}>
+            <div style={{fontSize:'0.85rem', color:'var(--muted)', marginBottom:'0.6rem'}}>
+              Recording downtime acts on the lab's behalf and is attributed to you, so it
+              needs a signed-in operator. The calendar itself is public.
+            </div>
+            {sync.can_sign_in && (
+              <a href={safeLoginUrl(sync.login_url)}
+                 style={{display:'inline-block', padding:'0.5rem 1rem', fontSize:'0.85rem',
+                         fontWeight:600, borderRadius:'0.4rem', background:'var(--accent)',
+                         color:'var(--bg)', textDecoration:'none'}}>
+                Sign in to mark downtime
+              </a>
+            )}
+            {sync.signed_in_as && (
+              <div style={{fontSize:'0.75rem', color:'var(--muted)', marginTop:'0.5rem'}}>
+                Signed in as {sync.signed_in_as}, but not on this dashboard's operator list.
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      return (
+        <div style={{marginBottom:'0.75rem'}}>
+          <button onClick={() => setOpen(!open)}
+                  style={{padding:'0.35rem 0.8rem', fontSize:'0.8rem'}}>
+            {open ? 'Cancel' : '+ Mark downtime'}
+          </button>
+          {open && (
+            <div style={{marginTop:'0.6rem', padding:'0.75rem', background:'var(--bg)',
+                         border:'1px solid var(--border)', borderRadius:'0.5rem'}}>
+              <div style={{display:'flex', gap:'0.4rem', flexWrap:'wrap', marginBottom:'0.4rem'}}>
+                <div style={{flex:'2 1 180px'}}>
+                  <label style={labelStyle}>Instrument</label>
+                  {instruments.length ? (
+                    <select value={instrument} onChange={e => setInstrument(e.target.value)}
+                            style={{...inputStyle, cursor:'pointer'}}>
+                      {instruments.map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  ) : (
+                    <input value={instrument} onChange={e => setInstrument(e.target.value)}
+                           placeholder="Instrument name" style={inputStyle} />
+                  )}
+                </div>
+                <div style={{flex:'1 1 140px'}}>
+                  <label style={labelStyle}>What happened</label>
+                  <select value={eventType} onChange={e => setEventType(e.target.value)}
+                          style={{...inputStyle, cursor:'pointer'}}>
+                    <option value="downtime">Downtime (instrument unavailable)</option>
+                    <option value="pm">PM (preventive maintenance)</option>
+                    <option value="source_clean">Source clean</option>
+                    <option value="calibration">Calibration</option>
+                    <option value="lc_service">LC service</option>
+                    <option value="column_change">Column change</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+              </div>
+              <div style={{display:'flex', gap:'0.4rem', flexWrap:'wrap', marginBottom:'0.4rem'}}>
+                <div style={{flex:'1 1 140px'}}>
+                  <label style={labelStyle}>{isDowntime ? 'Down from' : 'Date'}</label>
+                  <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+                         style={inputStyle} />
+                </div>
+                {isDowntime && (
+                  <div style={{flex:'1 1 140px'}}>
+                    <label style={labelStyle}>Back up on</label>
+                    <input type="date" value={endDate} min={startDate}
+                           onChange={e => setEndDate(e.target.value)} style={inputStyle} />
+                    <div style={{fontSize:'0.68rem', color:'var(--muted)', marginTop:'0.15rem'}}>
+                      Inclusive. Leave equal to the start for a single lost day.
+                    </div>
+                  </div>
+                )}
+                <div style={{flex:'1 1 140px'}}>
+                  <label style={labelStyle}>Operator</label>
+                  <input value={operator} onChange={e => setOperator(e.target.value)}
+                         placeholder="Who did the work" style={inputStyle} />
+                </div>
+              </div>
+              <div style={{marginBottom:'0.5rem'}}>
+                <label style={labelStyle}>Notes</label>
+                <input value={notes} onChange={e => setNotes(e.target.value)}
+                       placeholder="e.g. TIMS cartridge replaced, waiting on part" style={inputStyle} />
+              </div>
+              {/* Opt-in, default off: maintenance notes routinely name people
+                  and customers, and nothing should reach a public leaderboard
+                  because a checkbox was pre-ticked. */}
+              <label style={{display:'flex', gap:'0.4rem', alignItems:'flex-start',
+                             fontSize:'0.75rem', color:'var(--muted)', marginBottom:'0.6rem'}}>
+                <input type="checkbox" checked={share} onChange={e => setShare(e.target.checked)}
+                       style={{marginTop:'0.15rem'}} />
+                <span>
+                  Share with the community reliability leaderboard.
+                  <strong style={{color:'var(--warn)'}}> Off by default</strong> — notes can name
+                  customers, so only tick this if this entry is safe to publish.
+                </span>
+              </label>
+              <button onClick={submit} disabled={busy}
+                      style={{padding:'0.35rem 0.8rem', fontSize:'0.8rem', opacity: busy ? 0.6 : 1}}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+              {status && status.kind !== 'auth' && (
+                <span style={{marginLeft:'0.6rem', fontSize:'0.8rem',
+                              color: status.kind === 'err' ? 'var(--fail)' : 'var(--pass)'}}>
+                  {status.msg}
+                </span>
+              )}
+              {status && status.kind === 'auth' && (
+                <div style={{marginTop:'0.6rem', fontSize:'0.8rem', color:'var(--warn)'}}>
+                  {status.msg}{' '}
+                  <a href={status.loginUrl} style={{color:'var(--accent)', fontWeight:600}}>Sign in</a>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function MaintenanceTab() {
+      const [days, setDays] = useState(90);
+      const [view, setView] = useState('timeline');
+      const [instFilter, setInstFilter] = useState('');
+      const [picked, setPicked] = useState(null);
+      const [month, setMonth] = useState(() => {
+        const n = new Date();
+        return new Date(n.getFullYear(), n.getMonth(), 1);
+      });
+
+      const { data, loading, error, reload } = useFetch(`/api/maintenance/calendar?days=${days}`, [days]);
+      const { data: fleet } = useFetch('/api/fleet/instruments', []);
+      const { data: sync } = useFetch('/api/community/sync-status', []);
+
+      const today = useMemo(() => {
+        const n = new Date();
+        return new Date(n.getFullYear(), n.getMonth(), n.getDate());
+      }, []);
+
+      const allEvents = (data && Array.isArray(data.events)) ? data.events : [];
+
+      // The server tells us which types count as downtime; fall back to the
+      // one type we know so a stale server still renders spans.
+      const downSet = useMemo(
+        () => new Set((data && data.downtime_types) || ['downtime']),
+        [data]
+      );
+      const isDown = useCallback(
+        ev => ev && (ev.is_downtime === true || downSet.has(ev.event_type)),
+        [downSet]
+      );
+
+      // Lanes come from the fleet list first so an instrument with a clean
+      // record still gets a row — an empty lane is information.
+      const instruments = useMemo(() => {
+        const names = new Set();
+        const fl = (fleet && fleet.instruments) || [];
+        fl.forEach(r => { if (r && r.instrument) names.add(r.instrument); });
+        allEvents.forEach(ev => { if (ev.instrument) names.add(ev.instrument); });
+        return [...names].sort();
+      }, [fleet, data]);
+
+      const events = useMemo(
+        () => (instFilter ? allEvents.filter(ev => ev.instrument === instFilter) : allEvents),
+        [data, instFilter]
+      );
+
+      const lanes = instFilter ? [instFilter] : instruments;
+
+      // Window: `days` back from today, extended forward if someone has
+      // scheduled downtime ahead (capped so one far-future entry can't
+      // squash the axis).
+      const windowStart = addDays(today, -(days - 1));
+      const windowEnd = useMemo(() => {
+        let end = today;
+        const cap = addDays(today, 60);
+        events.forEach(ev => {
+          const d = dateFromDayKey(eventSpan(ev)[1]);
+          if (d && d > end) end = d;
+        });
+        return end > cap ? cap : end;
+      }, [events, today]);
+      const nDays = Math.max(1, daysBetween(windowStart, windowEnd) + 1);
+
+      const sorted = useMemo(
+        () => [...events].sort((a, b) => String(b.event_date || '').localeCompare(String(a.event_date || ''))),
+        [events]
+      );
+
+      const nDowntime = events.filter(isDown).length;
+      const daysLost = events.filter(isDown).reduce((acc, ev) => {
+        const [s, e] = eventSpan(ev);
+        const sd = dateFromDayKey(s), ed = dateFromDayKey(e) || dateFromDayKey(s);
+        return acc + (sd && ed ? daysBetween(sd, ed) + 1 : 0);
+      }, 0);
+
+      const pickedId = picked && picked.id;
+      const onPick = useCallback(ev => setPicked(p => (p && p.id === ev.id ? null : ev)), []);
+
+      const selStyle = {
+        padding:'0.3rem 0.5rem', background:'var(--bg)', color:'var(--text)',
+        border:'1px solid var(--border)', borderRadius:'0.35rem', fontSize:'0.8rem',
+        cursor:'pointer',
+      };
+
+      return (
+        <div>
+          <div className="card">
+            <h3>Maintenance &amp; downtime calendar</h3>
+            <p style={{color:'var(--muted)', fontSize:'0.85rem', marginBottom:'0.8rem'}}>
+              Mark when an instrument is out of service and log the work done on it.
+              Downtime is recorded as a span, which is what the planned community
+              reliability leaderboard (MTBF, availability, recovery time) is computed from.
+            </p>
+            <MarkDowntimeForm instruments={instruments} sync={sync} onSaved={reload} />
+            <div style={{display:'flex', flexWrap:'wrap', gap:'0.5rem', alignItems:'center'}}>
+              <select value={view} onChange={e => setView(e.target.value)} style={selStyle}>
+                <option value="timeline">Timeline</option>
+                <option value="month">Month grid</option>
+              </select>
+              {view === 'timeline' ? (
+                <select value={days} onChange={e => setDays(Number(e.target.value))} style={selStyle}>
+                  {MAINT_WINDOWS.map(([d, label]) => <option key={d} value={d}>Last {label}</option>)}
+                </select>
+              ) : (
+                <span style={{display:'inline-flex', gap:'0.3rem', alignItems:'center'}}>
+                  <button onClick={() => setMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+                          style={{padding:'0.25rem 0.55rem', fontSize:'0.8rem'}}>‹</button>
+                  <span style={{fontSize:'0.85rem', minWidth:'8.5rem', textAlign:'center'}}>
+                    {month.toLocaleDateString([], {month:'long', year:'numeric'})}
+                  </span>
+                  <button onClick={() => setMonth(m => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+                          style={{padding:'0.25rem 0.55rem', fontSize:'0.8rem'}}>›</button>
+                </span>
+              )}
+              <select value={instFilter} onChange={e => setInstFilter(e.target.value)} style={selStyle}>
+                <option value="">All instruments</option>
+                {instruments.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <span style={{fontSize:'0.78rem', color:'var(--muted)'}}>
+                {nDowntime} downtime {nDowntime === 1 ? 'entry' : 'entries'}
+                {daysLost > 0 && ` · ${daysLost} instrument-days lost`}
+                {' · '}{events.length} events in window
+              </span>
+            </div>
+
+            {error && (
+              <div style={{color:'var(--fail)', fontSize:'0.85rem', marginTop:'0.6rem'}}>
+                Could not load the calendar: {error}.
+                {/* A 404 here is almost always a dashboard server older than
+                    this page, not a broken install — say so instead of
+                    leaving an operator staring at a bare HTTP code. */}
+                {String(error).includes('404') &&
+                  ' This server predates the /api/maintenance/calendar route — update STAN on the host serving the dashboard.'}
+              </div>
+            )}
+            {loading && !data && (
+              <div style={{color:'var(--muted)', fontSize:'0.85rem', marginTop:'0.6rem'}}>Loading…</div>
+            )}
+            {data && !lanes.length && (
+              <div className="empty">No instruments known to this dashboard yet.</div>
+            )}
+            {data && !!lanes.length && (
+              view === 'timeline'
+                ? <MaintTimeline instruments={lanes} events={events} start={windowStart}
+                                 nDays={nDays} today={today} isDown={isDown}
+                                 onPick={onPick} pickedId={pickedId} />
+                : <MaintMonthGrid month={month} events={events} today={today} isDown={isDown}
+                                  onPick={onPick} pickedId={pickedId} />
+            )}
+            <MaintLegend types={['pm', 'source_clean', 'calibration', 'lc_service', 'column_change', 'other']} />
+          </div>
+
+          <div className="card">
+            <h3>Log{instFilter ? ` — ${instFilter}` : ''}</h3>
+            <MaintEntryList events={sorted} isDown={isDown} onPick={onPick} pickedId={pickedId} />
+          </div>
         </div>
       );
     }
@@ -5784,7 +6522,8 @@
       const showConfig = caps ? caps.show_config !== false : true;
       const TABS = [
         ['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'],
-        ['health', 'Samples'], ['fleet', 'Fleet'], ['config', 'Config'],
+        ['health', 'Samples'], ['fleet', 'Fleet'], ['maintenance', 'Maintenance'],
+        ['config', 'Config'],
         ['community', 'Community'], ['arcade', '🎮 Arcade'], ['museum', '🏛 Museum'],
       ];
 
@@ -5805,6 +6544,7 @@
             {tab === 'trends' && <TrendCharts />}
             {tab === 'health' && <SamplesTab />}
             {tab === 'fleet' && <FleetPanel />}
+            {tab === 'maintenance' && <MaintenanceTab />}
             {tab === 'config' && showConfig && <ConfigEditor />}
             {tab === 'community' && <CommunityTab />}
             {tab === 'arcade' && (

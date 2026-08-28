@@ -7,6 +7,7 @@ import logging
 import os
 import sqlite3
 import uuid
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -2308,8 +2309,45 @@ EVENT_TYPES = [
     "calibration",     # Mass calibration performed
     "pm",              # Scheduled preventive maintenance
     "lc_service",      # LC pump/valve/tubing service
+    "downtime",        # Instrument unavailable — spans event_date..end_date
     "other",           # Free-text
 ]
+
+#: Event types that make the instrument unavailable, i.e. that count against
+#: availability rather than merely recording that work happened. Kept
+#: separate from EVENT_TYPES so the reliability maths has one definition to
+#: read: see the "Community downtime / reliability leaderboard" item in the
+#: README (MTBF, availability, recovery time per instrument model).
+DOWNTIME_EVENT_TYPES = frozenset({"downtime"})
+
+
+@lru_cache(maxsize=1)
+def _maintenance_columns(_cache_key: str) -> frozenset[str]:
+    """Columns actually present on maintenance_events, cached per process.
+
+    Probed rather than assumed because the attribution/downtime columns need
+    a migration run by the table owner, and a dashboard must keep working in
+    the window before that happens.
+    """
+    try:
+        from stan.db_pg import use_pg
+        if use_pg():
+            from stan.db_pg import _connect as _pg_connect
+            with _pg_connect() as pg, pg.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'maintenance_events'")
+                return frozenset(r[0] for r in cur.fetchall())
+        with connect(get_db_path()) as con:
+            return frozenset(
+                r[1] for r in con.execute("PRAGMA table_info(maintenance_events)"))
+    except Exception:
+        logger.debug("could not probe maintenance_events columns", exc_info=True)
+        return frozenset()
+
+
+def _event_column_exists(name: str, db_path: Path | None = None) -> bool:
+    return name in _maintenance_columns(str(db_path or ""))
 
 
 def log_event(
@@ -2321,6 +2359,9 @@ def log_event(
     column_vendor: str | None = None,
     column_model: str | None = None,
     column_serial: str | None = None,
+    end_date: str | None = None,
+    created_by: str | None = None,
+    share_community: bool = False,
     db_path: Path | None = None,
 ) -> str:
     """Record a maintenance event for an instrument.
@@ -2353,6 +2394,22 @@ def log_event(
         "column_model": column_model,
         "column_serial": column_serial,
     }
+    # Attribution and downtime span. `operator` is who did the work (free
+    # text the user types); `created_by` is the authenticated identity that
+    # recorded the entry, which is the one a reader can actually trust.
+    # These columns arrive with migrations/2026-08-28_maintenance_downtime.sql
+    # and that has to be applied by the table owner, so they are added only
+    # when present -- a lab that has not migrated keeps logging events as
+    # before rather than getting an UndefinedColumn error on every save.
+    optional = {
+        "end_date": end_date,
+        "created_by": created_by,
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "share_community": bool(share_community),
+    }
+    for k, v in optional.items():
+        if _event_column_exists(k, db_path):
+            row[k] = v
 
     # PG mode: the maintenance log must be fleet-wide, not stranded on the
     # machine the operator happened to log it from.

@@ -190,8 +190,16 @@ def test_unknown_game_id_is_accepted(client: TestClient):
 
 # ── Read-only hosting ────────────────────────────────────────────────
 
-def test_readonly_gate_refuses_score_posts():
-    """The public dashboard reads the board and refuses to write to it.
+def test_readonly_gate_allows_score_posts():
+    """The public dashboard both reads AND writes the board.
+
+    Changed deliberately 2026-08-28: a leaderboard shared across the
+    community site and every local STAN is pointless if only signed-in
+    operators can add to it. The score post is the single entry in
+    readonly._PUBLIC_WRITE_PATHS -- the payload is a game score, with no
+    lab data and no instrument control, and lengths are truncated
+    server-side. Everything else still needs a login or is refused
+    outright; test_dashboard_auth.py pins that list to this one route.
 
     Mirrors tests/test_readonly_gate.py: the gate is installed at import
     time from the environment, so the route path is pinned against a
@@ -205,7 +213,7 @@ def test_readonly_gate_refuses_score_posts():
         return {"scores": []}
 
     @app.post("/api/arcade/score")
-    async def score():          # pragma: no cover - must never run
+    async def score():
         return {"ok": True}
 
     prev = os.environ.get("STAN_DASHBOARD_READONLY")
@@ -214,7 +222,7 @@ def test_readonly_gate_refuses_score_posts():
         install_readonly_gate(app)
         c = TestClient(app)
         assert c.get("/api/arcade/leaderboard").status_code == 200
-        assert c.post("/api/arcade/score", json={"game": "mzork", "score": 1}).status_code == 403
+        assert c.post("/api/arcade/score", json={"game": "mzork", "score": 1}).status_code == 200
     finally:
         if prev is None:
             os.environ.pop("STAN_DASHBOARD_READONLY", None)
