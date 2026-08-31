@@ -360,7 +360,50 @@ not collect, so it was replaced by IPS.
 
 ## Autonomous troubleshooting (CRITICAL)
 
-**When Brett reports a problem, DO NOT ask him to run diagnostic commands on the instrument PC. Read the Hive mirror first.** The instrument PCs sync their state to Hive continuously; treat the mirror as the authoritative source of truth for instrument-side state.
+**When Brett reports a problem, DO NOT ask him to run diagnostic commands on the instrument PC. Look for the answer server-side first.**
+
+### Check the timestamp before you trust the mirror
+
+The instrument PCs were *supposed* to sync their state to the share
+continuously. **They are not doing it.** Measured 2026-08-31:
+
+| | `stan.db` | newest log |
+|---|---|---|
+| `TIMS-10878/` | 11 Aug 2026 | 11 Aug 2026 |
+| `DESKTOP-FOT3DAA/` | 11 May 2026 | — |
+
+Twenty days stale on the timsTOF and three and a half months on the
+Exploris, and nobody noticed — which is the real lesson here. **A stale
+mirror is worse than no mirror**, because it answers confidently with
+data from before the problem you are looking at. `ls -lat` the file
+before you read it, and say the date out loud when you quote it.
+
+Most of what the mirror was for has moved on anyway:
+
+- **Run data lives in PG now** (`STAN_DB_BACKEND=pg`, see `docs/PG_FARM.md`),
+  and Hive ingests from the Flinders archive directly. A per-instrument
+  `stan.db` is no longer the source of truth for any run, so do not
+  reach for it to answer "was this run ingested" — ask PG.
+- **Raw files** are on Flinders (`/nfs/lssc0/flinders/proteomics/Data/raw_data/<instrument>`),
+  readable from Hive. Look there to answer "does this file exist / how
+  big is it / when did it land".
+- **What the mirror is still uniquely good for** is instrument-side
+  state that exists nowhere else: what the watcher saw on disk, config,
+  crash logs. That is exactly the part that has stopped arriving.
+
+### Anything new must publish its own logs
+
+Do not rely on `sync_to_hive_mirror()` — it is the thing that stopped.
+A job that wants to be diagnosable should copy its own output to
+`<share>\STAN\<hostname>\<job>\` at the end of every run, finding the
+share by looking for `STAN\<COMPUTERNAME>` across the mapped drives
+rather than trusting a drive letter.
+
+`scripts/flinders_copy.ps1` (`Publish-Logs`) is the working example, and
+it is worth copying wholesale: a one-line status file goes every pass so
+its timestamp is proof of life, the bulky files go only when something
+happened, and the whole thing is wrapped so a dead share can never break
+the job it is reporting on.
 
 ### Hive mirror layout
 
@@ -372,7 +415,11 @@ Each instrument has its own subdirectory keyed by hostname:
 - `lumosRox/` — Lumos
 
 Inside each:
-- `stan.db` — full SQLite mirror (copy locally with `cp` then query with `sqlite3`; direct query over the mount hits permission errors)
+- `stan.db` — full SQLite mirror. **Check its date first** (see above; it
+  has been stale since 11 Aug 2026 on TIMS-10878). Copy locally with `cp`
+  then query with `sqlite3` — direct query over the mount hits permission
+  errors. For run data prefer PG; this is only useful for instrument-local
+  state, and only if it is fresh.
 - `instruments.yml`, `community.yml`, `config/` — current instrument config
 - `logs/` — every backfill + watch_status + submit log, sorted by timestamp:
   - `watch_status_YYYYMMDD_HHMMSS.log` — disk-vs-DB diff (columns: mtime, qc_match y/-, in_runs, in_sample_health, filename). Every file on disk is listed with its routing decision.
