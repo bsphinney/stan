@@ -181,3 +181,49 @@ def test_public_write_list_stays_narrow():
     assert ro._PUBLIC_WRITE_PATHS == {"/api/arcade/score"}
     assert "/api/fleet/command" not in ro._PUBLIC_WRITE_PATHS
     assert "/api/community/sync" not in ro._PUBLIC_WRITE_PATHS
+
+
+@pytest.fixture
+def ht_client(monkeypatch):
+    monkeypatch.setenv("STAN_DASHBOARD_READONLY", "1")
+    import importlib
+
+    import stan.dashboard.readonly as ro
+    importlib.reload(ro)
+    from fastapi import FastAPI
+    app = FastAPI()
+
+    @app.get("/api/ht/submission")
+    async def _ht():
+        return {"rows": ["customer sample names"]}
+
+    @app.get("/api/runs")
+    async def _runs():
+        return {"runs": []}
+
+    ro.install_readonly_gate(app)
+    return TestClient(app)
+
+
+def test_ht_read_requires_sign_in_on_the_public_host(ht_client):
+    """HT data is keyed by customer submission and carries their sample names.
+
+    Unlike aggregate QC, which is public on purpose.
+    """
+    r = ht_client.get("/api/ht/submission?q=0793")
+    assert r.status_code == 403
+    assert "login_url" in r.json()
+
+
+def test_signed_in_operator_can_read_ht(ht_client, monkeypatch):
+    monkeypatch.setenv("STAN_ALLOWED_USERS", "bsphinney@ucdavis.edu")
+    r = ht_client.get(
+        "/api/ht/submission?q=0793",
+        headers={"x-ms-client-principal": _principal_header("bsphinney@ucdavis.edu"),
+                 "x-ms-client-principal-name": "bsphinney@ucdavis.edu"})
+    assert r.status_code == 200
+
+
+def test_ordinary_qc_reads_stay_public(ht_client):
+    """Gating HT must not quietly close the rest of the site."""
+    assert ht_client.get("/api/runs").status_code == 200

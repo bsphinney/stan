@@ -1341,7 +1341,8 @@ async def api_log_event(
 
 @app.get("/api/ht/submission")
 async def api_ht_submission(
-    q: str, instrument: str = "timsTOF HT", metric: str = "ms1_total_tic",
+    request: Request, q: str, instrument: str = "timsTOF HT",
+    metric: str = "ms1_total_tic", token: str | None = None,
 ) -> dict:
     """Sample health for one high-throughput submission, plus its outliers.
 
@@ -1367,6 +1368,22 @@ async def api_ht_submission(
         raise HTTPException(
             status_code=400,
             detail="Enter at least 2 characters of the submission number.")
+
+    # Access. On a public host this data is gated (it carries a customer's
+    # submission number and sample names). A collaborator reaches their own
+    # plate with a share link instead of an account, and the token is checked
+    # against THIS submission -- editing the number in the URL gets them
+    # nothing, which is the usual way secret-link schemes leak.
+    from stan.dashboard.auth import is_privileged
+    from stan.dashboard.ht_share import make_token, verify_token
+    shared = bool(token) and verify_token(q, token)
+    if is_readonly() and not shared and not is_privileged(request):
+        from stan.dashboard.readonly import LOGIN_URL
+        raise HTTPException(
+            status_code=403,
+            detail={"message": "High-throughput submission data requires a "
+                               "sign-in or a share link for this submission.",
+                    "login_url": LOGIN_URL})
 
     try:
         all_rows = get_sample_health(limit=20000) or []
@@ -1416,6 +1433,11 @@ async def api_ht_submission(
     result["query"] = q
     result["instrument"] = instrument
     result["n_samples"] = len(matched)
+    result["shared_view"] = shared
+    # Only an operator is handed the link to give out; a collaborator viewing
+    # via a share link is not shown the token that would let them mint others.
+    if not shared:
+        result["share_token"] = make_token(q)
     return result
 
 

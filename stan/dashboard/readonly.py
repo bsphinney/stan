@@ -74,6 +74,27 @@ def _is_privileged_path(path: str) -> bool:
         p.match(path) for p in _PRIVILEGED_PATTERNS
     )
 
+#: Reads that require a signed-in operator on the PUBLIC host.
+#:
+#: Almost everything in STAN is deliberately open -- Brett's position is that
+#: aggregate QC data is not sensitive and the community benefits from it
+#: being visible. High-throughput submission data is the exception: it is
+#: keyed by a customer's submission number and carries their sample names
+#: (`SI-48`, `DTTCAAoff`), which is a different kind of information from
+#: "this instrument identified 30,000 precursors on a HeLa standard".
+#:
+#: Gated whole rather than per-field. A partial gate that shows the plate map
+#: but hides the names still leaks the submission's shape and size, and the
+#: failure mode of getting it subtly wrong is silent.
+_PRIVILEGED_READ_PATTERNS = (
+    re.compile(r"^/api/ht(/|$)"),
+)
+
+
+def _is_privileged_read(path: str) -> bool:
+    return any(p.match(path) for p in _PRIVILEGED_READ_PATTERNS)
+
+
 #: Introspection surfaces that leak route shapes or internals. Hidden rather
 #: than 403'd so a scanner sees "not here" instead of "here but forbidden".
 _HIDDEN_PATHS = frozenset({
@@ -106,6 +127,20 @@ def install_readonly_gate(app) -> bool:
         path = request.url.path.rstrip("/") or "/"
         if path in _HIDDEN_PATHS:
             return JSONResponse({"detail": "Not Found"}, status_code=404)
+        # A share link carries a token. Let it reach the endpoint, which is
+        # the only place with enough context to check the token against the
+        # submission actually being asked for -- the gate sees the path, not
+        # which customer's plate this is.
+        has_share_token = bool(request.query_params.get("token"))
+        if (_is_privileged_read(path) and not has_share_token
+                and not is_privileged(request)):
+            logger.info("read-only: refused HT read %s from %s", path,
+                        getattr(request.client, "host", "?"))
+            return JSONResponse(
+                {"detail": "High-throughput submission data requires an "
+                           "authorized sign-in.",
+                 "login_url": LOGIN_URL},
+                status_code=403)
         if request.method.upper() in _MUTATING:
             # A signed-in, allow-listed operator gets write access back. This
             # is the only way through the gate, and it is decided per request

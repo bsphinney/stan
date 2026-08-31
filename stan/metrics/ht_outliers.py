@@ -265,6 +265,19 @@ def plate_map(rows: list[dict], metric: str = "ms1_total_tic") -> dict:
         p["max"] = max(vals) if vals else None
         p["median"] = _median(vals) if vals else None
         p["n_wells"] = len(p["wells"])
+        # Completeness, so a plate that stopped part-way says what is left to
+        # run rather than just looking sparse. A queue can halt mid-plate for
+        # plenty of reasons -- an overpressure trip, an aborted batch -- and
+        # the question then is "which wells still need injecting", which is
+        # answerable from the layout and nothing else.
+        missing = [f"{row}{col}" for col in PLATE_COLS for row in PLATE_ROWS
+                   if f"{row}{col}" not in p["wells"]]
+        p["n_expected"] = len(PLATE_ROWS) * len(PLATE_COLS)
+        p["n_missing"] = len(missing)
+        p["missing_wells"] = missing
+        p["is_complete"] = not missing
+        p["pct_complete"] = round(
+            len(p["wells"]) / p["n_expected"] * 100, 1)
         # Both sides need enough wells to have a median worth comparing.
         if len(edge) >= 3 and len(inner) >= 3:
             em, im = _median(edge), _median(inner)

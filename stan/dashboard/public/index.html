@@ -6509,6 +6509,666 @@
       );
     }
 
+    /* ── HT (high-throughput) tab ──────────────────────────────────
+       One plate submission at a time: a 96-well map, the queue trend,
+       and the samples that need a re-run. Everything is drawn from
+       /api/ht/submission; nothing is recomputed here.
+
+       TWO COLOUR SCALES, ON PURPOSE. A sample well is coloured by its
+       TIC (~1e10) and a HeLa standard well by its precursor count
+       (~3e4) — six orders of magnitude apart, so a single shared scale
+       would paint every standard the same colour as the dimmest sample
+       and the plate would read as broken. Samples get viridis against
+       the sample-only min/max the API reports; standards get their own
+       warm ramp against the standards' own range. Which is which never
+       rests on colour alone: standards also carry a dashed border and
+       an "H", and each ramp has its own legend.
+
+       Plate position is randomised against injection order by design,
+       so the map and the queue chart answer different questions: the
+       map is "does position on the plate matter" (edge effects), the
+       chart is "does time in the queue matter" (a dirtying source). */
+    const HT_INSTRUMENT = 'timsTOF HT';
+    const HT_STORE_KEY = 'stan.ht.submission';
+
+    /* Sequential ramps, both luminance-ordered and colourblind-safe.
+       No red-green anywhere — a fair number of mass spectrometrists
+       cannot read one. */
+    const HT_VIRIDIS = ['#440154', '#482878', '#3e4989', '#31688e', '#26828e',
+                        '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
+    const HT_WARM = ['#fff7ec', '#fee8c8', '#fdd49e', '#fdbb84', '#fc8d59',
+                     '#ef6548', '#d7301f', '#b30000', '#7f0000'];
+    /* Categorical pair for the queue chart. Blue/orange, not red/green. */
+    const HT_SAMPLE_C = '#38bdf8';
+    const HT_STD_C = '#fb923c';
+
+    function htRamp(stops, t) {
+      if (t == null || !isFinite(t)) return 'rgb(120, 120, 120)';
+      const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+      const i = Math.min(stops.length - 2, Math.floor(x));
+      const f = x - i;
+      const parse = h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+      const a = parse(stops[i]), b = parse(stops[i + 1]);
+      const mix = k => Math.round(a[k] + (b[k] - a[k]) * f);
+      return `rgb(${mix(0)}, ${mix(1)}, ${mix(2)})`;
+    }
+
+    /* Black or white text, whichever survives on this fill. */
+    function htInk(rgb) {
+      const m = /rgb\((\d+), (\d+), (\d+)\)/.exec(String(rgb));
+      if (!m) return 'var(--text)';
+      const lum = (0.299 * +m[1] + 0.587 * +m[2] + 0.114 * +m[3]) / 255;
+      return lum > 0.55 ? '#111111' : '#ffffff';
+    }
+
+    /* Compact, for inside a 74px well. Scientific above 1e5 because a
+       TIC of 23,452,352,815 does not fit and does not need to. */
+    const htFmt = v => {
+      if (v == null || !isFinite(v)) return '—';
+      const a = Math.abs(v);
+      if (a >= 1e5) return Number(v).toExponential(2).replace('e+', 'e');
+      if (a >= 1000) return (v / 1000).toFixed(1) + 'k';
+      if (a >= 10) return Number(v).toFixed(1);
+      return Number(v).toFixed(2);
+    };
+    /* Full precision, for tooltips and the re-run table where someone is
+       deciding whether to spend an injection re-running a customer. */
+    const htFull = v => (v == null || !isFinite(v))
+      ? '—' : Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    const htPct = v => (v == null || !isFinite(v))
+      ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(1)}%`;
+
+    function HTLegendStrip({ stops, lo, hi, label, note }) {
+      return (
+        <div style={{ minWidth: '210px', flex: '1 1 210px' }}>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text)', marginBottom: '0.25rem' }}>{label}</div>
+          <div style={{
+            display: 'flex', height: '12px', borderRadius: '3px',
+            overflow: 'hidden', border: '1px solid var(--border)',
+          }}>
+            {Array.from({ length: 16 }, (_, i) => (
+              <div key={i} style={{ flex: 1, background: htRamp(stops, i / 15) }} />
+            ))}
+          </div>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between',
+            fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.2rem',
+          }}>
+            <span>{htFmt(lo)}</span><span>{htFmt(hi)}</span>
+          </div>
+          {note && <div style={{ fontSize: '0.72rem', color: 'var(--muted)', marginTop: '0.1rem' }}>{note}</div>}
+        </div>
+      );
+    }
+
+    /* 96-well map for one plate. `plate` is one entry of
+       data.plate.plates; rowLabels/colLabels come from data.plate. */
+    function HTPlateMap({ plate, rowLabels, colLabels, metricLabel }) {
+      const wells = plate.wells || {};
+      const qcVals = [];
+      let nSample = 0, nQc = 0;
+      Object.keys(wells).forEach(k => {
+        const w = wells[k];
+        if (w.kind === 'qc') { nQc += 1; if (w.value != null) qcVals.push(w.value); }
+        else nSample += 1;
+      });
+      /* plate.min/max/median are computed over SAMPLE wells only — that
+         is exactly the scale the sample ramp needs. Standards get their
+         own extent from their own values. */
+      const sMin = plate.min, sMax = plate.max;
+      const qMin = qcVals.length ? Math.min(...qcVals) : null;
+      const qMax = qcVals.length ? Math.max(...qcVals) : null;
+      const tOf = (v, lo, hi) => (v == null || !isFinite(v) || lo == null || hi == null)
+        ? null : (hi > lo ? (v - lo) / (hi - lo) : 0.5);
+
+      const cw = 80, ch = 52, padL = 34, padT = 26, padB = 10;
+      const width = padL + colLabels.length * cw;
+      const height = padT + rowLabels.length * ch + padB;
+
+      const ee = plate.edge_effect;
+      const pd = ee ? ee.pct_diff : null;
+      const eeVerdict = pd == null ? null
+        : Math.abs(pd) < 5 ? 'Negligible — no edge effect worth acting on.'
+        : Math.abs(pd) < 10 ? 'Mild — worth a second look at the outer wells.'
+        : 'Substantial — the outer ring differs from the interior. Check evaporation, sealing and plate handling.';
+
+      return (
+        <div className="card">
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', alignItems: 'baseline', gap: '0.5rem' }}>
+            <h3 style={{ marginBottom: '0.4rem' }}>Plate {plate.plate} — {plate.n_wells} wells</h3>
+            <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+              {nSample} samples coloured by {metricLabel} · {nQc} HeLa standards coloured by precursors
+            </span>
+          </div>
+
+          {/* The edge effect is the question this map exists to answer,
+              so it is stated as a number before the grid, not hidden in
+              a tooltip underneath it. */}
+          {ee ? (
+            <div style={{
+              display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap',
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: '0.5rem', padding: '0.7rem 0.9rem', margin: '0.5rem 0 0.9rem',
+            }}>
+              <div style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1.1, fontVariantNumeric: 'tabular-nums' }}>
+                {htPct(pd)}
+              </div>
+              <div style={{ fontSize: '0.82rem', lineHeight: 1.5, flex: '1 1 320px' }}>
+                <div>
+                  Edge wells vs interior, median {metricLabel}:{' '}
+                  <strong>{htFull(ee.edge_median)}</strong> vs <strong>{htFull(ee.interior_median)}</strong>
+                  {' '}({ee.n_edge} edge, {ee.n_interior} interior — sample wells only).
+                </div>
+                <div style={{ color: 'var(--muted)' }}>
+                  {eeVerdict} (under 5% is treated as negligible here.)
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: '0.82rem', color: 'var(--muted)', margin: '0.5rem 0 0.9rem' }}>
+              Not enough sample wells on this plate to compare the edge with the interior.
+            </div>
+          )}
+
+          <div style={{ overflowX: 'auto' }}>
+            <svg viewBox={`0 0 ${width} ${height}`}
+                 style={{ width: '100%', minWidth: '640px', height: 'auto' }}>
+              {colLabels.map((cl, ci) => (
+                <text key={`col-${cl}`} x={padL + ci * cw + cw / 2} y={16}
+                      fill="var(--muted)" fontSize="12" textAnchor="middle">{cl}</text>
+              ))}
+              {rowLabels.map((rl, ri) => (
+                <text key={`row-${rl}`} x={padL - 10} y={padT + ri * ch + ch / 2 + 4}
+                      fill="var(--muted)" fontSize="12" textAnchor="end">{rl}</text>
+              ))}
+              {/* Dashed box = the interior. Everything outside it is an
+                  edge well, which is the split the percentage above uses. */}
+              <rect x={padL + cw} y={padT + ch}
+                    width={cw * Math.max(0, colLabels.length - 2)}
+                    height={ch * Math.max(0, rowLabels.length - 2)}
+                    fill="none" stroke="var(--muted)" strokeDasharray="5,4"
+                    strokeWidth="1" opacity="0.45" />
+              {rowLabels.map((rl, ri) => colLabels.map((cl, ci) => {
+                const id = `${rl}${cl}`;
+                const x = padL + ci * cw + 3, y = padT + ri * ch + 3;
+                const ww = cw - 6, hh = ch - 6;
+                const w = wells[id];
+                if (!w) {
+                  /* No run in this well. Drawn as an outline so "nothing
+                     was injected here" never reads as "a value of zero". */
+                  return (
+                    <g key={id}>
+                      <rect x={x} y={y} width={ww} height={hh} rx="4" fill="none"
+                            stroke="var(--border)" strokeDasharray="2,3" strokeWidth="1" />
+                      <text x={x + ww / 2} y={y + hh / 2 + 4} fill="var(--border)"
+                            fontSize="11" textAnchor="middle">empty</text>
+                      <title>{`Well ${id} — no run`}</title>
+                    </g>
+                  );
+                }
+                const isQc = w.kind === 'qc';
+                const t = isQc ? tOf(w.value, qMin, qMax) : tOf(w.value, sMin, sMax);
+                const fill = htRamp(isQc ? HT_WARM : HT_VIRIDIS, t);
+                const ink = htInk(fill);
+                const tip = [
+                  w.run_name || id,
+                  `Well ${id} · ${w.is_edge ? 'edge' : 'interior'} · ${isQc ? 'HeLa standard' : 'sample'}`,
+                  `${isQc ? 'precursors identified' : metricLabel}: ${htFull(w.value)}`,
+                  w.verdict ? `verdict: ${w.verdict}` : null,
+                  w.is_outlier ? 'flagged — see "Needs re-run" below' : null,
+                ].filter(Boolean).join('\n');
+                return (
+                  <g key={id}>
+                    <rect x={x} y={y} width={ww} height={hh} rx="4" fill={fill}
+                          stroke={w.is_outlier ? '#ffffff' : (isQc ? 'var(--text)' : 'rgba(255,255,255,0.18)')}
+                          strokeWidth={w.is_outlier ? 2.5 : (isQc ? 2 : 0.75)}
+                          strokeDasharray={isQc ? '5,3' : undefined} />
+                    <text x={x + ww / 2} y={y + hh / 2 + 4} fill={ink} fontSize="12"
+                          textAnchor="middle" style={{ pointerEvents: 'none', fontVariantNumeric: 'tabular-nums' }}>
+                      {htFmt(w.value)}
+                    </text>
+                    {isQc && (
+                      <text x={x + 6} y={y + 13} fill={ink} fontSize="10" fontWeight="700"
+                            style={{ pointerEvents: 'none' }}>H</text>
+                    )}
+                    {w.is_outlier && (
+                      <g style={{ pointerEvents: 'none' }}>
+                        <circle cx={x + ww - 9} cy={y + 10} r="7" fill="#ffffff" />
+                        <text x={x + ww - 9} y={y + 14} fill="#111111" fontSize="11"
+                              fontWeight="700" textAnchor="middle">!</text>
+                      </g>
+                    )}
+                    <title>{tip}</title>
+                  </g>
+                );
+              }))}
+            </svg>
+          </div>
+
+          <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap', marginTop: '0.9rem' }}>
+            <HTLegendStrip stops={HT_VIRIDIS} lo={sMin} hi={sMax}
+                           label={`Samples — ${metricLabel}`}
+                           note={`median ${htFmt(plate.median)} · plain border`} />
+            {qcVals.length > 0 && (
+              <HTLegendStrip stops={HT_WARM} lo={qMin} hi={qMax}
+                             label="HeLa standards — precursors identified"
+                             note="dashed border + H · its own scale" />
+            )}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.6rem', lineHeight: 1.5 }}>
+            The two ramps are independent — a sample and a standard with the same colour have
+            nothing in common. Wells outlined in white with <strong>!</strong> are flagged below.
+            Dotted outlines are wells with no run. Hover any well for the run name and value.
+            Injection order is randomised against plate position, so this map is not run order.
+          </div>
+        </div>
+      );
+    }
+
+    /* Signal vs injection number. Samples and HeLa standards share the x
+       axis but not the y axis: samples carry TIC, standards carry
+       precursor counts. */
+    function HTQueueChart({ queue }) {
+      const pts = (queue.points || []).slice().sort((a, b) => a.injection - b.injection);
+      if (!pts.length) return null;
+      const samples = pts.filter(p => p.kind !== 'qc' && p.tic != null && isFinite(p.tic));
+      const stds = pts.filter(p => p.kind === 'qc' && p.n_precursors != null);
+
+      const xs = pts.map(p => p.injection);
+      const x0 = Math.min(...xs);
+      const x1 = Math.max(...xs) > x0 ? Math.max(...xs) : x0 + 1;
+      const W = 960, H = 330, pad = { l: 74, r: 82, t: 18, b: 48 };
+      const w = W - pad.l - pad.r, h = H - pad.t - pad.b;
+      const X = v => pad.l + ((v - x0) / (x1 - x0)) * w;
+
+      const spanOf = vals => {
+        if (!vals.length) return null;
+        let lo = Math.min(...vals), hi = Math.max(...vals);
+        if (hi === lo) { lo = hi - 1; hi = hi + 1; }
+        const m = (hi - lo) * 0.08;
+        return [lo - m, hi + m];
+      };
+      const sSpan = spanOf(samples.map(p => p.tic));
+      const qSpan = spanOf(stds.map(p => p.n_precursors));
+      const YL = v => (sSpan ? pad.t + h - ((v - sSpan[0]) / (sSpan[1] - sSpan[0])) * h : pad.t + h);
+      const YR = v => (qSpan ? pad.t + h - ((v - qSpan[0]) / (qSpan[1] - qSpan[0])) * h : pad.t + h);
+
+      /* The API's slope is a least-squares fit, and a least-squares line
+         always passes through the mean of the points — so anchoring the
+         reported slope at (mean x, mean y) reproduces the API's own line
+         instead of a second, slightly different fit drawn next to its
+         number. */
+      const fitLine = (arr, valOf, trend, Y) => {
+        const slope = trend ? trend.slope_per_injection : null;
+        if (!arr.length || slope == null || !isFinite(slope)) return null;
+        const mx = arr.reduce((s, p) => s + p.injection, 0) / arr.length;
+        const my = arr.reduce((s, p) => s + valOf(p), 0) / arr.length;
+        const at = x => my + slope * (x - mx);
+        return { x1: X(x0), y1: Y(at(x0)), x2: X(x1), y2: Y(at(x1)) };
+      };
+      const stdTrend = queue.standards_trend_precursors;
+      const sampTrend = queue.samples_trend_tic;
+      const stdFit = fitLine(stds, p => p.n_precursors, stdTrend, YR);
+      const sampFit = fitLine(samples, p => p.tic, sampTrend, YL);
+
+      const ticks = n => Array.from({ length: n }, (_, i) => i / (n - 1));
+      const xTicks = ticks(5).map(f => Math.round(x0 + (x1 - x0) * f));
+
+      const pct = stdTrend ? stdTrend.pct_change_over_queue : null;
+      const headlineColor = pct == null ? 'var(--text)'
+        : pct <= -5 ? 'var(--warn)' : 'var(--text)';
+
+      return (
+        <div className="card">
+          <h3>Queue trend — is the instrument dirtying as the plate runs?</h3>
+
+          <div style={{
+            display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap',
+            background: 'var(--bg)', border: '1px solid var(--border)',
+            borderRadius: '0.5rem', padding: '0.7rem 0.9rem', margin: '0.3rem 0 0.9rem',
+          }}>
+            <div style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1.1, color: headlineColor, fontVariantNumeric: 'tabular-nums' }}>
+              {htPct(pct)}
+            </div>
+            <div style={{ fontSize: '0.82rem', lineHeight: 1.5, flex: '1 1 340px' }}>
+              {stdTrend ? (
+                <>
+                  <div>
+                    Change in precursors identified from the <strong>HeLa standards</strong> across the
+                    queue — {stdTrend.n} standards, injections {stdTrend.first_injection} to {stdTrend.last_injection}
+                    {' '}({htFull(stdTrend.slope_per_injection)} precursors per injection).
+                  </div>
+                  <div style={{ color: 'var(--muted)' }}>
+                    {pct != null && pct < 0
+                      ? 'Negative: identical material is yielding fewer identifications later in the queue — the signature of a source or column getting dirty.'
+                      : 'Not falling across the queue.'}
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: 'var(--muted)' }}>
+                  No HeLa standards with precursor counts in this submission, so there is no
+                  control series to read a queue trend from.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.5rem', lineHeight: 1.5 }}>
+            The standards are the trustworthy series: every HeLa injection is the same material, so
+            a drift in their signal is the instrument. The customer samples differ from each other by
+            design, so their trend
+            {sampTrend ? <> ({htPct(sampTrend.pct_change_over_queue)} TIC over {sampTrend.n} injections)</> : null}
+            {' '}is context, not evidence.
+          </div>
+
+          <div style={{ overflowX: 'auto' }}>
+            <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', minWidth: '620px', height: 'auto' }}>
+              <rect x={pad.l} y={pad.t} width={w} height={h} fill="rgba(255,255,255,0.03)"
+                    stroke="var(--border)" strokeWidth="1" />
+              {/* left axis — sample TIC */}
+              {sSpan && ticks(5).map((f, i) => {
+                const v = sSpan[0] + (sSpan[1] - sSpan[0]) * f;
+                const y = YL(v);
+                return (
+                  <g key={`yl-${i}`}>
+                    <line x1={pad.l} y1={y} x2={pad.l + w} y2={y} stroke="var(--border)"
+                          strokeDasharray="2,4" strokeWidth="0.5" />
+                    <text x={pad.l - 6} y={y + 3} fill={HT_SAMPLE_C} fontSize="10" textAnchor="end">{htFmt(v)}</text>
+                  </g>
+                );
+              })}
+              {/* right axis — standard precursors */}
+              {qSpan && ticks(5).map((f, i) => {
+                const v = qSpan[0] + (qSpan[1] - qSpan[0]) * f;
+                const y = YR(v);
+                return (
+                  <text key={`yr-${i}`} x={pad.l + w + 6} y={y + 3} fill={HT_STD_C}
+                        fontSize="10" textAnchor="start">{htFmt(v)}</text>
+                );
+              })}
+              {xTicks.map((t, i) => (
+                <g key={`xt-${i}`}>
+                  <line x1={X(t)} y1={pad.t + h} x2={X(t)} y2={pad.t + h + 4} stroke="var(--muted)" strokeWidth="0.75" />
+                  <text x={X(t)} y={pad.t + h + 17} fill="var(--muted)" fontSize="10" textAnchor="middle">{t}</text>
+                </g>
+              ))}
+              {sampFit && (
+                <line x1={sampFit.x1} y1={sampFit.y1} x2={sampFit.x2} y2={sampFit.y2}
+                      stroke={HT_SAMPLE_C} strokeWidth="1.5" strokeDasharray="6,4" opacity="0.6" />
+              )}
+              {samples.map(p => (
+                <circle key={`s-${p.injection}-${p.run_name}`} cx={X(p.injection)} cy={YL(p.tic)}
+                        r={p.is_outlier ? 4.5 : 3} fill={HT_SAMPLE_C}
+                        stroke={p.is_outlier ? '#ffffff' : 'none'} strokeWidth={p.is_outlier ? 2 : 0}
+                        opacity="0.85">
+                  <title>{`${p.run_name}\ninjection ${p.injection}\nTIC ${htFull(p.tic)}${p.verdict ? `\nverdict: ${p.verdict}` : ''}${p.is_outlier ? '\nflagged — needs re-run' : ''}`}</title>
+                </circle>
+              ))}
+              {stdFit && (
+                <line x1={stdFit.x1} y1={stdFit.y1} x2={stdFit.x2} y2={stdFit.y2}
+                      stroke={HT_STD_C} strokeWidth="2" strokeDasharray="7,4" />
+              )}
+              {stds.length > 1 && (
+                <polyline fill="none" stroke={HT_STD_C} strokeWidth="1.5" opacity="0.55"
+                          points={stds.map(p => `${X(p.injection)},${YR(p.n_precursors)}`).join(' ')} />
+              )}
+              {stds.map(p => (
+                <circle key={`q-${p.injection}-${p.run_name}`} cx={X(p.injection)} cy={YR(p.n_precursors)}
+                        r="5.5" fill={HT_STD_C} stroke="#ffffff" strokeWidth="1.5">
+                  <title>{`${p.run_name}\ninjection ${p.injection}\nHeLa standard\nprecursors ${htFull(p.n_precursors)}`}</title>
+                </circle>
+              ))}
+              <text x={pad.l + w / 2} y={H - 8} fill="var(--muted)" fontSize="11" textAnchor="middle">
+                injection number (queue order)
+              </text>
+              <text x={14} y={pad.t + h / 2} fill={HT_SAMPLE_C} fontSize="11"
+                    transform={`rotate(-90 14 ${pad.t + h / 2})`} textAnchor="middle">
+                sample MS1 TIC
+              </text>
+              <text x={W - 12} y={pad.t + h / 2} fill={HT_STD_C} fontSize="11"
+                    transform={`rotate(90 ${W - 12} ${pad.t + h / 2})`} textAnchor="middle">
+                standard precursors
+              </text>
+            </svg>
+          </div>
+          <div style={{ display: 'flex', gap: '1.2rem', flexWrap: 'wrap', fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.5rem' }}>
+            <span><span style={{ display: 'inline-block', width: '10px', height: '10px', borderRadius: '50%', background: HT_SAMPLE_C, marginRight: '0.35rem' }} />
+              samples ({queue.n_samples}) — TIC, left axis</span>
+            <span><span style={{ display: 'inline-block', width: '11px', height: '11px', borderRadius: '50%', background: HT_STD_C, border: '1.5px solid #fff', marginRight: '0.35rem' }} />
+              HeLa standards ({queue.n_standards}) — precursors, right axis</span>
+            <span>dashed line = least-squares trend</span>
+            <span>white ring = flagged sample</span>
+          </div>
+        </div>
+      );
+    }
+
+    /* The list someone actually acts on: which wells to re-inject, and
+       the numbers behind the call. */
+    function HTRerunList({ rows, wellByRun, cohortOk, minCohort, zThreshold }) {
+      if (!rows || !rows.length) {
+        return (
+          <div className="card">
+            <h3>Needs re-run</h3>
+            <div style={{ color: 'var(--muted)', fontSize: '0.85rem', lineHeight: 1.5 }}>
+              Nothing flagged — no sample in this submission is more than {zThreshold} robust
+              standard deviations from the plate median on any monitored metric.
+              {!cohortOk && <> That is a weak all-clear here: outlier detection needs at
+                least {minCohort} samples to have a median worth comparing against, and this
+                submission is below that.</>}
+            </div>
+          </div>
+        );
+      }
+      return (
+        <div className="card">
+          <h3>Needs re-run — {rows.length} {rows.length === 1 ? 'sample' : 'samples'}</h3>
+          <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.6rem', lineHeight: 1.5 }}>
+            Flagged at |z| &gt; {zThreshold} against this submission's own median, where z is a robust
+            score (median and MAD, not mean and SD).
+            {!cohortOk && <> Only {minCohort} or more samples make that comparison meaningful — this
+              submission is below that, so treat the flags as a hint, not a verdict.</>}
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Run</th>
+                <th>Well</th>
+                <th>Verdict</th>
+                <th>Why it is flagged</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.id || r.run_name}>
+                  <td style={{ fontFamily: 'monospace', fontSize: '0.78rem', wordBreak: 'break-all' }}>{r.run_name}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{wellByRun[r.run_name] || '—'}</td>
+                  <td>
+                    <span className={`badge badge-${r.verdict === 'fail' ? 'fail' : r.verdict === 'warn' ? 'warn' : 'pass'}`}>
+                      {r.verdict || '—'}
+                    </span>
+                  </td>
+                  <td style={{ fontSize: '0.78rem' }}>
+                    {(r.outlier_reasons || []).map((x, i) => (
+                      <div key={i} style={{ marginBottom: '0.2rem' }}>
+                        <strong>{x.label}</strong>{' '}
+                        <span style={{ fontVariantNumeric: 'tabular-nums' }}>
+                          {htFull(x.value)} vs median {htFull(x.median)}
+                        </span>{' '}
+                        <span style={{ color: 'var(--muted)' }}>
+                          ({x.side === 'below' ? '▼' : '▲'} {x.side}, z = {htFull(x.z)})
+                        </span>
+                        {x.detail && <span style={{ color: 'var(--muted)' }}> · {x.detail}</span>}
+                      </div>
+                    ))}
+                    {(!r.outlier_reasons || !r.outlier_reasons.length) && <span style={{ color: 'var(--muted)' }}>—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.6rem', lineHeight: 1.5 }}>
+            Read the raw value next to z, not z alone: when a metric is near-constant across the plate
+            the MAD is tiny and z inflates to hundreds on a difference that may not matter.
+          </div>
+        </div>
+      );
+    }
+
+    function HTTab() {
+      const initialQuery = (() => {
+        try { return localStorage.getItem(HT_STORE_KEY) || ''; } catch (e) { return ''; }
+      })();
+      const [query, setQuery] = useState(initialQuery);
+      const [metric, setMetric] = useState('ms1_total_tic');
+      /* One request object drives the fetch, so typing a new submission
+         and switching the plate metric go through the same path. */
+      const [req, setReq] = useState(initialQuery ? { q: initialQuery, metric: 'ms1_total_tic' } : null);
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState(null);
+
+      useEffect(() => {
+        if (!req) return undefined;
+        let cancelled = false;
+        setLoading(true);
+        setError(null);
+        const url = `${API}/api/ht/submission?q=${encodeURIComponent(req.q)}`
+          + `&instrument=${encodeURIComponent(HT_INSTRUMENT)}`
+          + `&metric=${encodeURIComponent(req.metric)}`;
+        fetch(url)
+          .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j }))
+                             .catch(() => ({ ok: false, status: r.status, j: null })))
+          .then(({ ok, status, j }) => {
+            if (cancelled) return;
+            if (!ok) throw new Error((j && j.detail) || `HTTP ${status}`);
+            setData(j);
+            setLoading(false);
+            try { localStorage.setItem(HT_STORE_KEY, req.q); } catch (e) { /* private mode */ }
+          })
+          .catch(e => {
+            if (cancelled) return;
+            setError(e.message || String(e));
+            setData(null);
+            setLoading(false);
+          });
+        return () => { cancelled = true; };
+      }, [req]);
+
+      const submit = () => {
+        const qq = String(query || '').trim();
+        if (qq.length < 2) {
+          setError('Enter at least 2 characters of the submission number.');
+          setData(null);
+          return;
+        }
+        setReq({ q: qq, metric });
+      };
+      const changeMetric = m => {
+        setMetric(m);
+        if (req) setReq({ q: req.q, metric: m });
+      };
+
+      /* run_name -> "S6-E7", so the re-run list says which well to pull. */
+      const wellByRun = useMemo(() => {
+        const m = {};
+        const plates = (data && data.plate && data.plate.plates) || [];
+        plates.forEach(p => {
+          Object.keys(p.wells || {}).forEach(id => {
+            const w = p.wells[id];
+            if (w && w.run_name) m[w.run_name] = p.plate ? `${p.plate}-${id}` : id;
+          });
+        });
+        return m;
+      }, [data]);
+
+      const metricOptions = (data && data.stats && Object.keys(data.stats).length)
+        ? Object.keys(data.stats).map(k => [k, data.stats[k].label || k])
+        : [['ms1_total_tic', 'total ion current']];
+      const plateMetric = (data && data.plate && data.plate.metric) || metric;
+      const metricLabel = (data && data.stats && data.stats[plateMetric] && data.stats[plateMetric].label)
+        || plateMetric;
+
+      const inputStyle = {
+        padding: '0.4rem 0.6rem', background: 'var(--bg)', color: 'var(--text)',
+        border: '1px solid var(--border)', borderRadius: '0.3rem', fontSize: '0.9rem',
+      };
+
+      return (
+        <div>
+          <div className="card">
+            <h3>HT — high-throughput submission</h3>
+            <div style={{ fontSize: '0.82rem', color: 'var(--muted)', marginBottom: '0.7rem', lineHeight: 1.5 }}>
+              Enter a submission number to pull every {HT_INSTRUMENT} run whose file name carries it,
+              then read the plate for position effects and the queue for time effects.
+            </div>
+            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', alignItems: 'center' }}>
+              <input
+                type="text"
+                value={query}
+                placeholder="Submission number, e.g. 0793"
+                onChange={e => setQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+                style={{ ...inputStyle, flex: '0 1 240px' }}
+              />
+              <button type="button" onClick={submit}>Load submission</button>
+              <label style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
+                Colour samples by{' '}
+                <select value={plateMetric} onChange={e => changeMetric(e.target.value)}
+                        style={{ ...inputStyle, cursor: 'pointer', fontSize: '0.8rem' }}>
+                  {metricOptions.map(([k, label]) => <option key={k} value={k}>{label}</option>)}
+                </select>
+              </label>
+            </div>
+
+            {loading && <div style={{ marginTop: '0.7rem', color: 'var(--muted)' }}>Loading submission…</div>}
+            {error && <div style={{ marginTop: '0.7rem', color: 'var(--fail)' }}>{error}</div>}
+
+            {data && data.n_samples > 0 && (
+              <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginTop: '0.9rem' }}>
+                <StatTile label="Submission" value={data.query} sub={data.instrument} tone="accent" />
+                <StatTile label="Samples" value={data.n_samples} sub="monitored runs" />
+                <StatTile label="HeLa standards" value={data.n_standards} sub="in-queue controls" />
+                <StatTile label="Needs re-run" value={data.n_needs_rerun}
+                          sub={`|z| > ${data.z_threshold}`} />
+                <StatTile label="Cohort" value={data.cohort_size}
+                          sub={data.cohort_ok ? 'large enough to score' : `below ${data.min_cohort} — flags are weak`} />
+              </div>
+            )}
+          </div>
+
+          {data && data.n_samples === 0 && !loading && (
+            <div className="card">
+              <div className="empty" style={{ padding: '2rem' }}>
+                <div style={{ marginBottom: '0.5rem' }}>
+                  Nothing found for <strong>{data.query}</strong> on {data.instrument}.
+                </div>
+                <div style={{ fontSize: '0.82rem' }}>
+                  Submissions are matched on the number as it appears in the raw file name
+                  (for example <code>20260827_793_100spd_SI-18_S6-B3_1_24026.d</code> matches 793).
+                  A run that the monitor has not processed yet will not be here.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {data && data.n_samples > 0 && (data.plate.plates || []).map(p => (
+            <HTPlateMap key={p.plate || 'plate'} plate={p}
+                        rowLabels={data.plate.rows} colLabels={data.plate.cols}
+                        metricLabel={metricLabel} />
+          ))}
+
+          {data && data.n_samples > 0 && data.queue && <HTQueueChart queue={data.queue} />}
+
+          {data && data.n_samples > 0 && (
+            <HTRerunList rows={data.needs_rerun} wellByRun={wellByRun}
+                         cohortOk={data.cohort_ok} minCohort={data.min_cohort}
+                         zThreshold={data.z_threshold} />
+          )}
+        </div>
+      );
+    }
+
     function App() {
       const [tab, setTab] = useState('live');
       const { data: ver } = useFetch('/api/version');
@@ -6522,7 +7182,8 @@
       const showConfig = caps ? caps.show_config !== false : true;
       const TABS = [
         ['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'],
-        ['health', 'Samples'], ['fleet', 'Fleet'], ['maintenance', 'Maintenance'],
+        ['health', 'Samples'], ['ht', 'HT'],
+        ['fleet', 'Fleet'], ['maintenance', 'Maintenance'],
         ['config', 'Config'],
         ['community', 'Community'], ['arcade', '🎮 Arcade'], ['museum', '🏛 Museum'],
       ];
@@ -6543,6 +7204,7 @@
             {tab === 'history' && <RunHistory />}
             {tab === 'trends' && <TrendCharts />}
             {tab === 'health' && <SamplesTab />}
+            {tab === 'ht' && <HTTab />}
             {tab === 'fleet' && <FleetPanel />}
             {tab === 'maintenance' && <MaintenanceTab />}
             {tab === 'config' && showConfig && <ConfigEditor />}

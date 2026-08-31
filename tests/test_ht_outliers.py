@@ -192,3 +192,29 @@ def test_uniform_batch_with_a_dead_well_still_flags_it():
     reason = next(x for x in out["needs_rerun"][0]["outlier_reasons"]
                   if x["metric"] == "ms1_total_tic")
     assert reason["pct_of_median"] is not None, "show how far off the batch it is"
+
+
+def test_partial_plate_reports_what_is_left_to_run():
+    """A queue can stop mid-plate — an overpressure trip, an aborted batch.
+
+    The question then is which wells still need injecting, so the map has to
+    distinguish "not acquired" from "acquired and empty". Real case: plate S5
+    stopped at 39 of 96 wells on 2026-08-28.
+    """
+    rows = [_sample(f"s_S5-{r}{c}_1_{100 + c}.d")
+            for c in (1, 2, 3) for r in "ABCDEFGH"]
+    p = plate_map(rows)["plates"][0]
+    assert p["n_wells"] == 24
+    assert p["n_expected"] == 96
+    assert p["n_missing"] == 72
+    assert p["is_complete"] is False
+    assert p["pct_complete"] == 25.0
+    assert "A4" in p["missing_wells"] and "A1" not in p["missing_wells"]
+
+
+def test_full_plate_reports_complete():
+    rows = [_sample(f"s_S6-{r}{c}_1_{100 + c}.d")
+            for c in range(1, 13) for r in "ABCDEFGH"]
+    p = plate_map(rows)["plates"][0]
+    assert p["is_complete"] is True
+    assert p["n_missing"] == 0 and p["pct_complete"] == 100.0
