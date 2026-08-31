@@ -6653,6 +6653,9 @@
       const width = padL + colLabels.length * cw;
       const height = padT + rowLabels.length * ch + padB;
 
+      /* Completeness arrives with the plate. Guarded so an older backend,
+         which reports n_wells and nothing else, still renders. */
+      const hasCompleteness = plate.n_expected != null;
       const ee = plate.edge_effect;
       const pd = ee ? ee.pct_diff : null;
       const eeVerdict = pd == null ? null
@@ -6763,15 +6766,18 @@
                 const ww = cw - 6, hh = ch - 6;
                 const w = wells[id];
                 if (!w) {
-                  /* No run in this well. Drawn as an outline so "nothing
-                     was injected here" never reads as "a value of zero". */
+                  /* No run in this well. An unfilled dotted outline, so
+                     "nothing was injected here" never reads as "a value of
+                     zero" — and no label, because a plate that is 39/96 has
+                     57 of these and a word in each one is just noise. The
+                     count and the well list live in the banner above. */
                   return (
                     <g key={id}>
                       <rect x={x} y={y} width={ww} height={hh} rx="4" fill="none"
                             stroke="var(--border)" strokeDasharray="2,3" strokeWidth="1" />
                       <text x={x + ww / 2} y={y + hh / 2 + 4} fill="var(--border)"
-                            fontSize="11" textAnchor="middle">empty</text>
-                      <title>{`Well ${id} — no run`}</title>
+                            fontSize="14" textAnchor="middle">·</text>
+                      <title>{`Well ${id} — not yet acquired`}</title>
                     </g>
                   );
                 }
@@ -7334,7 +7340,12 @@
     }
 
     function App() {
-      const [tab, setTab] = useState('live');
+      /* An HT share link (/?tab=ht&q=…&token=…) must land on the HT tab, or
+         its holder sees this week's QCs and no way to know where to go. */
+      const [tab, setTab] = useState(() => {
+        const l = htLinkParams();
+        return (l.tab === 'ht' || l.token) ? 'ht' : 'live';
+      });
       const { data: ver } = useFetch('/api/version');
 
       // Config edits the LOCAL instruments.yml. On a Hive/PG-backed install

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -198,3 +198,109 @@ def render_email(alerts: list[dict]) -> tuple[str, str]:
       </p>
     </div>"""
     return subject, html
+
+
+def recipient() -> str | None:
+    """Who gets the alert.
+
+    `ht_alerts.to` in community.yml if set, else `email_reports.to`.
+
+    The separate key matters on a host that should alert but not send the
+    daily digest. Hive is exactly that: it watches the plates because it is
+    always up, while the Mac sends the scheduled reports, and configuring
+    one should not silently switch on the other. Falling back to
+    `email_reports.to` means a normal single-machine install needs no extra
+    configuration at all.
+    """
+    try:
+        from stan.config import load_community
+        comm = load_community() or {}
+        to = ((comm.get("ht_alerts") or {}).get("to") or "").strip()
+        if to:
+            return to
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.warning("could not read ht_alerts config", exc_info=True)
+
+    try:
+        from stan.reports.daily_email import get_email_config
+        cfg = get_email_config() or {}
+        return (cfg.get("to") or "").strip() or None
+    except Exception:
+        logger.warning("could not read email config", exc_info=True)
+        return None
+
+
+def run_watch(
+    dry_run: bool = False,
+    state_dir: Path | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """Check every active HT submission and email anything new.
+
+    Submissions are discovered from the run names rather than registered by
+    hand. A plate that stops at 3am is exactly the one nobody remembered to
+    add to a watchlist, so the useful default is that everything active is
+    watched and the alerts are quiet enough to live with.
+    """
+    from stan.db import get_runs, get_sample_health
+    from stan.metrics.ht_outliers import analyse_submission, discover_submissions
+
+    now = now or datetime.now(timezone.utc)
+    health = get_sample_health(limit=20000) or []
+    qc = get_runs(limit=20000) or []
+
+    # Only recent work: an alert about a plate from March helps nobody, and
+    # the conditions are all about what is happening now.
+    cutoff = (now - timedelta(days=14)).isoformat()[:10]
+    recent = [r for r in health
+              if str(r.get("run_date") or "")[:10] >= cutoff]
+
+    submissions = discover_submissions(recent)
+    state = _load_state(state_dir)
+    seen_keys = set(state.get("sent", {}))
+    fresh: list[dict] = []
+    checked: list[str] = []
+
+    for sub in submissions:
+        analysis = analyse_submission(sub, health, qc)
+        if analysis["n_samples"] < 4:
+            continue
+        checked.append(sub)
+        for alert in check_plate(analysis, now=now):
+            if alert_key(alert) in seen_keys:
+                continue
+            fresh.append(alert)
+
+    sent_to = None
+    if fresh and not dry_run:
+        to = recipient()
+        if not to:
+            logger.warning("HT alerts to send but no recipient configured")
+        else:
+            from stan.reports.daily_email import _send_email
+            subject, html = render_email(fresh)
+            try:
+                _send_email(to, subject, html)
+                sent_to = to
+                stamps = dict(state.get("sent", {}))
+                for a in fresh:
+                    stamps[alert_key(a)] = now.isoformat(timespec="seconds")
+                state["sent"] = stamps
+                state["last_run"] = now.isoformat(timespec="seconds")
+                _save_state(state, state_dir)
+            except Exception:
+                # Do NOT record as sent: a failed send must retry next tick
+                # rather than being silently swallowed.
+                logger.error("HT alert email failed", exc_info=True)
+
+    return {
+        "submissions_checked": checked,
+        "n_submissions": len(checked),
+        "alerts": fresh,
+        "n_alerts": len(fresh),
+        "sent_to": sent_to,
+        "dry_run": dry_run,
+        "recipient_configured": bool(recipient()),
+    }

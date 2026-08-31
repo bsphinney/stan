@@ -416,3 +416,60 @@ def matches_submission(run_name: str, query: str) -> bool:
         bare = q.lstrip("0") or "0"
         return re.search(rf"(?:^|[_-])0*{re.escape(bare)}(?:[_-]|$)", name) is not None
     return q.lower() in name.lower()
+
+
+# ── one analysis path, shared by the dashboard and the watcher ──────
+
+
+def analyse_submission(
+    q: str,
+    health_rows: list[dict],
+    qc_rows: list[dict] | None = None,
+    metric: str = "ms1_total_tic",
+) -> dict:
+    """The whole analysis for one submission.
+
+    Extracted so `/api/ht/submission` and the email watcher run exactly the
+    same code. If they each built their own view, the alert and the screen
+    could disagree about whether a plate is in trouble, and the one nobody
+    is looking at would be the one that drifts.
+    """
+    samples = [dict(r) for r in health_rows if matches_submission(r.get("run_name"), q)]
+    for r in samples:
+        r["kind"] = "sample"
+    samples.sort(key=lambda r: str(r.get("run_name") or ""))
+
+    standards = [dict(r) for r in (qc_rows or [])
+                 if matches_submission(r.get("run_name"), q)]
+    for r in standards:
+        r["kind"] = "qc"
+
+    result = find_outliers(samples)
+    result["plate"] = plate_map(result["rows"] + standards, metric=metric)
+    result["queue"] = queue_series(result["rows"] + standards)
+    result["standards"] = standards
+    result["n_standards"] = len(standards)
+    result["query"] = q
+    result["n_samples"] = len(samples)
+    return result
+
+
+_SUBMISSION_IN_NAME = re.compile(r"^\d{8}_(\d{2,6})_")
+
+
+def discover_submissions(rows: list[dict]) -> list[str]:
+    """Submission numbers visible in a set of run names.
+
+    The watcher needs to know what to watch without anyone registering a
+    plate by hand -- a plate that stops at 3am is exactly the one nobody
+    remembered to add to a list. Reads the token out of the filename, which
+    is where the submission already lives:
+    `20260827_793_100spd_Hel50_S6-A12_1_24121.d` -> "793".
+    """
+    found: dict[str, int] = {}
+    for r in rows:
+        m = _SUBMISSION_IN_NAME.match(str(r.get("run_name") or ""))
+        if m:
+            found[m.group(1)] = found.get(m.group(1), 0) + 1
+    # Ignore one-off matches: a real submission is a plate, not a single file.
+    return sorted(k for k, n in found.items() if n >= 4)

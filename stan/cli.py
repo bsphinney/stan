@@ -7489,6 +7489,37 @@ def hive_upload_cmd(
         raise typer.Exit(1)
 
 
+@app.command()
+def ht_watch(
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Report what would be emailed without sending or recording it.",
+    ),
+) -> None:
+    """Check active high-throughput plates and email anything new.
+
+    Submissions are discovered from the run filenames -- nothing has to be
+    registered by hand, because the plate that stops at 3am is exactly the
+    one nobody remembered to add to a list.
+
+    Alerts on a plate that stopped part-way and went quiet, on consecutive
+    flagged injections, and on HeLa standards losing ground across a queue.
+    Each condition emails once per submission, so a stalled plate does not
+    mail on every cron tick.
+    """
+    import json as _json
+
+    from stan.reports.ht_watch import run_watch
+
+    result = run_watch(dry_run=dry_run)
+    console.print(_json.dumps(result, default=str, indent=2))
+    if result["n_alerts"] and not result["recipient_configured"]:
+        console.print(
+            "[yellow]Alerts found but no recipient configured. Set "
+            "email_reports.to in ~/.stan/community.yml[/yellow]")
+        raise typer.Exit(1)
+
+
 # Allow `python -m stan.cli ...` to actually invoke the typer app.
 # Without this, the subprocess form (used by remote actions like
 # _action_backfill_from_dir) imports the module but never calls
