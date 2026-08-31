@@ -2,42 +2,34 @@
 REM ------------------------------------------------------------------
 REM flinders_copy_tray.bat
 REM
-REM Launcher for the timsTOF -> Flinders tray copier. Double-click it,
-REM or leave it running; it puts an icon in the notification area
-REM (bottom-right, next to the clock) and copies each .d in D:\Data up
-REM to the Flinders archive once acquisition has finished.
+REM Starts the timsTOF -> Flinders copier. It puts an icon in the
+REM notification area (bottom right, by the clock) and copies each .d
+REM in D:\Data to the Flinders archive once acquisition has finished.
+REM Leave it running.
 REM
-REM First launch asks which drive letter the Flinders share is mapped
-REM to and remembers the answer, so it only asks once.
+REM Pure PowerShell. Nothing to install -- no Python, no STAN, no
+REM admin rights. It uses robocopy, which is already on Windows.
 REM
-REM To start it automatically at logon: press Win+R, run
-REM   shell:startup
-REM and drop a shortcut to this .bat into the folder that opens.
+REM First start asks where the Flinders timsTOF folder is and
+REM remembers the answer.
 REM
-REM Useful variants:
-REM   flinders_copy_tray.bat -ShowConsole    keep the console visible
-REM   flinders_copy_tray.bat -Reconfigure    ask for the drive again
+REM Start it automatically at logon: press Win+R, run  shell:startup
+REM and drop a shortcut to this file into the folder that opens.
+REM
+REM   flinders_copy_tray.bat -ShowConsole    watch the log live
+REM   flinders_copy_tray.bat -AskDest        ask for the folder again
 REM ------------------------------------------------------------------
-
-setlocal
 
 set "PS1=%~dp0flinders_copy_tray.ps1"
 
 if not exist "%PS1%" (
-    echo.
-    echo   ERROR: cannot find flinders_copy_tray.ps1 next to this .bat
-    echo   Expected: %PS1%
-    echo.
+    echo   ERROR: flinders_copy_tray.ps1 is not next to this .bat
+    echo   Expected it at: %PS1%
     pause
     exit /b 1
 )
 
-REM -WindowStyle Hidden keeps the console from lingering; the script
-REM also hides its own console window on startup, so at worst there is
-REM a brief flash. -ExecutionPolicy Bypass because instrument PCs are
-REM locked to Restricted by default and this script is not signed.
-start "STAN Flinders Copier" /b powershell.exe -NoProfile -NoLogo ^
-    -ExecutionPolicy Bypass -WindowStyle Hidden ^
-    -File "%PS1%" %*
-
-endlocal
+REM -ExecutionPolicy Bypass because instrument PCs default to
+REM Restricted and this script is not signed.
+start "STAN Flinders" /b powershell.exe -NoProfile -NoLogo ^
+    -ExecutionPolicy Bypass -WindowStyle Hidden -File "%PS1%" %*

@@ -11,65 +11,67 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
-## [1.0.41] — 2026-08-31
+## [1.0.42] — 2026-08-31
 
 ### Added
 - **`scripts/flinders_copy_tray.ps1` — a notification-area app that copies
-  finished timsTOF acquisitions to the Flinders archive.** It replaces
-  running `robocopy D:\Data ...` by hand: the operator leaves it in the
-  system tray and each `.d` is archived once acquisition ends. Icon colour
-  is the status (grey idle, blue watching, green copying, red failed).
-- **Completion is decided by directory size, not mtime.** A Bruker `.d` is a
-  directory, so the app measures the whole tree every 10 s and only copies
-  after 60 s with no change in byte count *or* file count — the same rule
-  the watcher uses (`stable_secs: 60` in `instruments.yml`).
+  finished timsTOF acquisitions to the Flinders archive.** Replaces running
+  `robocopy D:\Data ...` over the whole watch dir by hand: leave it in the
+  system tray and each `.d` is archived once acquisition ends.
+- **Pure PowerShell.** No Python, no pip, no venv, no STAN install, no
+  database — the only external program is `robocopy.exe`, which ships with
+  Windows. It runs on a PC where STAN was never installed and needs no
+  admin rights. This is deliberate: STAN's own watcher on the instrument PC
+  has been implicated in timsTOF freezes (README Mode A warning), so the
+  copier stays completely outside it. Asserted by the test suite, which
+  greps the shipped code for `python`, `pip`, `stan.db`, `sqlite` and `venv`.
+- **Finished-acquiring is decided by size, not mtime.** A Bruker `.d` is a
+  directory, and its timestamp does not move when a file inside it grows,
+  so the app totals file count + bytes for the tree and waits for 60 s of
+  no change — the same rule as the watcher's `stable_secs`. Listing a
+  directory does not open the files, so it does not contend with
+  acquisition.
 - **Runs land in the month folder the archive already uses.** `tTOF_HT` is
-  nested by month, and the spellings drifted over the years — `June26`,
-  `jun25`, `JUL26`, `july26`, `March25`, `Mar26` all exist. The app matches
-  an existing folder for that month rather than adding a new spelling
-  beside it, and takes the month from the run's own `YYYYMMDD` filename
-  prefix, so a run acquired at 23:50 on the 31st is not filed under the
-  next month.
-- **It asks which drive letter Flinders is mapped to, once.** Startup lists
-  the mapped network drives with their UNC targets, marks the ones that
-  actually contain `tTOF_HT`, and remembers the answer in
-  `%USERPROFILE%\STAN\flinders_copy_config.json`. The choice is
-  re-validated on every launch, so a remapped letter re-prompts instead of
-  silently copying somewhere wrong.
-- **Low-impact by construction.** `robocopy /IPG:20` yields network
-  bandwidth back to the instrument, the child process runs at
-  `BelowNormal`, only one copy runs at a time, and only `.d` directories
-  touched in the last 72 h are ever measured. The copy is spawned
-  asynchronously and polled, so the tray icon stays responsive through a
-  multi-GB transfer.
-- **Copy, never move,** with verification: file count and byte total must
-  match before a run is recorded as archived, so a partial transfer is
-  retried rather than marked done. The source in `D:\Data` is never
-  modified.
+  nested by month and the spellings drifted — `June26`, `jun25`, `JUL26`,
+  `july26`, `March25`, `Mar26` all exist. The app matches an existing
+  folder for that month instead of adding a spelling beside it, and takes
+  the month from the run's own `YYYYMMDD` name prefix, so a run acquired at
+  23:50 on the 31st is not filed under the next month.
+- **Low impact while acquiring.** One directory listing a minute when idle;
+  recursion only into `.d` folders touched in the last 72 h. Copies run one
+  at a time through `robocopy /IPG:20`, which paces the transfer so it
+  yields network bandwidth back to the instrument, at `BelowNormal`
+  priority, spawned in the background and polled so the tray never freezes
+  on a multi-GB run.
+- **Copy only.** The source in `D:\Data` is never renamed, modified or
+  deleted. Archived run names are appended to a plain text file, one per
+  line, so a restart does not re-copy.
+- **It asks where Flinders is, once.** Startup looks through the mapped
+  network drives for one that actually contains `tTOF_HT` and offers it for
+  confirmation, then remembers it in `%USERPROFILE%\STAN\flinders_dest.txt`.
+  The saved answer is re-checked every launch, so a remapped drive letter
+  re-prompts rather than silently copying somewhere wrong.
 - **`tests/test_flinders_copy_tray.ps1`** — loads the real functions out of
-  the shipped `.ps1` through the PowerShell AST, so it cannot drift from
-  what ships. The month cases are the actual folder names in
-  `/nfs/lssc0/flinders/proteomics/Data/raw_data/tTOF_HT`. Run it with
-  `pwsh -NoProfile -File tests/test_flinders_copy_tray.ps1`; it is not part
-  of the pytest suite, since CI is Python-only.
+  the shipped `.ps1` through the PowerShell AST, so the tests cannot drift
+  from what ships. The month cases are the actual folder names in
+  `/nfs/lssc0/flinders/proteomics/Data/raw_data/tTOF_HT`. Run with
+  `pwsh -NoProfile -File tests/test_flinders_copy_tray.ps1`; not part of
+  the pytest suite, since CI is Python-only.
 
-### Fixed
-Two bugs the test suite caught before this ever reached an instrument PC,
-both of them PowerShell semantics rather than logic errors:
-
-- **`Read-StateFile` returned a `String`, or `$null`, instead of a
-  `HashSet`.** PowerShell unrolls collections on return, so a set holding
-  one name came back as a bare string and an empty one as `$null`. On a
-  fresh install the first `Get-Candidates` would have thrown under
-  `StrictMode`, and after the first successful copy `.Add()` would have
-  failed on a fixed-size result — so no run was ever recorded and the same
-  `.d` would be re-copied on every tick, forever. Fixed with `return ,$set`.
-- **`ConvertTo-MonthDate` matched none of the real month folders.**
-  `TryParseExact` has a `string[]` overload, but PowerShell binds a PS array
-  to the `(string, string, ...)` overload and stringifies it to
-  `"System.Object[]"`, so every folder read as "not a month" and the reuse
-  logic would have created `Jun26` next to the existing `June26`. Now tries
-  one format at a time.
+### Notes
+- v1.0.41 shipped a first cut of this with a hand-built WinForms
+  drive-picker dialog. It was replaced the same day with the version above,
+  a third of the size, after Brett asked for the most minimal thing that
+  could work on an acquiring instrument PC. The picker became one
+  `Microsoft.VisualBasic` `InputBox` call, the JSON config and state files
+  became two lines of plain text, and the poll dropped from every 10 s to
+  every 60 s. Two bugs died with the rewrite that the tests had caught
+  first, both PowerShell semantics rather than logic: a function returning
+  a `HashSet` got unrolled into a bare `String` (so nothing was ever
+  recorded as archived and the same `.d` would re-copy forever), and
+  `TryParseExact` silently matched no month at all, because PowerShell
+  binds a PS array to the single-format overload and stringifies it to
+  `"System.Object[]"`. Both traps are now recorded in CLAUDE.md.
 
 ---
 
