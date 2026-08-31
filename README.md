@@ -193,6 +193,7 @@ What ships today vs. what's still planned.
 | Setup wizard | Done | 6 questions, dedupes `instruments.yml`, offers baseline at the end. |
 | Baseline builder | Done | Recursive discovery, auto-detect gradient/LC, pre-flight DIA-NN/Sage tests, resume on interrupt, scheduling (now / tonight / weekend). |
 | Windows installer + updater | Done | `stan.bat` — single entry point: installs on first run, self-updates on every run, supervises the watcher. `install-stan.bat` handles the one-time install step internally. |
+| timsTOF → Flinders tray copier | Done | `scripts/flinders_copy_tray.bat` — notification-area app for the instrument PC. Waits for each `.d` in `D:\Data` to stop growing (60 s, directory-size based), then throttled-`robocopy`s it into the Flinders archive under that run's own month folder (`tTOF_HT\Aug26\`), reusing whichever spelling of the month already exists. Copy-only; never touches the source. Asks once which drive letter Flinders is mapped to. |
 | Community submission | Done | Hard gates, soft flags, asset MD5 verification, no HF token needed (relay). |
 | Community sync button | Done | Dashboard Community tab; mints a pseudonym if the install has none. Refused on the public read-only host. |
 | Community sync cron | Done | Hive, every 6 h (`scripts/cron_community_sync.sh`). Idempotent via `submitted_to_benchmark`. |
