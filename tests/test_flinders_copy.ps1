@@ -77,69 +77,88 @@ foreach ($name in @("HeLSTDs", "Reports", "Service", "MSmeth", "ServiceBrukerEng
     else { Write-Host "  FAIL '$name' parsed as a month"; $Failures += 1 }
 }
 
-# ---- 2. reuse the spelling that is already there ------------------
+# ---- 2. destination folder mirrors the local one ------------------
 Write-Host ""
-Write-Host "[2] month folder reuse -- never add a second spelling"
+Write-Host "[2] destination folder mirrors what the operator acquired into"
 $Dest = Join-Path $sandbox "tTOF_HT"
 New-Item -ItemType Directory -Path $Dest -Force | Out-Null
-foreach ($seed in @("June26", "jun25", "JUL26", "aug26", "March25", "Reports")) {
+foreach ($seed in @("Aug26", "June26", "JUL26", "jun25", "March25", "Reports")) {
     New-Item -ItemType Directory -Path (Join-Path $Dest $seed) -Force | Out-Null
 }
-Check "Jun 2026 uses June26"   (Split-Path -Leaf (Get-MonthDir ([datetime] "2026-06-15"))) "June26"
-Check "Jul 2026 uses JUL26"    (Split-Path -Leaf (Get-MonthDir ([datetime] "2026-07-02"))) "JUL26"
-Check "Aug 2026 uses aug26"    (Split-Path -Leaf (Get-MonthDir ([datetime] "2026-08-28"))) "aug26"
-Check "Jun 2025 uses jun25"    (Split-Path -Leaf (Get-MonthDir ([datetime] "2025-06-01"))) "jun25"
-Check "Mar 2025 uses March25"  (Split-Path -Leaf (Get-MonthDir ([datetime] "2025-03-09"))) "March25"
-Check "Sep 2026 creates Sep26" (Split-Path -Leaf (Get-MonthDir ([datetime] "2026-09-01"))) "Sep26"
-Check "6 seeded + exactly 1 new" (@(Get-ChildItem -LiteralPath $Dest -Directory)).Count 7
+Check "Aug26 goes to Aug26"          (Split-Path -Leaf (Get-DestFolder "Aug26"))   "Aug26"
+Check "case difference reuses it"    (Split-Path -Leaf (Get-DestFolder "aug26"))   "Aug26"
+# Both sides collected several spellings of the same month; a local
+# july26 must land in the archive's JUL26, not make a second folder.
+Check "july26 reuses JUL26"          (Split-Path -Leaf (Get-DestFolder "july26"))  "JUL26"
+Check "Jun26 reuses June26"          (Split-Path -Leaf (Get-DestFolder "Jun26"))   "June26"
+Check "Mar25 reuses March25"         (Split-Path -Leaf (Get-DestFolder "Mar25"))   "March25"
+Check "an unknown month is created"  (Split-Path -Leaf (Get-DestFolder "Sep26"))   "Sep26"
+# A folder that is not a month at all is mirrored verbatim.
+Check "a non-month folder is mirrored" (Split-Path -Leaf (Get-DestFolder "Bruker_FAS_samples")) "Bruker_FAS_samples"
+Check "no parent means the root"     (Get-DestFolder "") $Dest
+Check "6 seeded + exactly 2 created" (@(Get-ChildItem -LiteralPath $Dest -Directory)).Count 8
 
-# ---- 3. which date files the run ---------------------------------
+# ---- 3. finding runs inside the month folders --------------------
+# The bug that reached the instrument: timsControl acquires into
+# D:\Data\Aug26\, and a top-level-only scan found nothing at all.
 Write-Host ""
-Write-Host "[3] the run's own name beats the folder mtime"
+Write-Host "[3] scanning D:\Data the way it is actually laid out"
 $SourceDir = Join-Path $sandbox "Data"
 New-Item -ItemType Directory -Path $SourceDir -Force | Out-Null
-$dated = New-Item -ItemType Directory -Path (Join-Path $SourceDir "20260828_100spd_COH-46_S5-F6_1_24165.d") -Force
-$plain = New-Item -ItemType Directory -Path (Join-Path $SourceDir "wash_S1-A1_1_24166.d") -Force
-# Acquired 28 Aug, copied 3 Sep -- must still be filed under August.
-(Get-Item $dated.FullName).LastWriteTime = [datetime] "2026-09-03 04:00"
-(Get-Item $plain.FullName).LastWriteTime = [datetime] "2026-08-30 11:00"
-Check "dated name wins" (Get-Stamp (Get-Item $dated.FullName)).ToString("yyyy-MM-dd") "2026-08-28"
-Check "undated falls back to mtime" (Get-Stamp (Get-Item $plain.FullName)).ToString("yyyy-MM-dd") "2026-08-30"
-Check "and it lands in August" (Split-Path -Leaf (Get-MonthDir (Get-Stamp (Get-Item $dated.FullName)))) "aug26"
+$Done = @()
+# Real paths from the TIMS-10878 database.
+$nested = New-Item -ItemType Directory -Force -Path `
+    (Join-Path $SourceDir "Aug26/11aug26_HeL50-Flex-questionablGlasCap-tf9d0_60spd_S4-E1_1_23549.d")
+$nested2 = New-Item -ItemType Directory -Force -Path `
+    (Join-Path $SourceDir "july26/31iul26_HeL50-tf9d0_60spd_S4-E7_1_23330.d")
+$atRoot = New-Item -ItemType Directory -Force -Path `
+    (Join-Path $SourceDir "wash_S1-A1_1_24181.d")
+# A .d holds files and folders of its own -- we must never treat those
+# as runs, however they are named.
+New-Item -ItemType Directory -Force -Path (Join-Path $nested.FullName "inner.d") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $SourceDir "Reports") | Out-Null
 
-# ---- 4. the finished-acquiring signal ----------------------------
+$found = @(Get-Candidates)
+Check "finds both nested runs and the root one" $found.Count 3
+$rels = @()
+foreach ($item in $found) { $rels += $item.Rel }
+$sep = [System.IO.Path]::DirectorySeparatorChar
+Check "a nested run is keyed by month\name" ($rels -contains "Aug26${sep}11aug26_HeL50-Flex-questionablGlasCap-tf9d0_60spd_S4-E1_1_23549.d") "True"
+Check "a root run is keyed by name alone" ($rels -contains "wash_S1-A1_1_24181.d") "True"
+Check "it never descends into a .d" ($rels -notcontains "Aug26${sep}11aug26_HeL50-Flex-questionablGlasCap-tf9d0_60spd_S4-E1_1_23549.d${sep}inner.d") "True"
+foreach ($item in $found) {
+    if ($item.Rel -like "Aug26*") { Check "parent is carried through" $item.Parent "Aug26" }
+}
+
 Write-Host ""
-Write-Host "[4] size signature"
-Set-Content -LiteralPath (Join-Path $dated.FullName "analysis.tdf") -Value ("x" * 100) -NoNewline
-New-Item -ItemType Directory -Path (Join-Path $dated.FullName "nested") -Force | Out-Null
-Set-Content -LiteralPath (Join-Path $dated.FullName "nested/frames.bin") -Value ("y" * 50) -NoNewline
-Check "counts the whole tree" (Get-Sig $dated.FullName) "2/150"
-$before = Get-Sig $dated.FullName
-Check "unchanged tree, same signature" (Get-Sig $dated.FullName) $before
+Write-Host "[4] what gets skipped"
+$old = New-Item -ItemType Directory -Force -Path (Join-Path $SourceDir "June26/063026_HE50_60-spd-dia_S1-A2_1_22380.d")
+(Get-Item $old.FullName).LastWriteTime = [datetime] "2026-06-30"
+Check "an old run is out of range" (@(Get-Candidates)).Count 3
+# The done list is keyed by the relative path...
+$Done = @("Aug26${sep}11aug26_HeL50-Flex-questionablGlasCap-tf9d0_60spd_S4-E1_1_23549.d")
+Check "a done relative path is skipped" (@(Get-Candidates)).Count 2
+# ...but a bare name is honoured too, so a done list seeded before the
+# nested scan existed still counts.
+$Done = @("31iul26_HeL50-tf9d0_60spd_S4-E7_1_23330.d")
+Check "a done bare name is skipped" (@(Get-Candidates)).Count 2
+$Done = @("WASH_S1-A1_1_24181.D")
+Check "matching ignores case" (@(Get-Candidates)).Count 2
+$Done = @()
+
+Write-Host ""
+Write-Host "[5] size signature"
+Set-Content -LiteralPath (Join-Path $atRoot.FullName "analysis.tdf") -Value ("x" * 100) -NoNewline
+New-Item -ItemType Directory -Path (Join-Path $atRoot.FullName "nested") -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $atRoot.FullName "nested/frames.bin") -Value ("y" * 50) -NoNewline
+Check "counts the whole tree" (Get-Sig $atRoot.FullName) "2/150"
+$before = Get-Sig $atRoot.FullName
+Check "unchanged tree, same signature" (Get-Sig $atRoot.FullName) $before
 # A file growing in place is exactly what a directory mtime misses,
-# which is the whole reason this is size-based.
-Set-Content -LiteralPath (Join-Path $dated.FullName "nested/frames.bin") -Value ("y" * 900) -NoNewline
-Check "a file growing changes it" ($before -ne (Get-Sig $dated.FullName)) "True"
+# which is why this is size-based and not mtime-based.
+Set-Content -LiteralPath (Join-Path $atRoot.FullName "nested/frames.bin") -Value ("y" * 900) -NoNewline
+Check "a file growing changes it" ($before -ne (Get-Sig $atRoot.FullName)) "True"
 Check "missing path is survivable" (Get-Sig (Join-Path $sandbox "gone")) "0/0"
-
-# ---- 5. what gets picked up --------------------------------------
-Write-Host ""
-Write-Host "[5] candidate selection"
-$Done = @()
-New-Item -ItemType Directory -Path (Join-Path $SourceDir "not_a_raw_folder") -Force | Out-Null
-$old = New-Item -ItemType Directory -Path (Join-Path $SourceDir "20200101_ancient.d") -Force
-(Get-Item $old.FullName).LastWriteTime = [datetime] "2020-01-01"
-(Get-Item $dated.FullName).LastWriteTime = (Get-Date)
-(Get-Item $plain.FullName).LastWriteTime = (Get-Date)
-Check "only recent .d folders" (@(Get-Candidates)).Count 2
-$Done = @("wash_S1-A1_1_24166.d")
-Check "skips what the done file lists" (@(Get-Candidates)).Count 1
-# Windows paths are case-insensitive, so this has to be too, or a run
-# already on Flinders gets copied a second time.
-$Done = @("wash_S1-A1_1_24166.d", "20260828_100SPD_COH-46_S5-F6_1_24165.D")
-Check "matching ignores case" (@(Get-Candidates)).Count 0
-$Done = @()
-Check "empty done list is fine" (@(Get-Candidates)).Count 2
 
 # ---- 6. the across-passes memory ---------------------------------
 # This is what replaces the resident watcher's 60-second timer: a run
@@ -240,6 +259,8 @@ Check "the destination is stored as a UNC" ($dst -match "ConvertTo-Unc") "True"
 # -Install has to set the destination first, unelevated, or the
 # elevated half would have no drive to look at.
 Check "install does destination before task" ($code.IndexOf("Set-Destination)") -lt $code.IndexOf("Register-Task)")) "True"
+# The scan has to look inside the month folders or it finds nothing.
+Check "the scan goes one level down" ((Get-FuncText "Get-Candidates") -match "New-Candidate .top|New-Candidate .sub") "True"
 
 $bat = Get-Content -LiteralPath (Join-Path $repoRoot "scripts/install_flinders_copy.bat") -Raw
 Check "the .bat checks the exit code before saying Done" ($bat -match "errorlevel 1 goto :failed") "True"

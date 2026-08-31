@@ -32,12 +32,22 @@
 # for an archive.
 #
 # WHERE A RUN GOES
-# The Flinders tTOF_HT folder is nested by month, and the spelling
-# drifted over the years -- June26, jun25, JUL26, july26, March25 and
-# Mar26 all exist. So we look for a folder that already means that
-# month and use it, rather than adding another spelling beside it. The
-# month comes from the run's own YYYYMMDD name prefix, so a run
-# acquired at 23:50 on the 31st is not filed under the next month.
+# timsControl acquires into month folders already -- D:\Data\Aug26\,
+# D:\Data\july26\, D:\Data\June26\ -- and Flinders uses the same
+# names, because the archive has always been fed by a robocopy of the
+# whole tree. So we MIRROR the local folder rather than working the
+# month out from the filename: whatever the operator acquired into is
+# where it lands.
+#
+#     D:\Data\Aug26\<run>.d   ->   <Flinders>\tTOF_HT\Aug26\<run>.d
+#     D:\Data\<run>.d          ->   <Flinders>\tTOF_HT\<run>.d
+#
+# The one wrinkle is spelling. Both sides accumulated several
+# spellings of the same month over the years -- June26, jun25, JUL26,
+# july26, March25, Mar26 -- so before creating a folder we check
+# whether one that MEANS that month is already there and use it. A
+# local july26 lands in the archive's JUL26 if that is what exists,
+# instead of making a second folder for the same month.
 #
 # LOAD ON AN ACQUIRING PC
 # Per pass: one directory listing of D:\Data, then a recursive size
@@ -71,6 +81,7 @@ param(
     [switch] $SetDest,      # find + save the destination (needs the mapped drive)
     [switch] $RegisterTask, # create the scheduled task (needs administrator)
     [switch] $Verify,       # is the task actually there?
+    [switch] $SkipBacklog,  # mark everything already on disk as done
     [switch] $Uninstall,
     [switch] $Show
 )
@@ -179,37 +190,29 @@ function Get-MonthDate($Name) {
     return $null
 }
 
-function Get-MonthDir($Stamp) {
-    # Reuse whatever folder already means this month, however it is
-    # spelled. Only create one if there is genuinely none.
-    $want = $Stamp.ToString("MMMyy", [System.Globalization.CultureInfo]::InvariantCulture)
+function Get-DestFolder($LocalName) {
+    # Mirror the folder the operator acquired into. If the archive
+    # already has a folder MEANING that month under a different
+    # spelling, use that one instead of making a second -- a local
+    # july26 goes into the archive's JUL26 if that is what is there.
+    if (-not $LocalName) { return $Dest }
     $existing = @(Get-ChildItem -LiteralPath $Dest -Directory -Force -ErrorAction SilentlyContinue)
     foreach ($dir in $existing) {
-        if ($dir.Name -eq $want) { return $dir.FullName }
+        if ($dir.Name -eq $LocalName) { return $dir.FullName }   # -eq ignores case
     }
-    foreach ($dir in $existing) {
-        $asDate = Get-MonthDate $dir.Name
-        if ($asDate -and $asDate.Year -eq $Stamp.Year -and $asDate.Month -eq $Stamp.Month) {
-            return $dir.FullName
+    $asDate = Get-MonthDate $LocalName
+    if ($asDate) {
+        foreach ($dir in $existing) {
+            $other = Get-MonthDate $dir.Name
+            if ($other -and $other.Year -eq $asDate.Year -and $other.Month -eq $asDate.Month) {
+                return $dir.FullName
+            }
         }
     }
-    $new = Join-Path $Dest $want
+    $new = Join-Path $Dest $LocalName
     New-Item -ItemType Directory -Path $new -Force | Out-Null
-    Log "created month folder $want"
+    Log "created folder $LocalName"
     return $new
-}
-
-function Get-Stamp($Dir) {
-    # Prefer the run's own date prefix over the folder mtime.
-    if ($Dir.Name -match "^(\d{8})") {
-        $d = [datetime]::MinValue
-        if ([datetime]::TryParseExact($Matches[1], "yyyyMMdd",
-                [System.Globalization.CultureInfo]::InvariantCulture,
-                [System.Globalization.DateTimeStyles]::None, [ref] $d)) {
-            return $d
-        }
-    }
-    return $Dir.LastWriteTime
 }
 
 # ---------------- looking at D:\Data ----------------
@@ -223,18 +226,52 @@ function Get-Sig($Path) {
     return "$($items.Count)/$bytes"
 }
 
+function New-Candidate($Dir, $Parent) {
+    # Rel is the path relative to D:\Data -- "Aug26\run.d", or just
+    # "run.d" for one sitting at the root. It is both where the run
+    # goes on Flinders and the key we remember it by, so two runs with
+    # the same name in different months cannot be confused.
+    $rel = $Dir.Name
+    if ($Parent) { $rel = Join-Path $Parent $Dir.Name }
+    $item = New-Object PSObject
+    Add-Member -InputObject $item -MemberType NoteProperty -Name Dir    -Value $Dir
+    Add-Member -InputObject $item -MemberType NoteProperty -Name Rel    -Value $rel
+    Add-Member -InputObject $item -MemberType NoteProperty -Name Parent -Value $Parent
+    return $item
+}
+
 function Get-Candidates {
-    # Recently-touched .d folders we have not archived yet. The cheap
-    # pass: one top-level listing, no recursion, so a D:\Data holding
-    # years of acquisitions costs nothing.
+    # Recently-touched .d folders we have not archived yet.
+    #
+    # timsControl acquires into month folders (D:\Data\Aug26\...), so
+    # a top-level-only scan finds almost nothing -- which is exactly
+    # what the first version of this did. We look one level down as
+    # well, and never descend INTO a .d: it is the thing we are looking
+    # for, and it is full of files.
     $out = @()
     if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) { return $out }
     $cutoff = (Get-Date).AddHours(-$LookbackHours)
-    foreach ($dir in @(Get-ChildItem -LiteralPath $SourceDir -Directory -Force -ErrorAction SilentlyContinue)) {
-        if ($dir.Extension -ne ".d") { continue }
-        if ($dir.LastWriteTime -lt $cutoff) { continue }
-        if ($Done -contains $dir.Name) { continue }   # -contains ignores case
-        $out += $dir
+
+    $found = @()
+    foreach ($top in @(Get-ChildItem -LiteralPath $SourceDir -Directory -Force -ErrorAction SilentlyContinue)) {
+        if ($top.Extension -eq ".d") {
+            $found += (New-Candidate $top "")
+            continue
+        }
+        foreach ($sub in @(Get-ChildItem -LiteralPath $top.FullName -Directory -Force -ErrorAction SilentlyContinue)) {
+            if ($sub.Extension -ne ".d") { continue }
+            $found += (New-Candidate $sub $top.Name)
+        }
+    }
+
+    foreach ($item in $found) {
+        if ($item.Dir.LastWriteTime -lt $cutoff) { continue }
+        # -contains ignores case, which Windows paths need. The bare
+        # name is checked too, so a done list seeded from an older
+        # top-level-only run still counts.
+        if ($Done -contains $item.Rel) { continue }
+        if ($Done -contains $item.Dir.Name) { continue }
+        $out += $item
     }
     return $out
 }
@@ -260,8 +297,9 @@ function Write-Map($Path, $Map) {
     try { Set-Content -LiteralPath $Path -Value $lines } catch {}
 }
 
-function Copy-Run($Dir) {
-    $target = Join-Path (Get-MonthDir (Get-Stamp $Dir)) $Dir.Name
+function Copy-Run($Item) {
+    $Dir = $Item.Dir
+    $target = Join-Path (Get-DestFolder $Item.Parent) $Dir.Name
     # /IPG:20 paces the transfer so it yields bandwidth back to the
     # instrument; /Z survives the share dropping mid-copy; /FFT matches
     # the timestamp granularity the existing copy_all_data bat uses.
@@ -269,17 +307,17 @@ function Copy-Run($Dir) {
     $roboArgs = @("`"$($Dir.FullName)`"", "`"$target`"",
                   "/E", "/Z", "/FFT", "/R:2", "/W:10", "/IPG:20",
                   "/NP", "/NFL", "/NDL", "/LOG+:`"$roboLog`"")
-    Log "copying $($Dir.Name) -> $target"
+    Log "copying $($Item.Rel) -> $target"
     $proc = Start-Process robocopy.exe -ArgumentList $roboArgs -WindowStyle Hidden -PassThru
     try { $proc.PriorityClass = "BelowNormal" } catch {}
     $proc.WaitForExit()
     if ($proc.ExitCode -ge 8) {
         # robocopy: under 8 is success, 8 and up is a real failure.
-        Log "FAILED $($Dir.Name) (robocopy exit $($proc.ExitCode))"
+        Log "FAILED $($Item.Rel) (robocopy exit $($proc.ExitCode))"
         return $false
     }
-    Add-Content -LiteralPath $DoneFile -Value $Dir.Name
-    Log "done $($Dir.Name)"
+    Add-Content -LiteralPath $DoneFile -Value $Item.Rel
+    Log "done $($Item.Rel)"
     return $true
 }
 
@@ -440,6 +478,23 @@ if ($Install) {
     exit 0
 }
 
+if ($SkipBacklog) {
+    # Everything currently in D:\Data counts as already archived, so
+    # only genuinely new acquisitions get copied from here on.
+    $Done = @()
+    if (Test-Path $DoneFile) { $Done = @(Get-Content -LiteralPath $DoneFile) }
+    $Dest = "x"   # Get-Candidates does not need a real destination
+    $marked = 0
+    foreach ($item in Get-Candidates) {
+        Add-Content -LiteralPath $DoneFile -Value $item.Rel
+        $marked += 1
+    }
+    Write-Host "  Marked $marked existing run(s) as already archived."
+    Write-Host "  Only new acquisitions will be copied."
+    Log "skip-backlog marked $marked runs"
+    exit 0
+}
+
 if (Test-Path $PauseFile) {
     Set-Status "paused (delete $PauseFile to resume)"
     exit 0
@@ -470,16 +525,16 @@ $now = @{}
 $ready = @()
 $growing = 0
 
-foreach ($dir in Get-Candidates) {
-    $sig = Get-Sig $dir.FullName
-    $now[$dir.Name] = $sig
-    if ($was[$dir.Name] -eq $sig) { $ready += $dir } else { $growing += 1 }
+foreach ($item in Get-Candidates) {
+    $sig = Get-Sig $item.Dir.FullName
+    $now[$item.Rel] = $sig
+    if ($was[$item.Rel] -eq $sig) { $ready += $item } else { $growing += 1 }
 }
 Write-Map $SizeFile $now
 
 $copied = 0
-foreach ($dir in $ready) {
-    if (Copy-Run $dir) { $copied += 1 }
+foreach ($item in $ready) {
+    if (Copy-Run $item) { $copied += 1 }
 }
 
 $summary = "ok - $copied copied, $growing still acquiring, $($Done.Count) archived total"

@@ -11,6 +11,48 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.46] — 2026-08-31
+
+### Fixed
+Three things found by putting v1.0.43 on TIMS-10878. None were caught by
+the tests because all three were assumptions about the machine, not logic.
+
+- **It scanned the wrong shape of directory, and would have found almost
+  nothing.** timsControl acquires into month folders — `D:\Data\Aug26\`,
+  `D:\Data\july26\`, `D:\Data\June26\` — and the scan only looked at the
+  top level of `D:\Data`. It now looks one level down as well, and never
+  descends *into* a `.d`, which is itself a directory full of files.
+- **A run now mirrors the folder it was acquired into** rather than having
+  its month worked out from the filename: `D:\Data\Aug26\<run>.d` goes to
+  `tTOF_HT\Aug26\<run>.d`. Both sides already use the same month names,
+  because the archive has always been fed by a robocopy of the whole tree,
+  so mirroring is both simpler and closer to what the lab actually does.
+  The cross-spelling match survives for the case where they disagree — a
+  local `july26` lands in the archive's `JUL26` rather than creating a
+  second folder for the same month. Runs are keyed by their path relative
+  to `D:\Data`, so two runs with the same name in different months cannot
+  be confused; a bare name in the done list is still honoured.
+- **`Register-ScheduledTask` was refused with `0x80070005`, and the
+  installer said "Done" anyway.** UAC hands a filtered token even to an
+  account in Administrators. Only the task-registration step now elevates,
+  and it re-launches itself through UAC — elevating the whole installer
+  would have broken it differently, since an elevated process cannot see
+  the operator's mapped network drives, which is exactly what the
+  destination lookup needs. Registration is verified with
+  `Get-ScheduledTask` before success is reported, and the `.bat` checks the
+  exit code and says **NOTHING is scheduled** when it fails.
+- The destination is stored as a **UNC path** (`\\128.120.208.24\proteomics\...`)
+  rather than a drive letter, so it survives elevation, a different logon
+  session and a remap. If it is ever unreachable, a pass re-scans the
+  mapped drives for the instrument folder before giving up.
+
+### Added
+- **`-SkipBacklog`** marks every run currently in `D:\Data` as archived, so
+  only new acquisitions get copied. This replaces the `dir /b /ad` recipe
+  in the v1.0.43 notes, which could not see the month subfolders either.
+
+---
+
 ## [1.0.43] — 2026-08-31
 
 ### Added

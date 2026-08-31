@@ -1,3 +1,3 @@
 """STAN — Standardized proteomic Throughput ANalyzer."""
 
-__version__ = "1.0.45"
+__version__ = "1.0.46"
