@@ -520,6 +520,18 @@ _SUBMISSION_IN_NAME = re.compile(r"^\d{8}[_-](\d{2,6})[_-]")
 _SAMPLE_CODE_BEFORE_WELL = re.compile(r"_([A-Za-z]{2,10})-\d+_S\d+-[A-H]\d{1,2}_")
 
 
+#: Code prefixes that are never a customer submission. The sample-code
+#: fallback exists for plates named without a number, but HeLa standards and
+#: washes also share a prefix, and grouping those as a "submission" produced
+#: a real false alert: "28 consecutive injections flagged in submission HEL",
+#: which is just the QC standards being compared against each other. An alert
+#: about a non-submission is exactly how an alert channel gets ignored.
+_NOT_A_SUBMISSION = frozenset({
+    "HEL", "HELA", "HE", "HELA50", "BLANK", "BLANKDIA", "BLANKDDA",
+    "WASH", "QC", "STD", "BSA",
+})
+
+
 def submission_key(run_name: str) -> str | None:
     """The group this run belongs to, for watching purposes.
 
@@ -539,7 +551,8 @@ def submission_key(run_name: str) -> str | None:
         return m.group(1)
     m = _SAMPLE_CODE_BEFORE_WELL.search(name)
     if m:
-        return m.group(1).upper()
+        code = m.group(1).upper()
+        return None if code in _NOT_A_SUBMISSION else code
     return None
 
 

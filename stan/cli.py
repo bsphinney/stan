@@ -7576,7 +7576,9 @@ def ht_watch(
     from stan.reports.ht_watch import run_watch
 
     result = run_watch(dry_run=dry_run)
-    console.print(_json.dumps(result, default=str, indent=2))
+    # Plain print: rich wraps long lines and injects styling, which makes the
+    # output unparseable. Same fix as ht-manifest.
+    print(_json.dumps(result, default=str, indent=2))
     if result["n_alerts"] and not result["recipient_configured"]:
         console.print(
             "[yellow]Alerts found but no recipient configured. Set "

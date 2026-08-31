@@ -340,3 +340,25 @@ def test_a_distant_reuse_of_the_same_tray_label_is_not_joined():
              for i in range(30)]
     got = {r["run_name"] for r in expand_submission_runs("0793", rows)}
     assert all("April" not in n for n in got)
+
+
+def test_hela_standards_are_not_discovered_as_a_submission():
+    """Real false alert: '28 consecutive injections flagged in submission HEL'.
+
+    The sample-code fallback exists for plates named without a number, but
+    HeLa standards share a prefix too. Grouping them as a submission compares
+    the QC standards against each other and alerts on a thing that is not a
+    submission — which is how an alert channel gets ignored.
+    """
+    from stan.metrics.ht_outliers import discover_submissions, submission_key
+    assert submission_key("20260827_100spd_HEL-1_S6-A12_1_24121.d") is None
+    rows = [{"run_name": f"20260827_100spd_HEL-{i}_S6-A{i}_1_{100 + i}.d"}
+            for i in range(1, 9)]
+    assert discover_submissions(rows) == []
+
+
+def test_a_real_code_submission_is_still_discovered():
+    from stan.metrics.ht_outliers import discover_submissions
+    rows = [{"run_name": f"20260828_100spd_COH-{i}_S5-A{i}_1_{100 + i}.d"}
+            for i in range(1, 9)]
+    assert discover_submissions(rows) == ["COH"]
