@@ -477,22 +477,48 @@ def analyse_submission(
     return result
 
 
-_SUBMISSION_IN_NAME = re.compile(r"^\d{8}_(\d{2,6})_")
+#: A numeric submission immediately after the date:
+#: `20260827_793_100spd_Hel50_S6-A12_1_24121.d` -> "793".
+_SUBMISSION_IN_NAME = re.compile(r"^\d{8}[_-](\d{2,6})[_-]")
+
+#: The sample-code prefix sitting just before the well token:
+#: `20260828_100spd_COH-6_S5-F1_1_24164.d` -> "COH".
+_SAMPLE_CODE_BEFORE_WELL = re.compile(r"_([A-Za-z]{2,10})-\d+_S\d+-[A-H]\d{1,2}_")
+
+
+def submission_key(run_name: str) -> str | None:
+    """The group this run belongs to, for watching purposes.
+
+    Not every plate carries a numeric submission. Plate S5 on 2026-08-28 was
+    named `20260828_100spd_COH-6_S5-F1_1_24164.d` -- no number after the
+    date, the customer identified only by the sample code `COH`. Looking for
+    digits alone meant that plate was invisible to the watcher, which is
+    exactly the plate that had stopped and needed watching.
+
+    So: the numeric submission when there is one, else the sample-code
+    prefix. Preferring the number keeps a plate from being counted twice
+    when it has both.
+    """
+    name = str(run_name or "")
+    m = _SUBMISSION_IN_NAME.match(name)
+    if m:
+        return m.group(1)
+    m = _SAMPLE_CODE_BEFORE_WELL.search(name)
+    if m:
+        return m.group(1).upper()
+    return None
 
 
 def discover_submissions(rows: list[dict]) -> list[str]:
-    """Submission numbers visible in a set of run names.
+    """Groups worth watching, read straight out of the run names.
 
-    The watcher needs to know what to watch without anyone registering a
-    plate by hand -- a plate that stops at 3am is exactly the one nobody
-    remembered to add to a list. Reads the token out of the filename, which
-    is where the submission already lives:
-    `20260827_793_100spd_Hel50_S6-A12_1_24121.d` -> "793".
+    Nothing has to be registered by hand -- the plate that stops at 3am is
+    exactly the one nobody remembered to add to a list.
     """
     found: dict[str, int] = {}
     for r in rows:
-        m = _SUBMISSION_IN_NAME.match(str(r.get("run_name") or ""))
-        if m:
-            found[m.group(1)] = found.get(m.group(1), 0) + 1
+        key = submission_key(r.get("run_name"))
+        if key:
+            found[key] = found.get(key, 0) + 1
     # Ignore one-off matches: a real submission is a plate, not a single file.
     return sorted(k for k, n in found.items() if n >= 4)

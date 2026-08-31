@@ -246,3 +246,29 @@ def test_large_deficit_is_still_flagged():
     assert "weak_S6-E1_1_500.d" in names
     reason = out["needs_rerun"][0]["outlier_reasons"][0]
     assert reason["pct_diff"] < -70, "lead with the deficit, not the z-score"
+
+
+def test_letter_code_submissions_are_discovered():
+    """Not every plate carries a number.
+
+    Plate S5 on 2026-08-28 was named `20260828_100spd_COH-6_S5-F1_...` --
+    no numeric submission, the customer identified only by the sample code.
+    Looking for digits alone made that plate invisible to the watcher, which
+    is exactly the plate that had stopped and needed watching.
+    """
+    from stan.metrics.ht_outliers import discover_submissions, submission_key
+    assert submission_key("20260828_100spd_COH-6_S5-F1_1_24164.d") == "COH"
+    rows = [{"run_name": f"20260828_100spd_COH-{i}_S5-A{i}_1_{100 + i}.d"}
+            for i in range(1, 7)]
+    assert "COH" in discover_submissions(rows)
+
+
+def test_numeric_submission_wins_over_the_sample_code():
+    """A plate with both must be one group, not two."""
+    from stan.metrics.ht_outliers import submission_key
+    assert submission_key("20260827_793_100spd_SI-1_S6-A1_1_24046.d") == "793"
+
+
+def test_a_name_with_neither_is_skipped():
+    from stan.metrics.ht_outliers import submission_key
+    assert submission_key("blankDia_S1-H8_1_23992.d") is None

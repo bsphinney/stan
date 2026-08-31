@@ -7021,7 +7021,50 @@
 
     /* The list someone actually acts on: which wells to re-inject, and
        the numbers behind the call. */
-    function HTRerunList({ rows, wellByRun, cohortOk, minCohort, zThreshold, minEffect = 0.2 }) {
+    /* CSV of the samples to re-inject. A worklist, so the identifying
+       columns come first and the evidence after -- whoever re-queues these
+       needs plate and well, not a z-score. One row per sample rather than
+       per flag, because you re-run a sample once however many metrics
+       flagged it. */
+    function htCsvCell(v) {
+      const t = v == null ? '' : String(v);
+      return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+    }
+
+    function htExportRerun(rows, wellByRun, submission) {
+      const header = ['run_name', 'plate', 'well', 'usable_file', 'action',
+                      'worst_pct_vs_plate', 'reasons'];
+      const lines = [header.join(',')];
+      for (const r of rows) {
+        const wellFull = wellByRun[r.run_name] || '';
+        const parts = String(wellFull).split('-');
+        const plate = parts.length > 1 ? parts[0] : '';
+        const well = parts.length > 1 ? parts.slice(1).join('-') : wellFull;
+        const reasons = (r.outlier_reasons || []);
+        const worst = reasons.reduce((acc, x) =>
+          (x.pct_diff != null && (acc == null || Math.abs(x.pct_diff) > Math.abs(acc)))
+            ? x.pct_diff : acc, null);
+        const why = reasons.map(x => {
+          const pct = x.pct_diff != null ? ` ${x.pct_diff > 0 ? '+' : ''}${x.pct_diff}% vs plate` : '';
+          return `${x.label}${pct}`;
+        }).join('; ');
+        lines.push([r.run_name, plate, well, r.verdict || '', 're-run',
+                    worst == null ? '' : worst, why].map(htCsvCell).join(','));
+      }
+      const stamp = localDay(new Date());
+      const name = `stan_rerun_${(submission || 'submission').replace(/[^A-Za-z0-9_-]/g, '')}_${stamp}.csv`;
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    }
+
+    function HTRerunList({ rows, wellByRun, cohortOk, minCohort, zThreshold, minEffect = 0.2, submission = '' }) {
       if (!rows || !rows.length) {
         return (
           <div className="card">
@@ -7038,7 +7081,18 @@
       }
       return (
         <div className="card">
-          <h3>Needs re-run — {rows.length} {rows.length === 1 ? 'sample' : 'samples'}</h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between',
+                        alignItems: 'baseline', gap: '0.75rem', flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0 }}>
+              Needs re-run — {rows.length} {rows.length === 1 ? 'sample' : 'samples'}
+            </h3>
+            {rows.length > 0 && (
+              <button onClick={() => htExportRerun(rows, wellByRun, submission)}
+                      style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>
+                Export CSV
+              </button>
+            )}
+          </div>
           <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.6rem', lineHeight: 1.5 }}>
             These ran fine — the <strong>Verdict</strong> column is the health check, and a
             &ldquo;pass&rdquo; there means the file is usable. This list asks a different question:
@@ -7057,7 +7111,7 @@
               <tr>
                 <th>Run</th>
                 <th>Well</th>
-                <th>Verdict</th>
+                <th>Usable file</th>
                 <th>Why it is flagged</th>
               </tr>
             </thead>
@@ -7066,20 +7120,31 @@
                 <tr key={r.id || r.run_name}>
                   <td style={{ fontFamily: 'monospace', fontSize: '0.78rem', wordBreak: 'break-all' }}>{r.run_name}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>{wellByRun[r.run_name] || '—'}</td>
-                  <td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {/* The badge answers "is the file usable" — a pass here is
+                        why these rows look contradictory at a glance. The
+                        action sits under it so the row says what to DO. */}
                     <span className={`badge badge-${r.verdict === 'fail' ? 'fail' : r.verdict === 'warn' ? 'warn' : 'pass'}`}>
                       {r.verdict || '—'}
                     </span>
+                    <div style={{ marginTop: '0.25rem', fontSize: '0.72rem', fontWeight: 600,
+                                  letterSpacing: '0.03em', color: 'var(--accent, #e0a33e)' }}>
+                      re-run
+                    </div>
                   </td>
                   <td style={{ fontSize: '0.78rem' }}>
                     {(r.outlier_reasons || []).map((x, i) => (
                       <div key={i} style={{ marginBottom: '0.2rem' }}>
                         <strong>{x.label}</strong>{' '}
-                        <span style={{ fontVariantNumeric: 'tabular-nums' }}>
-                          {htFull(x.value)} vs median {htFull(x.median)}
-                        </span>{' '}
-                        <span style={{ color: 'var(--muted)' }}>
-                          ({x.side === 'below' ? '▼' : '▲'} {x.side}, z = {htFull(x.z)})
+                        {x.pct_diff != null && (
+                          <span style={{ fontWeight: 700, fontVariantNumeric: 'tabular-nums',
+                                         color: x.pct_diff < 0 ? '#e8833a' : '#4aa3df' }}>
+                            {x.pct_diff > 0 ? '+' : ''}{x.pct_diff}% vs plate
+                          </span>
+                        )}{' '}
+                        <span style={{ fontVariantNumeric: 'tabular-nums', color: 'var(--muted)' }}>
+                          ({htFull(x.value)} vs plate median {htFull(x.median)}
+                          {x.z != null && <>, z = {htFull(x.z)}</>})
                         </span>
                         {x.detail && <span style={{ color: 'var(--muted)' }}> · {x.detail}</span>}
                       </div>
@@ -7341,7 +7406,9 @@
           {data && data.n_samples > 0 && (
             <HTRerunList rows={data.needs_rerun} wellByRun={wellByRun}
                          cohortOk={data.cohort_ok} minCohort={data.min_cohort}
-                         zThreshold={data.z_threshold} />
+                         zThreshold={data.z_threshold}
+                         minEffect={data.min_effect}
+                         submission={data.query} />
           )}
         </div>
       );
