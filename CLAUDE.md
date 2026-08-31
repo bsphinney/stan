@@ -593,6 +593,26 @@ Instrument PCs run Windows with PowerShell 5.1. When editing `.ps1` files:
 - **No inline ternary `if`** — use separate `if`/`else` blocks
 - **No `Where-Object { }` pipelines** — use explicit `foreach` loops
 - **Use `Join-Path`** instead of string concatenation for paths
+- **`return ,$collection` when returning a set/list from a function** —
+  PowerShell unrolls collections on return, so a plain `return $set`
+  hands back a bare `String` when it holds one item and `$null` when it
+  is empty. The caller's `.Add()` then throws on a fixed-size result.
+  Only needed when the caller does *not* wrap the call in `@()`; adding
+  the comma to a plain array whose caller *does* wrap turns an empty
+  result into a 1-element array, which is its own bug.
+- **Never pass a PS array where .NET wants `string[]`** — PowerShell
+  prefers the scalar overload and stringifies the array to
+  `"System.Object[]"`. `[datetime]::TryParseExact($s, @("MMMyy","MMMMyy"),
+  ...)` silently matches nothing. Loop the formats one at a time.
+
+Both of the above shipped as bugs in `scripts/flinders_copy_tray.ps1` and
+were caught only because `tests/test_flinders_copy_tray.ps1` exercises the
+real functions. **There is no PowerShell on the dev Mac**, so verify `.ps1`
+work with a portable `pwsh` (`PowerShell/PowerShell` release tarball,
+extract and run — no install, no sudo): parse with
+`[System.Management.Automation.Language.Parser]::ParseFile`, then load the
+functions out of the shipped file through the AST and test them. A parse
+check plus tests is stronger evidence than a blind full-file rewrite.
 
 ---
 
