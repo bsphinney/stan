@@ -160,6 +160,27 @@ Set-Content -LiteralPath (Join-Path $atRoot.FullName "nested/frames.bin") -Value
 Check "a file growing changes it" ($before -ne (Get-Sig $atRoot.FullName)) "True"
 Check "missing path is survivable" (Get-Sig (Join-Path $sandbox "gone")) "0/0"
 
+Write-Host ""
+Write-Host "[5b] still-being-acquired guard"
+# The size check alone is not enough: a .d can sit unchanged for
+# minutes during LC equilibration, and copying then would archive a
+# truncated run permanently, since it gets marked done.
+$acq = New-Item -ItemType Directory -Force -Path (Join-Path $SourceDir "Aug26/mid_acquisition_1_99999.d")
+Check "a .d with no tdf_bin is not held back" (Test-StillWriting $acq.FullName) "False"
+$bin = Join-Path $acq.FullName "analysis.tdf_bin"
+Set-Content -LiteralPath $bin -Value "data" -NoNewline
+Check "an unlocked tdf_bin is finished" (Test-StillWriting $acq.FullName) "False"
+# Hold it the way timsControl would during acquisition.
+$held = $null
+try { $held = [System.IO.File]::Open($bin, "Open", "ReadWrite", "None") } catch { $held = $null }
+if ($null -ne $held) {
+    Check "an open tdf_bin means still acquiring" (Test-StillWriting $acq.FullName) "True"
+    $held.Close(); $held.Dispose()
+    Check "and it is released once the handle closes" (Test-StillWriting $acq.FullName) "False"
+} else {
+    Write-Host "  skip lock case (this OS does not enforce share modes)"
+}
+
 # ---- 6. the across-passes memory ---------------------------------
 # This is what replaces the resident watcher's 60-second timer: a run
 # is copied when this pass's signature matches what the previous pass

@@ -11,6 +11,34 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.47] — 2026-08-31
+
+### Added
+- **A run is not copied while anything still holds its data file open.**
+  Size-across-passes was the only completion signal, and it has a gap: a
+  `.d` can sit almost unchanged for several minutes early in a run, during
+  LC equilibration before MS data starts flowing. Two passes would then
+  agree, the partial run would be copied, marked done, and never looked at
+  again — a truncated run in the archive permanently. Now both signals
+  must agree: the tree stopped changing *and* nothing holds
+  `analysis.tdf_bin` open. timsControl keeps that file open for the whole
+  acquisition (~680 MB for a 100 SPD HeLa run), so an exclusive open fails
+  outright while acquiring. This is an OS-level question, not a guess about
+  Bruker's format, and the lock is never actually held during a run. A wash
+  can finish without ever writing an `analysis.tdf_bin`, so a missing one
+  is not read as "still writing" — those fall back to the size check.
+
+### Notes
+- **Already-archived runs are not re-transferred.** robocopy skips files
+  whose size and timestamp already match, so the first pass over a backlog
+  is a fast comparison that fills gaps rather than a re-copy.
+- **`/E`, never `/MIR` or `/PURGE`.** The `.d` folders on Flinders contain
+  `.features` sidecars written on Hive by 4DFF that do not exist in
+  `D:\Data`; a mirroring switch would delete them. `/E` leaves extra files
+  at the destination alone. Do not change this.
+
+---
+
 ## [1.0.46] — 2026-08-31
 
 ### Fixed

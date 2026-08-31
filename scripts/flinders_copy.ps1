@@ -240,6 +240,38 @@ function New-Candidate($Dir, $Parent) {
     return $item
 }
 
+function Test-StillWriting($Path) {
+    # Is the instrument still writing into this .d?
+    #
+    # The size-across-passes check is the primary signal, but it has a
+    # gap: a .d can sit almost unchanged for several minutes early in a
+    # run -- during LC equilibration, before MS data starts flowing --
+    # and copying then would archive a truncated run PERMANENTLY,
+    # because it gets marked done and never looked at again.
+    #
+    # analysis.tdf_bin is the file that grows (~680 MB for a 100 SPD
+    # HeLa run) and timsControl holds it open for the whole
+    # acquisition, so if we cannot get an exclusive handle, something
+    # still has it. That is an OS-level question, not a guess about
+    # Bruker's format. We never actually hold the lock during a run --
+    # the open fails outright -- and we release it immediately when it
+    # succeeds.
+    #
+    # A wash can finish without ever writing one, so a missing
+    # analysis.tdf_bin is NOT read as "still writing"; those fall back
+    # to the size check alone.
+    $bin = Join-Path $Path "analysis.tdf_bin"
+    if (-not (Test-Path -LiteralPath $bin)) { return $false }
+    try {
+        $handle = [System.IO.File]::Open($bin, "Open", "Read", "None")
+        $handle.Close()
+        $handle.Dispose()
+        return $false
+    } catch {
+        return $true
+    }
+}
+
 function Get-Candidates {
     # Recently-touched .d folders we have not archived yet.
     #
@@ -528,7 +560,13 @@ $growing = 0
 foreach ($item in Get-Candidates) {
     $sig = Get-Sig $item.Dir.FullName
     $now[$item.Rel] = $sig
-    if ($was[$item.Rel] -eq $sig) { $ready += $item } else { $growing += 1 }
+    # Two independent signals have to agree before we touch it: the
+    # tree stopped changing, AND nothing holds the data file open.
+    if ($was[$item.Rel] -eq $sig -and -not (Test-StillWriting $item.Dir.FullName)) {
+        $ready += $item
+    } else {
+        $growing += 1
+    }
 }
 Write-Map $SizeFile $now
 
