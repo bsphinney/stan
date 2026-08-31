@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+psycopg2-binary
+typer
+rich
+pyyaml
+polars
+requests
+huggingface_hub
