@@ -6531,13 +6531,41 @@
     const HT_INSTRUMENT = 'timsTOF HT';
     const HT_STORE_KEY = 'stan.ht.submission';
 
+    /* Share links land straight on this tab: /?tab=ht&q=0793&token=…
+       The token is minted per submission by the server, so it is carried
+       through to the API rather than interpreted here. A collaborator with
+       no account has nothing else to offer the read-only host. */
+    const htLinkParams = () => {
+      try {
+        const p = new URLSearchParams(window.location.search);
+        return {
+          tab: (p.get('tab') || '').trim(),
+          q: (p.get('q') || '').trim(),
+          token: (p.get('token') || '').trim(),
+        };
+      } catch (e) { return { tab: '', q: '', token: '' }; }
+    };
+    /* Only ever link out to a same-origin path or an http(s) URL the server
+       handed us — never whatever string arrives in login_url, which would
+       make a javascript: URL clickable if the response were ever tampered
+       with. */
+    const htSafeUrl = u => {
+      const s = String(u || '');
+      if (s.startsWith('/')) return s;
+      return /^https?:\/\//i.test(s) ? s : null;
+    };
+
     /* Sequential ramps, both luminance-ordered and colourblind-safe.
        No red-green anywhere — a fair number of mass spectrometrists
        cannot read one. */
     const HT_VIRIDIS = ['#440154', '#482878', '#3e4989', '#31688e', '#26828e',
                         '#1f9e89', '#35b779', '#6ece58', '#b5de2b', '#fde725'];
-    const HT_WARM = ['#fff7ec', '#fee8c8', '#fdd49e', '#fdbb84', '#fc8d59',
-                     '#ef6548', '#d7301f', '#b30000', '#7f0000'];
+    /* Reversed OrRd: dark at the LOW end, light at the high end, so it runs
+       the same direction as viridis. Both ramps then obey one rule — darker
+       is less — and a glance across the plate never has to remember which
+       scale a well belongs to before knowing whether it is a good number. */
+    const HT_WARM = ['#7f0000', '#b30000', '#d7301f', '#ef6548', '#fc8d59',
+                     '#fdbb84', '#fdd49e', '#fee8c8', '#fff7ec'];
     /* Categorical pair for the queue chart. Blue/orange, not red/green. */
     const HT_SAMPLE_C = '#38bdf8';
     const HT_STD_C = '#fb923c';
@@ -6635,11 +6663,52 @@
       return (
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', alignItems: 'baseline', gap: '0.5rem' }}>
-            <h3 style={{ marginBottom: '0.4rem' }}>Plate {plate.plate} — {plate.n_wells} wells</h3>
+            <h3 style={{ marginBottom: '0.4rem' }}>
+              Plate {plate.plate} — {hasCompleteness ? `${plate.n_wells}/${plate.n_expected} wells acquired` : `${plate.n_wells} wells`}
+            </h3>
             <span style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
               {nSample} samples coloured by {metricLabel} · {nQc} HeLa standards coloured by precursors
             </span>
           </div>
+
+          {/* A plate can stop part-way — an overpressure trip, an aborted
+              batch — and then the first question is not the edge effect, it
+              is which wells still need injecting. So this sits above it, and
+              names them. */}
+          {hasCompleteness && !plate.is_complete && (
+            <div style={{
+              background: 'var(--bg)', border: '1px solid var(--border)',
+              borderRadius: '0.5rem', padding: '0.7rem 0.9rem', margin: '0.5rem 0 0.9rem',
+            }}>
+              <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div style={{ fontSize: '1.5rem', fontWeight: 700, lineHeight: 1.1, fontVariantNumeric: 'tabular-nums' }}>
+                  {plate.n_wells}/{plate.n_expected}
+                </div>
+                <div style={{ fontSize: '0.82rem', lineHeight: 1.5, flex: '1 1 280px' }}>
+                  <div>
+                    <strong>{plate.pct_complete}% acquired</strong> — {plate.n_missing}{' '}
+                    {plate.n_missing === 1 ? 'well' : 'wells'} still to run.
+                  </div>
+                  <div style={{ color: 'var(--muted)' }}>
+                    Plate statistics below cover the {plate.n_wells} wells that exist so far, so
+                    the medians and the edge comparison will move as the rest come in.
+                  </div>
+                </div>
+              </div>
+              <div style={{
+                height: '8px', borderRadius: '999px', overflow: 'hidden',
+                background: 'var(--border)', margin: '0.6rem 0 0.5rem',
+              }}>
+                <div style={{ width: `${Math.max(0, Math.min(100, plate.pct_complete))}%`, height: '100%', background: 'var(--accent)' }} />
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
+                Remaining:{' '}
+                <span style={{ fontFamily: 'monospace', color: 'var(--text)', wordBreak: 'break-word' }}>
+                  {(plate.missing_wells || []).join(' ')}
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* The edge effect is the question this map exists to answer,
               so it is stated as a number before the grid, not hidden in
@@ -6757,7 +6826,8 @@
           </div>
           <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.6rem', lineHeight: 1.5 }}>
             The two ramps are independent — a sample and a standard with the same colour have
-            nothing in common. Wells outlined in white with <strong>!</strong> are flagged below.
+            nothing in common — but both run the same direction, darker for less.
+            Wells outlined in white with <strong>!</strong> are flagged below.
             Dotted outlines are wells with no run. Hover any well for the run name and value.
             Injection order is randomised against plate position, so this map is not run order.
           </div>
@@ -7015,11 +7085,54 @@
       );
     }
 
+    /* The link an operator hands a customer. Shown only when the server
+       minted a token for this submission — a collaborator already viewing
+       through a share link is not given the means to mint more, and the
+       API withholds the token from them, so this simply does not render. */
+    function HTShareLink({ query, token }) {
+      const [copied, setCopied] = useState(false);
+      const url = `${window.location.origin}/?tab=ht&q=${encodeURIComponent(query)}&token=${encodeURIComponent(token)}`;
+      const copy = () => {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url)
+              .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); })
+              .catch(() => { /* fall through to manual select */ });
+            return;
+          }
+        } catch (e) { /* no clipboard: the field is selectable */ }
+        setCopied(false);
+      };
+      return (
+        <div style={{ marginTop: '0.9rem' }}>
+          <div style={{ fontSize: '0.78rem', color: 'var(--muted)', marginBottom: '0.25rem' }}>
+            Share link for submission {query} — opens this plate only, no account needed.
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <input
+              type="text" readOnly value={url}
+              onFocus={e => e.target.select()}
+              style={{
+                flex: '1 1 420px', padding: '0.35rem 0.5rem', background: 'var(--bg)',
+                color: 'var(--muted)', border: '1px solid var(--border)',
+                borderRadius: '0.3rem', fontSize: '0.75rem', fontFamily: 'monospace',
+              }}
+            />
+            <button type="button" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+          </div>
+        </div>
+      );
+    }
+
     function HTTab() {
-      const initialQuery = (() => {
+      /* A share link wins over the remembered submission: someone opening a
+         link sent to them wants that plate, not the last one they typed. */
+      const link = htLinkParams();
+      const initialQuery = link.q || (() => {
         try { return localStorage.getItem(HT_STORE_KEY) || ''; } catch (e) { return ''; }
       })();
       const [query, setQuery] = useState(initialQuery);
+      const shareToken = link.token;
       const [metric, setMetric] = useState('ms1_total_tic');
       /* One request object drives the fetch, so typing a new submission
          and switching the plate metric go through the same path. */
@@ -7035,30 +7148,45 @@
         setError(null);
         const url = `${API}/api/ht/submission?q=${encodeURIComponent(req.q)}`
           + `&instrument=${encodeURIComponent(HT_INSTRUMENT)}`
-          + `&metric=${encodeURIComponent(req.metric)}`;
+          + `&metric=${encodeURIComponent(req.metric)}`
+          + (shareToken ? `&token=${encodeURIComponent(shareToken)}` : '');
         fetch(url)
           .then(r => r.json().then(j => ({ ok: r.ok, status: r.status, j }))
                              .catch(() => ({ ok: false, status: r.status, j: null })))
           .then(({ ok, status, j }) => {
             if (cancelled) return;
-            if (!ok) throw new Error((j && j.detail) || `HTTP ${status}`);
+            if (!ok) {
+              /* Two different 403 shapes reach here: the read-only gate puts
+                 login_url at the top level with a string detail, the endpoint
+                 puts both inside detail. Read either rather than rendering
+                 "[object Object]" at someone who just needs to sign in. */
+              const detail = j && j.detail;
+              const err = new Error(
+                (typeof detail === 'string' && detail)
+                || (detail && detail.message)
+                || `HTTP ${status}`);
+              err.status = status;
+              err.loginUrl = htSafeUrl((j && j.login_url)
+                || (detail && typeof detail === 'object' && detail.login_url));
+              throw err;
+            }
             setData(j);
             setLoading(false);
             try { localStorage.setItem(HT_STORE_KEY, req.q); } catch (e) { /* private mode */ }
           })
           .catch(e => {
             if (cancelled) return;
-            setError(e.message || String(e));
+            setError({ message: e.message || String(e), status: e.status || 0, loginUrl: e.loginUrl || null });
             setData(null);
             setLoading(false);
           });
         return () => { cancelled = true; };
-      }, [req]);
+      }, [req, shareToken]);
 
       const submit = () => {
         const qq = String(query || '').trim();
         if (qq.length < 2) {
-          setError('Enter at least 2 characters of the submission number.');
+          setError({ message: 'Enter at least 2 characters of the submission number.', status: 0, loginUrl: null });
           setData(null);
           return;
         }
@@ -7122,7 +7250,30 @@
             </div>
 
             {loading && <div style={{ marginTop: '0.7rem', color: 'var(--muted)' }}>Loading submission…</div>}
-            {error && <div style={{ marginTop: '0.7rem', color: 'var(--fail)' }}>{error}</div>}
+            {error && error.status !== 403 && (
+              <div style={{ marginTop: '0.7rem', color: 'var(--fail)' }}>{error.message}</div>
+            )}
+            {error && error.status === 403 && (
+              /* Read-only host. Nothing here is a bug the operator can fix by
+                 retrying, so say what is needed instead of showing an error. */
+              <div style={{
+                marginTop: '0.9rem', background: 'var(--bg)', border: '1px solid var(--border)',
+                borderRadius: '0.5rem', padding: '0.8rem 0.9rem', fontSize: '0.85rem', lineHeight: 1.6,
+              }}>
+                <div style={{ fontWeight: 600, marginBottom: '0.2rem' }}>Sign-in required</div>
+                <div style={{ color: 'var(--muted)' }}>{error.message}</div>
+                <div style={{ color: 'var(--muted)', marginTop: '0.3rem' }}>
+                  Submission data names a customer's samples, so this host does not serve it
+                  publicly. If a share link for this submission was sent to you, open that link
+                  again — it carries the token that unlocks this one plate.
+                </div>
+                {error.loginUrl && (
+                  <a href={error.loginUrl} style={{ color: 'var(--accent)', fontWeight: 600, display: 'inline-block', marginTop: '0.4rem' }}>
+                    Sign in
+                  </a>
+                )}
+              </div>
+            )}
 
             {data && data.n_samples > 0 && (
               <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginTop: '0.9rem' }}>
@@ -7134,6 +7285,19 @@
                 <StatTile label="Cohort" value={data.cohort_size}
                           sub={data.cohort_ok ? 'large enough to score' : `below ${data.min_cohort} — flags are weak`} />
               </div>
+            )}
+
+            {data && data.shared_view && (
+              <div style={{
+                marginTop: '0.9rem', fontSize: '0.8rem', color: 'var(--muted)',
+                borderLeft: '3px solid var(--accent)', paddingLeft: '0.6rem', lineHeight: 1.5,
+              }}>
+                Shared view — you are seeing submission <strong style={{ color: 'var(--text)' }}>{data.query}</strong> through
+                a share link. It covers this submission only.
+              </div>
+            )}
+            {data && data.n_samples > 0 && data.share_token && (
+              <HTShareLink query={data.query} token={data.share_token} />
             )}
           </div>
 
