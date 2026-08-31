@@ -11,67 +11,81 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
-## [1.0.42] — 2026-08-31
+## [1.0.43] — 2026-08-31
 
 ### Added
-- **`scripts/flinders_copy_tray.ps1` — a notification-area app that copies
-  finished timsTOF acquisitions to the Flinders archive.** Replaces running
-  `robocopy D:\Data ...` over the whole watch dir by hand: leave it in the
-  system tray and each `.d` is archived once acquisition ends.
+- **`scripts/flinders_copy.ps1` — copies finished timsTOF acquisitions from
+  `D:\Data` to the Flinders archive.** Replaces running
+  `robocopy D:\Data ...` over the whole watch dir by hand. Set up by
+  double-clicking `scripts/install_flinders_copy.bat`; removed with
+  `install_flinders_copy.bat /remove`.
+- **Runs as a scheduled task every 5 minutes, with nothing resident between
+  passes.** The process lives a few seconds and exits, so it cannot leak,
+  hang, or be left paused by someone who forgot. It returns by itself after
+  a reboot, which a tray app in the Startup folder does not reliably do —
+  the deciding argument, since these PCs get rebooted after Bruker service
+  visits and nobody remembers to restart things.
 - **Pure PowerShell.** No Python, no pip, no venv, no STAN install, no
   database — the only external program is `robocopy.exe`, which ships with
-  Windows. It runs on a PC where STAN was never installed and needs no
-  admin rights. This is deliberate: STAN's own watcher on the instrument PC
-  has been implicated in timsTOF freezes (README Mode A warning), so the
-  copier stays completely outside it. Asserted by the test suite, which
-  greps the shipped code for `python`, `pip`, `stan.db`, `sqlite` and `venv`.
-- **Finished-acquiring is decided by size, not mtime.** A Bruker `.d` is a
-  directory, and its timestamp does not move when a file inside it grows,
-  so the app totals file count + bytes for the tree and waits for 60 s of
-  no change — the same rule as the watcher's `stable_secs`. Listing a
-  directory does not open the files, so it does not contend with
-  acquisition.
+  Windows, and it needs no admin rights. Deliberate: STAN's own watcher on
+  the instrument PC has been implicated in timsTOF freezes (README Mode A
+  warning), so the copier stays entirely outside it. Asserted by the tests,
+  which grep the shipped code for `python`, `pip`, `stan.db`, `sqlite` and
+  `venv`, and for any `Start-Process` that is not robocopy.
+- **The task runs as the logged-on user, never SYSTEM.** Mapped network
+  drives are per-session, so a SYSTEM task could not see the Flinders drive
+  at all. Pinned by a test.
+- **Finished-acquiring is decided by size across passes, not mtime.** A
+  Bruker `.d` is a directory and its timestamp does not move when a file
+  inside it grows, so each pass records the tree's file count and byte
+  total and copies a run once that total matches what the previous pass saw
+  five minutes earlier. That is a stronger signal than the 60-second timer a
+  resident watcher would use, at the cost of up to ~10 minutes of latency,
+  which does not matter for an archive.
 - **Runs land in the month folder the archive already uses.** `tTOF_HT` is
   nested by month and the spellings drifted — `June26`, `jun25`, `JUL26`,
-  `july26`, `March25`, `Mar26` all exist. The app matches an existing
+  `july26`, `March25`, `Mar26` all exist. The copier matches an existing
   folder for that month instead of adding a spelling beside it, and takes
   the month from the run's own `YYYYMMDD` name prefix, so a run acquired at
   23:50 on the 31st is not filed under the next month.
-- **Low impact while acquiring.** One directory listing a minute when idle;
-  recursion only into `.d` folders touched in the last 72 h. Copies run one
-  at a time through `robocopy /IPG:20`, which paces the transfer so it
-  yields network bandwidth back to the instrument, at `BelowNormal`
-  priority, spawned in the background and polled so the tray never freezes
-  on a multi-GB run.
+- **Low impact while acquiring.** Per pass: one listing of `D:\Data`, then a
+  recursive size total of only those `.d` folders touched in the last 72 h.
+  Listing a directory does not open the files, so it does not contend with
+  acquisition. Copies run one at a time through `robocopy /IPG:20`, which
+  paces the transfer so it yields network bandwidth back to the instrument,
+  at `BelowNormal` priority.
 - **Copy only.** The source in `D:\Data` is never renamed, modified or
   deleted. Archived run names are appended to a plain text file, one per
-  line, so a restart does not re-copy.
-- **It asks where Flinders is, once.** Startup looks through the mapped
-  network drives for one that actually contains `tTOF_HT` and offers it for
-  confirmation, then remembers it in `%USERPROFILE%\STAN\flinders_dest.txt`.
-  The saved answer is re-checked every launch, so a remapped drive letter
-  re-prompts rather than silently copying somewhere wrong.
-- **`tests/test_flinders_copy_tray.ps1`** — loads the real functions out of
-  the shipped `.ps1` through the PowerShell AST, so the tests cannot drift
-  from what ships. The month cases are the actual folder names in
+  line, so a restart never re-copies.
+- **Proof of life without a tray icon.** `logs\flinders_status.txt` is
+  overwritten every pass, so its timestamp shows the task is alive even
+  when nothing has happened for days; `logs\flinders_copy.log` is appended
+  only on real events, so it stays readable at 288 passes a day. Both sit
+  under the tree that syncs to the Hive mirror, so a failure is diagnosable
+  remotely without touching the instrument PC. Pausing is creating
+  `flinders_pause.txt`.
+- **`tests/test_flinders_copy.ps1`** — loads the real functions out of the
+  shipped `.ps1` through the PowerShell AST, so the tests cannot drift from
+  what ships. The month cases are the actual folder names in
   `/nfs/lssc0/flinders/proteomics/Data/raw_data/tTOF_HT`. Run with
-  `pwsh -NoProfile -File tests/test_flinders_copy_tray.ps1`; not part of
-  the pytest suite, since CI is Python-only.
+  `pwsh -NoProfile -File tests/test_flinders_copy.ps1`; not part of the
+  pytest suite, since CI is Python-only.
 
 ### Notes
-- v1.0.41 shipped a first cut of this with a hand-built WinForms
-  drive-picker dialog. It was replaced the same day with the version above,
-  a third of the size, after Brett asked for the most minimal thing that
-  could work on an acquiring instrument PC. The picker became one
-  `Microsoft.VisualBasic` `InputBox` call, the JSON config and state files
-  became two lines of plain text, and the poll dropped from every 10 s to
-  every 60 s. Two bugs died with the rewrite that the tests had caught
-  first, both PowerShell semantics rather than logic: a function returning
-  a `HashSet` got unrolled into a bare `String` (so nothing was ever
-  recorded as archived and the same `.d` would re-copy forever), and
-  `TryParseExact` silently matched no month at all, because PowerShell
-  binds a PS array to the single-format overload and stringifies it to
-  `"System.Object[]"`. Both traps are now recorded in CLAUDE.md.
+- v1.0.41 and v1.0.42 shipped this as a resident system-tray app, first with
+  a hand-built WinForms drive picker and then at a third the size. Both were
+  replaced the same day: asked which design was better for a PC that is
+  acquiring data, the honest answer was that the footprint difference is
+  negligible — both do identical I/O — but a scheduled task cannot leak or
+  be left paused, and comes back after a reboot on its own. The tray
+  versions are in git history if the glanceable status icon is ever wanted
+  back.
+- Two PowerShell traps found while building this are now recorded in
+  CLAUDE.md: returning a collection from a function unrolls it (a `HashSet`
+  came back as a bare `String`, so nothing was ever recorded as archived and
+  the same `.d` would re-copy forever), and passing a PS array where .NET
+  wants `string[]` binds the scalar overload and stringifies it to
+  `"System.Object[]"` (so `TryParseExact` matched no month at all).
 
 ---
 

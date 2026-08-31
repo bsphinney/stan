@@ -605,8 +605,8 @@ Instrument PCs run Windows with PowerShell 5.1. When editing `.ps1` files:
   `"System.Object[]"`. `[datetime]::TryParseExact($s, @("MMMyy","MMMMyy"),
   ...)` silently matches nothing. Loop the formats one at a time.
 
-Both of the above shipped as bugs in `scripts/flinders_copy_tray.ps1` and
-were caught only because `tests/test_flinders_copy_tray.ps1` exercises the
+Both of the above shipped as bugs in `scripts/flinders_copy.ps1` and
+were caught only because `tests/test_flinders_copy.ps1` exercises the
 real functions. **There is no PowerShell on the dev Mac**, so verify `.ps1`
 work with a portable `pwsh` (`PowerShell/PowerShell` release tarball,
 extract and run — no install, no sudo): parse with
