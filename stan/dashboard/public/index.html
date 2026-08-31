@@ -7064,6 +7064,71 @@
       setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 
+    /* Searches recorded against this submission. Answers "was this searched,
+       as what, and where did it go?" -- which had no answer short of digging
+       through Hive directories and FRAN. The organism is the headline: it is
+       the one search parameter STAN cannot derive, and a submission searched
+       against the wrong FASTA looks healthy in every metric STAN collects. */
+    function HTSearchHistory({ submission, token }) {
+      const qs = `q=${encodeURIComponent(submission)}` + (token ? `&token=${encodeURIComponent(token)}` : '');
+      const { data, error } = useFetch(`/api/ht/searches?${qs}`, [submission, token]);
+      if (error || !data) return null;
+      const rows = data.searches || [];
+      if (!rows.length) {
+        return (
+          <div className="card" style={{ marginBottom: '1rem' }}>
+            <h3>Search history</h3>
+            <p style={{ color: 'var(--muted)', fontSize: '0.85rem', margin: 0 }}>
+              No search recorded for this submission yet. The pipeline skill
+              records one when it finishes, including the organism it searched
+              against.
+            </p>
+          </div>
+        );
+      }
+      return (
+        <div className="card" style={{ marginBottom: '1rem' }}>
+          <h3>Search history</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Searched</th><th>Organism</th><th>Engine</th>
+                <th>Files</th><th>FRAN</th><th>By</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.id}>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {String(r.searched_at || '').slice(0, 16).replace('T', ' ')}
+                  </td>
+                  <td><strong>{r.organism || <span style={{ color: 'var(--muted)' }}>not recorded</span>}</strong></td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {r.engine || '—'}{r.engine_version ? ` ${r.engine_version}` : ''}
+                  </td>
+                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{r.n_files ?? '—'}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>
+                    {r.fran_url
+                      ? <a href={r.fran_url} target="_blank" rel="noopener noreferrer">
+                          {r.fran_status === 'ingested' ? 'View in FRAN' : (r.fran_status || 'FRAN')} →
+                        </a>
+                      : <span style={{ color: 'var(--muted)' }}>{r.fran_status || 'not sent'}</span>}
+                  </td>
+                  <td style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>{r.searched_by || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {rows.some(r => r.fran_status && r.fran_status !== 'ingested') && (
+            <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.6rem' }}>
+              A staged search is waiting on FRAN's ingest cron, which runs every
+              four hours — the link works once it has been taken.
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function HTRerunList({ rows, wellByRun, cohortOk, minCohort, zThreshold, minEffect = 0.2, submission = '' }) {
       if (!rows || !rows.length) {
         return (
@@ -7404,11 +7469,14 @@
           {data && data.n_samples > 0 && data.queue && <HTQueueChart queue={data.queue} />}
 
           {data && data.n_samples > 0 && (
-            <HTRerunList rows={data.needs_rerun} wellByRun={wellByRun}
-                         cohortOk={data.cohort_ok} minCohort={data.min_cohort}
-                         zThreshold={data.z_threshold}
-                         minEffect={data.min_effect}
-                         submission={data.query} />
+            <>
+              <HTSearchHistory submission={data.query} token={shareToken} />
+              <HTRerunList rows={data.needs_rerun} wellByRun={wellByRun}
+                           cohortOk={data.cohort_ok} minCohort={data.min_cohort}
+                           zThreshold={data.z_threshold}
+                           minEffect={data.min_effect}
+                           submission={data.query} />
+            </>
           )}
         </div>
       );

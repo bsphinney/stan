@@ -110,6 +110,40 @@ Write somewhere else and let `fran_deposit.py stage` symlink it into
 
 ---
 
+## 4b. Tell STAN it was searched
+
+After depositing to FRAN, record the search so the HT tab can show it. The
+**organism** is the reason this step exists: it is the one search parameter
+STAN cannot derive, and a submission searched against the wrong FASTA looks
+perfectly healthy in every metric STAN collects.
+
+```bash
+stan ht-record-search 0793 \
+  --organism "Homo sapiens" \
+  --fasta /quobyte/proteomics-grp/de-limp/fasta/UP000005640_homo_sapiens_opg_2026_05.fasta \
+  --engine DIA-NN --engine-version 2.3.0 \
+  --n-files 120 --out /path/to/search_out \
+  --fran-status staged --by "$(id -un)@ucdavis.edu"
+```
+
+Once FRAN's cron has ingested it and you know the search id, record that too —
+it turns the HT tab's FRAN column into a direct link to the run:
+
+```bash
+stan ht-record-search 0793 --organism "Homo sapiens" \
+  --fran-status ingested --fran-search-id <FRAN search id>
+```
+
+`--fran-url` overrides the link entirely if you have one. Without a search id
+the link falls back to FRAN's submission page.
+
+If the command reports that `ht_searches` is missing, the migration has not
+been applied yet (`migrations/2026-08-31_ht_searches.sql`, PG owner only).
+The search itself is unaffected — recording is best-effort by design, and
+must never be the thing that breaks a search.
+
+---
+
 ## 5. Re-runs
 
 Re-injected samples are named `0793_rerun` with the sample name, e.g.

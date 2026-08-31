@@ -1424,6 +1424,30 @@ async def api_ht_submission(
     return result
 
 
+@app.get("/api/ht/searches")
+async def api_ht_searches(
+    request: Request, q: str, token: str | None = None,
+) -> dict:
+    """Searches recorded against a submission, newest first."""
+    from stan.dashboard.auth import is_privileged
+    from stan.dashboard.ht_share import verify_token
+    from stan.db import fran_link, get_ht_searches
+
+    q = (q or "").strip()
+    shared = bool(token) and verify_token(q, token)
+    if is_readonly() and not shared and not is_privileged(request):
+        from stan.dashboard.readonly import LOGIN_URL
+        raise HTTPException(status_code=403,
+                            detail={"message": "Sign in or use a share link.",
+                                    "login_url": LOGIN_URL})
+    rows = get_ht_searches(submission=q, limit=50)
+    for r in rows:
+        # Fill a link for rows recorded before one was stored.
+        if not r.get("fran_url"):
+            r["fran_url"] = fran_link(r.get("fran_search_id"), r.get("submission"))
+    return {"submission": q, "searches": rows, "n": len(rows)}
+
+
 @app.get("/api/ht/manifest")
 async def api_ht_manifest(
     request: Request, q: str, include: str = "samples",

@@ -1303,3 +1303,41 @@ def probe_pg(timeout: int = 8) -> bool:
 def use_pg() -> bool:
     """Return True when the PG backend should be used for reads and writes."""
     return os.environ.get("STAN_DB_BACKEND", "").lower() == "pg"
+
+
+def insert_ht_search_pg(row: dict) -> str:
+    """Insert one recorded HT search into PG."""
+    cols = list(row.keys())
+    marks = ", ".join(["%s"] * len(cols))
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO ht_searches ({', '.join(cols)}) VALUES ({marks})",
+            [row[c] for c in cols],
+        )
+    return row["id"]
+
+
+def get_ht_searches_pg(submission: str | None = None, limit: int = 200) -> list[dict]:
+    """Recorded HT searches from PG, newest first."""
+    sql = "SELECT * FROM ht_searches"
+    args: list = []
+    if submission:
+        sql += " WHERE submission = %s"
+        args.append(submission)
+    sql += " ORDER BY searched_at DESC LIMIT %s"
+    args.append(int(limit))
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(sql, args)
+        names = [d[0] for d in cur.description]
+        # Normalise timestamps to ISO strings: psycopg2 returns datetime
+        # where SQLite returns text, and the dashboard renders whatever it
+        # is given. That mismatch has bitten this codebase before.
+        out = []
+        for r in cur.fetchall():
+            d = dict(zip(names, r))
+            for k, v in list(d.items()):
+                if hasattr(v, "isoformat"):
+                    d[k] = v.isoformat()
+            out.append(d)
+        return out
+
