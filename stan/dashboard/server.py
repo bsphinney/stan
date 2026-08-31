@@ -1339,6 +1339,86 @@ async def api_log_event(
     return {"event_id": event_id, "status": "logged"}
 
 
+@app.get("/api/ht/submission")
+async def api_ht_submission(
+    q: str, instrument: str = "timsTOF HT", metric: str = "ms1_total_tic",
+) -> dict:
+    """Sample health for one high-throughput submission, plus its outliers.
+
+    `q` is matched as a substring of the run filename, because that is where
+    the submission lives: `08132026__60SPD_DIA-SK-10_S3-E7_1_23686.d` is
+    sample 10 of submission SK. Matching the filename is what the operator
+    actually knows, and it needs no submission table STAN does not have.
+
+    Reads the sample health the monitor pipeline has already computed -- it
+    does not recompute anything. New acquisitions are linked and monitored
+    automatically within about five minutes, so a submission run today is
+    normally complete by the time anyone asks about it; a sample that has
+    not been monitored yet simply is not here, which `n_samples` makes
+    visible rather than silently under-reporting.
+    """
+    from stan.db import get_sample_health
+    from stan.metrics.ht_outliers import (
+        find_outliers, matches_submission, plate_map, queue_series,
+    )
+
+    q = (q or "").strip()
+    if len(q) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Enter at least 2 characters of the submission number.")
+
+    try:
+        all_rows = get_sample_health(limit=20000) or []
+    except Exception:
+        logger.warning("HT: could not read sample health", exc_info=True)
+        raise HTTPException(status_code=503, detail="Sample health unavailable")
+
+    inst = (instrument or "").strip().lower()
+    matched = [
+        dict(r) for r in all_rows
+        if matches_submission(r.get("run_name"), q)
+        and (not inst or inst in str(r.get("instrument") or "").lower())
+    ]
+    for r in matched:
+        r["kind"] = "sample"
+    matched.sort(key=lambda r: str(r.get("run_name") or ""))
+
+    # The HeLa standards dropped into the plate are QC runs, so they live in
+    # `runs` with an identification count, not in sample_health. They are the
+    # control series: identical material, so a trend across them is the
+    # instrument rather than the samples. Coloured by precursors because that
+    # is what a standard is for -- TIC would say nothing about whether the
+    # instrument is still identifying peptides.
+    standards: list[dict] = []
+    try:
+        from stan.db import get_runs
+        for r in get_runs(limit=20000) or []:
+            if not matches_submission(r.get("run_name"), q):
+                continue
+            if inst and inst not in str(r.get("instrument") or "").lower():
+                continue
+            d = dict(r)
+            d["kind"] = "qc"
+            standards.append(d)
+    except Exception:
+        logger.warning("HT: could not read QC runs", exc_info=True)
+
+    result = find_outliers(matched)
+    # Standards are laid out and trended alongside the samples, but are NOT
+    # fed to find_outliers: they are different material on a different
+    # pipeline, and mixing them into the batch median would move the very
+    # baseline the customer samples are judged against.
+    result["plate"] = plate_map(result["rows"] + standards, metric=metric)
+    result["queue"] = queue_series(result["rows"] + standards)
+    result["standards"] = standards
+    result["n_standards"] = len(standards)
+    result["query"] = q
+    result["instrument"] = instrument
+    result["n_samples"] = len(matched)
+    return result
+
+
 @app.get("/api/maintenance/calendar")
 async def api_maintenance_calendar(days: int = 90) -> dict:
     """Every instrument's maintenance and downtime over a window.
