@@ -7554,61 +7554,6 @@ def ht_manifest(
 
 
 @app.command()
-def ht_record_search(
-    submission: str = typer.Argument(..., help="Submission number, e.g. 0793."),
-    organism: str = typer.Option(..., "--organism",
-                                 help="Organism searched against, e.g. 'Homo sapiens'."),
-    fasta: str = typer.Option("", "--fasta", help="FASTA path used."),
-    engine: str = typer.Option("", "--engine", help="DIA-NN or Sage."),
-    engine_version: str = typer.Option("", "--engine-version"),
-    n_files: int = typer.Option(0, "--n-files", help="Files searched."),
-    out_dir: str = typer.Option("", "--out", help="Search output directory."),
-    fran_status: str = typer.Option("", "--fran-status",
-                                    help="staged | ingested | not_sent"),
-    fran_search_id: str = typer.Option("", "--fran-search-id",
-                                       help="FRAN's search id, once known."),
-    fran_url: str = typer.Option("", "--fran-url",
-                                 help="Explicit FRAN link, if you have one."),
-    by: str = typer.Option("", "--by", help="Who ran it."),
-    notes: str = typer.Option("", "--notes"),
-) -> None:
-    """Record that a submission was searched, and where the result lives.
-
-    Called by the pipeline skill after a search completes, so the HT tab can
-    say "searched as Homo sapiens, in FRAN" instead of nothing. The organism
-    is the reason this exists: it is the one search parameter STAN cannot
-    derive, and a submission searched against the wrong FASTA looks perfectly
-    healthy in every metric STAN collects.
-
-        stan ht-record-search 0793 --organism "Homo sapiens" \
-            --fasta /quobyte/proteomics-grp/de-limp/fasta/UP000005640_homo_sapiens_opg_2026_05.fasta \
-            --engine DIA-NN --n-files 120 --out /path/to/search_out \
-            --fran-status staged --by bsphinney@ucdavis.edu
-    """
-    import json as _json
-
-    from stan.db import record_ht_search
-
-    rid = record_ht_search(
-        submission=submission, organism=organism or None,
-        fasta_path=fasta or None, engine=engine or None,
-        engine_version=engine_version or None,
-        n_files=n_files or None, output_dir=out_dir or None,
-        fran_status=fran_status or None,
-        fran_search_id=fran_search_id or None,
-        fran_url=fran_url or None, searched_by=by or None,
-        notes=notes or None,
-    )
-    if not rid:
-        console.print(
-            "[yellow]Not recorded. The ht_searches table is probably missing — "
-            "apply migrations/2026-08-31_ht_searches.sql as the PG owner.[/yellow]")
-        raise typer.Exit(1)
-    print(_json.dumps({"id": rid, "submission": submission,
-                       "organism": organism}, indent=2))
-
-
-@app.command()
 def ht_watch(
     dry_run: bool = typer.Option(
         False, "--dry-run",

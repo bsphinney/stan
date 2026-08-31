@@ -1424,28 +1424,23 @@ async def api_ht_submission(
     return result
 
 
-@app.get("/api/ht/searches")
-async def api_ht_searches(
-    request: Request, q: str, token: str | None = None,
-) -> dict:
-    """Searches recorded against a submission, newest first."""
-    from stan.dashboard.auth import is_privileged
-    from stan.dashboard.ht_share import verify_token
-    from stan.db import fran_link, get_ht_searches
+@app.get("/api/ht/fran-link")
+async def api_ht_fran_link(q: str) -> dict:
+    """Where this submission lives in FRAN.
+
+    A link, not a proxy. FRAN already holds the searches for a submission --
+    engine, organism, precursor and protein counts -- keyed on the same
+    number that appears in the raw filenames, and it applies its own
+    authorization to them. Fetching that here would mean copying both the
+    data and the access rules, and the copy is what goes stale.
+
+    No auth on this route: it returns a URL and nothing about the
+    submission. FRAN decides what the person following it may see.
+    """
+    from stan.db import fran_submission_url
 
     q = (q or "").strip()
-    shared = bool(token) and verify_token(q, token)
-    if is_readonly() and not shared and not is_privileged(request):
-        from stan.dashboard.readonly import LOGIN_URL
-        raise HTTPException(status_code=403,
-                            detail={"message": "Sign in or use a share link.",
-                                    "login_url": LOGIN_URL})
-    rows = get_ht_searches(submission=q, limit=50)
-    for r in rows:
-        # Fill a link for rows recorded before one was stored.
-        if not r.get("fran_url"):
-            r["fran_url"] = fran_link(r.get("fran_search_id"), r.get("submission"))
-    return {"submission": q, "searches": rows, "n": len(rows)}
+    return {"submission": q, "url": fran_submission_url(q)}
 
 
 @app.get("/api/ht/manifest")

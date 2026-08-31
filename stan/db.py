@@ -2302,125 +2302,28 @@ def mark_submitted(run_id: str, submission_id: str, db_path: Path | None = None)
 
 
 # ── High-throughput searches ───────────────────────────────────────
+#
+# STAN deliberately does NOT record what was searched. FRAN already does:
+# `/api/internal/submission/{id}` returns the CoreOmics submission plus every
+# search under it, with engine, organism and precursor/protein counts, keyed
+# on the same submission number that appears in the raw filenames. A table
+# here would be a second copy of that truth, and the copy is the one that
+# goes stale. FRAN's own authorization also decides who may see a search --
+# something STAN should not be re-implementing or proxying.
+#
+# So STAN links, and FRAN answers.
 
-#: FRAN's UI is hash-routed; these are real routes, verified against its
-#: router rather than assumed.
 FRAN_BASE_URL = "https://fran.stan-proteomics.org"
 
-HT_SEARCH_COLUMNS = (
-    "id", "submission", "organism", "fasta_path", "engine", "engine_version",
-    "n_files", "output_dir", "fran_status", "fran_search_id", "fran_url",
-    "searched_at", "searched_by", "notes",
-)
 
+def fran_submission_url(submission: str | None) -> str | None:
+    """FRAN's page for a submission, or None.
 
-def fran_link(search_id: str | None, submission: str | None = None) -> str | None:
-    """Best available FRAN link for a recorded search.
-
-    A search id gives the run page; without one the submission page is still
-    useful, and if FRAN does not know that submission the page simply says
-    so. Returns None when there is nothing to point at, rather than a link
-    that goes nowhere in particular.
+    Hash route verified against FRAN's own router (`case 'submission':`),
+    not assumed.
     """
-    if search_id:
-        return f"{FRAN_BASE_URL}/#/run/{search_id}"
-    if submission:
-        return f"{FRAN_BASE_URL}/#/submission/{submission}"
-    return None
-
-
-def record_ht_search(
-    submission: str,
-    organism: str | None = None,
-    fasta_path: str | None = None,
-    engine: str | None = None,
-    engine_version: str | None = None,
-    n_files: int | None = None,
-    output_dir: str | None = None,
-    fran_status: str | None = None,
-    fran_search_id: str | None = None,
-    fran_url: str | None = None,
-    searched_by: str | None = None,
-    notes: str | None = None,
-    db_path: Path | None = None,
-) -> str | None:
-    """Record that a submission was searched. Returns the row id, or None.
-
-    The organism is the point of this. It is the one search parameter STAN
-    cannot derive and the operator must supply, and a submission searched
-    against the wrong FASTA looks perfectly healthy in every metric STAN
-    collects -- so it is the fact most worth writing down.
-
-    Best-effort: the table arrives with a migration that only the PG owner
-    can run, so a missing table logs and returns None rather than failing
-    the caller. Recording that a search happened must never be the thing
-    that breaks a search.
-    """
-    row = {
-        "id": str(uuid.uuid4())[:12],
-        "submission": str(submission or "").strip(),
-        "organism": organism,
-        "fasta_path": fasta_path,
-        "engine": engine,
-        "engine_version": engine_version,
-        "n_files": n_files,
-        "output_dir": output_dir,
-        "fran_status": fran_status,
-        "fran_search_id": fran_search_id,
-        "fran_url": fran_url or fran_link(fran_search_id, submission),
-        "searched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "searched_by": searched_by,
-        "notes": notes,
-    }
-    if not row["submission"]:
-        raise ValueError("submission is required")
-
-    try:
-        from stan.db_pg import use_pg
-        if use_pg():
-            from stan.db_pg import insert_ht_search_pg
-            insert_ht_search_pg(row)
-            return row["id"]
-        if db_path is None:
-            db_path = get_db_path()
-        with connect(db_path) as con:
-            cols = ", ".join(row.keys())
-            marks = ", ".join(f":{k}" for k in row)
-            con.execute(f"INSERT INTO ht_searches ({cols}) VALUES ({marks})", row)
-        return row["id"]
-    except Exception as _e:
-        logger.warning(
-            "could not record HT search for %s (%s) -- has "
-            "migrations/2026-08-31_ht_searches.sql been applied?",
-            row["submission"], _e)
-        return None
-
-
-def get_ht_searches(
-    submission: str | None = None, limit: int = 200,
-    db_path: Path | None = None,
-) -> list[dict]:
-    """Recorded searches, newest first. Empty list if the table is absent."""
-    try:
-        from stan.db_pg import use_pg
-        if use_pg():
-            from stan.db_pg import get_ht_searches_pg
-            return get_ht_searches_pg(submission=submission, limit=limit)
-        if db_path is None:
-            db_path = get_db_path()
-        with connect(db_path) as con:
-            con.row_factory = sqlite3.Row
-            sql = "SELECT * FROM ht_searches"
-            args: list = []
-            if submission:
-                sql += " WHERE submission = ?"
-                args.append(submission)
-            sql += " ORDER BY searched_at DESC LIMIT ?"
-            args.append(int(limit))
-            return [dict(r) for r in con.execute(sql, args).fetchall()]
-    except Exception:
-        logger.debug("ht_searches unavailable", exc_info=True)
-        return []
+    sub = str(submission or "").strip()
+    return f"{FRAN_BASE_URL}/#/submission/{sub}" if sub else None
 
 
 # ── Maintenance events ─────────────────────────────────────────────

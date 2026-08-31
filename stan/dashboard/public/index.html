@@ -7064,67 +7064,34 @@
       setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 
-    /* Searches recorded against this submission. Answers "was this searched,
-       as what, and where did it go?" -- which had no answer short of digging
-       through Hive directories and FRAN. The organism is the headline: it is
-       the one search parameter STAN cannot derive, and a submission searched
-       against the wrong FASTA looks healthy in every metric STAN collects. */
-    function HTSearchHistory({ submission, token }) {
-      const qs = `q=${encodeURIComponent(submission)}` + (token ? `&token=${encodeURIComponent(token)}` : '');
-      const { data, error } = useFetch(`/api/ht/searches?${qs}`, [submission, token]);
-      if (error || !data) return null;
-      const rows = data.searches || [];
-      if (!rows.length) {
-        return (
-          <div className="card" style={{ marginBottom: '1rem' }}>
-            <h3>Search history</h3>
-            <p style={{ color: 'var(--muted)', fontSize: '0.85rem', margin: 0 }}>
-              No search recorded for this submission yet. The pipeline skill
-              records one when it finishes, including the organism it searched
-              against.
-            </p>
-          </div>
-        );
-      }
+    /* Where this submission's searches live. STAN does not keep its own
+       record of what was searched -- FRAN already holds the searches for a
+       submission, with engine, organism and counts, keyed on the same number
+       that appears in the raw filenames. Duplicating that here would create a
+       second copy of the truth, and the copy is the one that goes stale. So
+       this is a link, and FRAN answers. */
+    function HTFranLink({ submission }) {
+      if (!submission) return null;
+      const url = `https://fran.stan-proteomics.org/#/submission/${encodeURIComponent(submission)}`;
       return (
         <div className="card" style={{ marginBottom: '1rem' }}>
-          <h3>Search history</h3>
-          <table>
-            <thead>
-              <tr>
-                <th>Searched</th><th>Organism</th><th>Engine</th>
-                <th>Files</th><th>FRAN</th><th>By</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(r => (
-                <tr key={r.id}>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    {String(r.searched_at || '').slice(0, 16).replace('T', ' ')}
-                  </td>
-                  <td><strong>{r.organism || <span style={{ color: 'var(--muted)' }}>not recorded</span>}</strong></td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    {r.engine || '—'}{r.engine_version ? ` ${r.engine_version}` : ''}
-                  </td>
-                  <td style={{ fontVariantNumeric: 'tabular-nums' }}>{r.n_files ?? '—'}</td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    {r.fran_url
-                      ? <a href={r.fran_url} target="_blank" rel="noopener noreferrer">
-                          {r.fran_status === 'ingested' ? 'View in FRAN' : (r.fran_status || 'FRAN')} →
-                        </a>
-                      : <span style={{ color: 'var(--muted)' }}>{r.fran_status || 'not sent'}</span>}
-                  </td>
-                  <td style={{ color: 'var(--muted)', fontSize: '0.8rem' }}>{r.searched_by || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {rows.some(r => r.fran_status && r.fran_status !== 'ingested') && (
-            <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.6rem' }}>
-              A staged search is waiting on FRAN's ingest cron, which runs every
-              four hours — the link works once it has been taken.
-            </div>
-          )}
+          <h3>Searches</h3>
+          <p style={{ color: 'var(--muted)', fontSize: '0.85rem', marginTop: 0, marginBottom: '0.8rem' }}>
+            Searches for this submission live in FRAN, the Core's cross-search
+            corpus — engine, organism, precursor and protein counts, keyed on
+            the same submission number. STAN does not keep a second copy.
+          </p>
+          <a href={url} target="_blank" rel="noopener noreferrer"
+             style={{ display: 'inline-block', padding: '0.6rem 1.1rem',
+                      fontSize: '0.92rem', fontWeight: 600, borderRadius: '0.5rem',
+                      background: 'linear-gradient(180deg,#5ee9a4,#34c98a)',
+                      color: '#04180f', textDecoration: 'none' }}>
+            Open submission {submission} in FRAN →
+          </a>
+          <p style={{ color: 'var(--muted)', fontSize: '0.75rem', marginTop: '0.7rem', marginBottom: 0 }}>
+            If it has not been searched yet, FRAN will say so. Access is FRAN's
+            to decide — this is only a link.
+          </p>
         </div>
       );
     }
@@ -7470,7 +7437,7 @@
 
           {data && data.n_samples > 0 && (
             <>
-              <HTSearchHistory submission={data.query} token={shareToken} />
+              <HTFranLink submission={data.query} />
               <HTRerunList rows={data.needs_rerun} wellByRun={wellByRun}
                            cohortOk={data.cohort_ok} minCohort={data.min_cohort}
                            zThreshold={data.z_threshold}
