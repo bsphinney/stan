@@ -1434,8 +1434,11 @@ async def api_ht_fran_link(q: str) -> dict:
     authorization to them. Fetching that here would mean copying both the
     data and the access rules, and the copy is what goes stale.
 
-    No auth on this route: it returns a URL and nothing about the
-    submission. FRAN decides what the person following it may see.
+    Gated with the rest of /api/ht on a public host. It leaks nothing --
+    the URL is built from the query string alone -- so an exception could be
+    carved out, but adding one to a security allow-list for a route nothing
+    calls is the wrong trade: the HT tab builds this link client-side.
+    Whoever follows it still meets FRAN's own authorization.
     """
     from stan.db import fran_submission_url
 
