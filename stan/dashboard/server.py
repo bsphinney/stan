@@ -1360,8 +1360,7 @@ async def api_ht_submission(
     """
     from stan.db import get_sample_health
     from stan.metrics.ht_outliers import (
-        MIN_EFFECT, find_outliers, matches_submission, plate_map,
-        queue_series,
+        MIN_EFFECT, analyse_submission,
     )
 
     q = (q or "").strip()
@@ -1393,14 +1392,8 @@ async def api_ht_submission(
         raise HTTPException(status_code=503, detail="Sample health unavailable")
 
     inst = (instrument or "").strip().lower()
-    matched = [
-        dict(r) for r in all_rows
-        if matches_submission(r.get("run_name"), q)
-        and (not inst or inst in str(r.get("instrument") or "").lower())
-    ]
-    for r in matched:
-        r["kind"] = "sample"
-    matched.sort(key=lambda r: str(r.get("run_name") or ""))
+    all_rows = [r for r in all_rows
+                if not inst or inst in str(r.get("instrument") or "").lower()]
 
     # The HeLa standards dropped into the plate are QC runs, so they live in
     # `runs` with an identification count, not in sample_health. They are the
@@ -1408,32 +1401,20 @@ async def api_ht_submission(
     # instrument rather than the samples. Coloured by precursors because that
     # is what a standard is for -- TIC would say nothing about whether the
     # instrument is still identifying peptides.
-    standards: list[dict] = []
+    qc_rows: list[dict] = []
     try:
         from stan.db import get_runs
-        for r in get_runs(limit=20000) or []:
-            if not matches_submission(r.get("run_name"), q):
-                continue
-            if inst and inst not in str(r.get("instrument") or "").lower():
-                continue
-            d = dict(r)
-            d["kind"] = "qc"
-            standards.append(d)
+        qc_rows = [r for r in (get_runs(limit=20000) or [])
+                   if not inst or inst in str(r.get("instrument") or "").lower()]
     except Exception:
         logger.warning("HT: could not read QC runs", exc_info=True)
 
-    result = find_outliers(matched)
-    # Standards are laid out and trended alongside the samples, but are NOT
-    # fed to find_outliers: they are different material on a different
-    # pipeline, and mixing them into the batch median would move the very
-    # baseline the customer samples are judged against.
-    result["plate"] = plate_map(result["rows"] + standards, metric=metric)
-    result["queue"] = queue_series(result["rows"] + standards)
-    result["standards"] = standards
-    result["n_standards"] = len(standards)
-    result["query"] = q
+    # One analysis path, shared with the email watcher. Building the view
+    # here instead is how the endpoint quietly missed per-tray scoring: the
+    # screen and the alert must never disagree about whether a plate is in
+    # trouble.
+    result = analyse_submission(q, all_rows, qc_rows, metric=metric)
     result["instrument"] = instrument
-    result["n_samples"] = len(matched)
     result["min_effect"] = MIN_EFFECT
     result["shared_view"] = shared
     # Only an operator is handed the link to give out; a collaborator viewing

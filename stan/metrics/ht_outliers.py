@@ -457,23 +457,57 @@ def analyse_submission(
     could disagree about whether a plate is in trouble, and the one nobody
     is looking at would be the one that drifts.
     """
-    samples = [dict(r) for r in health_rows if matches_submission(r.get("run_name"), q)]
+    # Whole submission, including trays that continue the queue without
+    # naming it (see expand_submission_runs).
+    samples = [dict(r) for r in expand_submission_runs(q, health_rows)]
     for r in samples:
         r["kind"] = "sample"
     samples.sort(key=lambda r: str(r.get("run_name") or ""))
 
-    standards = [dict(r) for r in (qc_rows or [])
-                 if matches_submission(r.get("run_name"), q)]
+    standards = [dict(r) for r in expand_submission_runs(q, qc_rows or [])]
     for r in standards:
         r["kind"] = "qc"
 
-    result = find_outliers(samples)
+    # Score each tray against itself, not the submission as a whole. A
+    # submission spanning two trays usually means two different sets of
+    # material prepared separately -- 0793's S6 holds SI-* and its S5 holds
+    # COH-* -- so one shared median judges each against the other's level.
+    # Merging the trays quietly took 0793 from 4 flagged samples to 2.
+    # A plate is also the unit the edge-effect test already works in.
+    by_plate: dict[str, list[dict]] = {}
+    for r in samples:
+        w = parse_well(r.get("run_name"))
+        by_plate.setdefault(w["plate"] if w else "", []).append(r)
+
+    scored: list[dict] = []
+    stats: dict[str, dict] = {}
+    cohort_ok = False
+    for plate_name, plate_rows in sorted(by_plate.items()):
+        part = find_outliers(plate_rows)
+        scored.extend(part["rows"])
+        cohort_ok = cohort_ok or part["cohort_ok"]
+        for metric, st in part["stats"].items():
+            stats.setdefault(f"{plate_name}:{metric}" if plate_name else metric, st)
+
+    needs = [r for r in scored if r.get("is_outlier")]
+    result = {
+        "rows": scored,
+        "stats": stats,
+        "cohort_size": len(samples),
+        "cohort_ok": cohort_ok,
+        "min_cohort": MIN_COHORT,
+        "z_threshold": Z_THRESHOLD,
+        "scored_per_plate": True,
+        "needs_rerun": needs,
+        "n_needs_rerun": len(needs),
+    }
     result["plate"] = plate_map(result["rows"] + standards, metric=metric)
     result["queue"] = queue_series(result["rows"] + standards)
     result["standards"] = standards
     result["n_standards"] = len(standards)
     result["query"] = q
     result["n_samples"] = len(samples)
+    result["min_effect"] = MIN_EFFECT
     return result
 
 
@@ -522,3 +556,112 @@ def discover_submissions(rows: list[dict]) -> list[str]:
             found[key] = found.get(key, 0) + 1
     # Ignore one-off matches: a real submission is a plate, not a single file.
     return sorted(k for k, n in found.items() if n >= 4)
+
+
+# ── a submission can span more than one plate ───────────────────────
+
+#: Injections allowed between two runs before the queue is treated as
+#: broken. Washes and blanks are interleaved and sometimes carry no
+#: submission of their own, so a strict +1 would split a plate at the first
+#: wash. Small enough that a genuinely separate later batch is not absorbed.
+MAX_INJECTION_GAP = 6
+
+#: How far either side of a submission's own injections to look for the rest
+#: of it. Wide enough for the next tray in the same queue, narrow enough that
+#: a tray label reused a month later is nowhere near it. ~300 injections is
+#: a few days of continuous 100-SPD running.
+NEIGHBOURHOOD = 300
+
+
+def expand_submission_runs(query: str, rows: list[dict]) -> list[dict]:
+    """Runs belonging to a submission, including plates named without it.
+
+    A submission often fills more than one tray, and typically only the first
+    carries the number. Submission 0793 ran plate S6 on 2026-08-27 as
+    `20260827_793_100spd_..._1_24026.d` through `_1_24125.d`, then continued
+    onto plate S5 the next day as `20260828_100spd_COH-12_S5-D2_1_24157.d` --
+    same queue, no 793 in the name.
+
+    What ties them is the acquisition counter at the end of the filename:
+    S5 begins at 24126, one after S6 ends at 24125.
+
+    Expansion is by WHOLE TRAY, not run by run. A run-level walk floods:
+    blanks and washes carry no submission of their own, so each one extends
+    the reach and the range creeps outward until it has swallowed weeks of
+    unrelated work (measured: 607 runs across five plates, back to injection
+    23505). A submission occupies trays, so a tray either joins or it does
+    not, and a tray naming a different submission never joins.
+    """
+    direct = [r for r in rows if matches_submission(r.get("run_name"), query)]
+    if not direct:
+        return []
+
+    numbered = re.compile(r"^\d{8}[_-]\d{2,6}[_-]")
+
+    # Scope to the neighbourhood of this queue BEFORE looking at trays.
+    # Tray labels repeat constantly -- S6 has been used every month since
+    # December -- so considering all of "plate S6" reaches back to injection
+    # 18450 and drags in months of other people's work. A submission runs in
+    # one stretch of the sequence; only that stretch is a candidate.
+    d_inj = sorted(i for i in (parse_injection(r.get("run_name")) for r in direct)
+                   if i is not None)
+    if not d_inj:
+        return direct
+    win_lo, win_hi = d_inj[0] - NEIGHBOURHOOD, d_inj[-1] + NEIGHBOURHOOD
+    scoped = []
+    for r in rows:
+        i = parse_injection(r.get("run_name"))
+        if i is not None and win_lo <= i <= win_hi:
+            scoped.append(r)
+
+    # Index the scoped runs by tray.
+    plates: dict[str, dict] = {}
+    for r in scoped:
+        w = parse_well(r.get("run_name"))
+        i = parse_injection(r.get("run_name"))
+        if not w or i is None:
+            continue
+        p = plates.setdefault(w["plate"], {"runs": [], "lo": i, "hi": i,
+                                           "foreign": False})
+        p["runs"].append((i, r))
+        p["lo"], p["hi"] = min(p["lo"], i), max(p["hi"], i)
+        name = str(r.get("run_name") or "")
+        if numbered.match(name) and not matches_submission(name, query):
+            p["foreign"] = True
+
+    direct_plates = set()
+    for r in direct:
+        w = parse_well(r.get("run_name"))
+        if w:
+            direct_plates.add(w["plate"])
+    if not direct_plates:
+        return direct
+
+    chosen = set(direct_plates)
+    lo = min(plates[p]["lo"] for p in chosen)
+    hi = max(plates[p]["hi"] for p in chosen)
+
+    grew = True
+    while grew:
+        grew = False
+        for name, p in plates.items():
+            if name in chosen or p["foreign"]:
+                continue
+            # Forward only. A submission continues onto later trays; the
+            # tray that ran BEFORE it belongs to whatever came before. On
+            # 2026-08-27 tray S4 finished at injection 24024 and 793 began at
+            # 24026 -- adjacent, but somebody else's work, and expanding
+            # backwards swallowed all 85 of its runs.
+            if hi < p["lo"] <= hi + MAX_INJECTION_GAP:
+                chosen.add(name)
+                hi = max(hi, p["hi"])
+                grew = True
+
+    keep = {id(r) for r in direct}
+    for name in chosen:
+        for i, r in plates[name]["runs"]:
+            if lo <= i <= hi:
+                keep.add(id(r))
+    # `lo` never moves below the submission's own first injection, so
+    # nothing earlier than the queue itself can be kept.
+    return [r for r in rows if id(r) in keep]

@@ -272,3 +272,71 @@ def test_numeric_submission_wins_over_the_sample_code():
 def test_a_name_with_neither_is_skipped():
     from stan.metrics.ht_outliers import submission_key
     assert submission_key("blankDia_S1-H8_1_23992.d") is None
+
+
+# ── a submission spanning several trays ─────────────────────────────
+
+def _run(name):
+    return {"run_name": name, "ms1_total_tic": 1e10, "ms1_max_intensity": 1e8,
+            "n_ms2_frames": 5000, "rt_duration_min": 21.0, "verdict": "pass"}
+
+
+def test_submission_follows_its_queue_onto_the_next_tray():
+    """Real case: 0793 filled tray S6, then continued onto S5 the next day.
+
+    Only the first tray carries the number -- S5 is named
+    `20260828_100spd_COH-12_S5-D2_1_24157.d`. What links them is the
+    acquisition counter: S6 ends at 24125, S5 begins at 24126.
+    """
+    from stan.metrics.ht_outliers import expand_submission_runs
+    rows = [_run(f"20260827_793_100spd_SI-{i}_S6-A{i % 12 + 1}_1_{24026 + i}.d")
+            for i in range(60)]
+    rows += [_run(f"20260828_100spd_COH-{i}_S5-B{i % 12 + 1}_1_{24090 + i}.d")
+             for i in range(20)]
+    got = {r["run_name"] for r in expand_submission_runs("0793", rows)}
+    assert len(got) == 80, "both trays belong to the submission"
+
+
+def test_expansion_does_not_reach_backwards():
+    """The tray that ran BEFORE belongs to whatever came before.
+
+    On 2026-08-27 tray S4 finished at injection 24024 and 793 began at
+    24026. Adjacent, but somebody else's work -- expanding backwards
+    swallowed all 85 of its runs.
+    """
+    from stan.metrics.ht_outliers import expand_submission_runs
+    rows = [_run(f"27aug26_HeL50_100spd_S4-A{i % 12 + 1}_1_{23990 + i}.d")
+            for i in range(30)]                                    # ends 24019
+    rows += [_run(f"20260827_793_100spd_SI-{i}_S6-B{i % 12 + 1}_1_{24026 + i}.d")
+             for i in range(40)]
+    got = {r["run_name"] for r in expand_submission_runs("0793", rows)}
+    assert all("_793_" in n for n in got), "must not absorb the earlier tray"
+
+
+def test_a_tray_naming_another_submission_never_joins():
+    from stan.metrics.ht_outliers import expand_submission_runs
+    rows = [_run(f"20260827_793_100spd_SI-{i}_S6-A{i % 12 + 1}_1_{24026 + i}.d")
+            for i in range(40)]
+    rows += [_run(f"20260828_812_100spd_X-{i}_S5-C{i % 12 + 1}_1_{24070 + i}.d")
+             for i in range(20)]
+    got = {r["run_name"] for r in expand_submission_runs("0793", rows)}
+    assert all("_812_" not in n for n in got), "another customer's plate"
+
+
+def test_reruns_are_picked_up_by_the_submission_search():
+    """Re-runs are labelled `0793_rerun` with the sample name."""
+    from stan.metrics.ht_outliers import matches_submission
+    assert matches_submission("20260901_0793_rerun_SI-48_S1-A1_1_24200.d", "0793")
+    assert matches_submission("20260901_793_rerun_Si-70_S1-A2_1_24201.d", "0793")
+    assert not matches_submission("20260901_0794_rerun_X-1_S1-A3_1_24202.d", "0793")
+
+
+def test_a_distant_reuse_of_the_same_tray_label_is_not_joined():
+    """Tray labels repeat monthly; S6 in April is not S6 in August."""
+    from stan.metrics.ht_outliers import expand_submission_runs
+    rows = [_run(f"20260827_793_100spd_SI-{i}_S6-A{i % 12 + 1}_1_{24026 + i}.d")
+            for i in range(40)]
+    rows += [_run(f"14April2026_x_S6-D{i % 12 + 1}_1_{18450 + i}.d")
+             for i in range(30)]
+    got = {r["run_name"] for r in expand_submission_runs("0793", rows)}
+    assert all("April" not in n for n in got)
