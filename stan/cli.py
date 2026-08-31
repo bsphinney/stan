@@ -7490,6 +7490,70 @@ def hive_upload_cmd(
 
 
 @app.command()
+def ht_manifest(
+    submission: str = typer.Argument(
+        ..., help="Submission number or code, e.g. 0793. Padded or bare."),
+    include: str = typer.Option(
+        "samples", "--include",
+        help="samples (customer material, the default), rerun, standards, or all."),
+    paths_only: bool = typer.Option(
+        False, "--paths-only",
+        help="Print one raw path per line, for piping straight into a search."),
+    instrument: str = typer.Option(
+        "timsTOF HT", "--instrument", help="Instrument filter."),
+) -> None:
+    """List the raw files belonging to a high-throughput submission.
+
+    STAN is the only thing that knows a submission's real extent: which trays
+    it occupies, that a tray whose filenames never mention the number is
+    still part of it, which wells are blanks or HeLa standards, and which
+    samples came out badly enough to want re-running.
+
+    The searching belongs elsewhere -- the Core's proteomics-pipeline skill
+    already derives parameters from the data type, pins the engine, batches
+    the SLURM submission and deposits finished searches into FRAN. This just
+    hands it a file list:
+
+        stan ht-manifest 0793 --paths-only > files.txt
+    """
+    import json as _json
+
+    from stan.db import get_runs, get_sample_health
+    from stan.metrics.ht_manifest import INCLUDE_CHOICES, build_manifest
+
+    if include not in INCLUDE_CHOICES:
+        console.print(f"[red]--include must be one of {INCLUDE_CHOICES}[/red]")
+        raise typer.Exit(2)
+
+    inst = (instrument or "").strip().lower()
+    health = [r for r in (get_sample_health(limit=20000) or [])
+              if not inst or inst in str(r.get("instrument") or "").lower()]
+    qc = [r for r in (get_runs(limit=20000) or [])
+          if not inst or inst in str(r.get("instrument") or "").lower()]
+
+    m = build_manifest(submission, health, qc, include=include)
+
+    if paths_only:
+        for f in m["files"]:
+            print(f)
+        # Never let a caller pipe a silently short list into a search.
+        if m["missing_paths"]:
+            console.print(
+                f"[yellow]{len(m['missing_paths'])} run(s) have no raw path in "
+                f"STAN and are NOT in this list[/yellow]", err=True)
+        return
+
+    # Plain print, not console.print: rich wraps long lines and injects
+    # styling, which breaks any caller parsing this. The whole point of this
+    # command is to be consumed by another tool.
+    print(_json.dumps(m, default=str, indent=2))
+    if m["missing_paths"]:
+        console.print(
+            f"[yellow]{len(m['missing_paths'])} run(s) have no raw path "
+            f"recorded; they are excluded from `files`.[/yellow]", err=True)
+
+
+@app.command()
 def ht_watch(
     dry_run: bool = typer.Option(
         False, "--dry-run",

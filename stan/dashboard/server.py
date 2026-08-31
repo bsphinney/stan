@@ -1424,6 +1424,47 @@ async def api_ht_submission(
     return result
 
 
+@app.get("/api/ht/manifest")
+async def api_ht_manifest(
+    request: Request, q: str, include: str = "samples",
+    instrument: str = "timsTOF HT", token: str | None = None,
+) -> dict:
+    """Raw files belonging to a submission, for an external search tool.
+
+    Same access rules as the rest of /api/ht -- a signed-in operator, or a
+    share link for this submission. The list carries customer sample names
+    and resolved paths, so it is not public.
+    """
+    from stan.dashboard.auth import is_privileged
+    from stan.dashboard.ht_share import verify_token
+    from stan.db import get_runs, get_sample_health
+    from stan.metrics.ht_manifest import INCLUDE_CHOICES, build_manifest
+
+    q = (q or "").strip()
+    if len(q) < 2:
+        raise HTTPException(status_code=400, detail="Submission is too short.")
+    if include not in INCLUDE_CHOICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"include must be one of {list(INCLUDE_CHOICES)}")
+
+    shared = bool(token) and verify_token(q, token)
+    if is_readonly() and not shared and not is_privileged(request):
+        from stan.dashboard.readonly import LOGIN_URL
+        raise HTTPException(
+            status_code=403,
+            detail={"message": "High-throughput data requires a sign-in or a "
+                               "share link for this submission.",
+                    "login_url": LOGIN_URL})
+
+    inst = (instrument or "").strip().lower()
+    health = [r for r in (get_sample_health(limit=20000) or [])
+              if not inst or inst in str(r.get("instrument") or "").lower()]
+    qc = [r for r in (get_runs(limit=20000) or [])
+          if not inst or inst in str(r.get("instrument") or "").lower()]
+    return build_manifest(q, health, qc, include=include)
+
+
 @app.get("/api/maintenance/calendar")
 async def api_maintenance_calendar(days: int = 90) -> dict:
     """Every instrument's maintenance and downtime over a window.
