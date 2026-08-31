@@ -30,6 +30,22 @@ logger = logging.getLogger(__name__)
 #: deliberately not tuned to make the output look good on one batch.
 Z_THRESHOLD = 3.5
 
+#: Minimum deficit, as a fraction of the batch median, before anything is
+#: flagged at all -- however extreme its z-score.
+#:
+#: A z-score alone is not evidence worth re-running a customer's sample on.
+#: On real submission 0793, MS2 frame count is near-constant across the
+#: plate, so its MAD is tiny and one well 5.4% below the median scored
+#: z = -249.6 -- while the four samples actually worth re-running, at 73-80%
+#: below median TIC, scored only -3.5 to -3.9. The largest z on the plate
+#: marked the smallest real problem. Requiring a material difference as well
+#: as a statistically unusual one removes that inversion.
+#:
+#: 20% is a judgement call, set well below the real signals (73-80%) and well
+#: above the noise (5%), and stated here rather than buried so it can be
+#: argued with.
+MIN_EFFECT = 0.20
+
 #: Fraction a value must differ from the batch median by, when MAD is zero
 #: and a z-score is therefore undefined. Half the batch's level is a large,
 #: explainable difference -- not a threshold tuned to make one plate's output
@@ -85,6 +101,7 @@ def find_outliers(
     z_threshold: float = Z_THRESHOLD,
     min_cohort: int = MIN_COHORT,
     rel_threshold: float = REL_THRESHOLD,
+    min_effect: float = MIN_EFFECT,
 ) -> dict:
     """Flag samples in one submission that look unlike their batch-mates.
 
@@ -137,6 +154,11 @@ def find_outliers(
                           "rule": "mad" if mad > 0 else
                                   ("relative" if med else "skipped")}
             for i, v in pairs:
+                # Practical significance gate, applied before the statistical
+                # one. Without it a near-constant metric flags trivial
+                # differences with enormous z-scores.
+                if med and abs(v - med) / abs(med) < min_effect:
+                    continue
                 if mad > 0:
                     z = 0.6745 * (v - med) / mad
                     if direction == "low" and z > -z_threshold:
@@ -161,6 +183,7 @@ def find_outliers(
                     "metric": col, "label": label, "value": v,
                     "median": med, "z": z_out, "side": "below" if v < med else "above",
                     "pct_of_median": round(v / med * 100, 1) if med else None,
+                    "pct_diff": round((v - med) / abs(med) * 100, 1) if med else None,
                 })
                 rows[i]["is_outlier"] = True
 

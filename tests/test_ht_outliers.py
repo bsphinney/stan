@@ -218,3 +218,31 @@ def test_full_plate_reports_complete():
     p = plate_map(rows)["plates"][0]
     assert p["is_complete"] is True
     assert p["n_missing"] == 0 and p["pct_complete"] == 100.0
+
+
+def test_tiny_difference_is_not_flagged_however_large_its_z():
+    """Real false positive from submission 0793.
+
+    MS2 frame count is near-constant across the plate, so its MAD is tiny and
+    a well 5.4% below the median scored z = -249.6 -- while the four samples
+    genuinely worth re-running, at 73-80% below median TIC, scored only -3.5
+    to -3.9. The largest z on the plate marked the smallest real problem.
+    """
+    rows = [_sample(f"s{i}_S6-D{i}_1_{100 + i}.d", ms2=6894 + (i % 3))
+            for i in range(1, 20)]
+    rows.append(_sample("near_S6-E1_1_500.d", ms2=6524))   # 5.4% below
+    out = find_outliers(rows)
+    assert out["n_needs_rerun"] == 0, (
+        "a 5% difference is not a reason to re-run a customer's sample")
+
+
+def test_large_deficit_is_still_flagged():
+    """The signal the gate must not suppress: 80% below the batch."""
+    rows = [_sample(f"s{i}_S6-D{i}_1_{100 + i}.d", tic=3.69e10 + i * 1e8)
+            for i in range(1, 20)]
+    rows.append(_sample("weak_S6-E1_1_500.d", tic=7.47e9))  # ~80% below
+    out = find_outliers(rows)
+    names = [r["run_name"] for r in out["needs_rerun"]]
+    assert "weak_S6-E1_1_500.d" in names
+    reason = out["needs_rerun"][0]["outlier_reasons"][0]
+    assert reason["pct_diff"] < -70, "lead with the deficit, not the z-score"

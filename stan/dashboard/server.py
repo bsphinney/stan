@@ -1360,7 +1360,8 @@ async def api_ht_submission(
     """
     from stan.db import get_sample_health
     from stan.metrics.ht_outliers import (
-        find_outliers, matches_submission, plate_map, queue_series,
+        MIN_EFFECT, find_outliers, matches_submission, plate_map,
+        queue_series,
     )
 
     q = (q or "").strip()
@@ -1433,6 +1434,7 @@ async def api_ht_submission(
     result["query"] = q
     result["instrument"] = instrument
     result["n_samples"] = len(matched)
+    result["min_effect"] = MIN_EFFECT
     result["shared_view"] = shared
     # Only an operator is handed the link to give out; a collaborator viewing
     # via a share link is not shown the token that would let them mint others.

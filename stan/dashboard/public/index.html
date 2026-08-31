@@ -7021,7 +7021,7 @@
 
     /* The list someone actually acts on: which wells to re-inject, and
        the numbers behind the call. */
-    function HTRerunList({ rows, wellByRun, cohortOk, minCohort, zThreshold }) {
+    function HTRerunList({ rows, wellByRun, cohortOk, minCohort, zThreshold, minEffect = 0.2 }) {
       if (!rows || !rows.length) {
         return (
           <div className="card">
@@ -7040,8 +7040,15 @@
         <div className="card">
           <h3>Needs re-run — {rows.length} {rows.length === 1 ? 'sample' : 'samples'}</h3>
           <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.6rem', lineHeight: 1.5 }}>
-            Flagged at |z| &gt; {zThreshold} against this submission's own median, where z is a robust
-            score (median and MAD, not mean and SD).
+            These ran fine — the <strong>Verdict</strong> column is the health check, and a
+            &ldquo;pass&rdquo; there means the file is usable. This list asks a different question:
+            is the sample unlike <em>its own plate-mates</em>? A well far below the others usually
+            means it under-loaded or under-eluted, which is worth another injection even though
+            nothing about the run itself failed.
+            <br />
+            Flagged only when a sample is both at least {Math.round(minEffect * 100)}% away from this
+            submission's median <em>and</em> |z| &gt; {zThreshold} (z uses median and MAD, not mean
+            and SD, so a few bad wells cannot hide the rest).
             {!cohortOk && <> Only {minCohort} or more samples make that comparison meaningful — this
               submission is below that, so treat the flags as a hint, not a verdict.</>}
           </div>
@@ -7084,8 +7091,9 @@
             </tbody>
           </table>
           <div style={{ fontSize: '0.75rem', color: 'var(--muted)', marginTop: '0.6rem', lineHeight: 1.5 }}>
-            Read the raw value next to z, not z alone: when a metric is near-constant across the plate
-            the MAD is tiny and z inflates to hundreds on a difference that may not matter.
+            Lead with the percentage, not z. Where a metric is near-constant across the plate the
+            MAD is tiny and z inflates into the hundreds on a trivial difference — which is why a
+            minimum effect size is required before anything is flagged at all.
           </div>
         </div>
       );
