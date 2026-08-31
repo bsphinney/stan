@@ -3,13 +3,18 @@ REM ------------------------------------------------------------------
 REM install_flinders_copy.bat
 REM
 REM Sets up the timsTOF -> Flinders copier on this instrument PC.
-REM Double-click it. It will ask where the Flinders timsTOF folder is,
-REM then create a scheduled task that runs every 5 minutes.
+REM Double-click it. It asks where the Flinders timsTOF folder is,
+REM then creates a scheduled task that runs every 5 minutes.
 REM
-REM Nothing to install first -- no Python, no STAN, no admin rights.
-REM It uses robocopy, which is already part of Windows.
+REM Nothing to install first -- no Python, no STAN. It uses robocopy,
+REM which is already part of Windows.
 REM
-REM To remove it later, run:  install_flinders_copy.bat /remove
+REM Windows will ask for administrator approval once, to create the
+REM task. Only that one step is elevated: finding the Flinders drive
+REM happens first, unelevated, because an elevated process cannot see
+REM your mapped network drives.
+REM
+REM To remove it later:  install_flinders_copy.bat /remove
 REM ------------------------------------------------------------------
 
 set "PS1=%~dp0flinders_copy.ps1"
@@ -31,12 +36,7 @@ echo.
 echo   Setting up the timsTOF -^> Flinders copier
 echo.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -Install
-if errorlevel 1 (
-    echo.
-    echo   Setup did not finish. Nothing was scheduled.
-    pause
-    exit /b 1
-)
+if errorlevel 1 goto :failed
 
 echo.
 echo   Done. It will check D:\Data every 5 minutes from now on,
@@ -47,3 +47,12 @@ echo   What it has done:     %%USERPROFILE%%\STAN\logs\flinders_copy.log
 echo   To pause it:          create %%USERPROFILE%%\STAN\flinders_pause.txt
 echo.
 pause
+exit /b 0
+
+:failed
+echo.
+echo   Setup did not finish. NOTHING is scheduled.
+echo   Read the message above, fix it, and run this again.
+echo.
+pause
+exit /b 1

@@ -67,7 +67,10 @@
 # whole-file rewrites only. Tests: tests/test_flinders_copy.ps1
 
 param(
-    [switch] $Install,
+    [switch] $Install,      # -SetDest then -RegisterTask
+    [switch] $SetDest,      # find + save the destination (needs the mapped drive)
+    [switch] $RegisterTask, # create the scheduled task (needs administrator)
+    [switch] $Verify,       # is the task actually there?
     [switch] $Uninstall,
     [switch] $Show
 )
@@ -127,6 +130,32 @@ function Resolve-Dest($Root) {
     foreach ($suffix in @("Data\raw_data\$InstrumentDir", "raw_data\$InstrumentDir", $InstrumentDir)) {
         $try = Join-Path $r $suffix
         if (Test-Path -LiteralPath $try -PathType Container) { return $try }
+    }
+    return ""
+}
+
+function ConvertTo-Unc($Path) {
+    # Store the UNC, not the drive letter. Mapped drives are per-session
+    # and an elevated process cannot see them at all, so R:\... written
+    # here would be meaningless to the installer's elevated half and
+    # fragile for the task later. \\server\share\... always resolves.
+    if ($Path -match "^([A-Za-z]):") {
+        $drive = Get-PSDrive -Name $Matches[1] -ErrorAction SilentlyContinue
+        if ($drive -and $drive.DisplayRoot) {
+            $rest = $Path.Substring(2).TrimStart("\")
+            return (Join-Path $drive.DisplayRoot $rest)
+        }
+    }
+    return $Path
+}
+
+function Find-Dest {
+    # Look through the mapped network drives for one that actually has
+    # the instrument folder. Returns "" if none does.
+    foreach ($drive in Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue) {
+        if (-not $drive.DisplayRoot) { continue }
+        $found = Resolve-Dest "$($drive.Name):"
+        if ($found) { return $found }
     }
     return ""
 }
@@ -256,27 +285,20 @@ function Copy-Run($Dir) {
 
 # ---------------- install / uninstall ----------------
 
-function Install-Task {
-    # Copy ourselves somewhere stable first. A task pointing at a
-    # script in someone's Downloads folder breaks the day it is tidied.
+function Set-Destination {
+    # Non-elevated on purpose: this is the half that needs to see the
+    # operator's mapped drives.
     $installed = Join-Path $StanDir "flinders_copy.ps1"
     if ($PSCommandPath -ne $installed) {
         Copy-Item -LiteralPath $PSCommandPath -Destination $installed -Force
     }
     Write-Host "  Installed script: $installed"
 
-    # Ask where Flinders is, guessing from the mapped network drives.
     Add-Type -AssemblyName Microsoft.VisualBasic
     $guess = ""
     if (Test-Path $DestFile) { $guess = Resolve-Dest (Get-Content -LiteralPath $DestFile -TotalCount 1) }
-    if (-not $guess) {
-        foreach ($drive in Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue) {
-            if (-not $drive.DisplayRoot) { continue }
-            $found = Resolve-Dest "$($drive.Name):"
-            if ($found) { $guess = $found; break }
-        }
-    }
-    $prompt = "Where is the timsTOF folder on Flinders?`r`n`r`nUsually a mapped drive, e.g.  Y:\Data\raw_data\$InstrumentDir`r`nA drive letter on its own is fine."
+    if (-not $guess) { $guess = Find-Dest }
+    $prompt = "Where is the timsTOF folder on Flinders?`r`n`r`nUsually a mapped drive, e.g.  R:\Data\raw_data\$InstrumentDir`r`nA drive letter on its own is fine."
     $answer = [Microsoft.VisualBasic.Interaction]::InputBox($prompt, "STAN Flinders Copy", $guess)
     $resolved = Resolve-Dest $answer
     if (-not $resolved) {
@@ -285,12 +307,77 @@ function Install-Task {
         Write-Host "  Check the Flinders drive is connected, then run this again."
         return $false
     }
-    Set-Content -LiteralPath $DestFile -Value $resolved
-    Write-Host "  Destination:      $resolved"
 
-    # Runs as the logged-on user ON PURPOSE. Mapped network drives are
-    # per-session, so a task running as SYSTEM would not be able to see
-    # the Flinders drive at all.
+    # Save the UNC so the task is not hostage to a drive mapping.
+    $unc = ConvertTo-Unc $resolved
+    if ($unc -ne $resolved) {
+        if (Test-Path -LiteralPath $unc -PathType Container) {
+            Write-Host "  Destination:      $resolved"
+            Write-Host "                    stored as $unc"
+            $resolved = $unc
+        } else {
+            Write-Host "  Destination:      $resolved (UNC $unc not reachable, keeping the letter)"
+        }
+    } else {
+        Write-Host "  Destination:      $resolved"
+    }
+    Set-Content -LiteralPath $DestFile -Value $resolved
+    Log "destination set to $resolved"
+    return $true
+}
+
+function Test-Task {
+    $found = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($found) { return $true }
+    return $false
+}
+
+function Test-Elevated {
+    $me = New-Object Security.Principal.WindowsPrincipal(
+        [Security.Principal.WindowsIdentity]::GetCurrent())
+    return $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Register-Task {
+    # Creating a task needs an elevated token, even for an account in
+    # the Administrators group -- UAC hands a filtered one to a normal
+    # process, which is why this failed the first time with
+    # 0x80070005. Only THIS half elevates: an elevated process cannot
+    # see the operator's mapped network drives, so the destination has
+    # to have been found already, by Set-Destination, unelevated.
+    $installed = Join-Path $StanDir "flinders_copy.ps1"
+    if (-not (Test-Path -LiteralPath $installed)) {
+        Write-Host "  $installed is missing -- run the destination step first." -ForegroundColor Red
+        return $false
+    }
+
+    if (-not (Test-Elevated)) {
+        Write-Host ""
+        Write-Host "  Creating the scheduled task needs administrator rights."
+        Write-Host "  Say Yes to the Windows prompt that is about to appear."
+        # Start-Process quotes an array argument list properly, which is
+        # why this re-launch lives here and not in the .bat.
+        $relaunch = @("-NoProfile", "-ExecutionPolicy", "Bypass",
+                      "-File", $installed, "-RegisterTask")
+        try {
+            Start-Process powershell.exe -Verb RunAs -ArgumentList $relaunch -Wait -ErrorAction Stop
+        } catch {
+            Write-Host ""
+            Write-Host "  The administrator prompt was refused or cancelled." -ForegroundColor Red
+            Write-Host "  Right-click install_flinders_copy.bat and pick"
+            Write-Host "  'Run as administrator' to try again."
+            return $false
+        }
+        if (Test-Task) {
+            Write-Host "  Scheduled task:   $TaskName, every $EveryMinutes minutes"
+            return $true
+        }
+        Write-Host "  The task still is not there after elevating." -ForegroundColor Red
+        return $false
+    }
+
+    # Runs as the logged-on user ON PURPOSE, never SYSTEM: the copy has
+    # to happen in a session that can reach the Flinders share.
     $action = New-ScheduledTaskAction -Execute "powershell.exe" `
         -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$installed`""
     $atLogon = New-ScheduledTaskTrigger -AtLogOn
@@ -300,11 +387,24 @@ function Install-Task {
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
         -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 6) `
         -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries
-    Register-ScheduledTask -TaskName $TaskName -Action $action `
-        -Trigger @($atLogon, $repeat) -Settings $settings -Force | Out-Null
 
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $action `
+            -Trigger @($atLogon, $repeat) -Settings $settings -Force -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Host ""
+        Write-Host "  Could not create the scheduled task: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+
+    # Never claim success without looking. The first version of this
+    # printed "Done" after the registration had already failed.
+    if (-not (Test-Task)) {
+        Write-Host "  The task did not appear after registering." -ForegroundColor Red
+        return $false
+    }
     Write-Host "  Scheduled task:   $TaskName, every $EveryMinutes minutes"
-    Log "installed scheduled task, destination $resolved"
+    Log "registered scheduled task"
     return $true
 }
 
@@ -318,9 +418,26 @@ function Uninstall-Task {
 
 if ($Uninstall) { Uninstall-Task; exit 0 }
 
-if ($Install) {
-    if (Install-Task) { exit 0 }
+if ($Verify) {
+    if (Test-Task) { Write-Host "  Scheduled task is registered."; exit 0 }
+    Write-Host "  Scheduled task is NOT registered." -ForegroundColor Red
     exit 1
+}
+
+if ($SetDest) {
+    if (Set-Destination) { exit 0 }
+    exit 1
+}
+
+if ($RegisterTask) {
+    if (Register-Task) { exit 0 }
+    exit 1
+}
+
+if ($Install) {
+    if (-not (Set-Destination)) { exit 1 }
+    if (-not (Register-Task)) { exit 1 }
+    exit 0
 }
 
 if (Test-Path $PauseFile) {
@@ -330,8 +447,14 @@ if (Test-Path $PauseFile) {
 
 $Dest = ""
 if (Test-Path $DestFile) {
-    # Re-checked every pass: the operator may have remapped the letter.
+    # Re-checked every pass: the share may be down or remapped.
     $Dest = Resolve-Dest (Get-Content -LiteralPath $DestFile -TotalCount 1)
+}
+if (-not $Dest) {
+    # Self-heal: if the saved path has gone, look for the instrument
+    # folder on whatever is mapped right now before giving up.
+    $Dest = Find-Dest
+    if ($Dest) { Log "saved destination unreachable, using $Dest instead" }
 }
 if (-not $Dest) {
     Set-Status "NO DESTINATION - Flinders drive missing or not set up"

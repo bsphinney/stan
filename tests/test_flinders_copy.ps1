@@ -200,13 +200,56 @@ foreach ($line in (Get-Content -LiteralPath $target)) {
 $code = $codeOnly -join "`n"
 Check "no Python anywhere in the code" ($code -notmatch '(?i)python|\bpip\b|\.py\b') "True"
 Check "no STAN CLI or database dependency" ($code -notmatch '(?i)stan\.exe|stan\.db|sqlite|venv') "True"
-Check "robocopy is the only external program" ($code -notmatch '(?i)Start-Process\s+(?!robocopy)') "True"
+# robocopy does the copying; powershell.exe is only ever the
+# self-elevation relaunch of this same script. Nothing else may be
+# spawned on a PC that is acquiring data.
+Check "only robocopy and the elevation relaunch are spawned" ($code -notmatch '(?i)Start-Process\s+(?!robocopy|powershell)') "True"
 Check "shipped suffixes are Windows-separated" ($code -match 'Data\\raw_data') "True"
 # Mapped network drives are per-session: a task running as SYSTEM
 # could not see the Flinders drive at all.
 Check "task does not run as SYSTEM" ($code -notmatch '(?i)-User\s+"?SYSTEM|RunLevel\s+Highest') "True"
 Check "task tolerates a missed window" ($code -match 'StartWhenAvailable') "True"
 Check "overlapping passes are refused" ($code -match 'IgnoreNew') "True"
+
+# ---- 9. install must not lie, and must not elevate too much -----
+# Both of these shipped broken to the instrument PC on the first try:
+# Register-ScheduledTask was refused with 0x80070005 because UAC hands
+# a filtered token even to an Administrators account, and the installer
+# then printed "Done. It will check D:\Data every 5 minutes" anyway.
+Write-Host ""
+Write-Host "[9] installer honesty and the elevation split"
+
+function Get-FuncText($Name) {
+    $found = $ast.Find({
+        $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $args[0].Name -eq $Name
+    }, $true)
+    if ($found) { return $found.Extent.Text }
+    return ""
+}
+
+$reg = Get-FuncText "Register-Task"
+$dst = Get-FuncText "Set-Destination"
+Check "Register-Task exists" ($reg.Length -gt 0) "True"
+Check "it looks for the task before claiming success" ($reg -match "Test-Task") "True"
+Check "it elevates itself when refused" ($reg -match "RunAs") "True"
+# An elevated process cannot see mapped network drives, so the half
+# that has to find R:\ must never be the half that elevates.
+Check "finding the drive never elevates" ($dst -notmatch "RunAs") "True"
+Check "the destination is stored as a UNC" ($dst -match "ConvertTo-Unc") "True"
+# -Install has to set the destination first, unelevated, or the
+# elevated half would have no drive to look at.
+Check "install does destination before task" ($code.IndexOf("Set-Destination)") -lt $code.IndexOf("Register-Task)")) "True"
+
+$bat = Get-Content -LiteralPath (Join-Path $repoRoot "scripts/install_flinders_copy.bat") -Raw
+Check "the .bat checks the exit code before saying Done" ($bat -match "errorlevel 1 goto :failed") "True"
+Check "and says nothing is scheduled when it fails" ($bat -match "NOTHING is scheduled") "True"
+
+Write-Host ""
+Write-Host "[10] UNC conversion"
+Check "a UNC path is left alone" (ConvertTo-Unc "\\srv\share\Data") "\\srv\share\Data"
+Check "an unmapped letter is left alone" (ConvertTo-Unc "Q:\nope") "Q:\nope"
+Check "empty is left alone" (ConvertTo-Unc "") ""
 
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ""
