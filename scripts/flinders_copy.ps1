@@ -171,6 +171,52 @@ function Find-Dest {
     return ""
 }
 
+function Get-MirrorDir {
+    # Where this PC's state is mirrored for remote troubleshooting:
+    # <share>\STAN\<hostname>\ on the proteomics-grp share. Found by
+    # looking for the folder rather than trusting a drive letter, the
+    # same way the Flinders destination is.
+    $want = Join-Path "STAN" $env:COMPUTERNAME
+    foreach ($drive in Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue) {
+        if (-not $drive.DisplayRoot) { continue }
+        $try = Join-Path "$($drive.Name):" $want
+        if (Test-Path -LiteralPath $try -PathType Container) { return (ConvertTo-Unc $try) }
+    }
+    return ""
+}
+
+function Publish-Logs($Changed) {
+    # Push the logs to the mirror so they can be read from Hive without
+    # anyone touching this PC.
+    #
+    # We do this ourselves rather than relying on STAN's
+    # sync_to_hive_mirror: that is Python, this script deliberately has
+    # no Python dependency, and on TIMS-10878 the mirror's logs folder
+    # had not been updated since 11 Aug 2026 anyway.
+    #
+    # The status file goes every pass -- it is one line, and its
+    # timestamp is the proof the task is alive. The bulkier files only
+    # go when something actually happened, so an idle instrument is not
+    # pushing hundreds of KB over SMB every five minutes.
+    #
+    # Never allowed to break a pass: a dead share must not stop a copy.
+    try {
+        $dir = Get-MirrorDir
+        if (-not $dir) { return }
+        $target = Join-Path $dir "flinders"
+        if (-not (Test-Path -LiteralPath $target)) {
+            New-Item -ItemType Directory -Path $target -Force -ErrorAction Stop | Out-Null
+        }
+        $send = @($StatusFile)
+        if ($Changed) { $send = @($StatusFile, $LogFile, $DoneFile, (Join-Path $LogDir "flinders_robocopy.log")) }
+        foreach ($file in $send) {
+            if (Test-Path -LiteralPath $file) {
+                Copy-Item -LiteralPath $file -Destination $target -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+}
+
 # ---------------- month folder ----------------
 
 function Get-MonthDate($Name) {
@@ -546,6 +592,7 @@ if (-not $Dest) {
 if (-not $Dest) {
     Set-Status "NO DESTINATION - Flinders drive missing or not set up"
     Log "destination unavailable, nothing copied"
+    Publish-Logs $true
     exit 1
 }
 
@@ -578,4 +625,5 @@ foreach ($item in $ready) {
 $summary = "ok - $copied copied, $growing still acquiring, $($Done.Count) archived total"
 if ($copied -gt 0) { Log $summary }
 Set-Status $summary
+Publish-Logs ($copied -gt 0)
 exit 0

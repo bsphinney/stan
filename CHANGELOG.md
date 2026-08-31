@@ -11,6 +11,37 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.48] — 2026-08-31
+
+### Added
+- **The copier publishes its own logs to the Hive mirror.** It writes
+  `flinders_status.txt`, `flinders_copy.log`, `flinders_copied.txt` and the
+  robocopy log into `<share>\STAN\<hostname>\flinders\`, so a failure on
+  an instrument PC is readable from a Mac or from Hive without anyone
+  screenshotting a console. It finds the share by looking for
+  `STAN\<COMPUTERNAME>` across the mapped drives rather than trusting a
+  letter, and stores the UNC.
+  - It does this itself rather than calling `sync_to_hive_mirror`: that is
+    Python, and this script has no Python dependency by design. It is also
+    not a hypothetical — `TIMS-10878/logs/` in the mirror had not been
+    updated since **11 Aug 2026**, so anything relying on STAN's own sync
+    would have been invisible.
+  - The one-line status file goes every pass, since its timestamp is the
+    proof the task is alive now that there is no tray icon. The bulkier
+    files go only when a copy happened or the destination was unreachable,
+    so an idle instrument is not pushing hundreds of KB over SMB every five
+    minutes.
+  - Wrapped so it can never break a pass: a share being down must not stop
+    a copy. Asserted by a test that runs it with no mirror mapped at all.
+
+### Known issue (not this script)
+- **STAN's own mirror sync on TIMS-10878 appears dead** — nothing in
+  `TIMS-10878/logs/` since 11 Aug 2026, which breaks the autonomous
+  troubleshooting protocol in CLAUDE.md for that instrument. Unrelated to
+  the copier and worth chasing separately.
+
+---
+
 ## [1.0.47] — 2026-08-31
 
 ### Added

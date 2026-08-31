@@ -293,6 +293,20 @@ Check "a UNC path is left alone" (ConvertTo-Unc "\\srv\share\Data") "\\srv\share
 Check "an unmapped letter is left alone" (ConvertTo-Unc "Q:\nope") "Q:\nope"
 Check "empty is left alone" (ConvertTo-Unc "") ""
 
+Write-Host ""
+Write-Host "[11] publishing logs to the mirror"
+# Nothing about pushing logs may ever stop a copy from happening.
+Check "no mirror mapped is survivable" (& { Publish-Logs $true; "survived" }) "survived"
+Check "and so is the quiet path" (& { Publish-Logs $false; "survived" }) "survived"
+$pub = Get-FuncText "Publish-Logs"
+Check "publishing is wrapped in try/catch" ($pub -match "try \{") "True"
+Check "the bulky files only go when something changed" ($pub -match 'if \(\$Changed\)') "True"
+# The status file is one line and must go every pass -- its timestamp
+# is the only proof of life once the tray icon is gone.
+Check "status goes every pass" ($pub -match '\$send = @\(\$StatusFile\)') "True"
+Check "a pass publishes on the way out" ($code -match 'Publish-Logs \(\$copied') "True"
+Check "and publishes when there is no destination" ($code -match 'Publish-Logs \$true') "True"
+
 Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "===================================="
