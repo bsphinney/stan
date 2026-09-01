@@ -7321,11 +7321,29 @@
         return m;
       }, [data]);
 
+      /* stats keys are scoped per plate ("S5:n_ms2_frames") because outliers
+         are scored per plate, but the backend coloured a well with a bare
+         r.get(metric) on the run. Feeding the prefixed key straight into the
+         <option> asked for a column no run has, and left the <select> with no
+         option matching the metric actually in use — so it displayed the first
+         one regardless. Offer the bare names, deduped, and look stats up under
+         either spelling. */
+      const bareMetric = k => (k.includes(':') ? k.slice(k.indexOf(':') + 1) : k);
+      const statsFor = m => {
+        if (!data || !data.stats) return null;
+        if (data.stats[m]) return data.stats[m];
+        const hit = Object.keys(data.stats).find(k => bareMetric(k) === m);
+        return hit ? data.stats[hit] : null;
+      };
       const metricOptions = (data && data.stats && Object.keys(data.stats).length)
-        ? Object.keys(data.stats).map(k => [k, data.stats[k].label || k])
+        ? [...new Map(Object.keys(data.stats).map(k => {
+            const m = bareMetric(k);
+            return [m, [m, (data.stats[k] && data.stats[k].label) || m]];
+          })).values()]
         : [['ms1_total_tic', 'total ion current']];
-      const plateMetric = (data && data.plate && data.plate.metric) || metric;
-      const metricLabel = (data && data.stats && data.stats[plateMetric] && data.stats[plateMetric].label)
+      const plateMetric = bareMetric(
+        (data && data.plate && data.plate.metric) || metric);
+      const metricLabel = (statsFor(plateMetric) && statsFor(plateMetric).label)
         || plateMetric;
 
       const inputStyle = {
