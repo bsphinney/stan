@@ -11,6 +11,25 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.51] — 2026-09-01
+
+### Added
+- **Bruker acquisition-health panel on the Maintenance tab.** A new
+  `/api/maintenance/bruker` endpoint plus a `BrukerAcquisitionPanel` React
+  component surface maintenance signals extracted from the timsTOF's Compass
+  Server database: acquisition throughput over time, duty cycle, a 96-well plate
+  map, the failure taxonomy, and method usage. The data comes from a Hive-side
+  extractor that reads Bruker's own nightly BACKUP (never the live DB, no
+  password); the endpoint reads it from PG Farm when present, else the JSON
+  cache in the config dir. Read-only throughout. The panel hides itself when no
+  data has been produced yet.
+- Notably, the failure taxonomy identified that submission 0793's two empty
+  wells (COH-46, COH-48) failed with "Evosep One: No Evotip was present" — a
+  consumables miss, not an instrument fault — and that this is the single most
+  common failure mode on the instrument.
+
+---
+
 ## [1.0.50] — 2026-09-01
 
 ### Fixed

@@ -1303,3 +1303,51 @@ def probe_pg(timeout: int = 8) -> bool:
 def use_pg() -> bool:
     """Return True when the PG backend should be used for reads and writes."""
     return os.environ.get("STAN_DB_BACKEND", "").lower() == "pg"
+
+
+# ── Bruker maintenance cache ────────────────────────────────────────────
+# The Bruker timsTOF's Compass Server keeps its own PostgreSQL database of the
+# instrument's acquisition history. A Hive-side extractor reads the newest
+# Compass BACKUP (no live-DB access, no password) and produces one compact JSON
+# of maintenance signals. On the hosted dashboard that JSON reaches us through
+# PG Farm rather than a synced file: the extractor upserts it here, the
+# maintenance endpoint reads it back. One row, replaced each run.
+
+def _ensure_bruker_maintenance_table(cur) -> None:
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS bruker_maintenance ("
+        " id int PRIMARY KEY DEFAULT 1 CHECK (id = 1),"
+        " updated_at timestamptz NOT NULL DEFAULT now(),"
+        " doc jsonb NOT NULL)"
+    )
+
+
+def upsert_bruker_maintenance_pg(doc: dict) -> None:
+    """Replace the single Bruker maintenance document. Called by the extractor."""
+    with _connect() as pg, pg.cursor() as cur:
+        _ensure_bruker_maintenance_table(cur)
+        cur.execute(
+            "INSERT INTO bruker_maintenance (id, updated_at, doc)"
+            " VALUES (1, now(), %s)"
+            " ON CONFLICT (id) DO UPDATE SET"
+            " updated_at = excluded.updated_at, doc = excluded.doc",
+            (json.dumps(doc),),
+        )
+        pg.commit()
+
+
+def get_bruker_maintenance_pg() -> dict | None:
+    """The latest Bruker maintenance document, or None when none has been stored.
+
+    Read-only and DDL-free: the hosted service account has no CREATE privilege,
+    so a missing table is treated as "nothing stored yet" (the endpoint then
+    falls back to the file cache) rather than an error.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        try:
+            cur.execute("SELECT doc FROM bruker_maintenance WHERE id = 1")
+        except Exception:  # noqa: BLE001 - undefined_table etc. -> not stored yet
+            pg.rollback()
+            return None
+        row = cur.fetchone()
+    return row[0] if row else None

@@ -1515,6 +1515,45 @@ async def api_maintenance_calendar(days: int = 90) -> dict:
             "downtime_types": sorted(DOWNTIME_EVENT_TYPES)}
 
 
+@app.get("/api/maintenance/bruker")
+async def api_maintenance_bruker() -> dict:
+    """Bruker timsTOF acquisition-history maintenance signals.
+
+    A read-only summary extracted from the instrument's Compass Server
+    PostgreSQL BACKUP by the Hive-side extractor (never the live DB, no
+    password). On the hosted dashboard the document arrives through PG Farm
+    (the extractor upserts it there); a local install falls back to the JSON
+    cache the extractor writes into the STAN config dir, exactly where
+    thresholds.yml and ui_prefs.yml are found.
+
+    Responds 404 when nothing has been produced yet -- the panel treats that
+    as "the extractor hasn't run" and hides itself, like the ui_prefs.yml 404
+    path.
+    """
+    from stan.db_pg import get_bruker_maintenance_pg, use_pg
+    if use_pg():
+        try:
+            doc = get_bruker_maintenance_pg()
+        except Exception as exc:  # noqa: BLE001 - fall through to the file cache
+            logger.warning("Bruker maintenance PG read failed: %s", exc)
+            doc = None
+        if doc:
+            return doc
+    try:
+        path = resolve_config_path("bruker_maintenance.json")
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="Bruker maintenance data not found (extractor has not run)",
+        )
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError) as exc:
+        logger.warning("Bruker maintenance cache unreadable: %s", exc)
+        raise HTTPException(status_code=503, detail="Bruker maintenance cache unreadable")
+
+
 @app.get("/api/instruments/{instrument}/column-life")
 async def api_column_life(instrument: str) -> dict:
     """Column lifetime stats since last column change."""
