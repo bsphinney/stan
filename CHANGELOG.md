@@ -11,6 +11,44 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.50] — 2026-09-01
+
+### Fixed
+- **The "Colour samples by" dropdown never did anything.** The stats loop in
+  `analyse_submission` used `metric` as its loop variable, shadowing the
+  function parameter of the same name, so `plate_map()` always received
+  whichever key came last out of the stats dict — `n_ms2_frames`. Confirmed
+  against the live API: requesting `ms1_total_tic` returned
+  `plate.metric = n_ms2_frames`.
+- **The dropdown's option values could not resolve.** `stats` keys are
+  plate-scoped (`S5:n_ms2_frames`) because outliers are scored per plate, but a
+  well is coloured with a bare `r.get(metric)`. The prefixed key asked for a
+  column no run carries, and left `<select>` with no option matching the metric
+  in use — so it displayed the first option regardless, which is why the control
+  read "MS1 max intensity" while the legend said `n_ms2_frames`.
+- **Half the HeLa standards were never searched.** The QC filename pattern
+  required a digit immediately after `hel`, so `Hel50` (plate S6) matched and
+  `Hel-50` (plate S5) did not. The S5 standards went to the monitor pipeline,
+  arrived with no precursor counts, and the plate reported "0 HeLa standards"
+  while drawing them as ordinary samples. A separator now may precede the
+  digits. The pattern is duplicated in six files plus `dispatch.yml` and the
+  Hive fork; all were updated together.
+- **Blanks and washes are no longer scored as samples.** A blank is meant to be
+  empty, so judging it against the sample cohort flagged it for being exactly
+  that — submission 0793 put four blanks on an 11-entry rerun list. They also
+  sat in the cohort the median and MAD derive from (16 of S5's 94 "samples"),
+  dragging the median down and widening the spread a real failure must clear.
+  Now held out of scoring, the colour scale and the edge comparison; still drawn
+  on the plate map and the queue chart, just never flagged. Detection is more
+  sensitive as a result.
+
+### Note
+Versions 1.0.44, 1.0.45 and 1.0.49 have no entries here. 1.0.44 is the build
+currently deployed, so the running version is not described by this changelog;
+`GET /api/version` is the reliable way to ask what is live.
+
+---
+
 ## [1.0.48] — 2026-08-31
 
 ### Added
