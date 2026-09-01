@@ -7401,7 +7401,61 @@ function BFailTable({ rows }) {
       );
     }
 
-    function HTRerunList({ rows, wellByRun, cohortOk, minCohort, zThreshold, minEffect = 0.2, submission = '' }) {
+    /* A compact plate map of just the flagged wells: the full plate grids
+       coloured light, the re-run wells lit in warn/orange with their well id.
+       Answers "where on the plate are the re-runs" at a glance -- clustering
+       says plate/prep, scatter says sample. */
+    function HTRerunPlateMap({ rows, wellByRun }) {
+      const ROWS = 'ABCDEFGH', COLS = Array.from({ length: 12 }, (_, i) => i + 1);
+      const flagged = {};   // plate -> Set(well)
+      for (const r of rows || []) {
+        const wf = wellByRun[r.run_name] || '';
+        const [plate, well] = String(wf).split('-');
+        if (plate && well) (flagged[plate] = flagged[plate] || new Set()).add(well);
+      }
+      const plates = Object.keys(flagged).sort();
+      if (!plates.length) return null;
+      const cw = 26, ch = 20, padL = 20, padT = 16;
+      return (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.4rem', margin: '0.4rem 0 1rem' }}>
+          {plates.map(plate => {
+            const W = padL + COLS.length * cw, H = padT + ROWS.length * ch + 6;
+            return (
+              <div key={plate}>
+                <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.2rem' }}>
+                  Plate {plate} — {flagged[plate].size} to re-run
+                </div>
+                <svg width={W} height={H} style={{ overflow: 'visible' }}>
+                  {COLS.map((c, ci) => (
+                    <text key={'c' + c} x={padL + ci * cw + cw / 2} y={padT - 4}
+                          textAnchor="middle" fontSize="8" fill="var(--muted)">{c}</text>))}
+                  {ROWS.split('').map((rl, ri) => (
+                    <text key={'r' + rl} x={padL - 6} y={padT + ri * ch + ch / 2 + 3}
+                          textAnchor="end" fontSize="8" fill="var(--muted)">{rl}</text>))}
+                  {ROWS.split('').map((rl, ri) => COLS.map((c, ci) => {
+                    const hit = flagged[plate].has(rl + c);
+                    return (
+                      <g key={rl + c}>
+                        <rect x={padL + ci * cw + 1} y={padT + ri * ch + 1}
+                              width={cw - 2} height={ch - 2} rx="2"
+                              fill={hit ? 'var(--warn)' : 'var(--surface)'}
+                              stroke={hit ? 'var(--warn)' : 'var(--border)'}
+                              strokeWidth={hit ? 1.5 : 1}>
+                          <title>{plate}-{rl}{c}{hit ? ' — flagged for re-run' : ''}</title>
+                        </rect>
+                        {hit && <text x={padL + ci * cw + cw / 2} y={padT + ri * ch + ch / 2 + 3}
+                                      textAnchor="middle" fontSize="7" fontWeight="700"
+                                      fill="#111">{rl}{c}</text>}
+                      </g>);
+                  }))}
+                </svg>
+              </div>);
+          })}
+        </div>
+      );
+    }
+
+    function HTRerunList({ rows, wellByRun, cohortOk, minCohort, zThreshold, minEffect = 0.2, submission = '', shareToken = '' }) {
       if (!rows || !rows.length) {
         return (
           <div className="card">
@@ -7424,12 +7478,23 @@ function BFailTable({ rows }) {
               Needs re-run — {rows.length} {rows.length === 1 ? 'sample' : 'samples'}
             </h3>
             {rows.length > 0 && (
-              <button onClick={() => htExportRerun(rows, wellByRun, submission)}
-                      style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>
-                Export CSV
-              </button>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <a href={`${API}/api/ht/rerun-queue?q=${encodeURIComponent(submission)}`
+                       + (shareToken ? `&token=${encodeURIComponent(shareToken)}` : '')}
+                   style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem', borderRadius: '0.4rem',
+                            fontWeight: 600, textDecoration: 'none',
+                            background: 'linear-gradient(180deg,#ffd27a,#f5a623)', color: '#3a2500' }}
+                   title="HyStar SampleTable (.xlsx) of the flagged wells — load it to re-inject">
+                  Export sample queue
+                </a>
+                <button onClick={() => htExportRerun(rows, wellByRun, submission)}
+                        style={{ fontSize: '0.8rem', padding: '0.4rem 0.8rem' }}>
+                  Export CSV
+                </button>
+              </div>
             )}
           </div>
+          <HTRerunPlateMap rows={rows} wellByRun={wellByRun} />
           <div style={{ fontSize: '0.8rem', color: 'var(--muted)', marginBottom: '0.6rem', lineHeight: 1.5 }}>
             These ran fine — the <strong>Verdict</strong> column is the health check, and a
             &ldquo;pass&rdquo; there means the file is usable. This list asks a different question:
@@ -7765,7 +7830,7 @@ function BFailTable({ rows }) {
                            cohortOk={data.cohort_ok} minCohort={data.min_cohort}
                            zThreshold={data.z_threshold}
                            minEffect={data.min_effect}
-                           submission={data.query} />
+                           submission={data.query} shareToken={shareToken} />
             </>
           )}
         </div>

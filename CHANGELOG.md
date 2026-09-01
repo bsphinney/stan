@@ -11,6 +11,19 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.52] — 2026-09-01
+
+### Added
+- **Export sample queue** and a **re-run plate map** in the HT tab's "Needs
+  re-run" section. The new `/api/ht/rerun-queue` endpoint streams a HyStar
+  SampleTable `.xlsx` of the flagged wells — the format the instrument loads
+  directly to re-inject — filled column-major onto a fresh plate, matching the
+  Core's exported-queue format. Beside it, a compact SVG plate map lights the
+  flagged wells so their layout (clustered = plate/prep, scattered = sample) is
+  visible at a glance. Adds `openpyxl` to the hosted requirements.
+
+---
+
 ## [1.0.51] — 2026-09-01
 
 ### Added
