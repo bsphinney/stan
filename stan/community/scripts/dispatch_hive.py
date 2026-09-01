@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_CONFIG_PATH = Path("/quobyte/proteomics-grp/STAN/dispatch.yml")
-DEFAULT_QC_PATTERN = r"(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)"
+DEFAULT_QC_PATTERN = r"(?i)(he(l[_\-\s]?[a5\d]|[_\-\s]?\d)|qc|std[_\-\s]?he)"
 
 # SLURM resource profile for monitor jobs. Much cheaper than QC jobs:
 # no DIA-NN/Sage, just rawmeat metrics + sample-health writes.

@@ -449,7 +449,7 @@ def _run_4dff_inline(raw_path: Path, run_id: str = "", db_path: Path | None = No
             logger.info("ion cloud stored: %d points for %s", n, raw_path.name)
 
 
-QC_PATTERN = "(?i)(he(l[a5\\d]|\\d)|qc|std[_\\-\\s]?he)"
+QC_PATTERN = "(?i)(he(l[_\\-\\s]?[a5\\d]|[_\\-\\s]?\\d)|qc|std[_\\-\\s]?he)"
 
 
 def _classify_raw(raw_name: str) -> str:
