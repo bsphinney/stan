@@ -11,6 +11,31 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.59] — 2026-09-02
+
+### Added
+- **Clog alerts now name what was in the column when the pressure stepped.**
+  "What was running?" is the first operational question and the extractor
+  already answers it, so the sample is carried into the existing clog message
+  rather than sent as a second notification — every step found so far
+  coincides with a clog that alert already reports, and two messages for one
+  incident is how alerting becomes noise.
+
+  Because this names someone's sample, three deliberate constraints: the
+  correlation caveat is a literal line in the message rather than something
+  paraphrased away, low-confidence joins are dropped rather than hedged (a
+  hedged name still names someone), and `is_control` is surfaced when known,
+  because a blank fouling the column is a different conversation from a
+  customer's sample doing it. The enrichment is never load-bearing — an older
+  document without the key produces the same alert as before.
+
+  `by_submission` is deliberately **not** wired to Slack. It is empty, there is
+  no repeat offender in the data, and a push notification naming a submitter
+  off one medium-confidence correlation is not withdrawable. If it ships it
+  belongs in the panel, where its limits can be read alongside it.
+
+---
+
 ## [1.0.58] — 2026-09-02
 
 ### Fixed

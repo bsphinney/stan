@@ -209,6 +209,57 @@ def _episodes(flags: list[dict]) -> list[list[dict]]:
     return out
 
 
+def impacted_runs(doc: dict, start: datetime | None,
+                  end: datetime | None) -> list[dict]:
+    """Injections `sample_impact` ties to a baseline step inside this episode.
+
+    "What was in the column when it clogged" is the first thing anyone asks,
+    and the extractor already works it out, so a clog alert may as well carry
+    it. This ENRICHES the clog alert rather than becoming an alert of its own:
+    every step it has found so far coincides with a clog already detected, so
+    a separate notification would just say the same thing twice.
+
+    Attribution is correlation, never cause -- a sample that happens to be
+    running while a clog is already forming gets blamed for it. That caveat
+    travels with the text, because this names somebody's sample. `low`
+    confidence joins are dropped rather than hedged.
+    """
+    if start is None or end is None:
+        return []
+    out = []
+    for f in ((doc.get("sample_impact") or {}).get("flags") or []):
+        at = _parse(f.get("at"))
+        if at is None or not (start <= at <= end):
+            continue
+        if str(f.get("confidence") or "").lower() == "low":
+            continue
+        out.append(f)
+    return out
+
+
+def _impact_lines(hits: list[dict]) -> list[str]:
+    """Render the sample attribution, caveat included."""
+    if not hits:
+        return []
+    lines = []
+    for h in hits[:3]:
+        what = h.get("run_name") or h.get("well") or "?"
+        bits = []
+        if h.get("well"):
+            bits.append(f"well {h['well']}")
+        if h.get("confidence"):
+            bits.append(f"{h['confidence']} confidence")
+        if h.get("is_control"):
+            # A blank or HeLa standard fouling the column is a different
+            # conversation from a customer's sample doing it.
+            bits.append("a control/QC run, not a submitted sample")
+        suffix = f" ({', '.join(bits)})" if bits else ""
+        lines.append(f"*In the column when the baseline stepped:* `{what}`{suffix}")
+    lines.append("_Correlation, not cause — a sample running while a clog is "
+                 "already forming will be blamed for it._")
+    return lines
+
+
 def _at_ceiling(flag: dict, ceiling_bar: float | None) -> bool:
     if "ceiling" in (flag.get("kinds") or []):
         return True
@@ -326,6 +377,8 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
                     f"{newest.get('peak_bar')} bar of {ceiling}.",
                     f"*Started:* {(_parse(episode[0].get('start')) or now).strftime('%Y-%m-%d %H:%M')}",
                     "Reasons: " + "; ".join(newest.get("reasons") or []),
+                    *_impact_lines(impacted_runs(
+                        doc, _parse(episode[0].get("start")), last_at)),
                 ],
                 at=at_str,
                 extra={"method": method, "n_critical": len(criticals),

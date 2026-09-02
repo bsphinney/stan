@@ -476,3 +476,71 @@ def test_two_distinct_injections_do_not_share_a_key():
     b = check_bruker(_bruker([_failure("2026-09-01 02:23", "Connection lost")]),
                      now=NOW)
     assert a[0].key != b[0].key
+
+
+# ── sample attribution on a clog ─────────────────────────────────
+
+
+def _impact(at, run_name="20260828_100spd_COH-21_S5-E3_1_24214.d",
+            well="S5-E3", confidence="medium", **kw):
+    f = {"at": at, "run_name": run_name, "well": well,
+         "confidence": confidence, "from_bar": 322.6, "to_bar": 399.6}
+    f.update(kw)
+    return f
+
+
+def test_a_clog_names_the_injection_that_was_in_the_column():
+    """The first operational question, and the extractor already answers it.
+
+    Real join from 2026-08-31: the step at 23:18:45 lands on the episode's
+    first flagged run, and names COH-21 in well S5-E3.
+    """
+    doc = _doc(_series(3, first="2026-09-01T04:00:00"))
+    doc["sample_impact"] = {"flags": [_impact("2026-09-01T04:00:00")]}
+    clog = next(a for a in check_evosep(doc, now=NOW) if a.kind == "clog")
+    body = " ".join(clog.detail)
+    assert "COH-21" in body and "S5-E3" in body
+    # Naming somebody's sample obliges the caveat to travel with it.
+    assert "Correlation, not cause" in body
+
+
+def test_a_control_run_is_labelled_as_one():
+    """A blank fouling the column is a different conversation from a
+    customer's sample doing it."""
+    doc = _doc(_series(3, first="2026-09-01T04:00:00"))
+    doc["sample_impact"] = {"flags": [
+        _impact("2026-09-01T04:00:00", run_name="blankDia_S1-H9.d",
+                is_control=True)]}
+    clog = next(a for a in check_evosep(doc, now=NOW) if a.kind == "clog")
+    assert "control/QC run" in " ".join(clog.detail)
+
+
+def test_a_low_confidence_attribution_is_dropped_not_hedged():
+    doc = _doc(_series(3, first="2026-09-01T04:00:00"))
+    doc["sample_impact"] = {"flags": [
+        _impact("2026-09-01T04:00:00", confidence="low")]}
+    clog = next(a for a in check_evosep(doc, now=NOW) if a.kind == "clog")
+    assert "COH-21" not in " ".join(clog.detail)
+
+
+def test_a_step_outside_the_episode_is_not_attributed_to_it():
+    doc = _doc(_series(3, first="2026-09-01T04:00:00"))
+    doc["sample_impact"] = {"flags": [_impact("2026-08-20T04:00:00")]}
+    clog = next(a for a in check_evosep(doc, now=NOW) if a.kind == "clog")
+    assert "COH-21" not in " ".join(clog.detail)
+
+
+def test_no_sample_impact_key_changes_nothing():
+    """The enrichment must never be load-bearing -- older documents lack it."""
+    doc = _doc(_series(3, first="2026-09-01T04:00:00"))
+    clog = next(a for a in check_evosep(doc, now=NOW) if a.kind == "clog")
+    assert clog.headline and "Correlation" not in " ".join(clog.detail)
+
+
+def test_sample_impact_never_becomes_its_own_alert():
+    """Every step so far coincides with a clog already caught; a second
+    notification would say the same thing twice."""
+    doc = _doc(_series(3, first="2026-09-01T04:00:00"))
+    doc["sample_impact"] = {"flags": [_impact("2026-09-01T04:00:00")]}
+    kinds = {a.kind for a in check_evosep(doc, now=NOW)}
+    assert "sample_impact" not in kinds and "sample" not in kinds
