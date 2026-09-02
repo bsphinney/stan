@@ -11,6 +11,24 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.65] — 2026-09-02
+
+### Added
+- **Column ageing chart** — every column overlaid on a common *days since
+  fitted* axis, so the current one can be compared with its predecessors at
+  the same age rather than on a calendar. The y-axis is wash flow as a
+  fraction of each column's **own** value when new, which makes the comparison
+  survive a change of column type: absolute flow differs between columns, the
+  fraction does not. A line falling faster than the ones beneath it is a
+  column fouling faster than the last one did.
+
+  The 77% line is marked, because that is where the previous column was
+  actually replaced (2.267 → 1.738 µL/min) — so the chart shows not just the
+  trajectory but how far it is from the point at which the last column came
+  out.
+
+---
+
 ## [1.0.64] — 2026-09-02
 
 ### Changed

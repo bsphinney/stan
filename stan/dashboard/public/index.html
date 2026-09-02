@@ -5511,6 +5511,111 @@ function BFailTable({ rows }) {
       );
     }
 
+    /* Column ageing: every column overlaid on a common "days since install"
+       axis, so the current one can be compared with its predecessors AT THE
+       SAME AGE rather than on a calendar. Wash flow is the y-axis because it
+       is pressure-controlled and therefore a direct resistance measurement --
+       no baseline, no reference, no normalisation. A line dropping faster
+       than the ones beneath it is a column fouling faster than the last. */
+    function EvColumnAging({ wf, cl }) {
+      const pts = (wf && wf.series || []).filter(p => p && p.flow_ul_min > 0 && p.segment_installed);
+      if (pts.length < 3) return null;
+
+      const bySeg = {};
+      pts.forEach(p => { (bySeg[p.segment_installed] = bySeg[p.segment_installed] || []).push(p); });
+      const segs = Object.keys(bySeg).sort();
+      if (segs.length < 2) return null;
+      const currentSeg = segs[segs.length - 1];
+
+      /* Age in days, and flow as a FRACTION OF THAT COLUMN'S OWN FRESH VALUE.
+         Absolute flow differs between column types; the fraction does not, so
+         this axis stays meaningful when a different column is fitted. */
+      const lines = segs.map(k => {
+        const g = bySeg[k].slice().sort((a, b) => new Date(a.t) - new Date(b.t));
+        const t0 = new Date(g[0].t).getTime();
+        const fresh = g[0].flow_ul_min;
+        return {
+          seg: k,
+          isCurrent: k === currentSeg,
+          pts: g.map(p => ({
+            age: (new Date(p.t).getTime() - t0) / 86400000,
+            frac: p.flow_ul_min / fresh,
+            flow: p.flow_ul_min,
+          })),
+        };
+      });
+
+      const allAge = lines.flatMap(l => l.pts.map(p => p.age));
+      const allFr = lines.flatMap(l => l.pts.map(p => p.frac));
+      const aMax = Math.max(...allAge, 1);
+      const fMin = Math.min(...allFr, 0.95), fMax = Math.max(...allFr, 1.0);
+      const W = 720, H = 200, PADL = 46, PADB = 28, PADT = 12, PADR = 12;
+      const x = a => PADL + (a / aMax) * (W - PADL - PADR);
+      const y = f => PADT + (1 - (f - fMin) / Math.max(1e-9, fMax - fMin)) * (H - PADT - PADB);
+      const colours = ['#94a3b8', '#60a5fa', '#22c55e', '#a78bfa', '#f472b6'];
+
+      /* The replacement trigger, from the retired column: it was swapped at
+         ~77% of its own fresh flow. Relative, so it transfers to any column. */
+      const TRIGGER = 0.77;
+
+      return (
+        <div style={{ marginTop: '1rem' }}>
+          <h4 style={{ fontSize: '0.9rem', color: 'var(--text)', margin: '0 0 .2rem' }}>
+            Column ageing — every column on the same age axis
+          </h4>
+          <p style={{ color: 'var(--muted)', fontSize: '.78rem', margin: '0 0 .5rem' }}>
+            Wash flow as a fraction of each column&rsquo;s <em>own</em> value when new, against days
+            since it was fitted. Comparing columns at the same age rather than on a calendar —
+            a line falling faster than the ones below it is a column fouling faster than the last.
+          </p>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}
+               role="img" aria-label="Column ageing curves, overlaid by age">
+            <line x1={PADL} y1={H - PADB} x2={W - PADR} y2={H - PADB} stroke="var(--border)" />
+            <line x1={PADL} y1={PADT} x2={PADL} y2={H - PADB} stroke="var(--border)" />
+            {[1.0, 0.9, 0.8].filter(f => f >= fMin && f <= fMax).map(f => (
+              <g key={f}>
+                <line x1={PADL} y1={y(f)} x2={W - PADR} y2={y(f)}
+                      stroke="var(--border)" strokeDasharray="2 3" opacity=".5" />
+                <text x={PADL - 6} y={y(f) + 3} textAnchor="end" fontSize="9"
+                      fill="var(--muted)">{Math.round(f * 100)}%</text>
+              </g>
+            ))}
+            {TRIGGER >= fMin && TRIGGER <= fMax && (
+              <g>
+                <line x1={PADL} y1={y(TRIGGER)} x2={W - PADR} y2={y(TRIGGER)}
+                      stroke="var(--warn)" strokeDasharray="5 3" />
+                <text x={W - PADR} y={y(TRIGGER) - 4} textAnchor="end" fontSize="8.5"
+                      fill="var(--warn)">replaced at this level last time (77%)</text>
+              </g>
+            )}
+            {lines.map((l, i) => {
+              const c = l.isCurrent ? '#f59e0b' : colours[i % colours.length];
+              const d = l.pts.map((p, j) =>
+                `${j ? 'L' : 'M'}${x(p.age).toFixed(1)},${y(p.frac).toFixed(1)}`).join(' ');
+              const last = l.pts[l.pts.length - 1];
+              return (
+                <g key={l.seg}>
+                  <path d={d} fill="none" stroke={c}
+                        strokeWidth={l.isCurrent ? 2.2 : 1.3}
+                        opacity={l.isCurrent ? 1 : 0.75} />
+                  {l.isCurrent && l.pts.map((p, j) => (
+                    <circle key={j} cx={x(p.age)} cy={y(p.frac)} r="2.5" fill={c} />
+                  ))}
+                  <text x={Math.min(x(last.age) + 4, W - PADR - 60)} y={y(last.frac) - 3}
+                        fontSize="8.5" fill={c}>
+                    {String(l.seg).slice(0, 10)}{l.isCurrent ? ' (current)' : ''}
+                  </text>
+                </g>
+              );
+            })}
+            <text x={PADL} y={H - 8} fontSize="9" fill="var(--muted)">0 days</text>
+            <text x={W - PADR} y={H - 8} fontSize="9" fill="var(--muted)"
+                  textAnchor="end">{Math.round(aMax)} days</text>
+          </svg>
+        </div>
+      );
+    }
+
     function EvWashFlow({ wf }) {
       const pts = (wf.series || []).filter(p => p && p.flow_ul_min > 0);
       if (pts.length < 2) return null;
@@ -5749,6 +5854,8 @@ function BFailTable({ rows }) {
           {d.wash_flow && d.wash_flow.series && d.wash_flow.series.length > 1 && (
             <EvWashFlow wf={d.wash_flow} />
           )}
+
+          {d.wash_flow && <EvColumnAging wf={d.wash_flow} cl={d.column_lifetimes} />}
 
           {/* ── Wear counters ── */}
           {wear.pump_seal_ml && (
