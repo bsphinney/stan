@@ -63,12 +63,65 @@ _extra = [
     if o.strip()
 ]
 _DASHBOARD_ORIGINS = tuple(_DASHBOARD_ORIGINS_BASE) + tuple(_extra)
+# The middleware stack is built once at import time, so the
+# request-derived same-origin match added below cannot be mirrored
+# here — and does not need to be. The SPA is served by this same app,
+# so every fetch it makes is same-origin and the browser asks for no
+# CORS header at all. allow_origins only matters for a front end
+# hosted separately from the API, which the localhost entries and
+# STAN_DASHBOARD_EXTRA_ORIGINS already cover.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(_DASHBOARD_ORIGINS),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# 2026-09-02: accept genuine same-origin writes on whatever host the
+# app is actually served from. The hosted dashboard lives at
+# https://ucd.stan-proteomics.org behind Azure Easy Auth, that origin
+# was never added to STAN_DASHBOARD_EXTRA_ORIGINS, and so every
+# maintenance-log save 403'd with "not a STAN dashboard origin" at a
+# browser that was perfectly well signed in — the gate runs ahead of
+# auth and knew nothing about the custom domain. Hand-maintaining an
+# allowlist entry per deployment hostname is the bug, not the cure.
+#
+# Why matching our own origin is still real CSRF protection: the
+# browser sets Host itself from the URL being fetched and forbids
+# script from overriding it. A page at https://evil.example fetching
+# this app therefore sends Host: ucd.stan-proteomics.org together with
+# Origin: https://evil.example — the two disagree, and the request is
+# rejected exactly as before. Only a document actually served from our
+# own origin can make them agree, and that document is ours. No
+# wildcard, no bypass: an Origin header that is present is still
+# checked, every time.
+def _served_origin(request) -> str | None:
+    """The origin this request was actually served on, or None.
+
+    Built from Host (browser-controlled, unspoofable from script) plus
+    the scheme. X-Forwarded-Proto IS honoured because Azure App
+    Service terminates TLS at the front end: inside the container
+    request.url.scheme is "http" while the browser sends an https
+    Origin, so without it the hosted app never matches itself. Azure
+    overwrites any inbound value, and the scheme on its own cannot
+    make a foreign Origin match our Host.
+
+    X-Forwarded-Host is deliberately NOT honoured. Unlike Host it is
+    freely settable by any non-browser client, so trusting it would
+    let a caller simply declare its own origin to be ours and walk
+    straight through the gate.
+    """
+    host = request.headers.get("host")
+    if not host:
+        return None
+    forwarded = request.headers.get("x-forwarded-proto")
+    # Chained proxies send a comma-separated list; the client-facing
+    # hop is the first entry.
+    scheme = forwarded.split(",")[0].strip().lower() if forwarded else request.url.scheme
+    if scheme not in ("http", "https"):
+        return None
+    return f"{scheme}://{host}"
 
 
 @app.middleware("http")
@@ -78,12 +131,13 @@ async def _enforce_origin_on_writes(request, call_next):
     Browser CSRF protection. Read-only methods (GET/HEAD/OPTIONS) are
     not gated — the dashboard exposes no patient data and the cohort
     aggregates are read-safe. Mutating methods (POST/PUT/DELETE/PATCH)
-    require an Origin header matching one of `_DASHBOARD_ORIGINS`, OR
-    no Origin header at all (CLI client on the same machine).
+    require an Origin header matching one of `_DASHBOARD_ORIGINS` or
+    the origin the app is itself being served on, OR no Origin header
+    at all (CLI client on the same machine).
     """
     if request.method in ("POST", "PUT", "DELETE", "PATCH"):
         origin = request.headers.get("origin")
-        if origin and origin not in _DASHBOARD_ORIGINS:
+        if origin and origin not in _DASHBOARD_ORIGINS and origin != _served_origin(request):
             from fastapi.responses import JSONResponse
             return JSONResponse(
                 status_code=403,

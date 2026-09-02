@@ -11,6 +11,51 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.55] — 2026-09-02
+
+### Fixed
+- **Saving a maintenance log on the hosted dashboard 403'd with "not a STAN
+  dashboard origin", even signed in.** The CSRF origin gate allowed only
+  `localhost:8421`, `127.0.0.1:8421` and whatever `STAN_DASHBOARD_EXTRA_ORIGINS`
+  listed — and that variable was never set on the Azure app, so every write
+  from `https://ucd.stan-proteomics.org` was rejected before auth was even
+  consulted. The gate now also accepts an Origin matching the origin the app
+  is *actually being served on*, so the dashboard works at whatever hostname
+  it is deployed to instead of needing an allowlist entry hand-added per
+  domain.
+
+  This is not a weakening. The browser writes `Host` itself from the URL being
+  fetched and forbids script from overriding it, so a page at
+  `https://evil.example` fetching this app still sends `Origin:
+  https://evil.example` alongside `Host: ucd.stan-proteomics.org` — they
+  disagree and the request is rejected exactly as before. Only a document
+  served from our own origin can make them agree. `X-Forwarded-Proto` is
+  honoured because Azure terminates TLS at the front end (the container sees
+  `http` while the browser sends an `https` Origin); `X-Forwarded-Host` is
+  deliberately **not**, since unlike `Host` any non-browser client can set it
+  and thereby declare its own origin to be ours. 8 tests, verified as genuine
+  regressions by reverting the fix: the two same-origin cases fail without it
+  while all six security cases pass both before and after.
+
+### Added
+- **`column_clog` and `capillary_change` maintenance event types.** A clog is a
+  fault, not planned work, and a glass capillary swap is not a column swap —
+  previously both had to be logged as "other", which is why an inferred column
+  install date of 2026-08-19 was in fact the day a new *capillary* went in
+  (the real column change was 2026-07-31). `column_clog` renders amber rather
+  than red: red stays reserved for `downtime`, because a clog often costs a run
+  without taking the instrument out of service and conflating the two would
+  corrupt the availability/MTBF maths the community leaderboard computes from
+  downtime spans.
+
+### Changed
+- Evosep column-health panel now sits **above** the Bruker acquisition panel on
+  the Maintenance tab — the column is what actually fails week to week.
+- Column and capillary changes moved to the top of both event-type pickers,
+  ahead of the rarer entries.
+
+---
+
 ## [1.0.54] — 2026-09-02
 
 ### Fixed

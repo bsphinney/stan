@@ -189,7 +189,7 @@ CREATE INDEX IF NOT EXISTS idx_runs_date ON runs(run_date);
 CREATE TABLE IF NOT EXISTS maintenance_events (
     id          TEXT PRIMARY KEY,
     instrument  TEXT NOT NULL,
-    event_type  TEXT NOT NULL,   -- column_change, source_clean, calibration, pm, lc_service, other
+    event_type  TEXT NOT NULL,   -- column_change, column_clog, capillary_change, source_clean, calibration, pm, lc_service, other
     event_date  TEXT NOT NULL,
     notes       TEXT DEFAULT '',
     operator    TEXT DEFAULT '',
@@ -2350,6 +2350,8 @@ def fran_submission_url(submission: str | None) -> str | None:
 
 EVENT_TYPES = [
     "column_change",   # New LC column installed
+    "column_clog",     # Column clogged / overpressure -- a fault, not planned work
+    "capillary_change",  # Glass capillary swapped (timsTOF source inlet)
     "source_clean",    # Ion source cleaned
     "calibration",     # Mass calibration performed
     "pm",              # Scheduled preventive maintenance

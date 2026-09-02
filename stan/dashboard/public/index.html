@@ -118,6 +118,8 @@
        Keep in step with EVENT_TYPES in stan/db.py. */
     const MAINT_TYPE_LABELS = {
       column_change: 'Column Change',
+      column_clog: 'Column Clog',
+      capillary_change: 'Capillary Change',
       source_clean: 'Source Clean',
       calibration: 'Calibration',
       pm: 'PM',
@@ -127,6 +129,15 @@
     };
     const MAINT_TYPE_COLORS = {
       column_change: '#60a5fa',
+      /* Amber: a clog is a fault, so it should read as a warning rather than
+         as routine work. Red stays reserved for downtime -- a clog often
+         costs you a run without taking the instrument out of service, and
+         conflating the two would corrupt the availability maths. */
+      column_clog: '#fb923c',
+      /* Teal, not another blue: column and capillary swaps sit next to each
+         other in the log and the legend, and they are the two a reader most
+         needs to tell apart at marker size. */
+      capillary_change: '#2dd4bf',
       source_clean: '#22c55e',
       calibration: '#eab308',
       pm: '#a78bfa',
@@ -1795,8 +1806,13 @@
       const [colSerial, setColSerial] = useState('');
       const [status, setStatus] = useState('');
 
+      /* Second event-type list (Trends tab). Kept in step with the
+         Maintenance form's <select> and with EVENT_TYPES in stan/db.py --
+         three places, so a new type has to be added to all three. */
       const eventTypes = [
         { value: 'column_change', label: 'Column Change' },
+        { value: 'column_clog', label: 'Column Clog / Overpressure' },
+        { value: 'capillary_change', label: 'Glass Capillary Change' },
         { value: 'source_clean', label: 'Source Clean' },
         { value: 'calibration', label: 'Calibration' },
         { value: 'pm', label: 'PM (Preventive Maintenance)' },
@@ -4501,11 +4517,13 @@
                   <select value={eventType} onChange={e => setEventType(e.target.value)}
                           style={{...inputStyle, cursor:'pointer'}}>
                     <option value="downtime">Downtime (instrument unavailable)</option>
-                    <option value="pm">PM (preventive maintenance)</option>
+                    <option value="column_change">Column change</option>
+                    <option value="column_clog">Column clog / overpressure</option>
+                    <option value="capillary_change">Glass capillary change</option>
                     <option value="source_clean">Source clean</option>
                     <option value="calibration">Calibration</option>
                     <option value="lc_service">LC service</option>
-                    <option value="column_change">Column change</option>
+                    <option value="pm">PM (preventive maintenance)</option>
                     <option value="other">Other</option>
                   </select>
                 </div>
@@ -4589,9 +4607,9 @@
  * WHERE TO PASTE
  *   1. Drop this whole block in index.html just ABOVE `function MaintenanceTab()`
  *      (search for that string; it's ~line 4575).
- *   2. Inside MaintenanceTab's returned JSX, add <BrukerAcquisitionPanel /> as
- *      the last child, right before the final closing </div> of the return.
- *      (One line -- see snippet_maintenance_wiring.jsx.)
+ *   2. Inside MaintenanceTab's returned JSX, render <BrukerAcquisitionPanel />
+ *      near the end of the return -- currently below <EvosepColumnPanel />,
+ *      which sits above it because the column fails more often than the MS.
  * ======================================================================== */
 
 const BRK = {
@@ -5552,7 +5570,7 @@ function BFailTable({ rows }) {
                 : <MaintMonthGrid month={month} events={events} today={today} isDown={isDown}
                                   onPick={onPick} pickedId={pickedId} />
             )}
-            <MaintLegend types={['pm', 'source_clean', 'calibration', 'lc_service', 'column_change', 'other']} />
+            <MaintLegend types={['column_change', 'column_clog', 'capillary_change', 'source_clean', 'calibration', 'lc_service', 'pm', 'other']} />
           </div>
 
           <div className="card">
@@ -5560,8 +5578,11 @@ function BFailTable({ rows }) {
             <MaintEntryList events={sorted} isDown={isDown} onPick={onPick} pickedId={pickedId} />
           </div>
 
-          <BrukerAcquisitionPanel />
+          {/* Evosep first: the column is the part that actually fails week to
+              week (clogs, overpressure, tip misses), so it earns the top slot
+              over the MS acquisition summary. Brett's call, 2026-09-02. */}
           <EvosepColumnPanel />
+          <BrukerAcquisitionPanel />
         </div>
       );
     }
