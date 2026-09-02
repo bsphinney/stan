@@ -202,7 +202,12 @@ CREATE TABLE IF NOT EXISTS maintenance_events (
     -- from the pressure series alone gave three different answers for the
     -- same swap (2026-08-19, 2026-09-01, truth 2026-07-31) depending on the
     -- window extracted. A run the operator names cannot drift.
-    first_run     TEXT
+    first_run     TEXT,
+    -- Size/spec of the consumable this event concerns, e.g. "20um" for a
+    -- CaptiveSpray emitter's bore. Deliberately generic: emitters, capillaries
+    -- and columns all have a bore that drives backpressure, and a separate
+    -- column per part type would multiply for no gain.
+    part_spec     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_instrument ON maintenance_events(instrument);
@@ -2358,6 +2363,7 @@ EVENT_TYPES = [
     "column_change",   # New LC column installed
     "column_clog",     # Column clogged / overpressure -- a fault, not planned work
     "capillary_change",  # Glass capillary swapped (timsTOF source inlet)
+    "emitter_change",  # CaptiveSpray emitter swapped -- a clog suspect in its own right
     "source_clean",    # Ion source cleaned
     "calibration",     # Mass calibration performed
     "pm",              # Scheduled preventive maintenance
@@ -2413,6 +2419,7 @@ def log_event(
     column_model: str | None = None,
     column_serial: str | None = None,
     first_run: str | None = None,
+    part_spec: str | None = None,
     end_date: str | None = None,
     created_by: str | None = None,
     share_community: bool = False,
@@ -2466,6 +2473,7 @@ def log_event(
         end_date = str(end_date) + str(event_date)[10:]
     optional = {
         "first_run": first_run,
+        "part_spec": part_spec,
         "end_date": end_date,
         "created_by": created_by,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

@@ -44,3 +44,24 @@ columns:
     bore_um: 150
     particle_um: 1.5
     notes: "Installed 2026-09-02 (LOT 0000507372) and 2026-07-31."
+
+# ── CaptiveSpray emitters ───────────────────────────────────────────────
+# The emitter is a clog suspect in its own right: on 2026-09-02 the column was
+# replaced for over-pressure and the restriction did not fully clear until the
+# post-change washes, which put the emitter, capillary and fittings on the list
+# of candidates. Recording changes makes that analysable instead of anecdotal.
+#
+# `spec` is what gets stored on the maintenance event (part_spec) -- keep it
+# short and machine-parseable; the UI renders it with the micro sign.
+emitters:
+  - id: captivespray-20um
+    vendor: Bruker
+    model: CaptiveSpray emitter
+    bore_um: 20
+    spec: "20um"
+    default: true        # the lab's standard for several years
+  - id: captivespray-10um
+    vendor: Bruker
+    model: CaptiveSpray emitter
+    bore_um: 10
+    spec: "10um"

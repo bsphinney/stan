@@ -1350,7 +1350,12 @@ async def api_columns() -> dict:
         out.append({k: c.get(k) for k in
                     ("id", "vendor", "model", "part_number",
                      "length_cm", "bore_um", "particle_um", "notes")})
-    return {"columns": out}
+    emitters = []
+    for e in (data.get("emitters") or []):
+        if isinstance(e, dict) and e.get("id"):
+            emitters.append({k: e.get(k) for k in
+                             ("id", "vendor", "model", "bore_um", "spec", "default")})
+    return {"columns": out, "emitters": emitters}
 
 
 @app.get("/api/ui-prefs")
@@ -1396,6 +1401,8 @@ class LogEventRequest(BaseModel):
     #: Evosep analysis can anchor the swap to a run instead of guessing at it.
     #: Free text -- a run name or a bare injection number are both useful.
     first_run: str | None = Field(default=None, max_length=200)
+    #: Consumable size/spec, e.g. "20um" for a CaptiveSpray emitter bore.
+    part_spec: str | None = Field(default=None, max_length=60)
     #: Opt-in per entry. Maintenance notes can name people and customers, so
     #: nothing reaches the community reliability leaderboard unless someone
     #: deliberately ticks this. Defaults off.
@@ -1435,6 +1442,7 @@ async def api_log_event(
         column_model=body.column_model,
         column_serial=body.column_serial,
         first_run=body.first_run,
+        part_spec=body.part_spec,
         created_by=caller_email(request),
         share_community=body.share_community,
     )

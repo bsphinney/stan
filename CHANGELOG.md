@@ -11,6 +11,40 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.61] — 2026-09-02
+
+### Added
+- **`emitter_change` event type, with the emitter's bore recorded.** A
+  CaptiveSpray emitter comes in 10 µm and 20 µm, and bore is what drives
+  backpressure — so without recording it, swapping emitter size is invisible
+  to the pressure analysis and reads as a column problem or a clog. The picker
+  defaults to whatever `config/columns.yml` marks as the lab's standard (20 µm
+  here, in use for years), so the common case is one click. The new
+  `part_spec` column is deliberately generic rather than `emitter_um`:
+  emitters, capillaries and columns all have a bore, and one column per part
+  type multiplies for no gain.
+
+  This is not hypothetical. On 2026-09-02 a column was replaced for
+  over-pressure and the restriction did not clear until the post-change
+  washes, leaving the emitter, capillary and fittings as live suspects with no
+  recorded history to check against.
+
+- **Wash-flow trend on the Evosep panel.** System-and-column washes are
+  *pressure*-controlled at a setpoint, so pressure is pinned and **flow is the
+  resistance measurement**. That makes it the one column-health signal needing
+  no trailing baseline, no flow normalisation and no reference table — every
+  point is measured under an identical condition, so a falling line is a
+  closing column and nothing else. It renders only when the extractor
+  publishes `wash_flow`; older documents simply omit it.
+
+  Measured on the real data it reads clearly: 08-31 11:04 2.137 µL/min
+  (recovered after washing) → 15:29 1.996 → 09-02 09:22 1.894 → 10:17 1.738
+  (four washes in and still worsening) → column swapped → 11:24 **2.256**.
+  Consecutive washes making it *worse* is the signature of a blocked column
+  rather than a dirty one.
+
+---
+
 ## [1.0.60] — 2026-09-02
 
 ### Fixed

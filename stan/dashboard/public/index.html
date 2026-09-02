@@ -120,6 +120,7 @@
       column_change: 'Column Change',
       column_clog: 'Column Clog',
       capillary_change: 'Capillary Change',
+      emitter_change: 'Emitter Change',
       source_clean: 'Source Clean',
       calibration: 'Calibration',
       pm: 'PM',
@@ -138,6 +139,10 @@
          other in the log and the legend, and they are the two a reader most
          needs to tell apart at marker size. */
       capillary_change: '#2dd4bf',
+      /* Indigo: the emitter is the third consumable in the flow path and sits
+         beside column and capillary in the legend, so it needs to be tellable
+         apart from both at marker size. */
+      emitter_change: '#818cf8',
       source_clean: '#22c55e',
       calibration: '#eab308',
       pm: '#a78bfa',
@@ -1814,6 +1819,7 @@
         { value: 'column_change', label: 'Column Change' },
         { value: 'column_clog', label: 'Column Clog / Overpressure' },
         { value: 'capillary_change', label: 'Glass Capillary Change' },
+        { value: 'emitter_change', label: 'Emitter Change (CaptiveSpray)' },
         { value: 'source_clean', label: 'Source Clean' },
         { value: 'calibration', label: 'Calibration' },
         { value: 'pm', label: 'PM (Preventive Maintenance)' },
@@ -4066,7 +4072,8 @@
               {events.slice(0, 20).map(ev => {
                 const color = maintColor(ev.event_type);
                 const colInfo = [ev.column_vendor, ev.column_model, ev.column_serial,
-                                 ev.first_run ? `from run ${ev.first_run}` : null].filter(Boolean).join(' / ');
+                                 ev.first_run ? `from run ${ev.first_run}` : null,
+                                 ev.part_spec || null].filter(Boolean).join(' / ');
                 const [sKey, eKey] = eventSpan(ev);
                 const sDate = dateFromDayKey(sKey);
                 const eDate = dateFromDayKey(eKey);
@@ -4400,6 +4407,7 @@
       const [colLot, setColLot] = useState('');
       const [colOtherVendor, setColOtherVendor] = useState('');
       const [colOtherModel, setColOtherModel] = useState('');
+      const [emitterSpec, setEmitterSpec] = useState('');
       const [share, setShare] = useState(false);
       const [busy, setBusy] = useState(false);
       const [status, setStatus] = useState(null);   // {kind:'ok'|'err'|'auth', msg, loginUrl}
@@ -4417,6 +4425,16 @@
       const catalogue = (colCat && colCat.columns) || [];
       const pickedCol = catalogue.find(c => c.id === columnId) || null;
       const colIsOther = columnId === '__other__';
+      const isEmitterChange = eventType === 'emitter_change';
+      const emitters = (colCat && colCat.emitters) || [];
+      /* Default to whatever the catalogue marks as the lab's standard, so the
+         common case is one click. 20 um here — in use for several years. */
+      useEffect(() => {
+        if (!emitterSpec && emitters.length) {
+          const def = emitters.find(e => e.default) || emitters[0];
+          if (def && def.spec) setEmitterSpec(def.spec);
+        }
+      }, [colCat]);
       const readonly = !!(sync && sync.readonly);
 
       const inputStyle = {
@@ -4456,6 +4474,9 @@
             ? (colIsOther ? (colOtherModel || null) : (pickedCol ? pickedCol.model : null))
             : null,
           column_serial: isColumnChange ? (colLot || null) : null,
+          /* Bore is what drives backpressure, so an emitter change is only
+             analysable if its size is recorded. */
+          part_spec: isEmitterChange ? (emitterSpec || null) : null,
           share_community: share,
         };
         try {
@@ -4553,6 +4574,7 @@
                     <option value="column_change">Column change</option>
                     <option value="column_clog">Column clog / overpressure</option>
                     <option value="capillary_change">Glass capillary change</option>
+                    <option value="emitter_change">Emitter change (CaptiveSpray)</option>
                     <option value="source_clean">Source clean</option>
                     <option value="calibration">Calibration</option>
                     <option value="lc_service">LC service</option>
@@ -4589,6 +4611,26 @@
                   actual 2026-07-31) depending on the window extracted, so the
                   operator naming the first run is what makes column age and
                   wear trustworthy rather than merely plausible. */}
+              {isEmitterChange && (
+                <div style={{marginBottom:'0.5rem'}}>
+                  <label style={labelStyle}>Emitter fitted</label>
+                  <select value={emitterSpec} onChange={e => setEmitterSpec(e.target.value)}
+                          style={inputStyle}>
+                    {emitters.map(em => (
+                      <option key={em.id} value={em.spec}>
+                        {[em.vendor, em.model].filter(Boolean).join(' ')}
+                        {em.bore_um ? ` — ${em.bore_um} µm` : ''}
+                        {em.default ? ' (standard)' : ''}
+                      </option>
+                    ))}
+                    {!emitters.length && <option value="">— no emitters configured —</option>}
+                  </select>
+                  <div style={{fontSize:'0.68rem', color:'var(--muted)', marginTop:'0.15rem'}}>
+                    Bore drives backpressure, so recording the size is what makes an emitter
+                    change visible to the pressure analysis instead of looking like a clog.
+                  </div>
+                </div>
+              )}
               {isColumnChange && (
                 <div style={{display:'flex', gap:'0.4rem', flexWrap:'wrap', marginBottom:'0.5rem'}}>
                   <div style={{flex:'2 1 240px'}}>
@@ -5354,6 +5396,101 @@ function BFailTable({ rows }) {
     }
 
     /* ── The panel ─────────────────────────────────────────────────────────── */
+    /* Wash flow at a fixed pressure setpoint, over time, split by column.
+       Colour-blind safe: each column segment is drawn as its own polyline and
+       labelled, and the install boundaries are dashed verticals with text --
+       segment identity never rides on hue alone. */
+    function EvWashFlow({ wf }) {
+      const pts = (wf.series || []).filter(p => p && p.flow_ul_min > 0);
+      if (pts.length < 2) return null;
+      const W = 720, H = 170, PADL = 46, PADB = 26, PADT = 12, PADR = 10;
+      const ts = pts.map(p => new Date(p.t).getTime());
+      const fs = pts.map(p => p.flow_ul_min);
+      const t0 = Math.min(...ts), t1 = Math.max(...ts);
+      const f0 = Math.min(...fs), f1 = Math.max(...fs);
+      const fLo = f0 - (f1 - f0) * 0.12, fHi = f1 + (f1 - f0) * 0.12;
+      const x = t => PADL + ((t - t0) / Math.max(1, t1 - t0)) * (W - PADL - PADR);
+      const y = f => PADT + (1 - (f - fLo) / Math.max(1e-9, fHi - fLo)) * (H - PADT - PADB);
+
+      /* One polyline per column: joining across an install would draw a jump
+         that reads as a measurement rather than a part change. */
+      const bySeg = {};
+      pts.forEach(p => {
+        const k = p.segment_installed || 'unknown';
+        (bySeg[k] = bySeg[k] || []).push(p);
+      });
+      const segs = Object.keys(bySeg).sort();
+      const colours = ['#60a5fa', '#22c55e', '#a78bfa', '#f472b6', '#eab308'];
+      const fmt = t => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
+      return (
+        <div style={{ marginTop: '1rem' }}>
+          <h4 style={{ fontSize: '0.9rem', color: 'var(--text)', margin: '0 0 0.2rem' }}>
+            Column wash flow — resistance, measured directly
+          </h4>
+          <p style={{ color: 'var(--muted)', fontSize: '.78rem', margin: '0 0 .5rem' }}>
+            System-and-column washes hold {evNum(wf.setpoint_bar, 0)} bar and let flow float, so
+            flow <em>is</em> the resistance: <b>falling means the column is closing up</b>. No
+            baseline or reference is involved — every point is measured under the same condition.
+            Only washes within {evNum(wf.tolerance_bar, 0)} bar of the setpoint are shown.
+          </p>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}
+               role="img" aria-label="Wash flow over time, split by column">
+            <line x1={PADL} y1={H - PADB} x2={W - PADR} y2={H - PADB} stroke="var(--border)" />
+            <line x1={PADL} y1={PADT} x2={PADL} y2={H - PADB} stroke="var(--border)" />
+            {[fLo, (fLo + fHi) / 2, fHi].map((f, i) => (
+              <g key={i}>
+                <text x={PADL - 6} y={y(f) + 3} textAnchor="end" fontSize="9"
+                      fill="var(--muted)">{f.toFixed(2)}</text>
+                <line x1={PADL} y1={y(f)} x2={W - PADR} y2={y(f)}
+                      stroke="var(--border)" strokeDasharray="2 3" opacity="0.5" />
+              </g>
+            ))}
+            <text x={PADL} y={H - 8} fontSize="9" fill="var(--muted)">{fmt(t0)}</text>
+            <text x={W - PADR} y={H - 8} fontSize="9" fill="var(--muted)"
+                  textAnchor="end">{fmt(t1)}</text>
+            <text x={8} y={PADT + 4} fontSize="9" fill="var(--muted)">µL/min</text>
+            {segs.map((k, i) => {
+              const g = bySeg[k].slice().sort((a, b) => new Date(a.t) - new Date(b.t));
+              const c = colours[i % colours.length];
+              const dPath = g.map((p, j) =>
+                `${j ? 'L' : 'M'}${x(new Date(p.t).getTime()).toFixed(1)},${y(p.flow_ul_min).toFixed(1)}`
+              ).join(' ');
+              const bx = x(new Date(g[0].t).getTime());
+              return (
+                <g key={k}>
+                  {i > 0 && (
+                    <g>
+                      <line x1={bx} y1={PADT} x2={bx} y2={H - PADB}
+                            stroke="var(--muted)" strokeDasharray="3 3" />
+                      <text x={bx + 3} y={PADT + 9} fontSize="8.5" fill="var(--muted)">
+                        column {String(k).slice(0, 10)}
+                      </text>
+                    </g>
+                  )}
+                  <path d={dPath} fill="none" stroke={c} strokeWidth="1.4" />
+                  {g.map((p, j) => (
+                    <circle key={j} cx={x(new Date(p.t).getTime())} cy={y(p.flow_ul_min)} r="2" fill={c}>
+                      <title>{`${p.t}\n${p.flow_ul_min.toFixed(3)} µL/min at ${evNum(p.pressure_bar, 1)} bar`}</title>
+                    </circle>
+                  ))}
+                </g>
+              );
+            })}
+          </svg>
+          {!!(wf.by_segment || []).length && (
+            <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginTop: '0.4rem' }}>
+              {wf.by_segment.map((b, i) => (
+                <EvTile key={i} label={`Column ${String(b.installed || '?').slice(0, 10)}`}
+                        value={evNum(b.median, 3)} unit="µL/min"
+                        note={`median of ${b.n} wash${b.n === 1 ? '' : 'es'}`} />
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function EvosepColumnPanel() {
       const { data, loading, error } = useFetch('/api/maintenance/evosep', []);
 
@@ -5486,6 +5623,18 @@ function BFailTable({ rows }) {
                 </table>
               </div>
             </div>
+          )}
+
+          {/* ── Wash flow: the cleanest column-health signal we have ──
+               System-and-column washes are PRESSURE-controlled at a setpoint,
+               so pressure is pinned and FLOW is the resistance measurement.
+               That makes this the one column signal needing no trailing
+               baseline, no flow normalisation and no reference table — the
+               conditions are identical every time, so a falling line is a
+               closing column and nothing else. Rendered only when the
+               extractor publishes it; older documents simply omit it. */}
+          {d.wash_flow && d.wash_flow.series && d.wash_flow.series.length > 1 && (
+            <EvWashFlow wf={d.wash_flow} />
           )}
 
           {/* ── Wear counters ── */}
@@ -5658,7 +5807,7 @@ function BFailTable({ rows }) {
                 : <MaintMonthGrid month={month} events={events} today={today} isDown={isDown}
                                   onPick={onPick} pickedId={pickedId} />
             )}
-            <MaintLegend types={['column_change', 'column_clog', 'capillary_change', 'source_clean', 'calibration', 'lc_service', 'pm', 'other']} />
+            <MaintLegend types={['column_change', 'column_clog', 'capillary_change', 'emitter_change', 'source_clean', 'calibration', 'lc_service', 'pm', 'other']} />
           </div>
 
           <div className="card">
