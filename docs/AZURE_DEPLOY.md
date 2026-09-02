@@ -25,6 +25,20 @@ file produced a *successful-looking* build ("Errors (0)") followed by
 "Deployment Failed". The canonical copy now lives in the repo at
 `deploy/requirements-azure.txt` precisely so this cannot recur.
 
+## Check the JSX first
+
+`index.html` carries ~9,000 lines of in-browser-transpiled JSX, and a syntax
+error there does not degrade gracefully: Babel fails, React never mounts, and
+the whole dashboard is a blank page. Counting brackets is not a syntax check.
+
+```bash
+npm install --no-save @babel/parser        # once
+node scripts/check_jsx.js stan/dashboard/public/index.html
+```
+
+Exit 0 means every block parses. A failure reports the line number **in
+index.html**, not in the extracted block.
+
 ## Build the package
 
 ```bash
