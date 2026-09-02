@@ -11,6 +11,41 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.63] — 2026-09-02
+
+### Added
+- **"Runs left on this column"**, estimated from the wash-flow decline. Washes
+  are pressure-controlled, so flow *is* resistance and needs no baseline or
+  reference — which makes it the cleanest signal available for extrapolating.
+
+  Validated retrospectively on the retired column (982 injections): usable
+  from roughly half-life onward, bracketing the truth in 4 of 5 open-gate
+  cases, and **consistently under-predicting** — it warns early, which is the
+  correct direction for a warning to err.
+
+  **The gate matters more than the estimate.** Extrapolating a column that has
+  not yet declined produces nonsense: at 266 injections the column read 97.4%
+  of fresh and a linear fit predicted **31,744** runs remaining. So no estimate
+  is emitted until the flow has fallen at least 8% from fresh and at least 12
+  qualifying washes exist. That kills the degenerate regime by construction
+  rather than with a tuned constant. When the gate is shut it says *which*
+  reason — "not enough washes" and "not enough decline yet" are different
+  statements, and neither means the column is fine.
+
+  Always a range, never a point, floored at ±15%. The fit's standard error
+  alone would collapse to zero on a tidy run of washes and read as precision
+  the method does not have — and it only measures uncertainty in the *line*,
+  not in the assumption that the decline stays linear, which is what actually
+  does the work.
+
+  The replacement trigger is **~77% of that column's own fresh wash flow**,
+  derived from the retired column (2.267 → 1.738). Being relative, it carries
+  no geometry and transfers to any column type. It is also, honestly, derived
+  from the same column it was tested on — the current column is the first
+  genuine prospective test, and `limits` says so.
+
+---
+
 ## [1.0.62] — 2026-09-02
 
 ### Fixed

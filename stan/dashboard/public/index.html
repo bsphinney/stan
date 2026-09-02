@@ -5441,6 +5441,20 @@ function BFailTable({ rows }) {
                       tone={prev.resistance_change_pct > 25 ? 'var(--warn)' : 'var(--text)'}
                       note="resistance rise over its life" />
             )}
+            {/* Runs remaining is deliberately a RANGE or nothing at all. The
+                extrapolation is worthless until the column has actually
+                declined -- at 266 injections the retired column read 97% of
+                fresh and a linear fit predicted 31,744 runs left. The gate
+                shuts on that by construction, and says which reason, because
+                a silent absence gets read as "fine". */}
+            {cur && cur.runs_remaining && (
+              cur.runs_remaining.gate_open
+                ? <EvTile label="Runs left on this column"
+                          value={`≈ ${Math.round(cur.runs_remaining.estimate_low).toLocaleString()}–${Math.round(cur.runs_remaining.estimate_high).toLocaleString()}`}
+                          note={`at ${evNum(100 * cur.runs_remaining.pct_of_fresh, 0)}% of fresh flow · replace near ${evNum(cur.runs_remaining.trigger_flow_ul_min, 2)} µL/min`} />
+                : <EvTile label="Runs left on this column" value="—"
+                          note={cur.runs_remaining.gate_reason || 'not enough data to extrapolate'} />
+            )}
           </div>
           {!!(cl.columns || []).length && (
             <div style={{ overflowX: 'auto', marginTop: '.5rem' }}>
