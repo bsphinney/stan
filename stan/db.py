@@ -740,6 +740,26 @@ def record_dispatch_attempt(
     so a malfunctioning attempt-recording doesn't take down the watcher's
     main loop. Added v0.2.312 per the v1.0 audit's C2 finding.
     """
+    # PG Farm is canonical when configured. This table used to be the one
+    # exception -- it stayed on the Quobyte SQLite file, where the dispatcher
+    # UPSERTs ~60 rows every 5 minutes alongside concurrent SLURM writers, and
+    # that is exactly where the recurring index corruption kept landing (twice
+    # on 2026-09-01 alone, the first taking down 7,357 jobs). Routed to PG in
+    # v1.0.54. Still best-effort: attempt-recording must never break the caller.
+    from stan.db_pg import use_pg
+    if use_pg():
+        try:
+            from stan.db_pg import host_origin_from_instrument, record_dispatch_attempt_pg
+            try:
+                origin = host_origin_from_instrument(None)
+            except Exception:  # noqa: BLE001 - origin is a label, not load-bearing
+                origin = None
+            record_dispatch_attempt_pg(
+                raw_path, status, error, error_type, last_run_id, origin)
+            return
+        except Exception as _e:  # noqa: BLE001 - fall through to SQLite
+            logger.debug("dispatch_attempts PG write failed, using SQLite: %s", _e)
+
     if db_path is None:
         db_path = get_db_path()
     now = datetime.now(timezone.utc).isoformat()

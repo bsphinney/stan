@@ -222,11 +222,21 @@ def _classify_raw(raw_name: str, qc_pattern: str = DEFAULT_QC_PATTERN) -> str:
 def _capped_from_sqlite(db_path: Path, max_attempts: int) -> set[str]:
     """Raws that have failed too often, read from SQLite in one query.
 
-    Mirrors ``_failed_too_many``'s predicate exactly. Lives in SQLite in
-    both backends because ``dispatch_attempts`` was never migrated to PG.
+    Mirrors ``_failed_too_many``'s predicate exactly. Reads PG Farm when the
+    PG backend is configured -- ``dispatch_attempts`` moved there in v1.0.54,
+    because concurrent dispatcher + SLURM writes against the Quobyte SQLite
+    file kept corrupting this table's indexes. Falls back to SQLite otherwise,
+    and if PG is unreachable, so a local install is unaffected.
+
     A missing table means nothing has been recorded yet, which is an empty
-    set rather than an error.
+    set rather than an error -- failing closed here would skip every file.
     """
+    try:
+        from stan.db_pg import capped_raws_pg, use_pg
+        if use_pg():
+            return capped_raws_pg(max_attempts)
+    except Exception:  # noqa: BLE001 - fall through to SQLite
+        pass
     try:
         with sqlite3.connect(str(db_path)) as con:
             return {

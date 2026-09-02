@@ -11,6 +11,28 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.54] — 2026-09-02
+
+### Fixed
+- **`dispatch_attempts` moved to PG Farm, ending the recurring SQLite
+  corruption.** This was the last table with live data and no PG path — the
+  code said so: *"Lives in SQLite in both backends because dispatch_attempts
+  was never migrated to PG."* It is also exactly where the corruption kept
+  landing: on 2026-09-01 the database was found malformed at 10:20 (every
+  `stan-mon` job died at `init_db()`; **7,357 jobs failed in one day** before
+  anyone noticed, because the cron kept submitting into a DB it could not
+  open), and corrupt again 8 hours after the repair, both times on this
+  table's indexes. The cause is the write pattern — the dispatcher UPSERTs
+  50–60 rows every 5 minutes while SLURM jobs write their own outcomes
+  concurrently, against one SQLite file on Quobyte, whose locking semantics
+  SQLite's b-tree maintenance depends on and does not get. Writes and the
+  retry-cap query now go to PG Farm when `STAN_DB_BACKEND=pg`, falling back to
+  SQLite otherwise and if PG is unreachable, so a local install is unchanged.
+  848 existing rows were migrated with `attempt_count` preserved so retry caps
+  carry over.
+
+---
+
 ## [1.0.53] — 2026-09-01
 
 ### Added
