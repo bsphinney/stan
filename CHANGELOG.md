@@ -11,6 +11,39 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.60] — 2026-09-02
+
+### Fixed
+- **A sustained clog got quieter the longer it lasted.** Severity was scored
+  against a *trailing* baseline, and that baseline chases the clog. Across one
+  real episode the same restriction scored +29.8% (critical) and then +13.1%
+  (elevated) while the plateau barely moved — 417.8 to 408.3 bar — because the
+  baseline had climbed 321.8 to 361.1 and absorbed 12% of it. The clog rule
+  needs two consecutive criticals, so an episode could go quiet by
+  construction, and a slow creep would never fire at all.
+
+  The clog rule now also considers `pct_over_expected`, measured against the
+  column's own flow-normalised healthy floor, which cannot drift. Deliberately
+  scoped: it feeds the *existing* rule and can only reclassify a run the
+  extractor already flagged, so the risk is one-directional — it can stop a
+  real clog going silent, and cannot invent one on healthy runs. A missing
+  value means *no opinion*, never zero: defaulting absent-to-zero would
+  quietly reintroduce the cross-column comparison that was deliberately
+  refused (borrowing the previous column's 321 bar floor for a column running
+  399–453 bar would report +24% and +41% on a bed fitted hours earlier).
+
+  The 20% threshold is **uncalibrated** and says so in the source: healthy runs
+  sit at 0–4% and observed clogs at 27–30%, so it has margin both ways, but it
+  wants one pass over a week of real documents.
+
+### Known gap
+- **Slow creep is still not caught.** Detecting gradual drift means scanning
+  every run rather than only the flagged ones, and that needs calibration data
+  we do not yet have. Named here rather than papered over with a threshold
+  nobody can defend.
+
+---
+
 ## [1.0.59] — 2026-09-02
 
 ### Added

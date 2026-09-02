@@ -21,11 +21,13 @@ from stan.reports.instrument_watch import (
     COLUMN_DRIFT_PCT,
     COLUMN_MIN_INJECTIONS,
     LOOKBACK_HOURS,
+    PCT_OVER_EXPECTED_CRITICAL,
     RISING_RUNS,
     STANDING_COOLOFF_HOURS,
     check_bruker,
     check_column_wear,
     check_evosep,
+    is_critical,
     log_clog_events,
 )
 
@@ -544,3 +546,67 @@ def test_sample_impact_never_becomes_its_own_alert():
     doc["sample_impact"] = {"flags": [_impact("2026-09-01T04:00:00")]}
     kinds = {a.kind for a in check_evosep(doc, now=NOW)}
     assert "sample_impact" not in kinds and "sample" not in kinds
+
+
+# ── absolute expectation: the anti-drift path ────────────────────
+
+
+def test_a_decaying_clog_stays_critical_on_absolute_excess():
+    """The drift failure, with the real numbers.
+
+    On 2026-08-31 the same plateau scored +29.8% then +13.1% against the
+    trailing baseline as it climbed 321.8 -> 361.1 underneath the fault --
+    critical demoted to elevated. Measured against the column's fixed
+    expectation the same runs read +30.2% and +27.2%, so the clog stays a
+    clog instead of quietly ageing out of the alert.
+    """
+    flags = [
+        _flag("2026-09-01T04:00:00", severity="critical", plateau=417.8,
+              pct=29.8, pct_over_expected=30.2),
+        _flag("2026-09-01T04:14:00", severity="elevated", plateau=408.3,
+              pct=13.1, pct_over_expected=27.2),
+    ]
+    alerts = check_evosep(_doc(flags), now=NOW)
+    assert any(a.kind == "clog" for a in alerts), \
+        "the second run must still count toward the clog"
+
+
+def test_trailing_severity_alone_would_have_missed_it():
+    """Same pair without the absolute figure: only one critical, no clog.
+    This is what the shipped rule does today, and why the field matters."""
+    flags = [
+        _flag("2026-09-01T04:00:00", severity="critical", plateau=417.8, pct=29.8),
+        _flag("2026-09-01T04:14:00", severity="elevated", plateau=408.3, pct=13.1),
+    ]
+    assert not any(a.kind == "clog" for a in check_evosep(_doc(flags), now=NOW))
+
+
+def test_a_missing_expectation_is_no_opinion_not_zero():
+    """There is no cross-column fallback by design: the column fitted on
+    2026-09-02 runs at 399-453 bar where its predecessor's healthy floor was
+    321, so borrowing that reference would report +24%/+41% for a column
+    hours old. Absent must never be read as zero, nor as an excess."""
+    f = _flag("2026-09-01T04:00:00", severity="elevated", pct=13.1)
+    assert is_critical(f) is False
+    f2 = _flag("2026-09-01T04:00:00", severity="elevated", pct=13.1,
+               expected_unavailable="fewer than 5 runs in this flow bin")
+    assert is_critical(f2) is False
+
+
+def test_a_healthy_run_over_expectation_is_not_critical():
+    """The reference is the healthy floor, so ordinary runs sit near 0%."""
+    assert is_critical(_flag("2026-09-01T04:00:00", severity="elevated",
+                             pct_over_expected=3.8)) is False
+
+
+def test_the_absolute_threshold_boundary():
+    at = _flag("2026-09-01T04:00:00", severity="elevated",
+               pct_over_expected=PCT_OVER_EXPECTED_CRITICAL)
+    below = _flag("2026-09-01T04:00:00", severity="elevated",
+                  pct_over_expected=PCT_OVER_EXPECTED_CRITICAL - 0.1)
+    assert is_critical(at) is True and is_critical(below) is False
+
+
+def test_a_malformed_expectation_does_not_raise():
+    assert is_critical(_flag("2026-09-01T04:00:00", severity="elevated",
+                             pct_over_expected="n/a")) is False

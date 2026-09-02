@@ -108,6 +108,28 @@ COLUMN_MIN_AGE_DAYS = 3.0
 #: check with almost no injections. ~1 day of 100 SPD acquisition.
 COLUMN_MIN_INJECTIONS = 100
 
+#: Percent over the column's ABSOLUTE expected plateau at which a flagged run
+#: counts as critical, whatever the trailing-baseline severity says.
+#:
+#: The extractor's `severity` is scored against a *running* baseline that
+#: chases the fault. Measured on the 2026-08-31 clog: essentially the same
+#: plateau scored +29.8% at 23:32 and +13.1% at 00:43 -- critical demoted to
+#: elevated -- purely because the baseline climbed 321.8 -> 361.1 underneath
+#: it. Extrapolate and a clog that persists stops being flagged at all while
+#: the column is still fully blocked. `pct_over_expected` is measured against
+#: a fixed per-column, per-flow expectation (p5 of the column's own healthy
+#: distribution) and cannot drift: those same two runs read +30.2% and +27.2%.
+#:
+#: 20% sits between healthy (~0-4%, since the reference IS the healthy floor)
+#: and the observed clog range (27-30%), with margin both ways. This only ever
+#: reclassifies a run the extractor ALREADY flagged, so it cannot raise an
+#: alert on healthy runs -- it can only stop a real clog going quiet.
+#:
+#: NOT yet calibrated against deployed data: the field was written while Hive
+#: was down, so these are evosep-history's validated figures rather than a
+#: measurement of my own. Worth one pass over a week of real documents.
+PCT_OVER_EXPECTED_CRITICAL = 20.0
+
 #: Point events are keyed on this bucket so the Evosep log and the Compass
 #: database, which see the same failure a minute apart, collapse to one key.
 BUCKET_MINUTES = 10
@@ -260,6 +282,29 @@ def _impact_lines(hits: list[dict]) -> list[str]:
     return lines
 
 
+def is_critical(flag: dict) -> bool:
+    """Critical for clog purposes: trailing severity OR absolute excess.
+
+    A missing `pct_over_expected` is "no opinion", never zero. There is
+    deliberately no cross-column fallback in the extractor -- the column
+    fitted on 2026-09-02 runs at 399-453 bar where its predecessor's healthy
+    floor was 321, so borrowing the old reference would report +24% and +41%
+    for a column hours old and fire alarms purely from swapping columns.
+    Treating absent as zero would quietly re-introduce exactly that.
+    """
+    if flag.get("severity") == "critical":
+        return True
+    if flag.get("expected_unavailable"):
+        return False
+    pct = flag.get("pct_over_expected")
+    if pct is None:
+        return False
+    try:
+        return float(pct) >= PCT_OVER_EXPECTED_CRITICAL
+    except (TypeError, ValueError):
+        return False
+
+
 def _at_ceiling(flag: dict, ceiling_bar: float | None) -> bool:
     if "ceiling" in (flag.get("kinds") or []):
         return True
@@ -311,7 +356,7 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
         at_str = last_at.strftime("%Y-%m-%d %H:%M") if last_at else None
 
         pressure = [f for f in episode if "high_pressure" in (f.get("kinds") or [])]
-        criticals = [f for f in pressure if f.get("severity") == "critical"]
+        criticals = [f for f in pressure if is_critical(f)]
         ceiling_hits = [f for f in episode if _at_ceiling(f, ceiling)]
         worst = max((f.get("pct_over_baseline") or 0) for f in episode) if episode else 0
 
