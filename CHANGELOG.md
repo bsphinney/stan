@@ -13,6 +13,33 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ## [1.0.62] — 2026-09-02
 
+### Fixed
+- **SPD resolution silently dropped every method name spelled with a
+  separator.** `_EVOSEP_METHOD_PATTERNS` allowed whitespace between the number
+  and `spd` but not `-` or `_`, so `01132026_HE50_`**`60-spd-dia`**`_...`
+  returned `None` while `..._100spd_...` resolved. Measured over 2,673 timsTOF
+  names, widening the separator class took resolution from **68.4% to 78.8%**
+  — 287 runs recovered (266× 60 SPD, 20× 100, 1× 30).
+
+  This is the second bug of exactly this shape found on the same day: the HeLa
+  QC pattern required a digit immediately after `hel`, so `Hel-50` was dropped
+  while `Hel50` matched, and half the standards went unsearched. The lesson is
+  in a comment at the pattern: *when a pattern must match names typed by hand,
+  be permissive about separators and strict about boundaries.* The boundary
+  guards are what make the permissiveness safe — `0604202560Spd` must keep
+  returning `None`, and there is a test saying so in its docstring.
+
+  Reach is wider than the panel that prompted it: four call sites inside
+  `scoring.py`, and `validate_spd_from_metadata` is consumed by
+  `stan/baseline.py`, `stan/pipeline/hive_process.py`, `stan/cli.py` (×2),
+  `stan/watcher/daemon.py` and `stan/community/scripts/run_one_v1.py` — so it
+  reaches the watcher, the Hive search pipeline and the community submit path.
+  The change is one-directional: previously-`None` names now resolve, and
+  nothing that already resolved resolves differently.
+
+  *(Recorded after the fact — this shipped in 1.0.62 alongside the panel work
+  without its own changelog entry.)*
+
 ### Added
 - **Column lifetimes on the Evosep panel** — injections delivered by the
   current and previous column, with the full table. The first real figure:
