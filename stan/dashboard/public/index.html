@@ -5517,6 +5517,37 @@ function BFailTable({ rows }) {
        is pressure-controlled and therefore a direct resistance measurement --
        no baseline, no reference, no normalisation. A line dropping faster
        than the ones beneath it is a column fouling faster than the last. */
+    /* Collapsible detail section. The maintenance page is a SNAPSHOT first:
+       an operator should read the instrument's current state without
+       scrolling past nine charts. Everything diagnostic sits behind one of
+       these, closed by default — but the header always states what is inside,
+       so collapsing hides depth, never the existence of a problem. */
+    function EvSection({ title, hint, badge, children, defaultOpen = false }) {
+      const [open, setOpen] = useState(defaultOpen);
+      return (
+        <div style={{ marginTop: '0.6rem', borderTop: '1px solid var(--border)', paddingTop: '0.5rem' }}>
+          <button onClick={() => setOpen(!open)}
+                  aria-expanded={open}
+                  style={{ background: 'transparent', border: 'none', padding: 0, width: '100%',
+                           display: 'flex', alignItems: 'baseline', gap: '0.5rem',
+                           cursor: 'pointer', color: 'var(--text)', textAlign: 'left' }}>
+            <span style={{ color: 'var(--muted)', fontSize: '0.8rem', width: '0.9rem' }}>
+              {open ? '▾' : '▸'}
+            </span>
+            <span style={{ fontSize: '0.88rem', fontWeight: 600 }}>{title}</span>
+            {badge != null && (
+              <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>{badge}</span>
+            )}
+            {hint && !open && (
+              <span style={{ fontSize: '0.72rem', color: 'var(--muted)',
+                             marginLeft: 'auto' }}>{hint}</span>
+            )}
+          </button>
+          {open && <div style={{ marginTop: '0.5rem' }}>{children}</div>}
+        </div>
+      );
+    }
+
     function EvColumnAging({ wf, cl }) {
       const pts = (wf && wf.series || []).filter(p => p && p.flow_ul_min > 0 && p.segment_installed);
       if (pts.length < 3) return null;
@@ -5709,6 +5740,9 @@ function BFailTable({ rows }) {
 
     function EvosepColumnPanel() {
       const { data, loading, error } = useFetch('/api/maintenance/evosep', []);
+      /* Declared before the early return: hooks must run unconditionally, and
+         this component bails out below when there is no document yet. */
+      const [showClogs, setShowClogs] = useState(false);
 
       /* Match the Bruker panel: stay invisible until the extractor has produced
          a document, rather than showing an error box on a fresh install. */
@@ -5768,9 +5802,9 @@ function BFailTable({ rows }) {
           </div>
 
           {/* ── Chart A ── */}
-          <h4 style={{ fontSize: '0.9rem', color: 'var(--text)', margin: '0 0 0.4rem' }}>
-            Column backpressure, run by run
-          </h4>
+          <EvSection title="Column backpressure, run by run"
+                     badge={`${analytical.length} method${analytical.length === 1 ? '' : 's'}`}
+                     hint="per-gradient pressure traces">
           <div style={{ color: 'var(--muted)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>
             One panel per gradient, each on its own scale — a 100 spd and a 60 spd method
             run at different pressures, so a shared axis would compare nothing. The band is
@@ -5781,28 +5815,66 @@ function BFailTable({ rows }) {
             <EvBaselineChart key={ms.method} method={ms.method} ms={ms}
                              hue={EV_HUES[i % EV_HUES.length]} flagsByRun={flagsByRun} />
           ))}
+          </EvSection>
 
-          {/* ── Chart B ── */}
+          {/* ── Chart B ──
+               Behind a button rather than inline. It is one tall chart PER
+               cut-out run, so on a bad week it pushes everything below it off
+               the screen -- and it is a forensic view you consult after an
+               incident, not something you monitor. The button still states
+               the count, so its absence never hides that runs hit the limit. */}
           {clogs.length > 0 && (
             <div style={{ marginTop: '1rem' }}>
-              <h4 style={{ fontSize: '0.9rem', color: 'var(--text)', margin: '0 0 0.4rem' }}>
-                Anatomy of a clog — every run that reached the cut-out
-              </h4>
-              <div style={{ color: 'var(--muted)', fontSize: '0.75rem', marginBottom: '0.6rem' }}>
-                Each run is drawn against the reference it was judged against: the median
-                of the last few clean runs of the same method, on absolute minutes. A
-                clogging run tracks that reference exactly, then departs and climbs to the
-                cut-out. The shaded span is the warning — the time between the departure
-                and the moment the run actually hit the limit.
+              <button onClick={() => setShowClogs(true)}
+                      style={{ background: 'var(--bg)', color: 'var(--text)',
+                               border: '1px solid var(--border)', borderRadius: '0.35rem',
+                               padding: '0.4rem 0.7rem', fontSize: '0.82rem', cursor: 'pointer' }}>
+                🔬 Anatomy of a clog — {clogs.length} run{clogs.length === 1 ? '' : 's'} reached the cut-out
+              </button>
+            </div>
+          )}
+          {showClogs && (
+            <div onClick={() => setShowClogs(false)}
+                 style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)',
+                          zIndex: 1000, display: 'flex', alignItems: 'flex-start',
+                          justifyContent: 'center', overflowY: 'auto', padding: '2rem 1rem' }}>
+              <div onClick={e => e.stopPropagation()}
+                   style={{ background: 'var(--card, var(--bg))', border: '1px solid var(--border)',
+                            borderRadius: '0.5rem', padding: '1rem 1.2rem', maxWidth: '1000px',
+                            width: '100%' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between',
+                              alignItems: 'baseline', gap: '1rem' }}>
+                  <h4 style={{ fontSize: '0.95rem', color: 'var(--text)', margin: 0 }}>
+                    Anatomy of a clog — every run that reached the cut-out
+                  </h4>
+                  <button onClick={() => setShowClogs(false)}
+                          style={{ background: 'transparent', color: 'var(--muted)',
+                                   border: '1px solid var(--border)', borderRadius: '0.35rem',
+                                   padding: '0.15rem 0.5rem', cursor: 'pointer' }}>
+                    Close
+                  </button>
+                </div>
+                <div style={{ color: 'var(--muted)', fontSize: '0.75rem', margin: '0.4rem 0 0.6rem' }}>
+                  Each run is drawn against the reference it was judged against: the median
+                  of the last few clean runs of the same method, on absolute minutes. A
+                  clogging run tracks that reference exactly, then departs and climbs to the
+                  cut-out. The shaded span is the warning — the time between the departure
+                  and the moment the run actually hit the limit.
+                </div>
+                {clogs.map(r => (
+                  <EvClogTrace key={r.run} run={r} ceiling={d.ceiling_bar} />
+                ))}
               </div>
-              {clogs.map(r => (
-                <EvClogTrace key={r.run} run={r} ceiling={d.ceiling_bar} />
-              ))}
             </div>
           )}
 
           {/* ── Validation ── */}
-          <EvValidation v={d.validation} />
+          {d.validation && (
+            <EvSection title="How these numbers were validated"
+                       hint="method provenance">
+              <EvValidation v={d.validation} />
+            </EvSection>
+          )}
 
           {/* ── Triage list ── */}
           {recent.length > 0 && (
@@ -5852,17 +5924,25 @@ function BFailTable({ rows }) {
           {d.column_lifetimes && <EvColumnLifetimes cl={d.column_lifetimes} />}
 
           {d.wash_flow && d.wash_flow.series && d.wash_flow.series.length > 1 && (
-            <EvWashFlow wf={d.wash_flow} />
+            <EvSection title="Column wash flow — resistance, measured directly"
+                       badge={`${d.wash_flow.series.length} washes`}
+                       hint="the cleanest column-health signal">
+              <EvWashFlow wf={d.wash_flow} />
+            </EvSection>
           )}
 
-          {d.wash_flow && <EvColumnAging wf={d.wash_flow} cl={d.column_lifetimes} />}
+          {d.wash_flow && (
+            <EvSection title="Column ageing — every column on the same age axis"
+                       hint="is this one fouling faster than the last?">
+              <EvColumnAging wf={d.wash_flow} cl={d.column_lifetimes} />
+            </EvSection>
+          )}
 
           {/* ── Wear counters ── */}
           {wear.pump_seal_ml && (
-            <div style={{ marginTop: '1rem' }}>
-              <h4 style={{ fontSize: '0.9rem', color: 'var(--text)', margin: '0 0 0.35rem' }}>
-                Instrument wear — from the Evosep's own lifetime counters
-              </h4>
+            <EvSection title="Instrument wear — the Evosep's own lifetime counters"
+                       hint="pump seals, total analyses">
+            <div>
               <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
                 <EvTile label="Total analyses" value={(wear.total_analyses || 0).toLocaleString()}
                         note={`${evNum(wear.analyses_per_day, 1)}/day over the last ${evNum(wear.window_days, 0)} days`} />
@@ -5872,6 +5952,7 @@ function BFailTable({ rows }) {
                 ))}
               </div>
             </div>
+            </EvSection>
           )}
         </div>
       );

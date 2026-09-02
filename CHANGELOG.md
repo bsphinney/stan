@@ -11,6 +11,28 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.66] — 2026-09-02
+
+### Changed
+- **The Maintenance tab is a snapshot first.** The Evosep panel had grown to
+  nine stacked sections in a day, so an operator had to scroll past several
+  tall charts to learn the instrument's current state. What stays visible is
+  what answers "how is it right now": the column tiles, column lifetimes,
+  runs remaining, and the recent flagged runs. Everything diagnostic —
+  per-method pressure traces, the wash-flow trend, the ageing curves, the
+  wear counters, the validation provenance — now sits behind a collapsed
+  section.
+
+  **Collapsing hides depth, never the existence of a problem.** Every section
+  header states what is inside and how much of it (`3 methods`, `142 washes`),
+  so a closed section is never mistaken for an absent one. "Anatomy of a clog"
+  in particular is now a button carrying its own count — it draws one tall
+  chart *per* cut-out run, so on a bad week it pushed everything below it off
+  the screen, and it is a forensic view consulted after an incident rather
+  than something to monitor.
+
+---
+
 ## [1.0.65] — 2026-09-02
 
 ### Added
