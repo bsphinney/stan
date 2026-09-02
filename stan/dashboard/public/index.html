@@ -5400,6 +5400,103 @@ function BFailTable({ rows }) {
        Colour-blind safe: each column segment is drawn as its own polyline and
        labelled, and the install boundaries are dashed verticals with text --
        segment identity never rides on hue alone. */
+    /* Column lifetimes: how many injections each column actually delivered.
+       Boundaries come from the pressure record, not the maintenance log --
+       the log says WHICH column, the pressure says WHEN. Where they disagree
+       the gap is shown rather than reconciled silently, because on 2026-09-02
+       a placeholder-noon event date sat 6.8 h before the real swap and put
+       the old column's last two runs on the new column's account. */
+    function EvColumnLifetimes({ cl }) {
+      if (!cl || !cl.available) return null;
+      const cur = cl.current, prev = cl.previous;
+      const PROV = {
+        'logged+detected': 'logged and confirmed in the pressure record',
+        'detected-confirmed': 'found in the pressure record, corroborated by wash flow',
+        'detected': 'found in the pressure record; no wash coverage to corroborate',
+        'logged': 'from the maintenance log only',
+        'start-of-record': 'the record begins mid-life — this is a floor, not a lifetime',
+      };
+      const inj = c => (c && c.injections != null)
+        ? c.injections.toLocaleString() + (c.injections_is_lower_bound ? '+' : '') : '—';
+      return (
+        <div style={{ marginTop: '1rem' }}>
+          <h4 style={{ fontSize: '0.9rem', color: 'var(--text)', margin: '0 0 .2rem' }}>
+            Column lifetimes — injections delivered
+          </h4>
+          <p style={{ color: 'var(--muted)', fontSize: '.78rem', margin: '0 0 .5rem' }}>
+            Boundaries are found in the pressure record. The maintenance log says <em>which</em>
+            column; the pressure says <em>when</em> — where they differ, the difference is shown.
+          </p>
+          <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap' }}>
+            <EvTile label="This column — injections" value={inj(cur)}
+                    note={cur ? `${evNum(cur.days, 1)} days` +
+                      (cur.injections_per_day ? `, ${evNum(cur.injections_per_day, 0)}/day` : '') +
+                      (cur.provisional ? ' · provisional' : '') : 'no current column identified'} />
+            <EvTile label="Previous column — injections" value={inj(prev)}
+                    note={prev ? `${evNum(prev.days, 1)} days` +
+                      (prev.injections_per_day ? `, ${evNum(prev.injections_per_day, 0)}/day` : '')
+                      : 'none recorded'} />
+            {prev && prev.resistance_change_pct != null && (
+              <EvTile label="Previous column — wear" value={`+${evNum(prev.resistance_change_pct, 0)}%`}
+                      tone={prev.resistance_change_pct > 25 ? 'var(--warn)' : 'var(--text)'}
+                      note="resistance rise over its life" />
+            )}
+          </div>
+          {!!(cl.columns || []).length && (
+            <div style={{ overflowX: 'auto', marginTop: '.5rem' }}>
+              <table style={{ borderCollapse: 'collapse', fontSize: '.76rem', minWidth: '540px' }}>
+                <thead>
+                  <tr style={{ color: 'var(--muted)', textAlign: 'left' }}>
+                    <th style={{ padding: '.2rem .5rem .2rem 0' }}>Installed</th>
+                    <th style={{ padding: '.2rem .5rem' }}>Retired</th>
+                    <th style={{ padding: '.2rem .5rem', textAlign: 'right' }}>Injections</th>
+                    <th style={{ padding: '.2rem .5rem', textAlign: 'right' }}>Days</th>
+                    <th style={{ padding: '.2rem .5rem', textAlign: 'right' }}>Wear</th>
+                    <th style={{ padding: '.2rem .5rem' }}>How the boundary was found</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cl.columns.map((c, i) => (
+                    <tr key={i} style={{ borderTop: '1px solid var(--border)',
+                                         color: c.is_current ? 'var(--text)' : 'var(--muted)' }}>
+                      <td style={{ padding: '.25rem .5rem .25rem 0', whiteSpace: 'nowrap' }}>
+                        {String(c.installed || '').slice(0, 16).replace('T', ' ')}
+                      </td>
+                      <td style={{ padding: '.25rem .5rem', whiteSpace: 'nowrap' }}>
+                        {c.is_current ? 'in use' : String(c.retired || '').slice(0, 16).replace('T', ' ')}
+                      </td>
+                      <td style={{ padding: '.25rem .5rem', textAlign: 'right' }}>
+                        {c.injections != null
+                          ? c.injections.toLocaleString() + (c.injections_is_lower_bound ? '+' : '')
+                          : '—'}
+                      </td>
+                      <td style={{ padding: '.25rem .5rem', textAlign: 'right' }}>{evNum(c.days, 1)}</td>
+                      <td style={{ padding: '.25rem .5rem', textAlign: 'right' }}>
+                        {c.resistance_change_pct != null
+                          ? `+${evNum(c.resistance_change_pct, 0)}%` : '—'}
+                      </td>
+                      <td style={{ padding: '.25rem .5rem' }}>
+                        <span title={PROV[c.boundary_provenance] || ''}>
+                          {c.boundary_provenance || '—'}
+                        </span>
+                        {c.logged_minus_detected_hours != null &&
+                         Math.abs(c.logged_minus_detected_hours) >= 1 && (
+                          <span style={{ color: 'var(--warn)' }}>
+                            {` · log is ${evNum(Math.abs(c.logged_minus_detected_hours), 1)} h `}
+                            {c.logged_minus_detected_hours > 0 ? 'late' : 'early'}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     function EvWashFlow({ wf }) {
       const pts = (wf.series || []).filter(p => p && p.flow_ul_min > 0);
       if (pts.length < 2) return null;
@@ -5633,6 +5730,8 @@ function BFailTable({ rows }) {
                conditions are identical every time, so a falling line is a
                closing column and nothing else. Rendered only when the
                extractor publishes it; older documents simply omit it. */}
+          {d.column_lifetimes && <EvColumnLifetimes cl={d.column_lifetimes} />}
+
           {d.wash_flow && d.wash_flow.series && d.wash_flow.series.length > 1 && (
             <EvWashFlow wf={d.wash_flow} />
           )}

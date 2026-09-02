@@ -11,6 +11,40 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.62] — 2026-09-02
+
+### Added
+- **Column lifetimes on the Evosep panel** — injections delivered by the
+  current and previous column, with the full table. The first real figure:
+  **982 injections over 33.8 days** for the column retired on 2026-09-02.
+
+  Boundaries are found in the **pressure record**, not the maintenance log:
+  the log says *which* column, the pressure says *when*. Where they disagree
+  the panel shows the gap rather than reconciling it silently — on
+  2026-09-02 the logged event sat **6.8 h before** the real swap (a
+  placeholder noon), which put the old column's last two runs on the new
+  column's account and produced a false "the new column has not fixed the
+  pressure" conclusion. Every boundary carries its provenance
+  (`logged+detected`, `detected-confirmed`, `detected`, `logged`,
+  `start-of-record`), a column spanning a gap in the record is marked as a
+  lower bound, and the newest column is shown as provisional rather than
+  dropped.
+
+  Detecting the boundary needed three tests, not two. A sustained resistance
+  drop finds candidates, but clearing a blockage also produces one — and it
+  also lifts wash flow, so wash flow *confirmed* a false positive rather than
+  rejecting it. What separates them is where the drop **lands**: clearing a
+  blockage returns resistance to the level the column already held, while a
+  new column goes materially below anything the old one sustained. Measured
+  against each column's own settled baseline, that rejects the 08-19 capillary
+  swap and the 08-21 and 08-29 recoveries while keeping both real changes.
+
+  Both fresh columns measured **187.5 and 187.8 bar/(µL/min)** — the first
+  reproducible "this is what new looks like" figure this system has produced.
+  The retired column ended at 239.9, +28% over its life.
+
+---
+
 ## [1.0.61] — 2026-09-02
 
 ### Added

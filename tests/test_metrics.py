@@ -265,3 +265,59 @@ def test_score_empty_cohort():
     metrics = {"n_precursors": 10000, "n_peptides": 8000, "median_cv_precursor": 10, "ips_score": 70}
     score = compute_dia_score(metrics, {})
     assert 40 <= score <= 60  # should be around 50 with default percentile
+
+
+# ── Evosep throughput parsed from a method / filename ────────────────
+#
+# The separator between the number and "spd" is written every possible way
+# by hand at this facility. These pin both directions: what must now match,
+# and — more importantly — what must still NOT.
+
+def test_spd_parses_hyphenated_spelling():
+    """`60-spd-dia` is how a third of this facility's filenames are written.
+
+    The pattern required `\\s*` until 2026-09-02, so these silently returned
+    None: 10.7% of 2,672 timsTOF acquisitions had no gradient at all, falling
+    through to the cohort default in the search pipeline and into the Bruker
+    panel's "other/unspecified" bucket — its single largest bar.
+    """
+    from stan.metrics.scoring import _spd_from_method_string as spd
+    assert spd("01132026_HE50_60-spd-dia_S1-A1_1_19167.d") == 60
+    assert spd("02032026_HE50_100-spd-dia_S1-A2_1_19747.d") == 100
+    assert spd("07312026_HE50_60-spd-dia-new-zdf-column_S1-A1_1_23232.d") == 60
+    assert spd("HE50_30_spd_test") == 30
+
+
+def test_spd_still_parses_the_spellings_that_already_worked():
+    """The widening must be one-directional: nothing that resolved before
+    may resolve differently now."""
+    from stan.metrics.scoring import _spd_from_method_string as spd
+    assert spd("20260827_793_100spd_SI-1_S6-A1_1_24046.d") == 100
+    assert spd("100 spd") == 100
+    assert spd("Whisper40_SPD30_44min") == 30      # SPD token beats Whisper40
+    assert spd("Whisper100_20min") == 60
+    assert spd("SPD-60_gradient") == 60
+
+
+def test_spd_refuses_a_number_that_runs_out_of_a_date():
+    """MUST keep returning None. `0604202560Spd` is the date 06042025
+    followed by `60Spd`, with no separator — the `(?<!\\d)` guard refuses it
+    because the alternative is silently mislabelling a run, and a wrong
+    gradient is worse than a missing one.
+
+    Do not "simplify" the guard away to make this parse. It is load-bearing.
+    """
+    from stan.metrics.scoring import _spd_from_method_string as spd
+    assert spd("0604202560Spd_GC10_S3-B12_1_13768.d") is None
+    assert spd("spd6000") is None                  # trailing-digit guard
+    assert spd("1100spd") is None                  # leading-digit guard
+
+
+def test_spd_returns_none_for_runs_with_no_gradient():
+    """Washes and blanks have no gradient in any meaningful sense. They must
+    stay None so a caller can categorise them separately, rather than being
+    folded into 'we could not tell'."""
+    from stan.metrics.scoring import _spd_from_method_string as spd
+    assert spd("wash_S1-A1_1_24272.d") is None
+    assert spd("blank_S2-B3_1_100.d") is None
+    assert spd("100ng_hela_Flex_S1-A1_1_18528.d") is None

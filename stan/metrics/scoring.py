@@ -210,27 +210,47 @@ def validate_spd_from_metadata(raw_path) -> int | None:
 # We use (?<!\d) instead of \b before the number because method names
 # often separate tokens with underscores (e.g. "Evosep_60SPD"), and
 # underscores are word characters so \b fails to match there.
+#: Separator class between the number and "spd" is ``[-_\s]*``, NOT ``\s*``.
+#:
+#: It was ``\s*`` until 2026-09-02, which meant "100spd" and "100 spd" matched
+#: while "60-spd-dia" — the way this facility spells it in a third of its
+#: filenames — did not. Silently. Measured over 2,672 timsTOF acquisitions,
+#: that one missing character left 10.7 % of runs with no gradient at all:
+#: they fell through to the cohort default in the search pipeline and into an
+#: "other/unspecified" bucket on the Bruker panel, where they were the single
+#: largest bar (11,164 runs, more than 60 SPD and 100 SPD combined).
+#:
+#: The same shape of bug bit the HeLa QC filename pattern the same morning —
+#: it required a digit immediately after "hel", so "Hel50" was searched and
+#: "Hel-50" was not, and half a submission's standards were silently skipped.
+#: Twice in one day: when a pattern must match names typed by hand, be
+#: permissive about separators and strict about boundaries.
+#:
+#: The boundary guards are what keep that safe and MUST stay. ``(?<!\d)``
+#: stops a number running out of a date being read as a throughput —
+#: "0604202560Spd" is a date followed by "60Spd" and is correctly refused,
+#: because guessing there would silently mislabel a run.
 _EVOSEP_METHOD_PATTERNS: list[tuple[str, int]] = [
     # Explicit "<N> SPD" or "SPD<N>" tokens win over method-name shortcuts.
     # Names like "Whisper40_SPD30_44min" must resolve to 30 (the SPD)
     # not 40 (the Whisper variant).
-    (r"(?<!\d)500\s*spd(?!\d)", 500),
-    (r"(?<!\d)300\s*spd(?!\d)", 300),
-    (r"(?<!\d)200\s*spd(?!\d)", 200),
-    (r"(?<!\d)100\s*spd(?!\d)", 100),
-    (r"(?<!\d)60\s*spd(?!\d)", 60),
-    (r"(?<!\d)40\s*spd(?!\d)", 40),
-    (r"(?<!\d)30\s*spd(?!\d)", 30),
-    (r"(?<!\d)15\s*spd(?!\d)", 15),
+    (r"(?<!\d)500[-_\s]*spd(?!\d)", 500),
+    (r"(?<!\d)300[-_\s]*spd(?!\d)", 300),
+    (r"(?<!\d)200[-_\s]*spd(?!\d)", 200),
+    (r"(?<!\d)100[-_\s]*spd(?!\d)", 100),
+    (r"(?<!\d)60[-_\s]*spd(?!\d)", 60),
+    (r"(?<!\d)40[-_\s]*spd(?!\d)", 40),
+    (r"(?<!\d)30[-_\s]*spd(?!\d)", 30),
+    (r"(?<!\d)15[-_\s]*spd(?!\d)", 15),
     # "SPD<N>" ordering (Bruker PAC sometimes writes it this way).
-    (r"spd\s*500(?!\d)", 500),
-    (r"spd\s*300(?!\d)", 300),
-    (r"spd\s*200(?!\d)", 200),
-    (r"spd\s*100(?!\d)", 100),
-    (r"spd\s*60(?!\d)", 60),
-    (r"spd\s*40(?!\d)", 40),
-    (r"spd\s*30(?!\d)", 30),
-    (r"spd\s*15(?!\d)", 15),
+    (r"spd[-_\s]*500(?!\d)", 500),
+    (r"spd[-_\s]*300(?!\d)", 300),
+    (r"spd[-_\s]*200(?!\d)", 200),
+    (r"spd[-_\s]*100(?!\d)", 100),
+    (r"spd[-_\s]*60(?!\d)", 60),
+    (r"spd[-_\s]*40(?!\d)", 40),
+    (r"spd[-_\s]*30(?!\d)", 30),
+    (r"spd[-_\s]*15(?!\d)", 15),
     # Bruker PAC shortcut names (no explicit SPD token).
     (r"whisper100_20min", 60),
     (r"whisper100_40min", 30),
