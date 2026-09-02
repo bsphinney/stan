@@ -11,6 +11,46 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.53] — 2026-09-01
+
+### Added
+- **Evosep One column-health / clog early-warning panel on the Maintenance
+  tab.** A new `/api/maintenance/evosep` endpoint plus an `EvosepColumnPanel`
+  React component turn the Evosep's own per-run pressure logs into column
+  health: backpressure per run against a trailing baseline, per-method
+  distributions, detected interventions, instrument wear counters, and a
+  triage list of flagged runs. Data comes from a Hive-side extractor that
+  reads the mirrored logs read-only and publishes to PG Farm (falling back to
+  the JSON cache in the config dir, as the Bruker panel does). The panel hides
+  itself when no extract exists yet.
+- The point of the feature is that Compass records an LC failure only as a
+  post-mortem error string, while the Evosep writes a full pressure
+  time-series. Against 568 runs (2026-08-14 → 09-01) the pressure trace
+  independently found **every** LC-clog failure Compass logged (3/3) and every
+  Evotip failure (3/3), with no false negatives — and it found them
+  **8.5–20.2 minutes before** each run actually hit the 520 bar pump cut-out.
+- Two independent channels, because they are different faults: `Pump-HP`
+  backpressure is the analytical column (300–520 bar at ~1.7 µL/min), while a
+  spike on low-pressure pumps A/B at >60 bar is an Evotip that is missing or
+  not seated. Both of the "No Evotip was present" failures show as 0.9 min
+  aborts at 65–68 bar on that second channel.
+- **Honest negative result, stated in the panel:** run-to-run baseline does
+  *not* forecast these clogs days ahead. The five runs before the 2026-08-28
+  02:07 clog sat at 333.9 bar with a run-to-run sd of 0.70 bar — dead flat.
+  These blockages are sudden, single-run events; the warning is *within* the
+  run, not across runs. What the baseline does track well is column ageing and
+  interventions.
+- The panel also surfaces what the error log structurally cannot: runs that
+  ran 20–37 % over baseline and reached 519 bar but *completed*, so Compass
+  never recorded them. A 14-run episode on 2026-08-31/09-01 is the worked
+  example.
+
+### Changed
+- `MANIFEST.in` now ships `config/*.json`, so the bundled Bruker and Evosep
+  documents survive an sdist build.
+
+---
+
 ## [1.0.52] — 2026-09-01
 
 ### Added
