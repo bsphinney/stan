@@ -1351,3 +1351,21 @@ def get_bruker_maintenance_pg() -> dict | None:
             return None
         row = cur.fetchone()
     return row[0] if row else None
+
+
+def get_evosep_column_health_pg() -> dict | None:
+    """The latest Evosep column-health document, or None when none is stored.
+
+    Same contract as get_bruker_maintenance_pg: read-only and DDL-free. The
+    table is created by migration as its owner; the hosted service account has
+    DML only, so a missing table means "the publisher has not run yet" and the
+    endpoint falls back to the file cache rather than erroring.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        try:
+            cur.execute("SELECT doc FROM evosep_column_health WHERE id = 1")
+        except Exception:  # noqa: BLE001 - undefined_table etc. -> not stored yet
+            pg.rollback()
+            return None
+        row = cur.fetchone()
+    return row[0] if row else None

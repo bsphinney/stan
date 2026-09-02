@@ -1654,6 +1654,49 @@ async def api_maintenance_bruker() -> dict:
         raise HTTPException(status_code=503, detail="Bruker maintenance cache unreadable")
 
 
+@app.get("/api/maintenance/evosep")
+async def api_maintenance_evosep() -> dict:
+    """Evosep One column-health / clog early-warning signals.
+
+    The Evosep writes a full pressure time-series for every procedure it runs.
+    A Hive-side extractor reads those logs READ-ONLY and reduces them to
+    per-run backpressure signals, per-method baselines, detected interventions
+    and flagged runs. Compass records an LC failure only as a post-mortem
+    error string; this is the same event seen as a curve, minutes earlier.
+
+    Delivery mirrors /api/maintenance/bruker exactly: PG Farm first (the
+    publisher upserts the document there, so the hosted dashboard is
+    nightly-fresh rather than deploy-frozen), then the JSON cache in the STAN
+    config dir, where thresholds.yml and ui_prefs.yml are found.
+
+    Responds 404 when nothing has been produced yet -- the panel treats that
+    as "the extractor hasn't run" and hides itself.
+    """
+    from stan.db_pg import get_evosep_column_health_pg, use_pg
+    if use_pg():
+        try:
+            doc = get_evosep_column_health_pg()
+        except Exception as exc:  # noqa: BLE001 - fall through to the file cache
+            logger.warning("Evosep column health PG read failed: %s", exc)
+            doc = None
+        if doc:
+            return doc
+    try:
+        path = resolve_config_path("evosep_column_health.json")
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="Evosep column health data not found (extractor has not run)",
+        )
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError) as exc:
+        logger.warning("Evosep column health cache unreadable: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="Evosep column health cache unreadable")
+
+
 @app.get("/api/instruments/{instrument}/column-life")
 async def api_column_life(instrument: str) -> dict:
     """Column lifetime stats since last column change."""
