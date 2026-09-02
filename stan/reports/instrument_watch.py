@@ -120,14 +120,25 @@ COLUMN_MIN_INJECTIONS = 100
 #: a fixed per-column, per-flow expectation (p5 of the column's own healthy
 #: distribution) and cannot drift: those same two runs read +30.2% and +27.2%.
 #:
-#: 20% sits between healthy (~0-4%, since the reference IS the healthy floor)
-#: and the observed clog range (27-30%), with margin both ways. This only ever
-#: reclassifies a run the extractor ALREADY flagged, so it cannot raise an
-#: alert on healthy runs -- it can only stop a real clog going quiet.
+#: CALIBRATED against the deployed field, 2026-09-02 (39 runs, 19 carrying an
+#: expectation). The two populations separate cleanly, with nothing at all
+#: between 8.7 and 24.2:
 #:
-#: NOT yet calibrated against deployed data: the field was written while Hive
-#: was down, so these are evosep-history's validated figures rather than a
-#: measurement of my own. Worth one pass over a week of real documents.
+#:     unflagged (healthy)   n=8    min  0.0   median  0.6   max  8.7
+#:     flagged               n=11   min 24.2   median 30.2   max 61.9
+#:
+#: 20% sits inside that empty band. The margin is deliberately asymmetric --
+#: far closer to the flagged floor than the healthy ceiling -- because the
+#: healthy side cannot produce a false positive here at all: this only ever
+#: reclassifies a run the extractor ALREADY flagged, so an unflagged run is
+#: never tested against it. The job of the number is to catch the weakest real
+#: flag, and 24.2 is the weakest observed.
+#:
+#: A lower-bound value (`wear_is_lower_bound`, set when the record does not
+#: reach the column's install) is deliberately NOT excluded here. It means "at
+#: least this far over", so a lower bound crossing 20% is a sound detection --
+#: the truth is worse, not better. That is the opposite of the column-wear
+#: case, where a lower bound understates and must be gated out.
 PCT_OVER_EXPECTED_CRITICAL = 20.0
 
 #: Point events are keyed on this bucket so the Evosep log and the Compass

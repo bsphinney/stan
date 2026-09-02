@@ -610,3 +610,27 @@ def test_the_absolute_threshold_boundary():
 def test_a_malformed_expectation_does_not_raise():
     assert is_critical(_flag("2026-09-01T04:00:00", severity="elevated",
                              pct_over_expected="n/a")) is False
+
+
+def test_a_lower_bound_excess_still_counts():
+    """"At least this far over" crossing the threshold is a sound detection:
+    the truth is worse, not better. Opposite of the wear case, where a lower
+    bound understates and is gated out."""
+    assert is_critical(_flag("2026-09-01T04:00:00", severity="elevated",
+                             pct_over_expected=27.2,
+                             wear_is_lower_bound=True)) is True
+
+
+def test_the_sub_ceiling_run_a_flat_threshold_cannot_see():
+    """2026-09-02 10:33, live: peak 500.2 bar is below the 520 limit, so no
+    ceiling rule can reach it, and it scored only +14.0% against the trailing
+    baseline. Against the column's own expectation it is +42.7%. Paired with
+    10:47 it makes two consecutive criticals, so the clog fires -- where
+    before only the over-pressure rule caught 10:47 alone."""
+    flags = [
+        _flag("2026-09-01T04:00:00", severity="elevated", plateau=398.9,
+              peak=500.2, pct=14.0, pct_over_expected=42.7),
+        _flag("2026-09-01T04:14:00", severity="critical", plateau=452.6,
+              peak=520.1, pct=29.0, pct_over_expected=61.9),
+    ]
+    assert any(a.kind == "clog" for a in check_evosep(_doc(flags), now=NOW))

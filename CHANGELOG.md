@@ -11,6 +11,42 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.64] — 2026-09-02
+
+### Changed
+- **The clog threshold is now measured rather than borrowed.** Against the
+  live document the two populations separate cleanly with **nothing between
+  8.7% and 24.2%**: healthy runs sit at 0.0–8.7 (median 0.6), flagged runs at
+  24.2–61.9 (median 30.2). 20% falls in that empty band, so the number did not
+  change — but the reasoning behind it was wrong even though the value was
+  right. It had been justified as having "margin both ways"; in fact the
+  healthy side cannot produce a false positive at all, because the rule only
+  reclassifies runs the extractor has *already flagged*. An unflagged run is
+  never tested, so the threshold's only job is to catch the weakest real flag,
+  and 24.2 is the weakest observed.
+
+- **A lower bound is deliberately NOT treated the same way here as it is for
+  wear**, and the asymmetry is the point. For wear a lower bound *understates*
+  and must be excluded, or a worn column reads healthy. For "percent over
+  expected" a lower bound means "at least this far over" — so a lower bound
+  crossing the threshold is a *sound* detection, because the truth is worse,
+  not better. Applying the wear guard here out of symmetry would have been the
+  intuitive move and would have discarded real detections; a test asserts a
+  lower-bound flag still counts.
+
+### Note
+- With the absolute expectation deployed, the case for a column-specific
+  threshold over a flat pump-limit one is now demonstrated rather than
+  argued. Three runs the trailing baseline had demoted are promoted back to
+  critical, including **2026-09-02 10:33 — peak 500.2 bar, below the 520 limit
+  so no ceiling rule can ever reach it, and only +14% against a baseline that
+  had drifted up with the clog, but +42.7% against the column's own
+  expectation.** Paired with 10:47 that makes two consecutive criticals, so the
+  clog alert now fires where previously only the over-pressure rule caught a
+  single run.
+
+---
+
 ## [1.0.63] — 2026-09-02
 
 ### Added
