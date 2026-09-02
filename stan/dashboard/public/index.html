@@ -1804,6 +1804,7 @@
       const [colVendor, setColVendor] = useState('');
       const [colModel, setColModel] = useState('');
       const [colSerial, setColSerial] = useState('');
+      const [firstRun, setFirstRun] = useState('');
       const [status, setStatus] = useState('');
 
       /* Second event-type list (Trends tab). Kept in step with the
@@ -1832,6 +1833,7 @@
           payload.column_vendor = colVendor || null;
           payload.column_model = colModel || null;
           payload.column_serial = colSerial || null;
+          payload.first_run = firstRun || null;
         }
         try {
           const r = await fetch(API + `/api/instruments/${encodeURIComponent(instrument)}/events`, {
@@ -1901,6 +1903,11 @@
                   <div style={{flex:'1 1 120px'}}>
                     <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>Column serial</label>
                     <input value={colSerial} onChange={e => setColSerial(e.target.value)} placeholder="Optional" style={inputStyle} />
+                  </div>
+                  <div style={{flex:'1 1 160px'}}>
+                    <label style={{fontSize:'0.75rem', color:'var(--muted)'}}>First run on the new column</label>
+                    <input value={firstRun} onChange={e => setFirstRun(e.target.value)}
+                           placeholder="run number or run name" style={inputStyle} />
                   </div>
                 </div>
               )}
@@ -4058,7 +4065,8 @@
             <tbody>
               {events.slice(0, 20).map(ev => {
                 const color = maintColor(ev.event_type);
-                const colInfo = [ev.column_vendor, ev.column_model, ev.column_serial].filter(Boolean).join(' / ');
+                const colInfo = [ev.column_vendor, ev.column_model, ev.column_serial,
+                                 ev.first_run ? `from run ${ev.first_run}` : null].filter(Boolean).join(' / ');
                 const [sKey, eKey] = eventSpan(ev);
                 const sDate = dateFromDayKey(sKey);
                 const eDate = dateFromDayKey(eKey);
@@ -4387,6 +4395,7 @@
       const [endDate, setEndDate] = useState(localDay(new Date()));
       const [notes, setNotes] = useState('');
       const [operator, setOperator] = useState('');
+      const [firstRun, setFirstRun] = useState('');
       const [share, setShare] = useState(false);
       const [busy, setBusy] = useState(false);
       const [status, setStatus] = useState(null);   // {kind:'ok'|'err'|'auth', msg, loginUrl}
@@ -4396,6 +4405,7 @@
       }, [instruments]);
 
       const isDowntime = eventType === 'downtime';
+      const isColumnChange = eventType === 'column_change';
       const readonly = !!(sync && sync.readonly);
 
       const inputStyle = {
@@ -4423,6 +4433,7 @@
           end_date: isDowntime && endDate ? endDate + 'T12:00:00Z' : null,
           notes,
           operator,
+          first_run: isColumnChange ? (firstRun || null) : null,
           share_community: share,
         };
         try {
@@ -4550,6 +4561,22 @@
                          placeholder="Who did the work" style={inputStyle} />
                 </div>
               </div>
+              {/* Ground truth for the Evosep column-health analysis. Inferring
+                  the install point from the pressure series alone produced
+                  three different answers for one swap (2026-08-19, 2026-09-01,
+                  actual 2026-07-31) depending on the window extracted, so the
+                  operator naming the first run is what makes column age and
+                  wear trustworthy rather than merely plausible. */}
+              {isColumnChange && (
+                <div style={{marginBottom:'0.5rem'}}>
+                  <label style={labelStyle}>First run on the new column</label>
+                  <input value={firstRun} onChange={e => setFirstRun(e.target.value)}
+                         placeholder="run number or run name — e.g. 24040" style={inputStyle} />
+                  <div style={{fontSize:'0.68rem', color:'var(--muted)', marginTop:'0.15rem'}}>
+                    Lets the Evosep pressure log verify the swap instead of guessing at it.
+                  </div>
+                </div>
+              )}
               <div style={{marginBottom:'0.5rem'}}>
                 <label style={labelStyle}>Notes</label>
                 <input value={notes} onChange={e => setNotes(e.target.value)}

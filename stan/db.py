@@ -196,7 +196,13 @@ CREATE TABLE IF NOT EXISTS maintenance_events (
     -- For column tracking: what was installed
     column_vendor TEXT,
     column_model  TEXT,
-    column_serial TEXT
+    column_serial TEXT,
+    -- The first run acquired on the new column. Ground truth for anchoring a
+    -- column change in the Evosep pressure log: inferring the install date
+    -- from the pressure series alone gave three different answers for the
+    -- same swap (2026-08-19, 2026-09-01, truth 2026-07-31) depending on the
+    -- window extracted. A run the operator names cannot drift.
+    first_run     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_instrument ON maintenance_events(instrument);
@@ -2406,6 +2412,7 @@ def log_event(
     column_vendor: str | None = None,
     column_model: str | None = None,
     column_serial: str | None = None,
+    first_run: str | None = None,
     end_date: str | None = None,
     created_by: str | None = None,
     share_community: bool = False,
@@ -2420,6 +2427,10 @@ def log_event(
         operator: Who performed the maintenance.
         event_date: ISO 8601. Defaults to now.
         column_vendor/model/serial: For column_change events.
+        first_run: For column_change events -- the first run acquired on the
+            new column, as a run name or injection number. Lets the Evosep
+            column-health analysis anchor the swap to an exact run instead of
+            inferring it from the pressure series, which is unreliable.
 
     Returns:
         Event ID.
@@ -2454,6 +2465,7 @@ def log_event(
     if end_date and event_date and len(str(end_date)) == 10 < len(str(event_date)):
         end_date = str(end_date) + str(event_date)[10:]
     optional = {
+        "first_run": first_run,
         "end_date": end_date,
         "created_by": created_by,
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

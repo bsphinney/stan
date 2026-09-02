@@ -11,6 +11,50 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.56] — 2026-09-02
+
+### Added
+- **"First run on the new column" on a `column_change` entry.** The Evosep
+  panel infers when a column went in by finding a step in the plateau
+  pressure. That inference is not trustworthy: three extracts of the same
+  instrument on the same day, differing only in how much history each
+  covered, put the install at 2026-08-19, 2026-09-01 and (correctly)
+  2026-07-31. The 08-19 answer was the day a new glass *capillary* went in.
+  Everything downstream was confidently wrong — the panel showed "13.2 days"
+  for a column fitted ~32 days earlier, undercounted its injections, and
+  measured `baseline_change_pct` from a false origin. An operator naming the
+  first run acquired on the new column gives the analysis an anchor that
+  cannot drift with the extraction window. Free text on purpose: a bare
+  injection counter ("23229") and a full run name are both things an operator
+  will type, and both resolve against `runs`.
+
+### Fixed
+- **`json` was never imported at module scope in `stan/db_pg.py`**, though
+  four functions import it locally. `upsert_bruker_maintenance_pg` used a
+  bare `json.dumps` and would have raised `NameError` on first use. It has no
+  callers today (the Hive publisher does its own import), so nothing was
+  broken — this was a trap set for whoever wired it up next.
+- **`scripts/apply_pg_migration.py` now sets `lock_timeout` and aborts rather
+  than queueing.** A migration WAITING for `AccessExclusiveLock` blocks every
+  new reader that arrives behind it, so a blocked `ALTER` does not merely
+  stall, it takes the table offline for the whole application. A timed-out run
+  of this script left a backend queued server-side and stalled the dashboard's
+  maintenance calendar for ~3 minutes. The docstring also no longer recommends
+  `$(pgfarm auth token)`: the CLI prints "Registry created" on its first line,
+  so that form captures two lines and the server rejects the result as an
+  invalid token — indistinguishable from a genuinely expired one.
+
+### Note
+- `migrations/2026-08-28_maintenance_downtime.sql` had **never been applied to
+  PG Farm**. `maintenance_events` there was missing `created_by`, `created_at`,
+  `end_date` and `share_community`, so every hosted write silently dropped
+  them — downtime spans had no recorded end and no attribution. The
+  probe-based degradation in `log_event` worked exactly as designed, which is
+  precisely why it went unnoticed for eight versions. Applied 2026-09-02
+  alongside the `first_run` migration. Existing rows are not retro-filled.
+
+---
+
 ## [1.0.55] — 2026-09-02
 
 ### Fixed

@@ -9,7 +9,13 @@ Get an owner token first::
 
     npm install -g @ucd-lib/pgfarm     # once
     pgfarm auth login                  # UCD CAS, browser flow
-    export PGPASSWORD="$(pgfarm auth token)"
+    export PGPASSWORD="$(pgfarm auth token | tail -n1)"
+
+`tail -n1` is not optional. The pgfarm CLI prints "Registry created" on its
+first line and the token on the second, so a bare ``$(pgfarm auth token)``
+captures both and the server rejects it as an expired/invalid JWT -- which
+reads exactly like a genuinely expired token and sends you off to re-login
+for no reason. (2026-09-02.)
 
 Then::
 
@@ -39,6 +45,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("sql_file", type=Path)
     ap.add_argument("--user", default="brettsp",
                     help="PG role to connect as (default: the table owner).")
+    ap.add_argument("--lock-timeout", default="5s", dest="lock_timeout",
+                    help="Abort rather than queue if the table is locked "
+                         "(default 5s). A queued ALTER blocks all readers.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print the SQL and connect, but roll back instead of committing.")
     args = ap.parse_args(argv)
@@ -70,6 +79,14 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("%s cannot CREATE in schema public — wrong role for a migration", who)
             return 3
 
+        # Fail fast instead of queueing. A migration that WAITS for
+        # AccessExclusiveLock blocks every new reader that arrives behind it,
+        # so a blocked ALTER does not merely stall -- it takes the table
+        # offline for the whole application. On 2026-09-02 a timed-out run of
+        # this script left a backend queued server-side and stalled the
+        # dashboard's maintenance calendar for ~3 minutes. Better to abort and
+        # let the operator clear the blocker.
+        cur.execute("SET lock_timeout = %s", (args.lock_timeout,))
         cur.execute(sql)
         if args.dry_run:
             con.rollback()
@@ -77,6 +94,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             con.commit()
             logger.info("applied %s", args.sql_file.name)
+    except psycopg2.errors.LockNotAvailable:
+        con.rollback()
+        logger.error(
+            "table is locked -- aborted rather than queue behind it (a waiting "
+            "ALTER blocks every new reader). Find the holder with:\n"
+            "  SELECT l.pid, a.state, now()-a.xact_start FROM pg_locks l "
+            "JOIN pg_class c ON c.oid=l.relation JOIN pg_stat_activity a "
+            "ON a.pid=l.pid WHERE c.relname='<table>' AND l.granted;")
+        return 4
     finally:
         con.close()
     return 0

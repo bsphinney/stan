@@ -1350,6 +1350,10 @@ class LogEventRequest(BaseModel):
     column_vendor: str | None = Field(default=None, max_length=80)
     column_model: str | None = Field(default=None, max_length=120)
     column_serial: str | None = Field(default=None, max_length=120)
+    #: For column_change: the first run acquired on the new column, so the
+    #: Evosep analysis can anchor the swap to a run instead of guessing at it.
+    #: Free text -- a run name or a bare injection number are both useful.
+    first_run: str | None = Field(default=None, max_length=200)
     #: Opt-in per entry. Maintenance notes can name people and customers, so
     #: nothing reaches the community reliability leaderboard unless someone
     #: deliberately ticks this. Defaults off.
@@ -1388,6 +1392,7 @@ async def api_log_event(
         column_vendor=body.column_vendor,
         column_model=body.column_model,
         column_serial=body.column_serial,
+        first_run=body.first_run,
         created_by=caller_email(request),
         share_community=body.share_community,
     )
