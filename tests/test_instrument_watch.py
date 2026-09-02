@@ -19,6 +19,7 @@ from stan.notify import Alert
 from stan.reports.instrument_watch import (
     CLOG_CRITICAL_RUNS,
     COLUMN_DRIFT_PCT,
+    COLUMN_MIN_INJECTIONS,
     LOOKBACK_HOURS,
     RISING_RUNS,
     STANDING_COOLOFF_HOURS,
@@ -326,7 +327,31 @@ def test_lower_bound_counts_alone_are_enough_to_stay_silent():
     doc = _doc([], column={"known": True, "confidence": "logged",
                            "log_covers_install": True,
                            "counts_are_lower_bounds": True,
+                           "days_since": 30.0, "injections_since": 900,
                            "baseline_change_pct": 90.0})
+    assert check_column_wear(doc) == []
+
+
+def test_a_freshly_fitted_column_is_never_called_worn():
+    """Brett changed the column on 2026-07-31 and again on 2026-09-02, so an
+    hours-old column is a current case, not a hypothetical. A bed still
+    settling can show a large jump from its first-hour baseline; calling that
+    "worn" would be a confident false positive on a column just fitted."""
+    doc = _doc([], column={"known": True, "confidence": "logged",
+                           "log_covers_install": True,
+                           "installed": "2026-09-02T08:00:00",
+                           "days_since": 0.2, "injections_since": 14,
+                           "baseline_change_pct": 40.0})
+    assert check_column_wear(doc) == []
+
+
+def test_an_idle_instrument_cannot_age_a_column_into_a_wear_alert():
+    """Old enough by the calendar, but barely used. That is not wear."""
+    doc = _doc([], column={"known": True, "confidence": "logged",
+                           "log_covers_install": True,
+                           "days_since": 30.0,
+                           "injections_since": COLUMN_MIN_INJECTIONS - 1,
+                           "baseline_change_pct": 40.0})
     assert check_column_wear(doc) == []
 
 

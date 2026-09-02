@@ -96,6 +96,18 @@ STANDING_COOLOFF_HOURS = 12.0
 #: Column wear is a "order a column" alert, not a "get up" alert.
 COLUMN_COOLOFF_HOURS = 24.0 * 7
 
+#: A column younger than this cannot be "worn". A freshly fitted bed is still
+#: settling, and its first-hour baseline is not a fair origin to measure drift
+#: from -- a big jump there is an install problem, not wear. Brett changed the
+#: column on 2026-07-31 and again on 2026-09-02, so a hours-old column is a
+#: real, current case, not a hypothetical. Wear takes weeks; waiting costs
+#: nothing and stops a confident false positive on a brand-new column.
+COLUMN_MIN_AGE_DAYS = 3.0
+
+#: ...and enough use to have worn. An idle instrument can satisfy the age
+#: check with almost no injections. ~1 day of 100 SPD acquisition.
+COLUMN_MIN_INJECTIONS = 100
+
 #: Point events are keyed on this bucket so the Evosep log and the Compass
 #: database, which see the same failure a minute apart, collapse to one key.
 BUCKET_MINUTES = 10
@@ -420,33 +432,49 @@ def check_column_wear(doc: dict, station: str = DEFAULT_STATION) -> list[Alert]:
     #    for it; a document too old to carry the field is one of those
     #    windows with no way to tell which, and does not get a say.
     #
-    # 2. The BASELINE ORIGIN must be trustworthy, which is a separate axis and
-    #    the one that bites quietly. Once Brett's column change was logged as
-    #    an anchored event, `confidence` became "logged" on BOTH documents --
-    #    but the 30-minute tick only carries a 3-day window, so its
-    #    `baseline_at_install_bar` is the baseline at the start of that
-    #    window, not at the install. Real numbers from 2026-09-02:
-    #    days_since 32.99 (correct) against observed_days 1.94. Drift measured
-    #    from that origin describes three days and calls it the column's life,
-    #    reads far too low, and the 25% threshold would then never fire.
-    #    That is a SILENT failure -- the worst kind here, and exactly the
-    #    shape of the problem this whole change exists to end. So wear is only
-    #    judged on the daily full document, and `log_covers_install` is how we
-    #    tell which one we were handed.
+    # 2. The BASELINE ORIGIN must span the install. `baseline_change_pct` is
+    #    only "wear" if it is measured from the install; measured from the
+    #    start of a short window it describes that window and reads far too
+    #    low, so the threshold would never fire and nothing would ever say
+    #    so. A silent miss, which is the shape of the problem this whole
+    #    change exists to end. `log_covers_install` is how a document says
+    #    which it is -- and it is also how the alert step tells the daily
+    #    full document from the 30-minute one.
     #
-    # Fails CLOSED on both. A wear alert is a nudge to order a column; a nudge
-    # built on a number nobody can stand behind is worse than no nudge at all.
+    # 3. The column must be OLD ENOUGH for "worn" to be a claim about wear.
+    #    Brett changed the column twice: 2026-07-31 and again on 2026-09-02.
+    #    The current one is hours old, and a fresh column is exactly where a
+    #    drift number misleads in the other direction -- a bed still settling
+    #    can show a large jump from its first-hour baseline, and calling that
+    #    "worn" would be a confident false positive on a column that was just
+    #    fitted. Wear takes weeks, so nothing is lost by waiting.
+    #
+    # (History, because the numbers are easy to misread: on 2026-09-02 the
+    # document reported days_since 32.99 against observed_days 1.94. That
+    # 32.99 was NOT the current column's age -- the resolver had anchored to
+    # the older 07-31 event, so it was the age of the column that had just
+    # been REMOVED. Two different faults, one pair of numbers.)
+    #
+    # Fails CLOSED on all three. A wear alert is a nudge to order a column; a
+    # nudge built on a number nobody can stand behind is worse than none.
     trustworthy_date = (str(col.get("confidence") or "") in ("logged", "inferred")
                         and not col.get("installed_is_lower_bound"))
     trustworthy_baseline = (bool(col.get("log_covers_install"))
                             and not col.get("counts_are_lower_bounds"))
-    if not (trustworthy_date and trustworthy_baseline):
+    age_days = col.get("days_since")
+    injections = col.get("injections_since")
+    old_enough = (age_days is not None and float(age_days) >= COLUMN_MIN_AGE_DAYS
+                  and injections is not None
+                  and int(injections) >= COLUMN_MIN_INJECTIONS)
+    if not (trustworthy_date and trustworthy_baseline and old_enough):
         logger.info(
-            "column wear not judgeable from this document (confidence=%s, "
+            "column wear not judgeable (confidence=%s, "
             "installed_is_lower_bound=%s, log_covers_install=%s, "
-            "counts_are_lower_bounds=%s); skipping",
+            "counts_are_lower_bounds=%s, days_since=%s, injections_since=%s); "
+            "skipping",
             col.get("confidence"), col.get("installed_is_lower_bound"),
-            col.get("log_covers_install"), col.get("counts_are_lower_bounds"))
+            col.get("log_covers_install"), col.get("counts_are_lower_bounds"),
+            age_days, injections)
         return alerts
 
     if col.get("known") and drift is not None and float(drift) >= COLUMN_DRIFT_PCT:

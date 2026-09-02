@@ -11,6 +11,23 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.58] — 2026-09-02
+
+### Fixed
+- **A freshly fitted column could be called worn.** The column-wear gate
+  required a trustworthy install date and a baseline that actually reaches the
+  install. Both are satisfied by a column installed this morning — the 30-minute
+  document legitimately covers its whole (very short) life — so drift measured
+  from a first-hour baseline, while the bed is still settling, would fire
+  "column worn" on a column fitted hours earlier. Wear now also requires
+  3 days and 100 injections. Wear takes weeks, so the wait costs nothing, and
+  the alternative is a confident false positive on the day someone does the
+  right thing. All three conditions fail closed; an absent field is falsy, and
+  a test asserts alerting resumes once they hold so the gate cannot quietly
+  become permanent.
+
+---
+
 ## [1.0.57] — 2026-09-02
 
 ### Fixed
