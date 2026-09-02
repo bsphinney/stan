@@ -266,6 +266,50 @@ def doctor() -> None:
         emit("  (no alerts dir)")
     emit("")
 
+    emit("[bold]PG Farm idle transactions[/bold]")
+    emit("-" * 70)
+    # A session sitting "idle in transaction" is running nothing but still
+    # holds every lock its transaction took. On 2026-09-02 one held
+    # AccessShareLock on maintenance_events for 19 minutes; the ALTER TABLE
+    # behind it queued an AccessExclusiveLock, which blocks new readers too,
+    # so the migration hung and the maintenance calendar went dark with it.
+    # Nothing anywhere reported it -- it was found by hand, 25 minutes in,
+    # only because the migration blocked. One query makes that a five-second
+    # check the next time something is mysteriously slow.
+    try:
+        from stan.db_pg import (
+            IDLE_TX_WARN_SECONDS,
+            idle_in_transaction_sessions,
+            pg_configured,
+            probe_pg,
+        )
+    except Exception as e:  # noqa: BLE001 - psycopg2 absent on some installs
+        emit(f"  (unavailable: {type(e).__name__}: {e})")
+    else:
+        if not pg_configured():
+            emit("  (no PG Farm credential on this host — skipped)")
+        # Bounded probe before the query: _connect() backs off for up to
+        # several minutes on slot exhaustion, which is right for a search job
+        # that has already spent an hour of compute and wrong for a
+        # diagnostic. probe_pg caches the connection it opens, so the query
+        # below reuses it rather than paying a second handshake.
+        elif not probe_pg(timeout=8):
+            emit("  [yellow]PG Farm not reachable — skipped[/yellow]")
+        else:
+            stuck = idle_in_transaction_sessions()
+            if not stuck:
+                emit(f"  [green]none idle in transaction longer than "
+                     f"{IDLE_TX_WARN_SECONDS}s[/green]")
+            for s in stuck:
+                emit(f"  [red]pid {s['pid']}  transaction {s['xact_age_s']}s "
+                     f"old, idle {s['idle_s']}s  ({s['state']})[/red]")
+                emit(f"      last: {s['last_query']}")
+            if stuck:
+                emit("  These hold read locks and will block the next")
+                emit("  ALTER TABLE. Clear one with:")
+                emit("      SELECT pg_terminate_backend(<pid>);")
+    emit("")
+
     # Write to logs/ so it syncs to Hive.
     try:
         log_dir = cfg_dir / "logs"
@@ -884,16 +928,28 @@ def remove_watch(
 def test_alert() -> None:
     """Send a test Slack message to verify alerts are configured.
 
-    Requires slack_webhook_url in ~/STAN/community.yml.
+    Reads the webhook from $STAN_SLACK_WEBHOOK, then slack_webhook_url in
+    community.yml, then ~/.stan/slack_webhook.
     """
-    from stan.alerts import test_slack_alert
+    from stan.notify import send_test, slack_configured
 
-    if test_slack_alert("STAN alert test"):
+    if not slack_configured():
+        console.print("[yellow]No Slack webhook configured.[/yellow]")
+        console.print("  Create an Incoming Webhook at "
+                      "[cyan]https://api.slack.com/apps[/cyan] "
+                      "(Incoming Webhooks -> Add New Webhook to Workspace),")
+        console.print("  then either export it:")
+        console.print('  [cyan]export STAN_SLACK_WEBHOOK="https://hooks.slack.com/services/..."[/cyan]')
+        console.print("  or write it to [cyan]~/.stan/slack_webhook[/cyan] (chmod 600).")
+        raise typer.Exit(1)
+
+    if send_test("STAN alert test"):
         console.print("[green]Test alert sent.[/green] Check your Slack channel.")
     else:
-        console.print("[yellow]No Slack webhook configured.[/yellow]")
-        console.print("  Add slack_webhook_url to ~/STAN/community.yml:")
-        console.print('  [cyan]slack_webhook_url: "https://hooks.slack.com/services/..."[/cyan]')
+        # The URL itself is never echoed back -- it is a bearer credential.
+        console.print("[red]Slack rejected the message.[/red] "
+                      "The webhook may have been revoked or mistyped.")
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -7583,6 +7639,59 @@ def ht_watch(
         console.print(
             "[yellow]Alerts found but no recipient configured. Set "
             "email_reports.to in ~/.stan/community.yml[/yellow]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def instrument_watch(
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Report what would be sent without sending or recording it.",
+    ),
+    seed: bool = typer.Option(
+        False, "--seed",
+        help="Mark everything currently visible as already sent. Run once at "
+             "install so a fresh state file does not replay old history.",
+    ),
+    evosep_json: str = typer.Option(
+        None, "--evosep-json",
+        help="Read the Evosep column-health document from this file instead "
+             "of PG / the bundled copy.",
+    ),
+    bruker_json: str = typer.Option(
+        None, "--bruker-json",
+        help="Read the Bruker maintenance document from this file instead "
+             "of PG / the bundled copy.",
+    ),
+    lookback_hours: float = typer.Option(
+        None, "--lookback-hours",
+        help="Ignore faults older than this (default 24).",
+    ),
+) -> None:
+    """Check the instrument for over-pressure, clogs and hard errors; Slack them.
+
+    Reads the Evosep column-health and Bruker maintenance documents the
+    extractors publish and alerts on what they already scored -- so the
+    dashboard and the alerter can never disagree about what is wrong.
+
+    Deduplicated by condition, not by run: a clog spanning forty runs is one
+    message, repeated only if it gets worse or is still there twelve hours
+    later. Set $STAN_SLACK_WEBHOOK (see `stan test-alert`).
+    """
+    import json as _json
+
+    from stan.reports.instrument_watch import LOOKBACK_HOURS, run_watch
+
+    result = run_watch(
+        dry_run=dry_run, seed=seed,
+        evosep_path=evosep_json, bruker_path=bruker_json,
+        lookback_hours=LOOKBACK_HOURS if lookback_hours is None else lookback_hours,
+    )
+    print(_json.dumps(result, default=str, indent=2))
+    if result.get("n_fresh") and not result.get("slack_configured"):
+        console.print(
+            "[yellow]Faults found but no Slack webhook configured. Set "
+            "STAN_SLACK_WEBHOOK — see `stan test-alert`.[/yellow]")
         raise typer.Exit(1)
 
 

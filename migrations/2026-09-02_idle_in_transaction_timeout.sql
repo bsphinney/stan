@@ -1,0 +1,148 @@
+-- Kill sessions parked "idle in transaction" on PG Farm (STAN v1.0.56)
+--
+-- WHY. On 2026-09-02 an `ALTER TABLE maintenance_events ADD COLUMN ...` could
+-- not run for ~25 minutes. pg_locks showed pid 73581 holding a granted
+-- AccessShareLock on the table; pg_stat_activity (queried as the service
+-- account -- `brettsp` sees `<insufficient privilege>` for another role's
+-- rows) showed:
+--
+--     state       idle in transaction
+--     wait_event  ClientRead
+--     connection age 24 min, transaction age 19 min, idle 2m44s
+--     last query  SELECT "run_id", "source", "mz", "mobility", "rt", ...
+--
+-- That was STAN's own SQLite mirror (stan/sync/pg_to_sqlite.py) running its
+-- statements on the module-level cached connection without a `with` block.
+-- psycopg2's connection context manager is the only thing that ends a
+-- transaction there, so the read transaction opened by the first SELECT of the
+-- first refresh tick stayed open for the life of the dashboard process. That
+-- code is fixed. This file is the backstop for the next one.
+--
+-- The damage is worse than the wait. A *queued* AccessExclusiveLock blocks
+-- every NEW reader of the table as well, so the blocked ALTER did not merely
+-- stall -- it took `maintenance_events` offline for the whole app, and the
+-- dashboard's maintenance calendar went dark for ~3 minutes. An open read
+-- snapshot also pins VACUUM's cleanup horizon for as long as it lasts, so the
+-- same bug bloats the database quietly between incidents. Restarting the Azure
+-- web app did not clear it; `pg_terminate_backend` did.
+--
+-- WHY THE APP RESTART DID NOT HELP -- and why a DB-side timeout is not merely
+-- belt-and-braces. Connections do not reach the server directly: a session
+-- opened from a Mac on the campus network reports
+-- `client_addr = 10.100.6.6` (checked 2026-09-02), i.e. PG Farm's proxy, not
+-- the client. The backend pid therefore belongs to a pooled server-side
+-- connection that outlives the client process, which is consistent with pid
+-- 73581 being identical before and after the restart. If a client can vanish
+-- and leave its transaction behind, no amount of client-side discipline can
+-- clear one after the fact -- only this timeout, or a manual
+-- pg_terminate_backend, can.
+--
+-- WHY 5 MINUTES. Sized against STAN's actual transactions, not picked round:
+--
+--   * `idle_in_transaction_session_timeout` only fires on a session that is
+--     inside a transaction AND running nothing. It cannot interrupt a
+--     statement in flight, however long: the full `SELECT * FROM runs` that
+--     seeds the mirror is `active`, not idle, for its whole duration. And it
+--     is not `idle_session_timeout` -- a connection sitting idle *outside* a
+--     transaction is untouched, which is what the ~100 SLURM jobs of a Hive
+--     backlog drain do between writes.
+--
+--   * Every write path is one statement plus a commit inside
+--     `with _connect() as pg, pg.cursor() as cur:` -- insert_run_pg,
+--     row_exists_pg, insert_feature_cloud_pg, the dispatcher's UPSERTs, the
+--     community-sync writes. Sub-second, and the client is never idle inside
+--     them.
+--
+--   * The ingest path does its expensive work OUTSIDE the transaction:
+--     `stan ingest-orphans` runs step_extract to completion and only then
+--     calls insert_run_pg, which opens and closes its own transaction.
+--
+--   * The longest legitimate client-side pause inside a transaction is the
+--     mirror writing one 25-row feature-cloud chunk (~10 MB of JSON) to
+--     SQLite between two PG statements. Seconds. The mirror now commits
+--     before each of those writes anyway, and even with every one of those
+--     commits removed a whole refresh tick is bounded by
+--     STAN_PG_REFRESH_SECONDS (default 300) -- the loop sleeps *after* the
+--     pull returns and never overlaps itself. So 5 minutes cannot kill a
+--     mirror tick that is behaving.
+--
+--   * The one path that used to hold a transaction across long compute was
+--     scripts/feature_cloud_4dff.py, whose opening SELECT stayed open while
+--     4DFF ran for up to --timeout-min (45) minutes. That SELECT now commits
+--     before the loop. Anything written in future that genuinely must hold a
+--     transaction open across minutes of client-side work should say so
+--     explicitly for its own session rather than raise this ceiling:
+--
+--         SET idle_in_transaction_session_timeout = 0;   -- this session only
+--
+--   * 5 minutes bounds the blast radius on both sides: the next migration
+--     waits at most 5 minutes instead of forever, and VACUUM's horizon can be
+--     pinned for at most 5 minutes instead of indefinitely.
+--
+-- Not setting `statement_timeout` here. That one CAN kill a legitimate
+-- long-running query -- the mirror's full `runs` copy is minutes on a cold
+-- start -- and it is not what caused this.
+--
+-- SCOPE. One role covers both clients that matter: STAN and FRAN both connect
+-- as `genome-proteomics-service-account` (see stan/db_pg.py PG_DEFAULTS and
+-- the shared-secret note in _resolve_pgpassword). A notebook connecting as a
+-- human role is not covered -- see the ALTER DATABASE variant at the bottom if
+-- you want that too.
+--
+-- HOW TO RUN -- NOT as brettsp. This is not a table migration, so the usual
+-- "must be the table owner" note does not apply, and the owner cannot run it
+-- anyway. Checked read-only against PG Farm on 2026-09-02:
+--
+--   rolname                             rolsuper  rolcreaterole  rolconfig
+--   brettsp                             f         f              NULL
+--   genome-proteomics-service-account   f         f              NULL
+--
+-- `brettsp` is neither superuser nor CREATEROLE, so it cannot ALTER a role
+-- other than itself. But `idle_in_transaction_session_timeout` is a USERSET
+-- parameter and a role may always set a USERSET parameter on ITSELF -- so the
+-- service account applies this to itself. It has no CREATE on schema public,
+-- which the applier normally refuses, hence `--skip-owner-check` (added
+-- alongside this file; the guard stays on by default for real schema changes).
+--
+--   export PGPASSWORD="$(cat /Volumes/proteomics-grp/brett/.pgfarm_token)"
+--   python scripts/apply_pg_migration.py \
+--       migrations/2026-09-02_idle_in_transaction_timeout.sql \
+--       --user genome-proteomics-service-account --skip-owner-check
+--
+-- `rolconfig` being NULL for both roles is also the confirmation that no
+-- timeout is set today: a fresh session reports
+-- `SHOW idle_in_transaction_session_timeout` -> 0, i.e. unlimited. That is why
+-- the 19-minute session was able to sit there indefinitely.
+--
+-- TAKES EFFECT ON NEW SESSIONS ONLY. Anything already connected keeps the old
+-- (unlimited) setting until it reconnects -- including a session that is
+-- already stuck, which still needs pg_terminate_backend by hand.
+--
+-- Verify:
+--   SELECT rolname, rolconfig FROM pg_roles
+--    WHERE rolname = 'genome-proteomics-service-account';
+--   -- then, from a NEW session:
+--   SHOW idle_in_transaction_session_timeout;   -- expect: 5min
+
+BEGIN;
+
+ALTER ROLE "genome-proteomics-service-account"
+    SET idle_in_transaction_session_timeout = '5min';
+
+COMMIT;
+
+-- STRONGER, BUT NOT OURS TO RUN -- an ALTER DATABASE would cover every role
+-- that connects, including a human on psql or a notebook, not just the service
+-- account. It needs database ownership, and this database is owned by
+-- `postgres` (checked 2026-09-02), so it would have to come from a PG Farm
+-- admin. Worth asking for only if a human session ever pins a lock the same
+-- way; the incident and the fix are both service-account-side. Note the real
+-- database name is `stan` -- the slashed
+-- "uc-davis-genome-center-proteomics-core/stan" in PG_DEFAULTS is PG Farm's
+-- connection-routing syntax, not the catalog name:
+--
+--   ALTER DATABASE stan SET idle_in_transaction_session_timeout = '5min';
+--
+-- To undo:
+--   ALTER ROLE "genome-proteomics-service-account"
+--       RESET idle_in_transaction_session_timeout;

@@ -59,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     cur = pg.cursor()
     cur.execute("SELECT id, run_name, run_date FROM sample_health")
     rows = cur.fetchall()
+    pg.commit()   # don't hold a read lock on sample_health through the scan
 
     fixes, unresolved = [], []
     for rid, name, run_date in rows:

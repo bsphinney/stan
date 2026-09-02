@@ -84,6 +84,12 @@ def main() -> int:
         sql += f" LIMIT {int(args.limit)}"
     cur.execute(sql)
     rows = [(str(r[0]), r[1], r[2]) for r in cur.fetchall()]
+    # End the read transaction before the loop. Without this the AccessShareLock
+    # this SELECT took on runs/feature_clouds is held until the first UPSERT
+    # commits below -- and the first iteration runs 4DFF, up to --timeout-min
+    # (45) minutes. A read transaction that long blocks DDL on those tables and
+    # pins VACUUM's cleanup horizon for the whole backfill.
+    pg.commit()
     if args.nshards > 1:
         rows = [r for i, r in enumerate(rows) if i % args.nshards == args.shard]
 

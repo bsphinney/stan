@@ -198,6 +198,26 @@ def _get_ui_prefs_watcher() -> ConfigWatcher | None:
     return _ui_prefs_watcher
 
 
+_columns_watcher: ConfigWatcher | None = None
+
+
+def _get_columns_watcher() -> ConfigWatcher | None:
+    """Hot-reloading watcher for ``columns.yml``, or None if absent.
+
+    Absent is normal: a lab that has not catalogued its columns still logs
+    column changes, it just types the vendor and model by hand.
+    """
+    global _columns_watcher
+    if _columns_watcher is None:
+        try:
+            _columns_watcher = ConfigWatcher(resolve_config_path("columns.yml"))
+        except FileNotFoundError:
+            return None
+    elif _columns_watcher.is_stale():
+        _columns_watcher.reload()
+    return _columns_watcher
+
+
 # ── Startup ──────────────────────────────────────────────────────────
 
 # How often the dashboard re-pulls central runs, and whether it does at all.
@@ -1309,6 +1329,28 @@ async def api_update_thresholds(body: ThresholdsUpdate) -> dict:
     watcher.reload()
 
     return {"status": "ok"}
+
+
+@app.get("/api/columns")
+async def api_columns() -> dict:
+    """The lab's LC column catalogue, for the column_change picker.
+
+    Hot-reloaded from ``columns.yml`` so adding a column is an edit, not a
+    deploy. Returns an empty list rather than 404 when the file is missing —
+    the form falls back to free text, so an uncatalogued lab is not blocked.
+    """
+    w = _get_columns_watcher()
+    if w is None:
+        return {"columns": []}
+    data = w.data or {}
+    out = []
+    for c in (data.get("columns") or []):
+        if not isinstance(c, dict) or not c.get("id"):
+            continue
+        out.append({k: c.get(k) for k in
+                    ("id", "vendor", "model", "part_number",
+                     "length_cm", "bore_um", "particle_um", "notes")})
+    return {"columns": out}
 
 
 @app.get("/api/ui-prefs")

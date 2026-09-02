@@ -18,6 +18,7 @@ cur.execute("""
     ORDER BY r.run_date DESC LIMIT 200
 """)
 rows = cur.fetchall()
+pg.commit()   # the filesystem walk below must not hold a PG read transaction
 
 missing_dir = no_tdf = no_bin = ok = 0
 examples = []

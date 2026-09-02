@@ -11,6 +11,66 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.57] — 2026-09-02
+
+### Fixed
+- **The PG→SQLite mirror never ended its transaction, pinning locks for the
+  life of the dashboard process.** `pull_from_pg` took the module-level cached
+  connection and ran every statement bare; its `finally` closed only the local
+  SQLite handle. psycopg2's connection context manager is the only thing that
+  ends a transaction on a cached connection, so the read transaction opened by
+  the first SELECT stayed open and *grew with every* `STAN_PG_REFRESH_SECONDS`
+  *tick*. Observed live: transaction age crossing 350 s while idle time reset
+  to 24 s — each tick appending to one never-ending transaction.
+
+  This is not cosmetic. A schema migration on 2026-09-02 could not run for 25
+  minutes because this transaction held `AccessShareLock` on
+  `maintenance_events` (taken by `_pull_detail_tables`, several statements
+  before the feature-cloud read that showed as the session's "last query"). A
+  *queued* `AccessExclusiveLock` blocks every new reader behind it, so the
+  blocked `ALTER` took the maintenance calendar offline for ~3 minutes. A long
+  read transaction also pins `VACUUM`'s cleanup horizon, so this was quietly
+  bloating the database the whole time.
+
+  Four standalone scripts had the same bare-`_connect()` shape;
+  `feature_cloud_4dff.py` was the worst, holding its opening SELECT open for
+  the entire 45-minute 4DFF run.
+
+### Added
+- **Slack alerting for instrument errors and over-pressure.** Flagged runs are
+  grouped into *episodes* — consecutive flags on one method less than 2 h
+  apart — so a clog spanning 40 runs is one message, not 40. Re-sends only on
+  a real escalation (severity, or a 10-bar band change) or a 12 h cool-off,
+  and only while the condition is still live. Replayed against the real
+  2026-08-14→09-01 window it fires on the 08-31 23:18 clog within half an hour
+  of onset, and produces roughly one alert every other day rather than 27.
+  Bruker's lookback is 72 h, not 24: the Compass document is rebuilt nightly
+  at 20:00 from an 18:00 backup, so a 14:38 failure is not visible for ~29 h
+  and a 24 h window would have silently dropped exactly the errors this was
+  built to report.
+- **`stan doctor` now reports PG Farm idle transactions** — pid, transaction
+  age, idle time, last query, and the `pg_terminate_backend` line. The leak
+  above was invisible until a migration happened to collide with it.
+- **LC column catalogue and picker.** `config/columns.yml` (hot-reloaded)
+  populates a dropdown on a `column_change` entry, with a LOT/serial field and
+  an "Other" free-text escape. Column vendor/model were previously free text
+  typed differently every time, and reachable only from the Trends form — not
+  the Maintenance tab where entries are actually made — which made per-column
+  history impossible to group.
+
+### Note
+- `migrations/2026-09-02_idle_in_transaction_timeout.sql` is **not applied**.
+  `idle_in_transaction_session_timeout` is USERSET and neither role is
+  superuser or CREATEROLE, so the owner cannot set it on another role — the
+  service account must apply it to itself. `rolconfig` is NULL on both roles
+  today, i.e. currently unlimited. This matters more than defence in depth:
+  connections arrive through PG Farm's proxy (`client_addr = 10.100.6.6`), so
+  a backend outlives its client process — which is why the leaking session
+  survived a web-app restart. A database-side timeout is the only thing that
+  can clear a leak whose client is already gone.
+
+---
+
 ## [1.0.56] — 2026-09-02
 
 ### Added

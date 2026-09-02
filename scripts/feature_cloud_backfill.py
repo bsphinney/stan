@@ -166,6 +166,12 @@ def main() -> int:
     if args.nshards > 1:
         rows = [r for i, r in enumerate(rows) if i % args.nshards == args.shard]
 
+    # End the read transaction the SELECTs above opened. It is otherwise held
+    # until the first per-run UPSERT commits, with the sidecar extraction of
+    # run #1 sitting inside it -- read locks on runs/feature_clouds and a
+    # pinned VACUUM horizon for no reason.
+    pg.commit()
+
     log({"event": "start", "n_queued": len(rows), "already_stored": len(have),
          "shard": args.shard, "nshards": args.nshards,
          "max_points": args.max_points, "force": args.force,

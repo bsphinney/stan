@@ -21,6 +21,12 @@ Then::
 
     python scripts/apply_pg_migration.py migrations/<file>.sql --user brettsp
 
+A migration that touches no table -- an ``ALTER ROLE ... SET <guc>``, say --
+does not need the owner at all, and the service account can apply it to
+itself. Pass ``--skip-owner-check`` for that case; the CREATE-on-public guard
+stays on by default so a real schema change still fails loudly on the wrong
+role.
+
 The whole file is sent as one statement batch so its own BEGIN/COMMIT
 controls the transaction; nothing is auto-committed around it.
 """
@@ -50,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
                          "(default 5s). A queued ALTER blocks all readers.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print the SQL and connect, but roll back instead of committing.")
+    ap.add_argument("--skip-owner-check", action="store_true",
+                    help="Allow a role without CREATE on schema public. Only for "
+                         "migrations that alter no table -- e.g. an ALTER ROLE "
+                         "setting a GUC, which a role may always do to itself.")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -75,9 +85,13 @@ def main(argv: list[str] | None = None) -> int:
         cur.execute("SELECT current_user, has_schema_privilege(current_user,'public','CREATE')")
         who, can_create = cur.fetchone()
         logger.info("connected as %s (CREATE on public: %s)", who, can_create)
-        if not can_create:
+        if not can_create and not args.skip_owner_check:
             logger.error("%s cannot CREATE in schema public — wrong role for a migration", who)
             return 3
+        if not can_create:
+            logger.warning(
+                "%s has no CREATE on public — proceeding on --skip-owner-check. "
+                "This is only valid for a migration that alters no table.", who)
 
         # Fail fast instead of queueing. A migration that WAITS for
         # AccessExclusiveLock blocks every new reader that arrives behind it,

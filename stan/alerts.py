@@ -2,24 +2,30 @@
 
 Supports:
 - Shell command hooks in instruments.yml (legacy)
-- Slack webhooks in community.yml (preferred)
+- Slack webhooks (preferred)
 
-Slack config in ~/STAN/community.yml:
+Slack config, in precedence order (see ``stan.notify.slack_webhook``):
 
-    slack_webhook_url: "https://hooks.slack.com/services/T.../B.../..."
+    $STAN_SLACK_WEBHOOK
+    slack_webhook_url in ~/STAN/community.yml
+    ~/.stan/slack_webhook
+
     alerts:
       on_qc_fail: true       # alert when a run fails gates
       on_qc_warn: false      # alert on warnings too
+
+This module owns the *QC gate* path only — one message per failing run,
+fired inline with acquisition. Instrument faults (over-pressure, clogs,
+Compass errors) are `stan.reports.instrument_watch`, which is scheduled and
+deduplicated. Both post through `stan.notify` so there is one webhook
+resolution and one place a secret could leak from.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import subprocess
 import threading
-import urllib.error
-import urllib.request
 
 from stan.gating.evaluator import GateDecision, GateResult
 
@@ -27,33 +33,26 @@ logger = logging.getLogger(__name__)
 
 
 def _get_slack_webhook() -> str | None:
-    """Load Slack webhook URL from community.yml."""
-    try:
-        from stan.config import load_community
-        comm = load_community()
-        url = comm.get("slack_webhook_url", "")
-        if url and url.startswith("https://hooks.slack.com"):
-            return url
-    except Exception:
-        pass
-    return None
+    """Load the Slack webhook URL. See ``stan.notify.slack_webhook``."""
+    from stan.notify import slack_webhook
+
+    return slack_webhook()
 
 
 def _post_to_slack_async(webhook: str, payload: dict) -> None:
-    """Fire-and-forget POST to Slack webhook."""
-    def _send():
-        try:
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                webhook,
-                data=data,
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=10):
-                pass
-        except Exception:
-            logger.debug("Slack webhook failed", exc_info=True)
-    thread = threading.Thread(target=_send, daemon=True, name="stan-slack-alert")
+    """Fire-and-forget POST to a Slack webhook.
+
+    Async here, unlike the scheduled watcher, because this runs inline with
+    acquisition: a QC alert must never make the watcher wait on Slack. The
+    tradeoff is that success is unobservable, which is fine when the same
+    condition will be re-evaluated on the next run.
+    """
+    from stan.notify import post_slack
+
+    thread = threading.Thread(
+        target=lambda: post_slack(payload, webhook),
+        daemon=True, name="stan-slack-alert",
+    )
     thread.start()
 
 

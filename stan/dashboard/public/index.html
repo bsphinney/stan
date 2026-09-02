@@ -4396,6 +4396,10 @@
       const [notes, setNotes] = useState('');
       const [operator, setOperator] = useState('');
       const [firstRun, setFirstRun] = useState('');
+      const [columnId, setColumnId] = useState('');
+      const [colLot, setColLot] = useState('');
+      const [colOtherVendor, setColOtherVendor] = useState('');
+      const [colOtherModel, setColOtherModel] = useState('');
       const [share, setShare] = useState(false);
       const [busy, setBusy] = useState(false);
       const [status, setStatus] = useState(null);   // {kind:'ok'|'err'|'auth', msg, loginUrl}
@@ -4406,6 +4410,13 @@
 
       const isDowntime = eventType === 'downtime';
       const isColumnChange = eventType === 'column_change';
+      /* Catalogue of columns the lab installs, from config/columns.yml.
+         Empty list is fine and expected for an uncatalogued lab -- the
+         'Other' branch keeps the form usable either way. */
+      const { data: colCat } = useFetch('/api/columns', []);
+      const catalogue = (colCat && colCat.columns) || [];
+      const pickedCol = catalogue.find(c => c.id === columnId) || null;
+      const colIsOther = columnId === '__other__';
       const readonly = !!(sync && sync.readonly);
 
       const inputStyle = {
@@ -4434,6 +4445,17 @@
           notes,
           operator,
           first_run: isColumnChange ? (firstRun || null) : null,
+          /* Vendor/model come from the catalogue so the same column is spelled
+             the same way every time -- per-column history and the expected
+             pressure-per-flow table both key on it. Serial carries the LOT,
+             which differs between two columns of the same part number. */
+          column_vendor: isColumnChange
+            ? (colIsOther ? (colOtherVendor || null) : (pickedCol ? pickedCol.vendor : null))
+            : null,
+          column_model: isColumnChange
+            ? (colIsOther ? (colOtherModel || null) : (pickedCol ? pickedCol.model : null))
+            : null,
+          column_serial: isColumnChange ? (colLot || null) : null,
           share_community: share,
         };
         try {
@@ -4567,6 +4589,45 @@
                   actual 2026-07-31) depending on the window extracted, so the
                   operator naming the first run is what makes column age and
                   wear trustworthy rather than merely plausible. */}
+              {isColumnChange && (
+                <div style={{display:'flex', gap:'0.4rem', flexWrap:'wrap', marginBottom:'0.5rem'}}>
+                  <div style={{flex:'2 1 240px'}}>
+                    <label style={labelStyle}>Column installed</label>
+                    <select value={columnId} onChange={e => setColumnId(e.target.value)}
+                            style={inputStyle}>
+                      <option value="">— pick a column —</option>
+                      {catalogue.map(c => (
+                        <option key={c.id} value={c.id}>
+                          {[c.vendor, c.model].filter(Boolean).join(' · ')}
+                        </option>
+                      ))}
+                      <option value="__other__">Other (type it below)</option>
+                    </select>
+                    <div style={{fontSize:'0.68rem', color:'var(--muted)', marginTop:'0.15rem'}}>
+                      Add new columns to <code>config/columns.yml</code> — hot-reloaded, no deploy.
+                    </div>
+                  </div>
+                  <div style={{flex:'1 1 140px'}}>
+                    <label style={labelStyle}>LOT / serial</label>
+                    <input value={colLot} onChange={e => setColLot(e.target.value)}
+                           placeholder="e.g. 0000507372" style={inputStyle} />
+                  </div>
+                </div>
+              )}
+              {isColumnChange && colIsOther && (
+                <div style={{display:'flex', gap:'0.4rem', flexWrap:'wrap', marginBottom:'0.5rem'}}>
+                  <div style={{flex:'1 1 140px'}}>
+                    <label style={labelStyle}>Vendor</label>
+                    <input value={colOtherVendor} onChange={e => setColOtherVendor(e.target.value)}
+                           placeholder="e.g. IonOpticks" style={inputStyle} />
+                  </div>
+                  <div style={{flex:'2 1 200px'}}>
+                    <label style={labelStyle}>Model</label>
+                    <input value={colOtherModel} onChange={e => setColOtherModel(e.target.value)}
+                           placeholder="e.g. Aurora 25cm x 75um, 1.6um" style={inputStyle} />
+                  </div>
+                </div>
+              )}
               {isColumnChange && (
                 <div style={{marginBottom:'0.5rem'}}>
                   <label style={labelStyle}>First run on the new column</label>

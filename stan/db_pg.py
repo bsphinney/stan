@@ -112,6 +112,36 @@ def _mint_jwt(secret: str) -> str:
     return token
 
 
+def _token_candidates() -> list[Path]:
+    """Where a PG Farm credential file may live on this host.
+
+    The same shared volume is mounted at different paths on Hive and on a
+    Mac, so try both rather than making every Mac-side caller export
+    STAN_PGFARM_TOKEN_FILE by hand.
+    """
+    override = os.environ.get("STAN_PGFARM_TOKEN_FILE")
+    if override:
+        return [Path(override)]
+    return [
+        Path("/quobyte/proteomics-grp/brett/.pgfarm_token"),
+        Path("/Volumes/proteomics-grp/brett/.pgfarm_token"),
+    ]
+
+
+def pg_configured() -> bool:
+    """True when this host has a PG Farm credential to try at all.
+
+    Env/file check only — deliberately does NOT call
+    ``_resolve_pgpassword``, which mints a JWT over the network when the
+    stored credential is the long-lived secret. ``stan doctor`` runs on
+    instrument PCs that have never heard of PG Farm, and answering "no PG
+    here" must not cost a network round-trip.
+    """
+    if os.environ.get("PGPASSWORD", "").strip():
+        return True
+    return any(p.exists() for p in _token_candidates())
+
+
 def _resolve_pgpassword() -> str:
     """Find the PG Farm password, $PGPASSWORD first then the token file.
 
@@ -132,14 +162,7 @@ def _resolve_pgpassword() -> str:
     pwd = os.environ.get("PGPASSWORD", "").strip()
     if pwd:
         return pwd if _is_jwt(pwd) else _mint_jwt(pwd)
-    # The same shared volume is mounted at different paths on Hive and on a
-    # Mac, so try both rather than making every Mac-side caller export
-    # STAN_PGFARM_TOKEN_FILE by hand.
-    override = os.environ.get("STAN_PGFARM_TOKEN_FILE")
-    candidates = [Path(override)] if override else [
-        Path("/quobyte/proteomics-grp/brett/.pgfarm_token"),
-        Path("/Volumes/proteomics-grp/brett/.pgfarm_token"),
-    ]
+    candidates = _token_candidates()
     for token_file in candidates:
         if not token_file.exists():
             continue
@@ -159,6 +182,51 @@ def _resolve_pgpassword() -> str:
 _CACHED_CONN = None
 
 
+def _warn_if_left_in_transaction(conn) -> bool:
+    """Log when the cached connection comes back still inside a transaction.
+
+    That state means the previous caller ran statements on ``_connect()``
+    *outside* a ``with`` block: psycopg2's context-manager exit is the only
+    thing that ends a transaction here, and nothing else does.
+
+    It is not a cosmetic problem. On 2026-09-02 ``pull_from_pg`` did exactly
+    this in the dashboard process and left one read transaction open for 19
+    minutes. It held AccessShareLock on every table it had touched, including
+    ``maintenance_events``; the ``ALTER TABLE`` behind it queued an
+    AccessExclusiveLock, and a *queued* exclusive lock blocks every NEW
+    reader as well — so the migration stalled and the maintenance calendar
+    went dark with it. The same open snapshot also pins VACUUM's cleanup
+    horizon, which bloats tables quietly for as long as it lasts.
+
+    Deliberately warn-only. Rolling back here would be wrong the moment a
+    caller nests: an inner ``_connect()`` hands back this same cached
+    connection, and the rollback would silently discard the outer caller's
+    work. No such nesting exists today (every other call site is
+    ``with _connect() as pg, pg.cursor() as cur``), and turning this into a
+    silent data-loss trap for whoever writes the first one is not worth the
+    auto-heal. The real backstops are the fixed call sites and the
+    role-level ``idle_in_transaction_session_timeout``
+    (migrations/2026-09-02_idle_in_transaction_timeout.sql).
+
+    Returns True when a leaked transaction was detected, for tests.
+    """
+    try:
+        from psycopg2.extensions import TRANSACTION_STATUS_IDLE
+        status = conn.info.transaction_status
+    except Exception:  # noqa: BLE001 - diagnostics must never break a connect
+        return False
+    if status == TRANSACTION_STATUS_IDLE:
+        return False
+    logger.warning(
+        "PG Farm connection handed back inside a transaction "
+        "(transaction_status=%s). A caller ran statements on _connect() "
+        "outside a `with` block; it is holding read locks and pinning "
+        "VACUUM until something commits. This is what blocks migrations.",
+        status,
+    )
+    return True
+
+
 def _connect():
     """Return a cached PG Farm connection, opening one if needed.
 
@@ -170,6 +238,11 @@ def _connect():
     does NOT close the connection, so callers can keep using the
     context-manager pattern.
 
+    That last sentence is also the trap: a caller that runs statements
+    *without* a ``with`` block leaves the transaction open on the shared
+    cached connection forever. Always use
+    ``with _connect() as pg, pg.cursor() as cur:``.
+
     Reconnects if the cached connection has been closed by the server
     (idle timeout, network blip).
     """
@@ -178,6 +251,7 @@ def _connect():
 
     if _CACHED_CONN is not None:
         try:
+            _warn_if_left_in_transaction(_CACHED_CONN)
             with _CACHED_CONN.cursor() as c:
                 c.execute("SELECT 1")
             return _CACHED_CONN
@@ -250,6 +324,67 @@ def _connect_with_retry():
             time.sleep(delay)
     assert last is not None
     raise last
+
+
+# How long a session may sit "idle in transaction" before STAN calls it a
+# leak rather than a slow moment. Everything STAN does legitimately is one
+# statement plus a commit, or a read whose slow half (writing the SQLite
+# mirror) now happens outside the transaction — seconds, not minutes. Two
+# minutes is comfortably above that and well below the 5-minute role-level
+# termination threshold in
+# migrations/2026-09-02_idle_in_transaction_timeout.sql, so `stan doctor`
+# names the offender before PG kills it and the evidence disappears.
+IDLE_TX_WARN_SECONDS = 120
+
+
+def idle_in_transaction_sessions(
+    min_seconds: int = IDLE_TX_WARN_SECONDS,
+) -> list[dict]:
+    """PG Farm sessions parked ``idle in transaction`` for too long.
+
+    A session in this state is not running anything, but it still holds
+    every lock its transaction took. That is invisible until a migration
+    blocks on it — which is how the 2026-09-02 incident was found, 25
+    minutes in, by hand. One query turns that into a five-second check.
+
+    Reads ``pg_stat_activity``, which only shows another role's ``query``
+    text to a superuser: run as the service account (STAN and FRAN both
+    connect as it) this sees the sessions that actually matter. Returns
+    ``[]`` — never raises — when the view is unreadable, so a diagnostic
+    can call it unconditionally.
+    """
+    rows: list[tuple] = []
+    try:
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                "SELECT pid, state, coalesce(application_name, ''), "
+                "       extract(epoch FROM (now() - xact_start))::int, "
+                "       extract(epoch FROM (now() - state_change))::int, "
+                "       left(coalesce(query, ''), 120) "
+                "  FROM pg_stat_activity "
+                " WHERE datname = current_database() "
+                "   AND pid <> pg_backend_pid() "
+                "   AND state IN ('idle in transaction', "
+                "                 'idle in transaction (aborted)') "
+                "   AND xact_start < now() - make_interval(secs => %s) "
+                " ORDER BY xact_start",
+                (int(min_seconds),),
+            )
+            rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001 - a diagnostic must not raise
+        logger.debug("idle-in-transaction probe failed: %s", e)
+        return []
+    return [
+        {
+            "pid": r[0],
+            "state": r[1],
+            "application_name": r[2],
+            "xact_age_s": int(r[3] or 0),
+            "idle_s": int(r[4] or 0),
+            "last_query": (r[5] or "").strip(),
+        }
+        for r in rows
+    ]
 
 
 def update_peg_result_pg(

@@ -1,0 +1,46 @@
+# LC column catalogue — populates the "Column installed" dropdown on a
+# column_change maintenance entry.
+#
+# WHY THIS FILE EXISTS. Column vendor/model used to be free text, typed
+# differently every time ("Aurora 25cm", "aurora 25", "IonOpticks Aurora"),
+# which makes per-column history impossible to group and makes an expected
+# pressure-per-flow table impossible to key on. A short catalogue of what the
+# lab actually installs turns that into a choice.
+#
+# TO ADD A COLUMN: copy a block, keep `id` unique and stable (it is what gets
+# stored, so changing an existing id orphans the history that references it).
+# The file is hot-reloaded — no restart, no deploy. Anything not listed can
+# still be entered: the form has an "Other" option with free-text fields.
+#
+# Dimensions are optional but worth filling in: backpressure through a packed
+# bed goes as (length x flow) / (particle diameter^2 x bore area), so with them
+# STAN can say whether a measured pressure is reasonable FOR THIS COLUMN rather
+# than merely below the pump's 520 bar ceiling.
+
+# Operating conditions the pressure figures assume. Backpressure is directly
+# proportional to mobile-phase viscosity, and viscosity is strongly
+# temperature-dependent (water: 0.89 mPa.s at 25C, 0.50 at 55C), so a pressure
+# expectation without a stated temperature means nothing -- the same healthy
+# column reads roughly twice as high cold as it does at 55C. A column oven that
+# is off or still warming up therefore looks exactly like a partial blockage.
+defaults:
+  # OPERATOR-REPORTED, NOT MEASURED. Brett read this off the Column Toaster's
+  # LED bar on 2026-09-02 ("55C I believe", then "50c I believe"). The two
+  # differ by ~7% in expected pressure, which is well inside the uncertainty
+  # on the packing and viscosity constants -- so it changes no conclusion, but
+  # it does mean this number is remembered rather than known. If the oven
+  # temperature turns out to be recorded per run (HyStarMetadata.xml or the
+  # Compass extract), read it from there and delete this default.
+  oven_c: 50
+  oven_c_source: operator-reported
+  oven_device: "Bruker Column Toaster"
+
+columns:
+  - id: pepsep-max-c18-10cm-150um-1p5um
+    vendor: Bruker PepSep
+    model: PepSep Max C18 10cm x 150um, 1.5um
+    part_number: "1893483"
+    length_cm: 10
+    bore_um: 150
+    particle_um: 1.5
+    notes: "Installed 2026-09-02 (LOT 0000507372) and 2026-07-31."

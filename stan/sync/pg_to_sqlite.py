@@ -40,40 +40,69 @@ def pull_from_pg(db_path: Path | None = None, since: str = "") -> dict:
     init_db(db_path)
 
     pg = _connect()
-    cur = pg.cursor()
     local = connect(db_path)
     written: dict[str, int] = {}
 
     try:
-        sq_cols = [r[1] for r in local.execute("PRAGMA table_info(runs)").fetchall()]
-        cur.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name='runs'"
-        )
-        pg_cols = {r[0] for r in cur.fetchall()}
-        cols = [c for c in sq_cols if c in pg_cols]
-
-        quoted = ", ".join('"' + c + '"' for c in cols)
-        sql = f"SELECT {quoted} FROM runs"
-        params: tuple = ()
-        if since:
-            sql += " WHERE run_date >= %s"
-            params = (since,)
-        cur.execute(sql, params)
-        rows = cur.fetchall()
-        with local:
-            local.executemany(
-                f"INSERT OR REPLACE INTO runs ({', '.join(cols)}) "
-                f"VALUES ({','.join('?' * len(cols))})",
-                [tuple(r) for r in rows],
+        # ``with pg`` is load-bearing, not decoration. ``_connect()`` returns a
+        # module-level cached connection and psycopg2's context-manager exit is
+        # the ONLY thing that ends a transaction on it — it commits/rolls back
+        # but does not close. Until 2026-09-02 this function ran its statements
+        # bare, so the read transaction opened by the first SELECT below stayed
+        # open for the life of the dashboard process, growing with every
+        # five-minute refresh tick. It held AccessShareLock on every table
+        # touched here, ``maintenance_events`` among them; an ``ALTER TABLE``
+        # then queued an AccessExclusiveLock behind it, and a *queued* exclusive
+        # lock blocks new readers too — so the migration hung for 25 minutes and
+        # took the maintenance calendar down with it. The open snapshot also
+        # pinned VACUUM's cleanup horizon the whole time.
+        with pg, pg.cursor() as cur:
+            sq_cols = [
+                r[1] for r in local.execute("PRAGMA table_info(runs)").fetchall()
+            ]
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='runs'"
             )
-        written["runs"] = len(rows)
+            pg_cols = {r[0] for r in cur.fetchall()}
+            cols = [c for c in sq_cols if c in pg_cols]
 
-        written["tic_traces"] = _pull_tic(cur, local, since)
-        written.update(_pull_detail_tables(cur, local))
-        written["feature_clouds"] = _pull_feature_clouds(cur, local)
+            quoted = ", ".join('"' + c + '"' for c in cols)
+            sql = f"SELECT {quoted} FROM runs"
+            params: tuple = ()
+            if since:
+                sql += " WHERE run_date >= %s"
+                params = (since,)
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+            _release(cur)
+            with local:
+                local.executemany(
+                    f"INSERT OR REPLACE INTO runs ({', '.join(cols)}) "
+                    f"VALUES ({','.join('?' * len(cols))})",
+                    [tuple(r) for r in rows],
+                )
+            written["runs"] = len(rows)
+
+            written["tic_traces"] = _pull_tic(cur, local, since)
+            written.update(_pull_detail_tables(cur, local))
+            written["feature_clouds"] = _pull_feature_clouds(cur, local)
     finally:
         local.close()
     return written
+
+
+def _release(cur) -> None:
+    """End the PG read transaction before the slow local write that follows.
+
+    Every SELECT here opens a transaction that holds AccessShareLock on the
+    table until something commits, and the slow half of each phase is the
+    SQLite side — tens of megabytes of feature-cloud JSON on a first sync.
+    There is no reason to hold PG locks (or pin VACUUM's horizon) through it.
+    The mirror is eventually consistent by design, so a per-phase snapshot is
+    exactly as correct as one snapshot for the whole pull.
+    """
+    cur.connection.commit()
 
 
 def _pull_tic(cur, local, since: str = "") -> int:
@@ -92,8 +121,11 @@ def _pull_tic(cur, local, since: str = "") -> int:
         params = (since,)
     cur.execute(sql, params)
 
+    fetched = cur.fetchall()
+    _release(cur)
+
     batch = []
-    for run_id, rt, inten in cur.fetchall():
+    for run_id, rt, inten in fetched:
         if not rt or not inten:
             continue
         # psycopg2 hands JSONB back already decoded; tolerate a str either way.
@@ -154,8 +186,10 @@ def _pull_detail_tables(cur, local) -> dict:
                 continue
             cur.execute(f'SELECT {", ".join(chr(34) + c + chr(34) for c in cols)} FROM {t}')
             rows = cur.fetchall()
+            _release(cur)
         except Exception as e:  # noqa: BLE001 - table absent / not yet migrated
             logger.debug("skipping %s: %s", t, e)
+            cur.connection.rollback()
             continue
         if not rows:
             out[t] = 0
@@ -235,6 +269,7 @@ def _pull_feature_clouds(cur, local) -> int:
                 "ORDER BY created_at DESC NULLS LAST"
             )
         wanted = [k for k in cur.fetchall() if (k[0], k[1]) not in have]
+        _release(cur)
         if not wanted:
             return 0
 
@@ -258,6 +293,7 @@ def _pull_feature_clouds(cur, local) -> int:
                 (tuple((str(a), str(b)) for a, b in chunk),),
             )
             rows = cur.fetchall()
+            _release(cur)
             if not rows:
                 continue
             with local:
@@ -274,4 +310,10 @@ def _pull_feature_clouds(cur, local) -> int:
         # here is a bug that hides itself. The absent-table case already
         # returned above.
         logger.warning("feature_clouds sync failed: %s", e)
+        # Swallowing the error must not also swallow the transaction: leave
+        # the shared connection clean for the next caller rather than aborted.
+        try:
+            cur.connection.rollback()
+        except Exception:  # noqa: BLE001 - connection already gone
+            pass
         return 0
