@@ -1369,3 +1369,63 @@ def get_evosep_column_health_pg() -> dict | None:
             return None
         row = cur.fetchone()
     return row[0] if row else None
+
+
+# ── dispatch attempts ───────────────────────────────────────────────────
+# Moved off the Quobyte SQLite file in v1.0.54. The dispatcher UPSERTs up to
+# 50-60 of these every 5 minutes while SLURM jobs write their own outcomes
+# concurrently; SQLite's locking assumes a POSIX filesystem that Quobyte does
+# not faithfully provide, and the index corruption always landed here. See
+# migrations/2026-09-01_dispatch_attempts_pg.sql.
+
+def record_dispatch_attempt_pg(
+    raw_path: str,
+    status: str,
+    error: str | None = None,
+    error_type: str | None = None,
+    last_run_id: str | None = None,
+    host_origin: str | None = None,
+) -> None:
+    """Record a dispatch outcome. Idempotent on raw_path, bumps attempt_count.
+
+    Mirrors ``stan.db.record_dispatch_attempt``: a re-attempt UPDATEs the row
+    rather than appending, and ``last_run_id`` is only overwritten by a newer
+    non-NULL value so an 'ok' run id survives a later 'failed'.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "INSERT INTO dispatch_attempts"
+            " (raw_path, attempted_at, status, error, error_type,"
+            "  attempt_count, last_run_id, host_origin)"
+            " VALUES (%s, now(), %s, %s, %s, 1, %s, %s)"
+            " ON CONFLICT (raw_path) DO UPDATE SET"
+            "   attempted_at  = now(),"
+            "   status        = excluded.status,"
+            "   error         = excluded.error,"
+            "   error_type    = excluded.error_type,"
+            "   attempt_count = dispatch_attempts.attempt_count + 1,"
+            "   last_run_id   = COALESCE(excluded.last_run_id,"
+            "                            dispatch_attempts.last_run_id)",
+            (raw_path, status, error, error_type, last_run_id, host_origin),
+        )
+        pg.commit()
+
+
+def capped_raws_pg(max_attempts: int) -> set[str]:
+    """Raws that have failed at least ``max_attempts`` times.
+
+    The dispatcher's dedup predicate, identical to the SQLite version it
+    replaces. A missing table means nothing recorded yet -> empty set, so a
+    fresh deployment does not fail closed and skip every file.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        try:
+            cur.execute(
+                "SELECT raw_path FROM dispatch_attempts"
+                " WHERE status = 'failed' AND attempt_count >= %s",
+                (max_attempts,),
+            )
+        except Exception:  # noqa: BLE001 - undefined_table etc.
+            pg.rollback()
+            return set()
+        return {r[0] for r in cur.fetchall()}
