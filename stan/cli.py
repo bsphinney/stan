@@ -7141,7 +7141,7 @@ def time_hive_partitions_cmd(
 
     if raw is None:
         # Pick smallest QC-pattern-matching candidate
-        qc_pat = re.compile(r"(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)")
+        qc_pat = re.compile(r"(?i)(he(l[_\-\s]?[a5\d]|[_\-\s]?\d)|qc|std[_\-\s]?he)")
         candidates: list[tuple[int, Path]] = []
         for child in watch_dir.iterdir():
             if not qc_pat.search(child.name):
@@ -7370,7 +7370,7 @@ def backfill_from_dir_cmd(
         print(f"ERROR: Could not derive vendor/family for {inst_name!r}.")
         raise typer.Exit(1)
 
-    qc_pattern = re.compile(r"(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)")
+    qc_pattern = re.compile(r"(?i)(he(l[_\-\s]?[a5\d]|[_\-\s]?\d)|qc|std[_\-\s]?he)")
     candidates: list[Path] = []
     for child in sorted(src.iterdir()):
         if child.is_dir() and child.suffix.lower() == ".d":

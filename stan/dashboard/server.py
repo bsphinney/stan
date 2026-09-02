@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 import yaml
@@ -1424,6 +1425,105 @@ async def api_ht_submission(
     return result
 
 
+# The HyStar SampleTable format, taken from the Core's exported queues. HyStar
+# fills a fresh plate column-major (A1,B1..H1,A2..); the acquisition software
+# appends _S<tray>-<well>_1_<counter> itself, so the Sample ID stops at the
+# sample name.
+_QUEUE_COLUMNS = [
+    "CheckToRun", "Vial", "Sample ID", "Separation Method", "MS Method",
+    "Status", "Volume [µl]", "Data Path", "Result Path", "Sample Comment",
+    "Start Date", "End Date",
+]
+_QUEUE_SEP_METHOD = r"D:\Methods\EvoSepLCmeth\100spd.m?HyStar_LC"
+_QUEUE_MS_METHOD = (r"D:\Methods\MSmeth\ela\wBPS_11Ian24"
+                    r"\DIA_11x3-k07t13Ra85.m?OtofImpacTEMControl")
+_QUEUE_DATA_PATH = r"D:\Data"
+_QUEUE_RUN_RE = re.compile(
+    r"^(?P<date>\d{8})_(?:(?P<sub>\d{2,4})_)?(?P<method>[^_]+)_"
+    r"(?P<samp>.+?)_S\d+-[A-H]\d{1,2}_\d+_\d+")
+
+
+@app.get("/api/ht/rerun-queue")
+async def api_ht_rerun_queue(
+    request: Request, q: str, instrument: str = "timsTOF HT",
+    token: str | None = None, run_date: str | None = None,
+):
+    """A HyStar SampleTable (.xlsx) for this submission's flagged wells.
+
+    The same list the "Needs re-run" table shows, exported in the format the
+    instrument loads directly -- one row per flagged well, filled onto a fresh
+    plate column-major. Streamed as a download; nothing is written server-side.
+    """
+    import datetime as _dt
+    import io as _io
+    from fastapi.responses import StreamingResponse
+    try:
+        import openpyxl
+        from openpyxl.styles import Font
+    except ImportError:
+        raise HTTPException(status_code=503, detail="xlsx export unavailable")
+
+    from stan.dashboard.auth import is_privileged
+    from stan.dashboard.ht_share import verify_token
+    from stan.db import get_sample_health
+    from stan.metrics.ht_outliers import analyse_submission, parse_well
+
+    q = (q or "").strip()
+    if len(q) < 2:
+        raise HTTPException(status_code=400, detail="submission too short")
+    shared = bool(token) and verify_token(q, token)
+    if is_readonly() and not shared and not is_privileged(request):
+        raise HTTPException(status_code=403, detail="sign-in or share link required")
+
+    all_rows = get_sample_health(limit=20000) or []
+    inst = (instrument or "").strip().lower()
+    qc_rows = [r for r in (get_sample_health(limit=20000) or [])
+               if not inst or inst in str(r.get("instrument") or "").lower()]
+    result = analyse_submission(q, all_rows, qc_rows)
+    flagged = [r for r in result.get("needs_rerun", [])
+               if parse_well(r.get("run_name"))]
+    flagged.sort(key=lambda r: (lambda w: (w["plate"], w["row"], w["col"]))(
+        parse_well(r["run_name"])))
+
+    rd = (run_date or _dt.date.today().strftime("%Y%m%d"))
+    rows = ROWS = "ABCDEFGH"
+    slots = [f"S1-{r}{c}" for c in range(1, 13) for r in rows]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "SampleTable"
+    ws.append(_QUEUE_COLUMNS)
+    for i, r in enumerate(flagged):
+        if i >= len(slots):
+            break
+        name = r.get("run_name") or ""
+        m = _QUEUE_RUN_RE.match(name)
+        if m:
+            sub = m.group("sub") or (str(int(q)) if q.isdigit() else q)
+            sid = f"{rd}_{sub}_{m.group('method')}_{m.group('samp')}"
+        else:
+            sid = name.removesuffix(".d")
+        w = parse_well(name)
+        ws.append(["True", slots[i], sid, _QUEUE_SEP_METHOD, _QUEUE_MS_METHOD,
+                   None, 0, _QUEUE_DATA_PATH, None,
+                   f"rerun of {w['plate']}-{w['row']}{w['col']}", None, None])
+    f = Font(name="Tahoma", size=10)
+    for row in ws.iter_rows():
+        for c in row:
+            c.font = f
+    for col, width in (("C", 32.86), ("D", 33.57), ("E", 67.71), ("F", 23.71)):
+        ws.column_dimensions[col].width = width
+
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"rerun_queue_{(q or 'submission')}_{rd}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
 @app.get("/api/ht/fran-link")
 async def api_ht_fran_link(q: str) -> dict:
     """Where this submission lives in FRAN.
@@ -1513,6 +1613,45 @@ async def api_maintenance_calendar(days: int = 90) -> dict:
     out.sort(key=lambda e: str(e.get("event_date") or ""), reverse=True)
     return {"days": days, "events": out,
             "downtime_types": sorted(DOWNTIME_EVENT_TYPES)}
+
+
+@app.get("/api/maintenance/bruker")
+async def api_maintenance_bruker() -> dict:
+    """Bruker timsTOF acquisition-history maintenance signals.
+
+    A read-only summary extracted from the instrument's Compass Server
+    PostgreSQL BACKUP by the Hive-side extractor (never the live DB, no
+    password). On the hosted dashboard the document arrives through PG Farm
+    (the extractor upserts it there); a local install falls back to the JSON
+    cache the extractor writes into the STAN config dir, exactly where
+    thresholds.yml and ui_prefs.yml are found.
+
+    Responds 404 when nothing has been produced yet -- the panel treats that
+    as "the extractor hasn't run" and hides itself, like the ui_prefs.yml 404
+    path.
+    """
+    from stan.db_pg import get_bruker_maintenance_pg, use_pg
+    if use_pg():
+        try:
+            doc = get_bruker_maintenance_pg()
+        except Exception as exc:  # noqa: BLE001 - fall through to the file cache
+            logger.warning("Bruker maintenance PG read failed: %s", exc)
+            doc = None
+        if doc:
+            return doc
+    try:
+        path = resolve_config_path("bruker_maintenance.json")
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail="Bruker maintenance data not found (extractor has not run)",
+        )
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError) as exc:
+        logger.warning("Bruker maintenance cache unreadable: %s", exc)
+        raise HTTPException(status_code=503, detail="Bruker maintenance cache unreadable")
 
 
 @app.get("/api/instruments/{instrument}/column-life")

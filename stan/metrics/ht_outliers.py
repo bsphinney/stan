@@ -279,8 +279,12 @@ def plate_map(rows: list[dict], metric: str = "ms1_total_tic") -> dict:
         # Sample wells only. Standards carry precursor counts, which are
         # orders of magnitude away from a TIC, so including them would make
         # the colour scale useless and the edge comparison meaningless.
+        # Blanks and washes are excluded for the mirror-image reason: they are
+        # meant to be empty, so they drag the low end of the scale down and
+        # bias the edge medians toward wherever the washes happen to sit.
         sample_wells = [w for w in p["wells"].values()
-                        if w.get("kind") != "qc" and w["value"] is not None]
+                        if w.get("kind") not in ("qc", "control")
+                        and w["value"] is not None]
         vals = [w["value"] for w in sample_wells]
         edge = [w["value"] for w in sample_wells if w["is_edge"]]
         inner = [w["value"] for w in sample_wells if not w["is_edge"]]
@@ -459,10 +463,19 @@ def analyse_submission(
     """
     # Whole submission, including trays that continue the queue without
     # naming it (see expand_submission_runs).
-    samples = [dict(r) for r in expand_submission_runs(q, health_rows)]
+    expanded = [dict(r) for r in expand_submission_runs(q, health_rows)]
+    # Controls are held out of the cohort entirely rather than filtered off the
+    # rerun list afterwards: they skew the median and MAD every other sample is
+    # judged against. They still reach the plate map, just never flagged.
+    controls = [r for r in expanded if is_control_run(r.get("run_name"))]
+    samples = [r for r in expanded if not is_control_run(r.get("run_name"))]
     for r in samples:
         r["kind"] = "sample"
+    for r in controls:
+        r["kind"] = "control"
+        r["is_outlier"] = False
     samples.sort(key=lambda r: str(r.get("run_name") or ""))
+    controls.sort(key=lambda r: str(r.get("run_name") or ""))
 
     standards = [dict(r) for r in expand_submission_runs(q, qc_rows or [])]
     for r in standards:
@@ -486,8 +499,13 @@ def analyse_submission(
         part = find_outliers(plate_rows)
         scored.extend(part["rows"])
         cohort_ok = cohort_ok or part["cohort_ok"]
-        for metric, st in part["stats"].items():
-            stats.setdefault(f"{plate_name}:{metric}" if plate_name else metric, st)
+        # NOT `for metric, ...`: that rebinds the `metric` PARAMETER, and the
+        # plate_map() call below then colours by whichever metric came last
+        # out of this dict rather than the one the caller asked for. The
+        # "Colour samples by" dropdown looked inert because every selection
+        # was silently discarded here.
+        for mkey, st in part["stats"].items():
+            stats.setdefault(f"{plate_name}:{mkey}" if plate_name else mkey, st)
 
     needs = [r for r in scored if r.get("is_outlier")]
     result = {
@@ -501,10 +519,15 @@ def analyse_submission(
         "needs_rerun": needs,
         "n_needs_rerun": len(needs),
     }
-    result["plate"] = plate_map(result["rows"] + standards, metric=metric)
-    result["queue"] = queue_series(result["rows"] + standards)
+    # Controls rejoin here so the plate still draws every well it ran, and the
+    # queue still shows where the washes fell — they are simply never scored.
+    result["plate"] = plate_map(result["rows"] + controls + standards,
+                                metric=metric)
+    result["queue"] = queue_series(result["rows"] + controls + standards)
     result["standards"] = standards
     result["n_standards"] = len(standards)
+    result["controls"] = controls
+    result["n_controls"] = len(controls)
     result["query"] = q
     result["n_samples"] = len(samples)
     result["min_effect"] = MIN_EFFECT
@@ -530,6 +553,24 @@ _NOT_A_SUBMISSION = frozenset({
     "HEL", "HELA", "HE", "HELA50", "BLANK", "BLANKDIA", "BLANKDDA",
     "WASH", "QC", "STD", "BSA",
 })
+
+#: A blank or wash is SUPPOSED to be empty. Scoring one against the sample
+#: cohort flags it for being exactly what it is meant to be, and re-running it
+#: buys nothing -- 0793 put four blanks on an 11-entry rerun list. Worse, they
+#: sat in the cohort the median and MAD are computed from: plate S5 carried 16
+#: blanks among 94 "samples", so a sixth of the distribution was near-zero
+#: signal, dragging the median down and widening the spread that real failures
+#: have to clear. Excluding them both cleans the list and makes the remaining
+#: samples easier to judge.
+#:
+#: (A blank carrying real signal is carryover -- a genuine finding, but a
+#: different report, and not one another injection would fix.)
+_CONTROL_RUN = re.compile(r"(?i)(blank|wash)")
+
+
+def is_control_run(run_name: str) -> bool:
+    """True for a blank or wash — a control well, not a customer sample."""
+    return _CONTROL_RUN.search(str(run_name or "")) is not None
 
 
 def submission_key(run_name: str) -> str | None:

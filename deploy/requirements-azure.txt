@@ -7,3 +7,4 @@ pyyaml
 polars
 requests
 huggingface_hub
+openpyxl

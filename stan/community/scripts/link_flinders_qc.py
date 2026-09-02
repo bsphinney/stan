@@ -63,7 +63,7 @@ logger = logging.getLogger(__name__)
 try:  # pragma: no cover - import shim for standalone Hive runs
     from stan.community.scripts.dispatch_hive import DEFAULT_QC_PATTERN
 except Exception:  # noqa: BLE001 - intentional: run before stan is updated
-    DEFAULT_QC_PATTERN = r"(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)"
+    DEFAULT_QC_PATTERN = r"(?i)(he(l[_\-\s]?[a5\d]|[_\-\s]?\d)|qc|std[_\-\s]?he)"
 
 # Flinders archive source per instrument family. Stable layout; the
 # destination watch_dir is read from dispatch.yml so it can't drift.

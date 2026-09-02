@@ -11,6 +11,76 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.52] — 2026-09-01
+
+### Added
+- **Export sample queue** and a **re-run plate map** in the HT tab's "Needs
+  re-run" section. The new `/api/ht/rerun-queue` endpoint streams a HyStar
+  SampleTable `.xlsx` of the flagged wells — the format the instrument loads
+  directly to re-inject — filled column-major onto a fresh plate, matching the
+  Core's exported-queue format. Beside it, a compact SVG plate map lights the
+  flagged wells so their layout (clustered = plate/prep, scattered = sample) is
+  visible at a glance. Adds `openpyxl` to the hosted requirements.
+
+---
+
+## [1.0.51] — 2026-09-01
+
+### Added
+- **Bruker acquisition-health panel on the Maintenance tab.** A new
+  `/api/maintenance/bruker` endpoint plus a `BrukerAcquisitionPanel` React
+  component surface maintenance signals extracted from the timsTOF's Compass
+  Server database: acquisition throughput over time, duty cycle, a 96-well plate
+  map, the failure taxonomy, and method usage. The data comes from a Hive-side
+  extractor that reads Bruker's own nightly BACKUP (never the live DB, no
+  password); the endpoint reads it from PG Farm when present, else the JSON
+  cache in the config dir. Read-only throughout. The panel hides itself when no
+  data has been produced yet.
+- Notably, the failure taxonomy identified that submission 0793's two empty
+  wells (COH-46, COH-48) failed with "Evosep One: No Evotip was present" — a
+  consumables miss, not an instrument fault — and that this is the single most
+  common failure mode on the instrument.
+
+---
+
+## [1.0.50] — 2026-09-01
+
+### Fixed
+- **The "Colour samples by" dropdown never did anything.** The stats loop in
+  `analyse_submission` used `metric` as its loop variable, shadowing the
+  function parameter of the same name, so `plate_map()` always received
+  whichever key came last out of the stats dict — `n_ms2_frames`. Confirmed
+  against the live API: requesting `ms1_total_tic` returned
+  `plate.metric = n_ms2_frames`.
+- **The dropdown's option values could not resolve.** `stats` keys are
+  plate-scoped (`S5:n_ms2_frames`) because outliers are scored per plate, but a
+  well is coloured with a bare `r.get(metric)`. The prefixed key asked for a
+  column no run carries, and left `<select>` with no option matching the metric
+  in use — so it displayed the first option regardless, which is why the control
+  read "MS1 max intensity" while the legend said `n_ms2_frames`.
+- **Half the HeLa standards were never searched.** The QC filename pattern
+  required a digit immediately after `hel`, so `Hel50` (plate S6) matched and
+  `Hel-50` (plate S5) did not. The S5 standards went to the monitor pipeline,
+  arrived with no precursor counts, and the plate reported "0 HeLa standards"
+  while drawing them as ordinary samples. A separator now may precede the
+  digits. The pattern is duplicated in six files plus `dispatch.yml` and the
+  Hive fork; all were updated together.
+- **Blanks and washes are no longer scored as samples.** A blank is meant to be
+  empty, so judging it against the sample cohort flagged it for being exactly
+  that — submission 0793 put four blanks on an 11-entry rerun list. They also
+  sat in the cohort the median and MAD derive from (16 of S5's 94 "samples"),
+  dragging the median down and widening the spread a real failure must clear.
+  Now held out of scoring, the colour scale and the edge comparison; still drawn
+  on the plate map and the queue chart, just never flagged. Detection is more
+  sensitive as a result.
+
+### Note
+Versions 1.0.44, 1.0.45 and 1.0.49 have no entries here. 1.0.44 is the build
+currently deployed, so the running version is not described by this changelog;
+`GET /api/version` is the reliable way to ask what is live.
+
+---
+
 ## [1.0.48] — 2026-08-31
 
 ### Added

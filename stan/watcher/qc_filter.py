@@ -23,21 +23,31 @@ logger = logging.getLogger(__name__)
 
 # Default QC filename patterns (case-insensitive).
 #
-# `he(l[a5\d]|\d)` matches:
+# `he(l[_\-\s]?[a5\d]|[_\-\s]?\d)` matches:
 #   he + l + a    → "HeLa", "Hela", "HELA"
 #   he + l + 5    → "HeL5", legacy variant
 #   he + l + \d   → "HeL50", "HeL3hr", any digit after "HeL"
 #   he + \d       → "HE50", "He5", "He125ng" — the lab abbreviation
 #                   added 2026-04-21 after Brett's lab started using it.
+#   an optional _ - or space before that digit → "Hel-50", "Hel_50",
+#                   added 2026-09-01. Submission 0793 named its S6
+#                   standards "Hel50" and its S5 standards "Hel-50";
+#                   only the first spelling matched, so half the
+#                   standards were silently routed to the monitor
+#                   pipeline, never searched, and showed up on the
+#                   plate map as ordinary samples with no precursor
+#                   counts. A separator must not change a run's class.
 #
-# Crucially does NOT match plain "hel" with non-digit/a follow-up, so
+# Crucially does NOT match plain "hel" with a letter follow-up, so
 # "helper", "spentHeLtip", "HelPER" stay non-QC. Likewise "head" /
-# "heart" / "heat" stay non-QC because `he\d` requires a digit, not a
-# letter, after the "he".
+# "heart" / "heat" stay non-QC because the digit branch requires a
+# digit, not a letter, after the "he". The separator is optional and
+# never stands alone: "he-llo" still does not match, because `-` must
+# be followed by a digit.
 #
 # `qc` matches any token like "QC", "qc", "QCex".
 # `std[_\-\s]?he` matches "Std_He", "std-he", "STD HELA", etc.
-DEFAULT_QC_PATTERN = r"(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)"
+DEFAULT_QC_PATTERN = r"(?i)(he(l[_\-\s]?[a5\d]|[_\-\s]?\d)|qc|std[_\-\s]?he)"
 
 
 def compile_qc_pattern(pattern: str | None = None) -> re.Pattern:
