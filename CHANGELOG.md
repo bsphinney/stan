@@ -11,6 +11,22 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.68] — 2026-09-03
+
+### Changed
+- **The column these figures describe is now a banner, not a caption.** Every
+  absolute number on the Evosep panel — baseline, expected pressure, headroom
+  to the 520 bar limit, the 77% replacement line — is a property of *one*
+  column type. Read against a different column they are simply wrong, and a
+  small line of grey text is too quiet to prevent that. It now sits above the
+  tiles with the column name, model and LOT.
+
+  When no column is recorded on the current change the banner turns amber and
+  says so, rather than staying silent. Silence reads as "these apply to any
+  column", which is the failure this exists to prevent.
+
+---
+
 ## [1.0.67] — 2026-09-03
 
 ### Changed

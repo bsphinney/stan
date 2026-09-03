@@ -5808,17 +5808,51 @@ function BFailTable({ rows }) {
             {' '}Extracted {evFmtDate(d.generated_at)}.
           </div>
 
-          {/* Name the column these numbers describe, or say plainly that it is
-              unrecorded -- silence reads as "these apply to any column". */}
-          <div style={{ fontSize: '0.78rem', marginBottom: '0.5rem',
-                        color: colLabel ? 'var(--muted)' : 'var(--warn)' }}>
-            {colLabel
-              ? <>Figures below are for <b style={{ color: 'var(--text)' }}>{colLabel}</b>
-                  {col.column_serial ? ` (LOT ${col.column_serial})` : ''} — a different
-                  column type has different baselines.</>
-              : <>No column recorded for the current change, so these absolute pressures
-                  cannot be attributed to a column type. Log the column on the
-                  maintenance entry to fix this.</>}
+          {/* WHICH COLUMN, stated prominently. Every absolute figure on this
+              panel -- baseline, expected pressure, headroom to 520 bar, the
+              77 % replacement line -- is a property of ONE column type. Read
+              against a different column they are simply wrong, and a caption
+              is too quiet to prevent that. So it gets a banner, and an
+              unrecorded column gets the same banner in warning colour rather
+              than silence, which reads as "these apply to anything". */}
+          <div style={{
+                 display: 'flex', alignItems: 'center', gap: '0.6rem',
+                 padding: '0.55rem 0.75rem', marginBottom: '0.75rem',
+                 borderRadius: '0.4rem',
+                 border: `1px solid ${colLabel ? 'var(--border)' : 'var(--warn)'}`,
+                 background: colLabel ? 'var(--bg)' : 'rgba(234,179,8,0.08)',
+                 borderLeft: `4px solid ${colLabel ? 'var(--accent, #60a5fa)' : 'var(--warn)'}`,
+               }}>
+            <span style={{ fontSize: '1.1rem', lineHeight: 1 }}>{colLabel ? '\u{1F9EA}' : '\u26A0'}</span>
+            <div style={{ minWidth: 0 }}>
+              {colLabel ? (
+                <>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text)' }}>
+                    {colLabel}
+                    {col.column_serial && (
+                      <span style={{ fontWeight: 400, color: 'var(--muted)', fontSize: '0.82rem' }}>
+                        {`  \u00B7  LOT ${col.column_serial}`}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--muted)' }}>
+                    Every pressure figure on this panel belongs to this column type.
+                    A different column has different baselines.
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--warn)' }}>
+                    Column not recorded
+                  </div>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--muted)' }}>
+                    These pressures cannot be attributed to a column type, and a different
+                    column has different baselines. Pick the column on the next
+                    <b> Column change </b> entry to fix it.
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
           {/* ── Current column state ── */}
