@@ -5117,29 +5117,34 @@ function BFailTable({ rows }) {
       const pad = Math.max(4, (hi - lo) * 0.12);
       const yLo = lo - pad, yHi = hi + pad;
 
-      /* PIECEWISE X AXIS, at Brett's request. The right half of the panel is
-         the last 30 days; everything older is compressed into the left half.
-         Three years on a linear axis makes a month a few pixels wide, and the
-         month is what an operator is actually looking at.
-         The cost is real and is why the break is drawn and labelled: SLOPE IS
-         NOT COMPARABLE ACROSS THE DIVIDER. A line rising at 1 bar/day looks
-         far steeper on the compressed side. The per-method "trend" figure in
-         the header is computed from the data, not read off this axis, so it
-         stays correct.
-         The split is skipped when the window is short enough that it would
-         buy nothing (or when there is no data older than the cut), in which
-         case this degrades to the ordinary linear mapping. */
-      const RECENT_DAYS = 30;
-      const tSplit = t1 - RECENT_DAYS * 86400000;
+      /* LOG-AGE X AXIS. Position is set by log(1 + days before the newest run),
+         reversed so now sits at the right edge. This gives the recent past most
+         of the panel without the discontinuity a piecewise split introduces.
+         Over a three-year record the shares come out as:
+             last 24 h  10 %   last 7 d  30 %   last 30 d  49 %
+             last 90 d  64 %   last 1 y  84 %
+         so the last month gets about half the panel and the first two years
+         share the remaining sixth.
+         Why this rather than a hard break: a split axis has a point where
+         slope jumps, and a jump on a pressure chart reads as an event. A log
+         axis compresses smoothly, so nothing looks like it happened at the
+         seam. Slope is still not uniform across the panel -- it cannot be if
+         recent time is magnified -- which is what the age ticks below are for:
+         they make the compression visible instead of implicit. The per-method
+         trend in each header is computed from the data, never measured off
+         this axis. */
+      const DAY = 86400000;
+      const ageDays = t => Math.max(0, (t1 - t) / DAY);
+      const maxAge = Math.max(1, ageDays(t0));
+      const lmax = Math.log1p(maxAge);
       const plotW = W - PADL - PADR;
-      const splitOK = tSplit > t0 && (t1 - t0) > 45 * 86400000;
-      const MID = PADL + plotW * 0.5;
-      const X = t => {
-        if (!splitOK) return PADL + ((t - t0) / ((t1 - t0) || 1)) * plotW;
-        if (t <= tSplit) return PADL + ((t - t0) / ((tSplit - t0) || 1)) * (MID - PADL);
-        return MID + ((t - tSplit) / ((t1 - tSplit) || 1)) * (W - PADR - MID);
-      };
-      const Y = v => PADT + (1 - (v - yLo) / ((yHi - yLo) || 1)) * (H - PADT - PADB);
+      const X = t => PADL + (1 - Math.log1p(ageDays(t)) / lmax) * plotW;
+
+      /* Ticks at ages a person thinks in, not at even pixel spacing. */
+      const AGE_TICKS = [
+        [0, 'now'], [7, '7d'], [30, '30d'], [90, '90d'],
+        [182, '6mo'], [365, '1y'], [730, '2y'], [1095, '3y'],
+      ].filter(([d]) => d <= maxAge * 0.98);
 
       const path = series
         .map((p, i) => `${i ? 'L' : 'M'}${X(times[i]).toFixed(1)},${Y(p.plateau_bar).toFixed(1)}`)
@@ -5187,21 +5192,24 @@ function BFailTable({ rows }) {
                     fill={hue} opacity="0.10" />
             )}
 
-            {/* The break. Drawn solid and labelled so nobody reads a slope
-                across it, and so the compressed side is obviously compressed. */}
-            {splitOK && (
-              <g>
-                <line x1={MID} y1={PADT} x2={MID} y2={H - PADB}
-                      stroke="var(--warn)" strokeWidth="1.4" />
-                <text x={MID + 4} y={PADT + 9} fontSize="8.5" fill="var(--warn)">
-                  last 30 days &#8594;
-                </text>
-                <text x={MID - 4} y={PADT + 9} fontSize="8.5" fill="var(--muted)"
-                      textAnchor="end">
-                  &#8592; earlier, compressed
-                </text>
-              </g>
-            )}
+            {/* Age ruler. Uneven spacing IS the message: it shows at a glance
+                how much of the panel each period occupies. The 30-day mark is
+                emphasised because that is the window under discussion. */}
+            {AGE_TICKS.map(([dAgo, lab]) => {
+              const x = X(t1 - dAgo * DAY);
+              const is30 = dAgo === 30;
+              return (
+                <g key={lab}>
+                  <line x1={x} y1={PADT} x2={x} y2={H - PADB}
+                        stroke={is30 ? 'var(--warn)' : 'var(--border)'}
+                        strokeWidth={is30 ? 1.3 : 1}
+                        strokeDasharray={is30 ? '' : '2 4'}
+                        opacity={is30 ? 0.9 : 0.45} />
+                  <text x={x} y={H - PADB + 10} fontSize="8" textAnchor="middle"
+                        fill={is30 ? 'var(--warn)' : 'var(--muted)'}>{lab}</text>
+                </g>
+              );
+            })}
             {drops.map((s, i) => {
               const x = X(new Date(s.at).getTime());
               return (
@@ -5956,10 +5964,11 @@ function BFailTable({ rows }) {
             ±10 % of the running baseline; dashed rules are sustained baseline drops
             (a wash, a new column); rings are flagged runs.
             <br />
-            <b style={{ color: 'var(--warn)' }}>The time axis is split:</b> the right half is
-            the last 30 days, everything older is compressed into the left half. Slopes are
-            therefore <b>not</b> comparable across the marked break — the per-method trend in
-            each header is computed from the data, not measured off this axis.
+            <b style={{ color: 'var(--warn)' }}>The time axis is logarithmic in age:</b> the
+            last 30 days take about half the width and older history compresses smoothly
+            toward the left. The ticks along the bottom show how much of the panel each
+            period occupies. Slope is therefore magnified on the right — the per-method trend
+            in each header is computed from the data, not measured off this axis.
           </div>
           {analytical.map((ms, i) => (
             <EvBaselineChart key={ms.method} method={ms.method} ms={ms}

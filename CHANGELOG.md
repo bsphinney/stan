@@ -11,6 +11,27 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.71] — 2026-09-03
+
+### Changed
+- **The backpressure time axis is now logarithmic in age** rather than split in
+  half. Brett's suggestion, and better than the piecewise version it replaces:
+  a split axis has a point where slope jumps, and a jump on a pressure chart
+  reads as an event. A log axis compresses smoothly, so nothing looks like it
+  happened at the seam.
+
+  It also lands where the split was aiming, without the seam. Over a three-year
+  record: **last 24 h 10%, last 7 days 30%, last 30 days 49%, last 90 days 64%,
+  last year 84%** of the panel width.
+
+  Age ticks (`now · 7d · 30d · 90d · 6mo · 1y · 2y · 3y`) run along the bottom
+  with the 30-day mark emphasised. Their uneven spacing is the point — it makes
+  the compression visible rather than implicit. Slope is still magnified toward
+  the right, which is unavoidable if recent time is enlarged; the per-method
+  trend in each header is computed from the data, never measured off the axis.
+
+---
+
 ## [1.0.70] — 2026-09-03
 
 ### Changed
