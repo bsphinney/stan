@@ -11,6 +11,29 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.72] — 2026-09-03
+
+### Added
+- **`instrument/` — the instrument-side tooling is now in version control.**
+  `extract_evosep.py` (~156 KB, 97 tests), the Bruker Compass extract and its
+  SQL, both crons, and the Windows-side collectors had been running production
+  jobs on Hive from a scratch directory and a copy on the Quobyte share, with
+  no history, no review and no way to revert. Generated artefacts are excluded
+  — the JSON documents, HTML previews and a 291 KB schema dump are regenerated
+  nightly and do not belong in git.
+
+  The README records the two traps that cost real time: the **deployed copy is
+  on the share, not a checkout**, so a change made only in git does not run;
+  and **the extract does not publish**, so a correct file on disk while PG
+  serves yesterday's document is indistinguishable from a fix that failed.
+
+### Note
+- This closes a gap that had been widening for two days. Everything in that
+  directory was written, deployed and depended on before any of it was
+  recorded anywhere durable.
+
+---
+
 ## [1.0.71] — 2026-09-03
 
 ### Changed
