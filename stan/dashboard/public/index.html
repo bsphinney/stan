@@ -5117,7 +5117,28 @@ function BFailTable({ rows }) {
       const pad = Math.max(4, (hi - lo) * 0.12);
       const yLo = lo - pad, yHi = hi + pad;
 
-      const X = t => PADL + ((t - t0) / ((t1 - t0) || 1)) * (W - PADL - PADR);
+      /* PIECEWISE X AXIS, at Brett's request. The right half of the panel is
+         the last 30 days; everything older is compressed into the left half.
+         Three years on a linear axis makes a month a few pixels wide, and the
+         month is what an operator is actually looking at.
+         The cost is real and is why the break is drawn and labelled: SLOPE IS
+         NOT COMPARABLE ACROSS THE DIVIDER. A line rising at 1 bar/day looks
+         far steeper on the compressed side. The per-method "trend" figure in
+         the header is computed from the data, not read off this axis, so it
+         stays correct.
+         The split is skipped when the window is short enough that it would
+         buy nothing (or when there is no data older than the cut), in which
+         case this degrades to the ordinary linear mapping. */
+      const RECENT_DAYS = 30;
+      const tSplit = t1 - RECENT_DAYS * 86400000;
+      const plotW = W - PADL - PADR;
+      const splitOK = tSplit > t0 && (t1 - t0) > 45 * 86400000;
+      const MID = PADL + plotW * 0.5;
+      const X = t => {
+        if (!splitOK) return PADL + ((t - t0) / ((t1 - t0) || 1)) * plotW;
+        if (t <= tSplit) return PADL + ((t - t0) / ((tSplit - t0) || 1)) * (MID - PADL);
+        return MID + ((t - tSplit) / ((t1 - tSplit) || 1)) * (W - PADR - MID);
+      };
       const Y = v => PADT + (1 - (v - yLo) / ((yHi - yLo) || 1)) * (H - PADT - PADB);
 
       const path = series
@@ -5166,6 +5187,21 @@ function BFailTable({ rows }) {
                     fill={hue} opacity="0.10" />
             )}
 
+            {/* The break. Drawn solid and labelled so nobody reads a slope
+                across it, and so the compressed side is obviously compressed. */}
+            {splitOK && (
+              <g>
+                <line x1={MID} y1={PADT} x2={MID} y2={H - PADB}
+                      stroke="var(--warn)" strokeWidth="1.4" />
+                <text x={MID + 4} y={PADT + 9} fontSize="8.5" fill="var(--warn)">
+                  last 30 days &#8594;
+                </text>
+                <text x={MID - 4} y={PADT + 9} fontSize="8.5" fill="var(--muted)"
+                      textAnchor="end">
+                  &#8592; earlier, compressed
+                </text>
+              </g>
+            )}
             {drops.map((s, i) => {
               const x = X(new Date(s.at).getTime());
               return (
@@ -5919,6 +5955,11 @@ function BFailTable({ rows }) {
             run at different pressures, so a shared axis would compare nothing. The band is
             ±10 % of the running baseline; dashed rules are sustained baseline drops
             (a wash, a new column); rings are flagged runs.
+            <br />
+            <b style={{ color: 'var(--warn)' }}>The time axis is split:</b> the right half is
+            the last 30 days, everything older is compressed into the left half. Slopes are
+            therefore <b>not</b> comparable across the marked break — the per-method trend in
+            each header is computed from the data, not measured off this axis.
           </div>
           {analytical.map((ms, i) => (
             <EvBaselineChart key={ms.method} method={ms.method} ms={ms}

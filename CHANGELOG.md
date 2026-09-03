@@ -11,6 +11,26 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.70] — 2026-09-03
+
+### Changed
+- **The backpressure charts use a split time axis.** The right half is the last
+  30 days; everything older is compressed into the left half, with the break
+  drawn and labelled. Three years on a linear axis makes a month a few pixels
+  wide, and the month is what an operator is actually looking at.
+
+  The cost is stated rather than hidden: **slope is not comparable across the
+  break** — a line rising 1 bar/day looks far steeper on the compressed side.
+  That is why the divider is solid and labelled on both sides, and why the
+  caption says so. The per-method trend figure in each header is computed from
+  the data rather than read off the axis, so it stays correct either way.
+
+  The split is skipped when the visible window is under 45 days or when no data
+  predates the cut, degrading to an ordinary linear axis rather than drawing a
+  meaningless divider.
+
+---
+
 ## [1.0.69] — 2026-09-03
 
 ### Added
