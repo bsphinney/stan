@@ -11,6 +11,49 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.73] — 2026-09-03
+
+### Fixed
+- **The Maintenance tab was blank.** A `useFetch` added to
+  `EvosepColumnPanel` in v1.0.69 sat *below* the component's early return, so
+  React saw a different number of hooks depending on whether the document had
+  loaded. The whole tab rendered as a React error. My mistake, and the second
+  time in two edits — the `useState` above it was placed correctly for exactly
+  this reason.
+
+  Neither the 800-test Python suite nor the JSX parser could catch it: the
+  suite never renders the dashboard, and hook ordering is a *runtime* rule, not
+  a syntax one. The file parses perfectly. A comment now sits above the hook
+  block saying every hook must stay above the early return, and why.
+
+### Security
+- **`/api/maintenance/evosep` was serving customer sample identifiers to
+  anonymous callers.** `PROT_0793`, 45 full acquisition names such as
+  `20260828_100spd_COH-48_S5-H6_1_24180.d`, and 100 plate wells — attached to
+  `sample_impact`, i.e. to an assertion that those samples fouled a column.
+
+  `readonly.py` already gates `/api/ht` for precisely this reason: *"keyed by a
+  customer's submission number and carries their sample names … a different
+  kind of information from 'this instrument identified 30,000 precursors on a
+  HeLa standard'."* The column-health document grew the same content later and
+  landed on an ungated route.
+
+  Identifying fields (`run_name`, `file`, `well`, `submission`, `sample`,
+  `vial`) are now stripped for callers without a signed-in principal, along
+  with `by_submission` — which exists solely to attribute fouling to a named
+  customer — and free-text `notes`. Both the PG and file-cache paths are
+  covered, so a local install is not the hole the hosted one just closed.
+  Everything quantitative is kept: the pressures, lifetimes and wear curves are
+  the point of the panel and are not sensitive.
+
+  Redacted per-field rather than gating the document whole, because
+  `readonly.py` warns that per-field gating fails silently —
+  `test_evosep_public_payload_carries_no_identifiers` therefore re-runs the
+  same pattern audit that found the leak, so a new field carrying an identifier
+  fails loudly.
+
+---
+
 ## [1.0.72] — 2026-09-03
 
 ### Added

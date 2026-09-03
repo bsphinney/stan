@@ -350,6 +350,14 @@ from stan.dashboard.readonly import install_readonly_gate, is_readonly  # noqa: 
 
 install_readonly_gate(app)
 
+# The `/stan` Slack slash command. A public POST whose authentication is a
+# Slack request signature rather than Easy Auth, so it is allow-listed in
+# readonly.py -- see the note there for why that is not a widening of the
+# write surface. Every security check lives in the module; this only mounts it.
+from stan.dashboard.slack_command import router as _slack_router  # noqa: E402
+
+app.include_router(_slack_router)
+
 
 @app.get("/api/capabilities")
 async def api_capabilities() -> dict:
@@ -1764,8 +1772,74 @@ async def api_maintenance_bruker() -> dict:
         raise HTTPException(status_code=503, detail="Bruker maintenance cache unreadable")
 
 
+#: Fields in the Evosep document that identify a customer's material: the
+#: acquisition name (which carries sample names like `COH-48` and `SI-1`), the
+#: plate well, and the submission number. readonly.py already gates `/api/ht`
+#: for exactly this reason -- "keyed by a customer's submission number and
+#: carries their sample names ... which is a different kind of information from
+#: 'this instrument identified 30,000 precursors on a HeLa standard'". The
+#: column-health document grew the same content later and reached an ungated
+#: route, so on 2026-09-03 `PROT_0793` and 45 acquisition names were readable
+#: by anyone with curl, attached to an assertion that they fouled a column.
+#:
+#: Redacted per-field rather than gating the whole document, because the
+#: pressures, column lifetimes and wear curves are genuinely not sensitive and
+#: are the point of the panel. readonly.py warns that per-field gating fails
+#: silently -- so `test_evosep_public_payload_carries_no_identifiers` re-runs
+#: the same pattern audit that found this, and fails loudly if a new field ever
+#: reintroduces one.
+_EVOSEP_IDENTIFYING_FIELDS = ("run_name", "run", "file", "well", "submission",
+                              "sample", "acquisition", "vial")
+
+
+def _maybe_redact_evosep(doc: dict, request) -> dict:
+    """Full document for a signed-in operator, redacted for everyone else.
+
+    Not gated on `is_readonly()`: a local install with no auth at all should
+    still not hand sample names to whoever can reach the port. Signed in means
+    Easy Auth gave us a principal; absent that we assume a stranger.
+    """
+    from stan.dashboard.auth import caller_email
+    try:
+        if caller_email(request):
+            return doc
+    except Exception:  # noqa: BLE001 - a broken principal is not a licence
+        logger.debug("caller_email failed; redacting", exc_info=True)
+    return _redact_evosep_document(doc)
+
+
+def _redact_evosep_document(doc: dict) -> dict:
+    """Strip customer-identifying fields from the column-health document.
+
+    Everything quantitative is kept; only the fields that say *whose* sample it
+    was are removed, plus `by_submission`, which exists solely to attribute
+    fouling to a named submission and has no non-identifying form.
+    """
+    import copy
+
+    def scrub(node):
+        if isinstance(node, dict):
+            return {k: scrub(v) for k, v in node.items()
+                    if k not in _EVOSEP_IDENTIFYING_FIELDS}
+        if isinstance(node, list):
+            return [scrub(v) for v in node]
+        return node
+
+    out = copy.deepcopy(doc)
+    si = out.get("sample_impact")
+    if isinstance(si, dict):
+        si.pop("by_submission", None)
+    # Notes are free text an operator typed; they can name anything.
+    for ev in (out.get("column_events_logged") or []):
+        if isinstance(ev, dict):
+            ev.pop("notes", None)
+    out = scrub(out)
+    out["_redacted"] = "sample and submission identifiers removed; sign in to see them"
+    return out
+
+
 @app.get("/api/maintenance/evosep")
-async def api_maintenance_evosep() -> dict:
+async def api_maintenance_evosep(request: Request) -> dict:
     """Evosep One column-health / clog early-warning signals.
 
     The Evosep writes a full pressure time-series for every procedure it runs.
@@ -1790,7 +1864,7 @@ async def api_maintenance_evosep() -> dict:
             logger.warning("Evosep column health PG read failed: %s", exc)
             doc = None
         if doc:
-            return doc
+            return _maybe_redact_evosep(doc, request)
     try:
         path = resolve_config_path("evosep_column_health.json")
     except FileNotFoundError:
@@ -1800,7 +1874,7 @@ async def api_maintenance_evosep() -> dict:
         )
     try:
         with open(path) as f:
-            return json.load(f)
+            return _maybe_redact_evosep(json.load(f), request)
     except (OSError, ValueError) as exc:
         logger.warning("Evosep column health cache unreadable: %s", exc)
         raise HTTPException(

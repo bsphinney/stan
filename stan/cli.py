@@ -106,6 +106,44 @@ def doctor() -> None:
         emit(f"  {pkg:<20} {pkg_version(pkg)}")
     emit("")
 
+    # Slack alerting. Reported here because the failure mode it prevents is
+    # silence: a token lacking `reactions:read` looks perfectly healthy right
+    # up until the night an acknowledgement goes unnoticed, and an unset
+    # webhook is indistinguishable from a working one. Prints no credential.
+    emit("[bold]Slack alerting[/bold]")
+    emit("-" * 70)
+    try:
+        from stan import slack_api
+        from stan.notify import slack_configured
+
+        emit(f"  webhook              "
+             f"{'configured' if slack_configured() else 'NOT configured'}")
+        auth = slack_api.auth_check()
+        if not auth["configured"]:
+            emit("  bot token            not configured "
+                 "(threading + acknowledgement unavailable)")
+        elif not auth["valid"]:
+            emit(f"  bot token            [red]INVALID[/red] - {auth['error']}")
+        else:
+            emit(f"  bot token            valid "
+                 f"(team={auth['team']}, bot={auth['user']})")
+            if auth["scopes"]:
+                emit(f"  scopes granted       {', '.join(auth['scopes'])}")
+            if auth["missing_scopes"]:
+                emit(f"  [red]MISSING SCOPES       "
+                     f"{', '.join(auth['missing_scopes'])} - re-install the "
+                     f"app with these[/red]")
+        if auth["configured"] and not auth["channel"]:
+            emit("  [yellow]channel              NOT set - threading is off. "
+                 "chat.postMessage needs a channel id; a webhook has one baked "
+                 "in, a bot token does not. Set slack_channel in "
+                 "community.yml.[/yellow]")
+        elif auth["channel"]:
+            emit(f"  channel              {auth['channel']}")
+    except Exception as e:  # noqa: BLE001 — a diagnostic must never crash
+        emit(f"  (Slack check failed: {type(e).__name__})")
+    emit("")
+
     emit("[bold]Critical compat checks[/bold]")
     emit("-" * 70)
     numpy_ver = pkg_version("numpy")

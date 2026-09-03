@@ -169,18 +169,33 @@ def test_arcade_score_is_accepted_without_login(readonly_client):
 
 
 def test_public_write_list_stays_narrow():
-    """Guard against widening the public hole beyond the arcade score.
+    """Guard against widening the public hole. Deliberately an EXACT match, so
+    adding a path trips this test and forces the reasoning to be written down.
 
-    Anything touching QC data, instruments or config must stay behind the
+    Members, and why each is allowed:
+
+    * ``/api/arcade/score`` -- a game score. No lab data, no instrument
+      control, length-bounded and range-checked at the endpoint.
+    * ``/api/slack/command`` (2026-09-03) -- the `/stan` slash command. A POST
+      only because that is how Slack delivers one; the handler writes nothing.
+      Nor is it really unauthenticated: it carries an HMAC-SHA256 over the
+      exact request bytes under a shared secret, inside a five-minute replay
+      window, from a pinned workspace -- a stronger proof than the browser
+      session Easy Auth would have supplied. And it discloses nothing new,
+      reformatting the document ``/api/maintenance/evosep`` already serves
+      anonymously, minus the identifying parts.
+
+    Anything that WRITES QC data, instruments or config must stay behind the
     gate no matter how convenient it would be to open.
     """
     import importlib
 
     import stan.dashboard.readonly as ro
     importlib.reload(ro)
-    assert ro._PUBLIC_WRITE_PATHS == {"/api/arcade/score"}
-    assert "/api/fleet/command" not in ro._PUBLIC_WRITE_PATHS
-    assert "/api/community/sync" not in ro._PUBLIC_WRITE_PATHS
+    assert ro._PUBLIC_WRITE_PATHS == {"/api/arcade/score", "/api/slack/command"}
+    for never in ("/api/fleet/command", "/api/community/sync",
+                  "/api/instruments", "/api/thresholds"):
+        assert never not in ro._PUBLIC_WRITE_PATHS, never
 
 
 @pytest.fixture

@@ -260,6 +260,12 @@ class Alert:
     of one clog share a key and produce one message. ``signature`` is the
     coarse state of that condition; a change re-alerts even inside the
     cool-off. ``cool_off_hours`` of None means a one-shot point event.
+
+    ``thread_key`` names the *incident* this belongs to, which is not always
+    its own condition: the over-pressure events and the named sample from one
+    clog episode all carry the clog's key, so they land as replies under it
+    instead of as three separate lines in the channel. None means "no
+    conversation" — batched with the other unthreaded alerts, as before.
     """
 
     key: str
@@ -272,6 +278,7 @@ class Alert:
     cool_off_hours: float | None = None
     at: str | None = None              # ISO timestamp of the event, if any
     extra: dict = field(default_factory=dict)
+    thread_key: str | None = None      # incident this belongs to
 
 
 _SEVERITY_ICON = {"critical": ":red_circle:", "warning": ":large_orange_diamond:",
@@ -322,6 +329,23 @@ def render_alerts(alerts: list[Alert]) -> tuple[str, list[dict]]:
 # ── dedup state ──────────────────────────────────────────────────
 
 
+#: Reserved keys inside the `detail` jsonb. Thread and acknowledgement state
+#: live there rather than in new columns, because `detail` exists precisely so
+#: this can evolve without DDL -- the original migration says so -- and because
+#: the JSON file fallback then needs no separate shape. The leading underscore
+#: keeps them clear of anything an alert puts in `extra`.
+_THREAD = "_thread"
+_ACK = "_ack"
+#: The same two, spelled without the underscore in the file backend, where
+#: they are ordinary nested dicts rather than jsonb paths.
+_FILE_FIELD = {_THREAD: "thread", _ACK: "ack"}
+
+#: Reactions that count as "a human has seen this". Deliberately a short list:
+#: an ack silences repetition, so a reaction people use casually would silence
+#: alerts by accident.
+ACK_EMOJI = ("white_check_mark", "heavy_check_mark", "eyes")
+
+
 def _state_path() -> Path:
     override = (os.environ.get("STAN_ALERT_STATE") or "").strip()
     if override:
@@ -352,7 +376,8 @@ class AlertStore:
         with _connect() as pg, pg.cursor() as cur:
             try:
                 cur.execute(
-                    "SELECT last_sent, signature FROM alert_state WHERE alert_key = %s",
+                    "SELECT last_sent, signature, kind, detail"
+                    " FROM alert_state WHERE alert_key = %s",
                     (key,))
             except Exception:  # noqa: BLE001 — undefined_table -> not migrated yet
                 pg.rollback()
@@ -360,12 +385,20 @@ class AlertStore:
             row = cur.fetchone()
         if not row:
             return None
+        detail = row[3] or {}
         return {"last_sent": row[0].isoformat() if row[0] else None,
-                "signature": row[1] or ""}
+                "signature": row[1] or "",
+                "kind": row[2],
+                "thread": detail.get(_THREAD) or None,
+                "ack": detail.get(_ACK) or None}
 
     def _pg_put(self, alert: Alert, now: datetime) -> None:
         from stan.db_pg import _connect
 
+        # `detail` is MERGED, not replaced. Thread and acknowledgement live in
+        # the same jsonb (see _THREAD/_ACK), and a plain overwrite would drop
+        # the thread id on the next update -- turning every reply back into a
+        # new channel message, silently.
         with _connect() as pg, pg.cursor() as cur:
             cur.execute(
                 "INSERT INTO alert_state"
@@ -376,10 +409,38 @@ class AlertStore:
                 "  last_sent = excluded.last_sent,"
                 "  n_sent = alert_state.n_sent + 1,"
                 "  signature = excluded.signature,"
-                "  detail = excluded.detail",
+                "  detail = COALESCE(alert_state.detail, '{}'::jsonb)"
+                "           || excluded.detail",
                 (alert.key, now, now, alert.signature, alert.kind,
                  alert.instrument, json.dumps(alert.extra)))
             pg.commit()
+
+    def _pg_merge_detail(self, key: str, patch: dict, kind: str | None) -> None:
+        """Merge a patch into one row's `detail`, creating the row if needed."""
+        from stan.db_pg import _connect
+
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                "INSERT INTO alert_state (alert_key, kind, detail)"
+                " VALUES (%s, %s, %s)"
+                " ON CONFLICT (alert_key) DO UPDATE SET"
+                "  detail = COALESCE(alert_state.detail, '{}'::jsonb)"
+                "           || excluded.detail",
+                (key, kind, json.dumps(patch)))
+            pg.commit()
+
+    def _pg_open_threads(self) -> list[dict]:
+        from stan.db_pg import _connect
+
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(
+                "SELECT alert_key, kind, detail FROM alert_state"
+                " WHERE detail -> %s ->> 'ts' IS NOT NULL"
+                "   AND detail -> %s ->> 'closed_at' IS NULL",
+                (_THREAD, _THREAD))
+            rows = cur.fetchall()
+        return [{"key": r[0], "kind": (r[2] or {}).get(_THREAD, {}).get("kind") or r[1],
+                 "thread": (r[2] or {}).get(_THREAD) or {}} for r in rows]
 
     def _file(self) -> dict:
         if self._file_cache is None:
@@ -428,12 +489,72 @@ class AlertStore:
                 logger.info("could not record alert_state in PG; using the file "
                             "fallback", exc_info=True)
                 self._use_pg = False
-        self._file()[alert.key] = {
+        row = dict(self._file().get(alert.key) or {})
+        row.update({
             "last_sent": now.isoformat(timespec="seconds"),
             "signature": alert.signature,
             "kind": alert.kind,
-        }
+        })
+        self._file()[alert.key] = row      # keeps `thread` / `ack`
         self._file_flush()
+
+    def _merge(self, key: str, field: str, patch: dict,
+               kind: str | None = None) -> None:
+        """Attach thread or acknowledgement state to a key. Never raises."""
+        if self._use_pg:
+            try:
+                self._pg_merge_detail(key, {field: patch}, kind)
+                return
+            except Exception:
+                logger.info("could not merge %s into alert_state in PG; using "
+                            "the file fallback", field, exc_info=True)
+                self._use_pg = False
+        row = dict(self._file().get(key) or {})
+        existing = dict(row.get(_FILE_FIELD[field]) or {})
+        existing.update(patch)
+        row[_FILE_FIELD[field]] = existing
+        if kind and not row.get("kind"):
+            row["kind"] = kind
+        self._file()[key] = row
+        self._file_flush()
+
+    def set_thread(self, key: str, channel: str, ts: str, kind: str,
+                   now: datetime | None = None) -> None:
+        """Remember the message that opened this incident's thread."""
+        now = now or datetime.now(timezone.utc)
+        self._merge(key, _THREAD, {"channel": channel, "ts": ts, "kind": kind,
+                                   "opened_at": now.isoformat(timespec="seconds")},
+                    kind=kind)
+
+    def close_thread(self, key: str, now: datetime | None = None) -> None:
+        """Mark an incident finished, so its thread is not re-closed."""
+        now = now or datetime.now(timezone.utc)
+        self._merge(key, _THREAD,
+                    {"closed_at": now.isoformat(timespec="seconds")})
+
+    def set_ack(self, key: str, by: str | None, emoji: str,
+                now: datetime | None = None) -> None:
+        """Record that a human reacted to this incident's parent message."""
+        now = now or datetime.now(timezone.utc)
+        self._merge(key, _ACK, {"by": by, "emoji": emoji,
+                                "at": now.isoformat(timespec="seconds")})
+
+    def open_threads(self) -> list[dict]:
+        """Incidents with a thread that has not been closed off."""
+        if self._use_pg:
+            try:
+                return self._pg_open_threads()
+            except Exception:
+                logger.info("could not list open threads in PG; using the file "
+                            "fallback", exc_info=True)
+                self._use_pg = False
+        out = []
+        for key, row in (self._file() or {}).items():
+            th = (row or {}).get("thread") or {}
+            if th.get("ts") and not th.get("closed_at"):
+                out.append({"key": key, "kind": th.get("kind") or row.get("kind"),
+                            "thread": th})
+        return out
 
     def flush(self) -> None:
         if not self._use_pg:
@@ -466,6 +587,12 @@ def should_send(alert: Alert, previous: dict | None,
 
     Everything else is ``suppressed``. A point event — one aborted run, one
     missing Evotip — has no cool-off and so is only ever sent once.
+
+    An **acknowledgement suppresses repetition, never escalation.** Somebody
+    reacting to the alert means they have seen it, which is not the same as it
+    being fixed — so the cool-off stops nagging them, while a genuine change
+    of state still speaks. That ordering is the whole point: the escalation
+    check runs first and returns before the ack is ever consulted.
     """
     if previous is None:
         return True, "new"
@@ -475,6 +602,12 @@ def should_send(alert: Alert, previous: dict | None,
 
     if alert.cool_off_hours is None:
         return False, "suppressed"
+
+    # Reached only for an unchanged standing condition, i.e. exactly the
+    # repetition an acknowledgement is meant to stop. Escalation returned two
+    # branches ago and never gets here.
+    if (previous.get("ack") or {}).get("at"):
+        return False, "acknowledged"
 
     now = now or datetime.now(timezone.utc)
     last = _parse(previous.get("last_sent"))
@@ -511,16 +644,120 @@ def collapse(alerts: list[Alert]) -> list[Alert]:
     return out
 
 
+def poll_acks(store: AlertStore, now: datetime | None = None) -> list[dict]:
+    """Look for a human reacting to any open incident. Never raises.
+
+    This is the whole reason the ack is a *poll* rather than an events
+    endpoint: it rides the 30-minute tick that already exists, needs no public
+    route into the lab, and its worst failure is a late acknowledgement.
+
+    A reactions read that fails returns None from the transport and is skipped,
+    NOT treated as "no reactions" -- the distinction matters only in one
+    direction, but it is the safe one: a blip must never look like an ack and
+    silence a live alert.
+    """
+    from stan import slack_api
+
+    now = now or datetime.now(timezone.utc)
+    found: list[dict] = []
+    if not slack_api.threading_available():
+        return found
+    try:
+        open_threads = store.open_threads()
+    except Exception:  # noqa: BLE001
+        logger.warning("could not list open threads for the ack poll",
+                       exc_info=True)
+        return found
+
+    for t in open_threads:
+        th = t.get("thread") or {}
+        ch, ts = th.get("channel"), th.get("ts")
+        if not ch or not ts:
+            continue
+        reactions = slack_api.get_reactions(ch, ts)
+        if reactions is None:
+            continue                      # could not tell; try again next tick
+        for r in reactions:
+            if r.get("name") not in ACK_EMOJI:
+                continue
+            who = (r.get("users") or [None])[0]
+            store.set_ack(t["key"], who, r.get("name"), now=now)
+            found.append({"key": t["key"], "emoji": r.get("name"), "by": who})
+            break
+    return found
+
+
+def close_finished_threads(store: AlertStore, live_keys: set[str],
+                           now: datetime | None = None) -> list[str]:
+    """Reply "this appears to be over" under incidents that have stopped.
+
+    An episode that simply stops is exactly what leaves somebody wondering
+    whether it was fixed or whether the watcher died, so silence is the wrong
+    ending. Only standing conditions are closed: a point event was never an
+    ongoing situation to begin with.
+
+    The caller must only pass ``live_keys`` from a document that actually
+    loaded. If an extract fails, every key vanishes and closing on that would
+    announce that everything resolved at the moment we stopped being able to
+    see anything.
+    """
+    from stan import slack_api
+
+    now = now or datetime.now(timezone.utc)
+    closed: list[str] = []
+    if not slack_api.threading_available():
+        return closed
+    try:
+        open_threads = store.open_threads()
+    except Exception:  # noqa: BLE001
+        logger.warning("could not list open threads to close", exc_info=True)
+        return closed
+
+    for t in open_threads:
+        if t["key"] in live_keys or t.get("kind") not in _STANDING_KINDS:
+            continue
+        th = t.get("thread") or {}
+        if not th.get("ts"):
+            continue
+        posted = slack_api.post_message(
+            f":white_check_mark: Resolved — no further flagged runs "
+            f"({t['key'].split(':')[0]}).",
+            [{"type": "section", "text": {"type": "mrkdwn",
+              "text": ":white_check_mark: *Resolved* — the instrument has "
+                      "stopped producing flagged runs for this condition.\n"
+                      "_Closed automatically because the condition went quiet, "
+                      "not because anyone confirmed a fix._"}}],
+            thread_ts=th["ts"])
+        if posted:
+            store.close_thread(t["key"], now=now)
+            closed.append(t["key"])
+    store.flush()
+    return closed
+
+
+#: Conditions that can meaningfully "end" and so deserve a closing reply.
+#: A point event -- one aborted run -- was never ongoing.
+_STANDING_KINDS = ("clog", "pressure_rising", "column_worn")
+
+
+def _thread_group(a: Alert) -> str | None:
+    return a.thread_key or None
+
+
 def notify(alerts: list[Alert], store: AlertStore | None = None,
            dry_run: bool = False, now: datetime | None = None) -> dict:
-    """Send whatever is news out of ``alerts``, as ONE Slack message.
+    """Send whatever is news, threaded by incident where possible.
 
-    Batching is the point: a plate that goes wrong tends to go wrong in
-    several ways at once, and three pings for one incident trains the reader
-    to swipe them away.
+    With a bot token, the first alert of an incident opens a thread and every
+    later development replies under it: the channel gets one line, the thread
+    gets the story. Without one, everything falls back to the webhook and a
+    single batched message — which is what another lab running STAN with only
+    a webhook gets permanently, so that path stays first-class.
 
     Never raises. Returns a summary suitable for printing from a cron.
     """
+    from stan import slack_api
+
     now = now or datetime.now(timezone.utc)
     store = store if store is not None else AlertStore()
     alerts = collapse(alerts)
@@ -540,6 +777,7 @@ def notify(alerts: list[Alert], store: AlertStore | None = None,
         else:
             suppressed.append(a.key)
 
+    threaded = slack_api.threading_available()
     result = {
         "n_alerts": len(alerts),
         "n_fresh": len(fresh),
@@ -547,22 +785,63 @@ def notify(alerts: list[Alert], store: AlertStore | None = None,
         "suppressed": suppressed,
         "fresh": [{"key": a.key, "severity": a.severity, "headline": a.headline,
                    "why": a.extra.get("why")} for a in fresh],
-        "slack_configured": slack_configured(),
+        "slack_configured": slack_configured() or threaded,
+        "threaded": threaded,
+        "threads": [],
         "sent": False,
         "dry_run": dry_run,
     }
     if not fresh or dry_run:
         return result
 
-    text, blocks = render_alerts(fresh)
-    if not send_message(text, blocks):
-        # Deliberately do NOT record: an unsent alert must be retried next
-        # tick, not quietly forgotten. Same rule as the HT email watcher.
-        logger.warning("Slack send failed; %d alert(s) will retry", len(fresh))
+    if not threaded:
+        # Webhook path, unchanged: one batched message, no thread, no ack.
+        text, blocks = render_alerts(fresh)
+        if not send_message(text, blocks):
+            # Deliberately do NOT record: an unsent alert must be retried next
+            # tick, not quietly forgotten. Same rule as the HT email watcher.
+            logger.warning("Slack send failed; %d alert(s) will retry", len(fresh))
+            return result
+        result["sent"] = True
+        for a in fresh:
+            store.record(a, now=now)
+        store.flush()
         return result
 
-    result["sent"] = True
+    # Threaded path. Group by incident; alerts with no incident (a Compass
+    # software error, say) are batched together as before under a None group.
+    groups: dict[str | None, list[Alert]] = {}
     for a in fresh:
-        store.record(a, now=now)
+        groups.setdefault(_thread_group(a), []).append(a)
+
+    any_sent = False
+    for gkey, members in groups.items():
+        text, blocks = render_alerts(members)
+        parent_ts = None
+        if gkey:
+            prev = store.last(gkey) or {}
+            parent_ts = ((prev.get("thread") or {}).get("ts")
+                         if not (prev.get("thread") or {}).get("closed_at")
+                         else None)
+        posted = slack_api.post_message(text, blocks, thread_ts=parent_ts)
+        if not posted:
+            logger.warning("Slack send failed for %s; %d alert(s) will retry",
+                           gkey or "(unthreaded)", len(members))
+            continue
+        any_sent = True
+        # The first thing said about an incident opens its thread -- which may
+        # be an over-pressure rather than the clog itself, and that is right:
+        # the thread is the incident, not one condition within it.
+        if gkey and not parent_ts:
+            kind = next((m.kind for m in members if m.kind in _STANDING_KINDS),
+                        members[0].kind)
+            store.set_thread(gkey, posted["channel"], posted["ts"], kind, now=now)
+        result["threads"].append(
+            {"key": gkey, "ts": posted["ts"], "reply": bool(parent_ts),
+             "n": len(members)})
+        for a in members:
+            store.record(a, now=now)
+
+    result["sent"] = any_sent
     store.flush()
     return result

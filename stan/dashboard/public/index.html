@@ -5798,6 +5798,13 @@ function BFailTable({ rows }) {
       /* Default to the current column: with three years on one axis its whole
          life is a few pixels wide, which is the complaint this answers. */
       const [evSpan, setEvSpan] = useState('col');
+      /* ALL HOOKS MUST SIT ABOVE THE EARLY RETURN BELOW. This one was added
+         beneath it in v1.0.69 and took the whole Maintenance tab down: React
+         requires the same hooks in the same order on every render, and this
+         component returns null until the document loads, so the call count
+         changed between renders. The failure is a blank tab with a React
+         minified error, not a build error -- the JSX parses fine. */
+      const { data: colCatP } = useFetch('/api/columns', []);
 
 
       /* Match the Bruker panel: stay invisible until the extractor has produced
@@ -5826,7 +5833,6 @@ function BFailTable({ rows }) {
          years, so "not recorded" was technically true and practically useless.
          What matters is that the panel never presents a DEFAULT as a RECORD --
          the distinction is the whole point of the attribution. */
-      const { data: colCatP } = useFetch('/api/columns', []);
       const defaultCol = (() => {
         const id = colCatP && colCatP.default_column_id;
         if (!id) return null;

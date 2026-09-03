@@ -40,15 +40,31 @@ _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 #: can offer the link rather than leaving a dead end.
 LOGIN_URL = "/.auth/login/aad?post_login_redirect_uri=/"
 
-#: Writes the PUBLIC dashboard accepts with no login at all.
-#: Only the arcade score post. A leaderboard shared across the community and
-#: every local STAN is pointless if only signed-in operators can add to it,
-#: and the payload is a game score -- no lab data, no instrument control. The
-#: fields are length-bounded and range-checked at the endpoint, so the worst
-#: case is a junk high score, which a person can delete.
-#: Nothing that touches QC data, instruments, or config belongs here.
+#: POSTs the PUBLIC dashboard accepts with no Easy Auth sign-in.
+#:
+#: ``/api/arcade/score`` -- a leaderboard shared across the community and every
+#: local STAN is pointless if only signed-in operators can add to it, and the
+#: payload is a game score: no lab data, no instrument control. The fields are
+#: length-bounded and range-checked at the endpoint, so the worst case is a
+#: junk high score, which a person can delete.
+#:
+#: ``/api/slack/command`` (2026-09-03) -- the `/stan` slash command. This one
+#: needs justifying against the rule below, because it does read QC data.
+#:   * It WRITES nothing. It is a POST only because that is how Slack sends a
+#:     slash command; the handler is read-only. This list gates the method,
+#:     not the effect.
+#:   * It is not actually unauthenticated. It carries a stronger proof than a
+#:     signed-in browser session: an HMAC-SHA256 of the exact request bytes
+#:     under a shared secret, inside a five-minute replay window, from a
+#:     pinned workspace. Easy Auth cannot express that, which is why the check
+#:     lives in the endpoint -- exactly like the share-token case above.
+#:   * It discloses nothing new. It reformats the same document
+#:     ``/api/maintenance/evosep`` already serves anonymously, and
+#:     deliberately drops the identifying parts (see slack_command.py).
+#: Nothing that WRITES QC data, instruments, or config belongs here.
 _PUBLIC_WRITE_PATHS = frozenset({
     "/api/arcade/score",
+    "/api/slack/command",
 })
 
 #: The only writes a signed-in operator may perform on the hosted dashboard.

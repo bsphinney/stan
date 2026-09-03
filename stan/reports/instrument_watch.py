@@ -362,6 +362,11 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
 
     for episode in _episodes(recent):
         method = episode[0].get("method") or "?"
+        # Everything this episode produces -- the clog, the over-pressure
+        # events, the aborted run -- is ONE incident, so it all threads under
+        # whichever of them speaks first. The clog key is the natural name for
+        # it: no timestamp, so one episode maps to one thread by construction.
+        incident = f"clog:{station}:{method}"
         last = episode[-1]
         last_at = _parse(last.get("start"))
         at_str = last_at.strftime("%Y-%m-%d %H:%M") if last_at else None
@@ -387,6 +392,7 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
             alerts.append(Alert(
                 key=f"overpressure:{station}:{_bucket(_parse(hit.get('start')))}",
                 kind="overpressure",
+                thread_key=incident,
                 instrument=label,
                 severity="critical",
                 headline=(f"over-pressure, {hit.get('peak_bar'):.0f} bar "
@@ -415,6 +421,7 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
             alerts.append(Alert(
                 key=f"clog:{station}:{method}",
                 kind="clog",
+                thread_key=incident,
                 instrument=label,
                 severity="critical",
                 signature=f"critical:{_band(worst)}",
@@ -448,6 +455,7 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
             alerts.append(Alert(
                 key=f"pressure_rising:{station}:{method}",
                 kind="pressure_rising",
+                thread_key=incident,
                 instrument=label,
                 severity="warning",
                 signature=f"elevated:{_band(worst)}",
@@ -476,6 +484,7 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
                 alerts.append(Alert(
                     key=f"evotip:{station}:{_bucket(f_at)}",
                     kind="evotip",
+                thread_key=incident,
                     instrument=label,
                     severity="warning",
                     headline="Evotip not seated — injection aborted",
@@ -489,6 +498,7 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
                 alerts.append(Alert(
                     key=f"aborted:{station}:{_bucket(f_at)}",
                     kind="aborted",
+                thread_key=incident,
                     instrument=label,
                     severity="warning",
                     headline="run aborted part-way",
@@ -820,7 +830,39 @@ def run_watch(dry_run: bool = False, seed: bool = False,
         return {"seeded": len(alerts), "sent": False, "n_alerts": len(alerts),
                 "evosep_loaded": bool(evosep), "bruker_loaded": bool(bruker)}
 
+    # Acknowledgements are polled BEFORE deciding what to send: a reaction
+    # left five minutes ago should suppress this tick's repetition, not the
+    # next one's.
+    acked: list[dict] = []
+    if not dry_run:
+        from stan.notify import poll_acks
+
+        try:
+            acked = poll_acks(store, now=now)
+        except Exception:  # noqa: BLE001 — a notifier never breaks its caller
+            logger.warning("acknowledgement poll failed", exc_info=True)
+
     result = notify(alerts, store=store, dry_run=dry_run, now=now)
+    result["acknowledged"] = acked
+
+    # Close off incidents that have stopped. Only when the Evosep document
+    # actually loaded: if the extract failed every key would vanish, and
+    # closing on that would announce that everything resolved at the exact
+    # moment we stopped being able to see anything.
+    if evosep and not dry_run:
+        from stan.notify import close_finished_threads
+
+        live = {a.thread_key or a.key for a in alerts}
+        # A standing condition that is live but merely suppressed this tick
+        # must not be closed either: it is quiet, not over. Any method still
+        # producing flagged runs inside the lookback counts as live.
+        live |= {f"clog:{station}:{f.get('method')}"
+                 for f in (evosep.get("flags") or [])}
+        try:
+            result["closed_threads"] = close_finished_threads(store, live, now=now)
+        except Exception:  # noqa: BLE001
+            logger.warning("closing finished threads failed", exc_info=True)
+            result["closed_threads"] = []
 
     # A clog that only ever existed as a Slack message scrolls away. Putting
     # it on the maintenance calendar gives the column-lifetime maths a real
