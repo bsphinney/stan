@@ -1355,7 +1355,8 @@ async def api_columns() -> dict:
         if isinstance(e, dict) and e.get("id"):
             emitters.append({k: e.get(k) for k in
                              ("id", "vendor", "model", "bore_um", "spec", "default")})
-    return {"columns": out, "emitters": emitters}
+    return {"columns": out, "emitters": emitters,
+            "default_column_id": data.get("default_column_id")}
 
 
 @app.get("/api/ui-prefs")

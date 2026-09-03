@@ -5777,9 +5777,23 @@ function BFailTable({ rows }) {
          headroom -- is a property of ONE column type. A different column has a
          different baseline, so an unlabelled panel invites reading these as
          universal. Comes from the logged column_change event. */
-      const colModel = col.column_model || col.model || null;
-      const colVendor = col.column_vendor || col.vendor || null;
-      const colLabel = [colVendor, colModel].filter(Boolean).join(' ');
+      /* Recorded on the event > the lab's standard column > nothing. The
+         middle case is the common one here: this lab has run the same part for
+         years, so "not recorded" was technically true and practically useless.
+         What matters is that the panel never presents a DEFAULT as a RECORD --
+         the distinction is the whole point of the attribution. */
+      const { data: colCatP } = useFetch('/api/columns', []);
+      const defaultCol = (() => {
+        const id = colCatP && colCatP.default_column_id;
+        if (!id) return null;
+        return ((colCatP && colCatP.columns) || []).find(c => c.id === id) || null;
+      })();
+      const recModel = col.column_model || col.model || null;
+      const recVendor = col.column_vendor || col.vendor || null;
+      const recLabel = [recVendor, recModel].filter(Boolean).join(' ');
+      const colLabel = recLabel || (defaultCol
+        ? [defaultCol.vendor, defaultCol.model].filter(Boolean).join(' ') : '');
+      const colIsDefault = !recLabel && !!colLabel;
       const flags = d.flags || [];
       const flagsByRun = {};
       flags.forEach(f => { flagsByRun[f.start] = f; });
@@ -5821,7 +5835,8 @@ function BFailTable({ rows }) {
                  borderRadius: '0.4rem',
                  border: `1px solid ${colLabel ? 'var(--border)' : 'var(--warn)'}`,
                  background: colLabel ? 'var(--bg)' : 'rgba(234,179,8,0.08)',
-                 borderLeft: `4px solid ${colLabel ? 'var(--accent, #60a5fa)' : 'var(--warn)'}`,
+                 borderLeft: `4px solid ${
+                   !colLabel ? 'var(--warn)' : (colIsDefault ? 'var(--warn)' : 'var(--accent, #60a5fa)')}`,
                }}>
             <span style={{ fontSize: '1.1rem', lineHeight: 1 }}>{colLabel ? '\u{1F9EA}' : '\u26A0'}</span>
             <div style={{ minWidth: 0 }}>
@@ -5834,10 +5849,18 @@ function BFailTable({ rows }) {
                         {`  \u00B7  LOT ${col.column_serial}`}
                       </span>
                     )}
+                    {colIsDefault && (
+                      <span style={{ fontWeight: 400, color: 'var(--warn)', fontSize: '0.78rem' }}>
+                        {'  \u00B7  assumed'}
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: '0.74rem', color: 'var(--muted)' }}>
-                    Every pressure figure on this panel belongs to this column type.
-                    A different column has different baselines.
+                    {colIsDefault
+                      ? <>The lab&rsquo;s standard column — <b>not recorded on this change</b>, so this
+                         is an assumption. Pick the column on the entry to confirm it.</>
+                      : <>Every pressure figure on this panel belongs to this column type.
+                         A different column has different baselines.</>}
                   </div>
                 </>
               ) : (

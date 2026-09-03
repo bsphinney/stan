@@ -11,6 +11,29 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.69] — 2026-09-03
+
+### Added
+- **`default_column_id` in the column catalogue.** This lab has run the same
+  column type for years, so "Column not recorded" was technically true and
+  practically useless — it told an operator nothing they did not know and
+  implied the figures were unattributable when in fact everyone knew what was
+  fitted. The panel now falls back to the lab's standard column and labels the
+  attribution **"assumed"**, keeping the amber accent so it still reads as
+  something to confirm rather than a record.
+
+  The distinction between a *record* and a *default* is the point, and the
+  banner never blurs it: a recorded column shows its LOT and a blue accent, an
+  assumed one says so in the same breath as the name.
+
+  Independent support that it really has been one column type: three separate
+  columns measured **186.1, 185.5 and 186.9 bar/(µL/min)** when fresh — within
+  0.7%. A change of length, bore or particle size would move that materially,
+  so the agreement is evidence of continuity rather than coincidence, and it is
+  what makes the cross-column comparisons on this panel sound.
+
+---
+
 ## [1.0.68] — 2026-09-03
 
 ### Changed

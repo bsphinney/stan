@@ -35,6 +35,19 @@ defaults:
   oven_c_source: operator-reported
   oven_device: "Bruker Column Toaster"
 
+# The column type in routine use. When a column_change event does not name a
+# column, the panel attributes its figures to this one and says the attribution
+# is a default rather than a record -- which is honest and far more useful than
+# "not recorded", given this lab has run the same part for years.
+#
+# Evidence that it really has been one type: three separate columns measured
+# 186.1, 185.5 and 186.9 bar/(uL/min) when fresh -- agreeing to 0.7%. A change
+# of geometry or particle size would move that number substantially.
+#
+# Change this the day the lab standardises on something else. Do NOT change it
+# to paper over an unlabelled one-off; log that column on its event instead.
+default_column_id: pepsep-max-c18-10cm-150um-1p5um
+
 columns:
   - id: pepsep-max-c18-10cm-150um-1p5um
     vendor: Bruker PepSep
