@@ -5097,8 +5097,16 @@ function BFailTable({ rows }) {
      * gradient run at genuinely different pressures, so overlaying them on one
      * scale would compare nothing.
      * ────────────────────────────────────────────────────────────────────────── */
-    function EvBaselineChart({ method, ms, hue, flagsByRun }) {
-      const series = ms.series || [];
+    function EvBaselineChart({ method, ms, hue, flagsByRun, sinceDays }) {
+      const all = ms.series || [];
+      /* Windowed rather than a compressed axis. Squeezing older time to make
+         recent time bigger would change every visible SLOPE, and slope is what
+         this chart is read for -- "trend -3.5 bar/day" would no longer match
+         what the line does. A window keeps one minute the same width
+         everywhere and still gives the current column the whole panel. */
+      const series = sinceDays
+        ? all.filter(p => (Date.now() - new Date(p.start).getTime()) <= sinceDays * 86400000)
+        : all;
       if (series.length < 2) return null;
 
       const W = 1000, H = 150, PADL = 46, PADR = 12, PADT = 12, PADB = 20;
@@ -5743,6 +5751,10 @@ function BFailTable({ rows }) {
       /* Declared before the early return: hooks must run unconditionally, and
          this component bails out below when there is no document yet. */
       const [showClogs, setShowClogs] = useState(false);
+      /* Default to the current column: with three years on one axis its whole
+         life is a few pixels wide, which is the complaint this answers. */
+      const [evSpan, setEvSpan] = useState('col');
+
 
       /* Match the Bruker panel: stay invisible until the extractor has produced
          a document, rather than showing an error box on a fresh install. */
@@ -5752,6 +5764,22 @@ function BFailTable({ rows }) {
       const col = d.column || {};
       const s = d.summary || {};
       const wear = d.wear || {};
+
+      /* Days of history to draw. 'col' means this column's life so far plus a
+         margin, so the install step itself stays visible; a brand-new column
+         still gets a usable minimum rather than a one-pixel window. */
+      const evSpanDays = evSpan === 'col'
+        ? Math.max(14, Math.ceil((col.days_since || 0) + 3))
+        : (evSpan || 0);
+
+      /* Which physical column these absolute numbers belong to. Every bar
+         figure here -- baseline, expected pressure, the 520 bar ceiling
+         headroom -- is a property of ONE column type. A different column has a
+         different baseline, so an unlabelled panel invites reading these as
+         universal. Comes from the logged column_change event. */
+      const colModel = col.column_model || col.model || null;
+      const colVendor = col.column_vendor || col.vendor || null;
+      const colLabel = [colVendor, colModel].filter(Boolean).join(' ');
       const flags = d.flags || [];
       const flagsByRun = {};
       flags.forEach(f => { flagsByRun[f.start] = f; });
@@ -5780,6 +5808,19 @@ function BFailTable({ rows }) {
             {' '}Extracted {evFmtDate(d.generated_at)}.
           </div>
 
+          {/* Name the column these numbers describe, or say plainly that it is
+              unrecorded -- silence reads as "these apply to any column". */}
+          <div style={{ fontSize: '0.78rem', marginBottom: '0.5rem',
+                        color: colLabel ? 'var(--muted)' : 'var(--warn)' }}>
+            {colLabel
+              ? <>Figures below are for <b style={{ color: 'var(--text)' }}>{colLabel}</b>
+                  {col.column_serial ? ` (LOT ${col.column_serial})` : ''} — a different
+                  column type has different baselines.</>
+              : <>No column recorded for the current change, so these absolute pressures
+                  cannot be attributed to a column type. Log the column on the
+                  maintenance entry to fix this.</>}
+          </div>
+
           {/* ── Current column state ── */}
           <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginBottom: '0.9rem' }}>
             <EvTile label="Days on this column" value={evNum(col.days_since, 1)} unit="days"
@@ -5793,9 +5834,9 @@ function BFailTable({ rows }) {
             <EvTile label="Baseline change" value={`${rising ? '+' : ''}${evNum(col.baseline_change_pct, 1)}%`}
                     tone={col.baseline_change_pct > 15 ? 'var(--warn)' : 'var(--text)'}
                     note={rising ? 'backpressure is climbing' : 'backpressure is flat or falling'} />
-            <EvTile label="Runs at the cut-out" value={s.n_at_ceiling}
+            <EvTile label="Runs stopped by over-pressure" value={s.n_at_ceiling}
                     tone={s.n_at_ceiling ? 'var(--fail)' : 'var(--pass)'}
-                    note={`peaked at the ${d.ceiling_bar} bar limit`} />
+                    note={`hit the ${d.ceiling_bar} bar pump limit and were cut off — all ${(s.n_runs || 0).toLocaleString()} runs on record`} />
             <EvTile label="Flagged runs" value={`${s.n_flagged}`}
                     tone={s.n_critical ? 'var(--warn)' : 'var(--text)'}
                     note={`${s.n_critical} critical, of ${s.n_runs} runs`} />
@@ -5805,6 +5846,17 @@ function BFailTable({ rows }) {
           <EvSection title="Column backpressure, run by run"
                      badge={`${analytical.length} method${analytical.length === 1 ? '' : 's'}`}
                      hint="per-gradient pressure traces">
+          <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.45rem', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>Show:</span>
+            {[['This column', 'col'], ['90 days', 90], ['1 year', 365], ['All', 0]].map(([lab, v]) => (
+              <button key={lab} onClick={() => setEvSpan(v)}
+                      style={{ fontSize: '0.72rem', padding: '0.15rem 0.45rem',
+                               borderRadius: '0.3rem', cursor: 'pointer',
+                               border: '1px solid var(--border)',
+                               background: evSpan === v ? 'var(--accent, #60a5fa)' : 'transparent',
+                               color: evSpan === v ? '#0b1220' : 'var(--muted)' }}>{lab}</button>
+            ))}
+          </div>
           <div style={{ color: 'var(--muted)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>
             One panel per gradient, each on its own scale — a 100 spd and a 60 spd method
             run at different pressures, so a shared axis would compare nothing. The band is
@@ -5813,7 +5865,8 @@ function BFailTable({ rows }) {
           </div>
           {analytical.map((ms, i) => (
             <EvBaselineChart key={ms.method} method={ms.method} ms={ms}
-                             hue={EV_HUES[i % EV_HUES.length]} flagsByRun={flagsByRun} />
+                             hue={EV_HUES[i % EV_HUES.length]} flagsByRun={flagsByRun}
+                             sinceDays={evSpanDays} />
           ))}
           </EvSection>
 
@@ -5829,7 +5882,7 @@ function BFailTable({ rows }) {
                       style={{ background: 'var(--bg)', color: 'var(--text)',
                                border: '1px solid var(--border)', borderRadius: '0.35rem',
                                padding: '0.4rem 0.7rem', fontSize: '0.82rem', cursor: 'pointer' }}>
-                🔬 Anatomy of a clog — {clogs.length} run{clogs.length === 1 ? '' : 's'} reached the cut-out
+                🔬 Anatomy of a clog — {clogs.length} charted run{clogs.length === 1 ? '' : 's'} that hit the {d.ceiling_bar} bar limit
               </button>
             </div>
           )}
@@ -5845,7 +5898,7 @@ function BFailTable({ rows }) {
                 <div style={{ display: 'flex', justifyContent: 'space-between',
                               alignItems: 'baseline', gap: '1rem' }}>
                   <h4 style={{ fontSize: '0.95rem', color: 'var(--text)', margin: 0 }}>
-                    Anatomy of a clog — every run that reached the cut-out
+                    Anatomy of a clog — runs stopped by the {d.ceiling_bar} bar pump limit
                   </h4>
                   <button onClick={() => setShowClogs(false)}
                           style={{ background: 'transparent', color: 'var(--muted)',
@@ -5857,9 +5910,11 @@ function BFailTable({ rows }) {
                 <div style={{ color: 'var(--muted)', fontSize: '0.75rem', margin: '0.4rem 0 0.6rem' }}>
                   Each run is drawn against the reference it was judged against: the median
                   of the last few clean runs of the same method, on absolute minutes. A
-                  clogging run tracks that reference exactly, then departs and climbs to the
-                  cut-out. The shaded span is the warning — the time between the departure
-                  and the moment the run actually hit the limit.
+                  clogging run tracks that reference exactly, then departs and climbs until
+                  the pump shuts off to protect itself. The shaded span is the warning — the
+                  time between the departure and the moment the run hit the limit.
+                  Only runs with a usable reference curve are drawn, so this is fewer than
+                  the total on the tile above.
                 </div>
                 {clogs.map(r => (
                   <EvClogTrace key={r.run} run={r} ceiling={d.ceiling_bar} />

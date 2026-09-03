@@ -11,6 +11,39 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.67] — 2026-09-03
+
+### Changed
+- **The backpressure charts default to the current column's life**, with
+  controls for 90 days, 1 year and all history. With three years on one axis a
+  33-day column is a few pixels wide, which made the chart unreadable for the
+  question people actually ask it.
+
+  Deliberately a **window, not a compressed axis**. Squeezing older time to
+  enlarge recent time changes every visible slope, and slope is what this chart
+  is read for — the label "trend −3.5 bar/day" would stop matching what the
+  line does. A window keeps one minute the same width everywhere.
+
+- **"Cut-out" is now said in plain words.** It is Evosep's term for the pump's
+  520 bar safety limit shutting the run off, and nothing on the panel explained
+  that. The tile reads "Runs stopped by over-pressure … hit the 520 bar pump
+  limit and were cut off".
+
+- **The two cut-out counts now say which population each covers.** The tile
+  counted every run on record while the "Anatomy of a clog" button counted only
+  runs with a usable reference curve — 32 against 6, with nothing saying why
+  they differed.
+
+### Added
+- **The panel names the column its absolute numbers belong to.** Baseline,
+  expected pressure and headroom to the 520 bar limit are properties of one
+  column type; a different column has a different baseline, so an unlabelled
+  panel invites reading them as universal. When no column is recorded on the
+  current change it says so in warning colour rather than staying silent —
+  silence reads as "these apply to anything".
+
+---
+
 ## [1.0.66] — 2026-09-02
 
 ### Changed
