@@ -11,6 +11,32 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.75] — 2026-09-03
+
+### Changed
+- **Hovering a flagged run now names it.** The run comes first in the tooltip,
+  since "which run was that?" is the question a dot prompts and everything else
+  is context for it, followed by severity, plateau, percent over baseline and
+  peak.
+
+- **Intervention rules no longer look like the age ruler.** Sustained baseline
+  drops — a wash or a new column — are now solid teal with a tick at the top,
+  because they mean something *happened to the instrument*. The age ruler
+  behind them stays faint and dashed because it is only a scale. Adding the
+  age ticks in v1.0.71 made the two indistinguishable, which is a regression I
+  introduced and did not notice.
+
+### Fixed
+- **The redaction was over-broad and stripped `run`.** That field holds the
+  Evosep procedure directory name (`100-samples-per-day_2026-06-05_11-47-40`) —
+  a method and a timestamp, with no sample in it — and the chart tooltips need
+  it. `run_name`, which holds the `.d` acquisition and carries names like
+  `COH-21`, is a different field and stays redacted. The audit that found the
+  original leak never flagged `run`; I added it to the list from caution rather
+  than evidence.
+
+---
+
 ## [1.0.74] — 2026-09-03
 
 ### Fixed

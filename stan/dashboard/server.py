@@ -1788,7 +1788,12 @@ async def api_maintenance_bruker() -> dict:
 #: silently -- so `test_evosep_public_payload_carries_no_identifiers` re-runs
 #: the same pattern audit that found this, and fails loudly if a new field ever
 #: reintroduces one.
-_EVOSEP_IDENTIFYING_FIELDS = ("run_name", "run", "file", "well", "submission",
+#: `run` is deliberately NOT here. It holds the Evosep procedure directory
+#: name -- `100-samples-per-day_2026-06-05_11-47-40`, a method and a timestamp
+#: with no sample in it -- and the chart tooltips need it to say which run a
+#: flagged point is. `run_name` (the `.d` acquisition, which carries names like
+#: `COH-21`) is a different field and stays redacted.
+_EVOSEP_IDENTIFYING_FIELDS = ("run_name", "file", "well", "submission",
                               "sample", "acquisition", "vial")
 
 

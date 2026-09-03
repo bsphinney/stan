@@ -5220,10 +5220,17 @@ function BFailTable({ rows }) {
               const x = X(new Date(s.at).getTime());
               return (
                 <g key={i}>
+                  {/* SOLID and coloured, because this means something HAPPENED
+                      to the instrument -- a wash or a new column. The age ruler
+                      behind it is dashed and grey because it is only a scale.
+                      Both were dashed grey until 2026-09-03 and were
+                      indistinguishable from each other. */}
                   <line x1={x} x2={x} y1={PADT} y2={H - PADB}
-                        stroke="var(--muted)" strokeWidth="1" strokeDasharray="3 3"
-                        vectorEffect="non-scaling-stroke" opacity="0.7" />
-                  <title>{`Baseline step ${s.change_pct}% at ${evFmtDate(s.at)} — ${s.from_bar} → ${s.to_bar} bar (candidate column change / wash)`}</title>
+                        stroke="#2dd4bf" strokeWidth="1.2"
+                        vectorEffect="non-scaling-stroke" opacity="0.85" />
+                  <polygon points={`${x - 3.5},${PADT} ${x + 3.5},${PADT} ${x},${PADT + 5}`}
+                           fill="#2dd4bf" opacity="0.95" />
+                  <title>{`Baseline step ${s.change_pct}% — ${evFmtDate(s.at)}\n${s.from_bar} → ${s.to_bar} bar\ncandidate intervention: a wash, or a new column`}</title>
                 </g>
               );
             })}
@@ -5241,7 +5248,15 @@ function BFailTable({ rows }) {
                   <circle cx={X(times[i])} cy={Y(p.plateau_bar)} r="4.5"
                           fill={s.color} stroke="var(--surface)" strokeWidth="2"
                           vectorEffect="non-scaling-stroke" />
-                  <title>{`${s.label} — ${evFmtDate(p.start)}\n${p.plateau_bar} bar\n${f.reasons.join('\n')}`}</title>
+                  {/* The run name goes first: "which run was that?" is the
+                      question a dot prompts, and everything else is context
+                      for it. `f.run` is the Evosep procedure directory, so it
+                      survives redaction for anonymous viewers -- unlike the
+                      `.d` acquisition name, which identifies a customer's
+                      sample and is stripped. */}
+                  <title>{`${f.run || evFmtDate(p.start)}\n${s.label} — ${p.plateau_bar} bar${
+                    f.pct_over_baseline != null ? ` (${f.pct_over_baseline > 0 ? '+' : ''}${f.pct_over_baseline}% vs baseline)` : ''}${
+                    f.peak_bar != null ? `\npeak ${f.peak_bar} bar` : ''}\n${(f.reasons || []).join('\n')}`}</title>
                 </g>
               );
             })}
@@ -5973,8 +5988,11 @@ function BFailTable({ rows }) {
           <div style={{ color: 'var(--muted)', fontSize: '0.75rem', marginBottom: '0.5rem' }}>
             One panel per gradient, each on its own scale — a 100 spd and a 60 spd method
             run at different pressures, so a shared axis would compare nothing. The band is
-            ±10 % of the running baseline; dashed rules are sustained baseline drops
-            (a wash, a new column); rings are flagged runs.
+            ±10 % of the running baseline.
+            <b style={{ color: '#2dd4bf' }}> Solid teal rules with a tick</b> are sustained
+            baseline drops — a wash or a new column — hover for the size of the step.
+            Rings are flagged runs; hover for the run name. The faint dashed verticals are
+            only the age ruler, labelled along the bottom.
             <br />
             <b style={{ color: 'var(--warn)' }}>The time axis is logarithmic in age:</b> the
             last 30 days take about half the width and older history compresses smoothly
