@@ -5139,6 +5139,12 @@ function BFailTable({ rows }) {
       const lmax = Math.log1p(maxAge);
       const plotW = W - PADL - PADR;
       const X = t => PADL + (1 - Math.log1p(ageDays(t)) / lmax) * plotW;
+      /* The vertical scale. This was deleted by accident on 2026-09-03 when the
+         log axis replaced the old X definition -- the edit spanned from `const
+         X` to `const path`, and Y sat between them. The result was a
+         ReferenceError inside the path map and a blank Maintenance tab, which
+         the JSX parser cannot see because the file is still valid JavaScript. */
+      const Y = v => PADT + (1 - (v - yLo) / ((yHi - yLo) || 1)) * (H - PADT - PADB);
 
       /* Ticks at ages a person thinks in, not at even pixel spacing. */
       const AGE_TICKS = [

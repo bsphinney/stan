@@ -11,6 +11,24 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.74] — 2026-09-03
+
+### Fixed
+- **The Maintenance tab was still blank — I had deleted the Y-axis scale.**
+  The v1.0.71 log-axis change replaced everything between `const X` and
+  `const path`, and `const Y` sat between them. A `ReferenceError` inside the
+  path map took the whole tab down.
+
+  Two blank-tab bugs in two releases, from the same root cause: **the JSX
+  parser I added that morning proves the file is valid JavaScript and nothing
+  more.** It cannot see a hook called after an early return, and it cannot see
+  a deleted identifier. Both bugs left the file perfectly parseable. The real
+  tool is eslint with `react-hooks/rules-of-hooks` and `no-undef`, which
+  catches both classes; a hand-rolled scope checker was tried and produced 15
+  false positives on existing code, which is worse than nothing.
+
+---
+
 ## [1.0.73] — 2026-09-03
 
 ### Fixed
