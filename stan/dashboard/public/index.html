@@ -5083,9 +5083,9 @@ function BFailTable({ rows }) {
     }
 
     /* A headline number with its unit and a one-line explanation. */
-    function EvTile({ label, value, unit, note, tone }) {
+    function EvTile({ label, value, unit, note, tone, title }) {
       return (
-        <div style={{
+        <div title={title} style={{
           background: 'var(--bg)', border: '1px solid var(--border)',
           borderRadius: '0.5rem', padding: '0.6rem 0.75rem', flex: '1 1 150px',
           minWidth: '140px',
@@ -6137,9 +6137,30 @@ function BFailTable({ rows }) {
               <EvTile label="Resistance now"
                       value={evNum(curLife.now_resistance_bar_per_ul_min, 0)}
                       unit="bar per µL/min"
-                      note={`fresh ${evNum(curLife.fresh_resistance_bar_per_ul_min, 0)}`
-                            + ` · ${evNum(col.baseline_now_bar, 0)} bar`
-                            + (col.method ? ` on ${col.method}` : '')} />
+                      /* SAY WHAT THE PRESSURE IS. "Baseline 281 bar" hides the two
+                         things that give it meaning -- which method, and at what
+                         flow -- and without them it is not comparable to anything.
+                         The flow is derived rather than carried: pressure divided
+                         by resistance IS the flow, so it costs no new field and
+                         cannot disagree with the other two numbers. */
+                      note={(() => {
+                        const bar = col.baseline_now_bar;
+                        const res = curLife.now_resistance_bar_per_ul_min;
+                        const flow = (bar && res) ? bar / res : null;
+                        return `fresh ${evNum(curLife.fresh_resistance_bar_per_ul_min, 0)}`
+                          + ` · ${evNum(bar, 0)} bar`
+                          + (flow ? ` at ${evNum(flow, 2)} µL/min` : '')
+                          + (col.method ? ` (${col.method})` : '');
+                      })()}
+                      title={`The pump settles at ${evNum(col.baseline_now_bar, 0)} bar during a `
+                        + `${col.method || 'run'}, which runs at `
+                        + `${evNum((col.baseline_now_bar || 0) / (curLife.now_resistance_bar_per_ul_min || 1), 2)} µL/min. `
+                        + `Divided by that flow it is ${evNum(curLife.now_resistance_bar_per_ul_min, 0)} bar per µL/min `
+                        + `— the column's resistance, which is comparable between methods and between columns; `
+                        + `the raw pressure is not, because each method runs at a different flow. `
+                        + `A fresh column of this type reads about `
+                        + `${evNum(curLife.fresh_resistance_bar_per_ul_min, 0)}. `
+                        + `The 520 bar cut-out trips on the raw pressure, not on this.`} />
             ) : (
               <EvTile label="Baseline now" value={evNum(col.baseline_now_bar, 0)} unit="bar"
                       note={`was ${evNum(col.baseline_at_install_bar, 0)} bar when installed`} />
