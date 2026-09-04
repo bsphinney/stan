@@ -88,6 +88,79 @@ detector.py → reads .d/analysis.tdf or .raw metadata → DIA or DDA?
 
 ---
 
+## Current deployment — UC Davis Proteomics Core
+
+**As of September 2026 this facility runs 100 % Hive + PG Farm.** The
+instrument PCs acquire and nothing else: no watcher, no local `stan.db`,
+no `stan dashboard`, no `update-stan.bat`. Anything in this file that
+describes software running on an instrument PC is describing a
+deployment *other labs* may use, not this one — those sections are
+marked.
+
+```
+Instrument PC (acquire only)
+    │  robocopy / vendor transfer
+    ▼
+Flinders archive        /nfs/lssc0/flinders/proteomics/Data/raw_data/<instrument>
+    │                   (tTOF_HT | Lumos1 | Exploris480)
+    ▼
+Hive cron  ── every 5 min ─────────────────────────────────────────────┐
+    │  symlink into the dispatcher watch dirs, sbatch the search       │
+    │  DIA-NN / Sage on partition `low`, metrics, gating               │
+    ▼                                                                  │
+PG Farm  uc-davis-genome-center-proteomics-core/stan   ← store of record│
+    │                                                                  │
+    ├──► ucd.stan-proteomics.org   hosted dashboard (Azure)            │
+    └──► HF Space relay            public community benchmark          │
+```
+
+### The three places code actually runs
+
+| Where | What | Version check |
+|---|---|---|
+| Hive | `/quobyte/proteomics-grp/brett/stan` checkout, editable-installed into `/quobyte/proteomics-grp/brett/stan_venv`. **The venv imports straight from the checkout, so `git pull` there IS the deploy.** | `ssh hive "/quobyte/proteomics-grp/brett/stan_venv/bin/python -c 'import stan;print(stan.__version__)'"` |
+| Azure | `ucd.stan-proteomics.org`, app `stan-ucd-proteomics` in `rg-fran`. Separate zip deploy — **does not** follow a `git push`. Runbook: `docs/AZURE_DEPLOY.md`. | `curl -s https://ucd.stan-proteomics.org/api/version` |
+| HF Space | `brettsp/stan` relay + public community dashboard. Its own version line. | `curl -s https://brettsp-stan.hf.space/api/version` |
+
+**These drift independently and routinely do.** Measured 2026-09-04:
+Hive on 1.0.84, Azure on 1.0.82, main on 1.0.85. So "is the fix live?"
+is three questions, not one, and pushing to GitHub answers none of them
+by itself. Check the surface the person is actually looking at.
+
+### Hive cron — what runs unattended
+
+All in `/quobyte/proteomics-grp/STAN/`, from brettsp's crontab, each
+wrapped in `flock` so a slow tick is skipped rather than stacked.
+Canonical copies live in `scripts/`.
+
+| Script | Cadence | Does |
+|---|---|---|
+| `cron_flinders_dispatch.sh` | */5 min | Walk the Flinders export, symlink new raws, sbatch up to 50 searches |
+| `cron_count_acquisitions.sh` | */15 min (+ full 3×/day) | Per-day acquisition counts → utilisation snapshot |
+| `cron_ht_watch.sh` | */20 min | timsTOF watch/status |
+| `cron_evosep.sh` | */30 min | Evosep column health extractor |
+| `cron_ioncloud.sh` | hourly | Feature-cloud backfill from existing 4DFF sidecars |
+| `cron_community_sync.sh` | */6 h | Push to the community benchmark |
+| `cron_bruker_maintenance.sh` | daily 20:00 | Compass BACKUP → maintenance document |
+
+`export STAN_DB_BACKEND=pg` is set inside these scripts — that is what
+`use_pg()` keys off. A script that forgets it silently writes SQLite.
+
+Login-node rules still apply: these only walk the filesystem, make
+symlinks and call `sbatch`. All real compute lands inside SLURM.
+
+### PG Farm auth
+
+Token file `/quobyte/proteomics-grp/brett/.pgfarm_token`, minted from the
+long-lived service-account secret. **It expires and the failure is
+loud but late** — `psycopg2.OperationalError: The JWT token provided is
+not valid or has expired`. It was expired when checked on 2026-09-04.
+Re-mint with `scripts/pgfarm_refresh_token.py` before concluding that
+anything else is broken. DDL needs the table *owner* (`brettsp`, CAS);
+the service account has DML only. See `docs/PG_FARM.md`.
+
+---
+
 ## CRITICAL: Always Check Primary Sources
 
 STAN depends on external tools (DIA-NN, Sage, timsrust, ThermoRawFileParser, Percolator)
@@ -313,8 +386,13 @@ not collect, so it was replaced by IPS.
 - Host: `hive.hpc.ucdavis.edu` (user `brettsp`, SSH alias `hive`)
 - Scheduler: SLURM
 - DIA-NN, Sage, 4DFF, etc. run as SLURM batch jobs
-- SQLite database lives on Hive scratch/project storage
-- Dashboard API can be SSH-tunneled to local machine
+- **PG Farm is the database** (`STAN_DB_BACKEND=pg`). The SQLite file on
+  Quobyte is a leftover: ~100 concurrent SLURM writers on a network FS
+  surfaced as `SQLITE_IOERR`, not a clean `SQLITE_BUSY`, and a
+  2026-08-26 drain lost ~37 monitor jobs in 11 minutes. That is what
+  moved the monitor pipeline to PG. Do not add a concurrent SQLite
+  writer on Quobyte.
+- Read the dashboard at `ucd.stan-proteomics.org`, not an SSH tunnel
 - Full context doc at `/Users/brettphinney/Documents/claude_private/HIVE_CLAUDE_GUIDE.md`
   (read at session start for partition/QOS/path details)
 
@@ -384,115 +462,79 @@ not collect, so it was replaced by IPS.
 
 ## Autonomous troubleshooting (CRITICAL)
 
-**When Brett reports a problem, DO NOT ask him to run diagnostic commands on the instrument PC. Look for the answer server-side first.**
+**Answer from PG first. Do not ask Brett to run anything on an
+instrument PC — nothing runs there** (see Current deployment above).
 
-### Check the timestamp before you trust the mirror
+### The Hive mirror is dead — do not reason from it
 
-The instrument PCs were *supposed* to sync their state to the share
-continuously. **They are not doing it.** Measured 2026-08-31:
+`/quobyte/proteomics-grp/STAN/<HOSTNAME>/` was a per-instrument mirror
+of each PC's local state. The PCs stopped writing it and then stopped
+running STAN altogether. Measured 2026-09-04:
 
-| | `stan.db` | newest log |
-|---|---|---|
-| `TIMS-10878/` | 11 Aug 2026 | 11 Aug 2026 |
-| `DESKTOP-FOT3DAA/` | 11 May 2026 | — |
+| | newest `status.json` |
+|---|---|
+| `TIMS-10878/` | 11 Aug 2026 |
+| `DESKTOP-FOT3DAA/` | 11 May 2026 |
+| `lumosRox/` | 14 May 2026 |
 
-Twenty days stale on the timsTOF and three and a half months on the
-Exploris, and nobody noticed — which is the real lesson here. **A stale
-mirror is worse than no mirror**, because it answers confidently with
-data from before the problem you are looking at. `ls -lat` the file
-before you read it, and say the date out loud when you quote it.
+**A stale mirror is worse than no mirror**, because it answers
+confidently with data from before the problem you are looking at. These
+files are historical only. If you open one anyway, `ls -lat` it first
+and say the date out loud when you quote it.
 
-Most of what the mirror was for has moved on anyway:
-
-- **Run data lives in PG now** (`STAN_DB_BACKEND=pg`, see `docs/PG_FARM.md`),
-  and Hive ingests from the Flinders archive directly. A per-instrument
-  `stan.db` is no longer the source of truth for any run, so do not
-  reach for it to answer "was this run ingested" — ask PG.
-- **Raw files** are on Flinders (`/nfs/lssc0/flinders/proteomics/Data/raw_data/<instrument>`),
-  readable from Hive. Look there to answer "does this file exist / how
-  big is it / when did it land".
-- **What the mirror is still uniquely good for** is instrument-side
-  state that exists nowhere else: what the watcher saw on disk, config,
-  crash logs. That is exactly the part that has stopped arriving.
-
-### Anything new must publish its own logs
-
-Do not rely on `sync_to_hive_mirror()` — it is the thing that stopped.
-A job that wants to be diagnosable should copy its own output to
-`<share>\STAN\<hostname>\<job>\` at the end of every run, finding the
-share by looking for `STAN\<COMPUTERNAME>` across the mapped drives
-rather than trusting a drive letter.
-
-`scripts/flinders_copy.ps1` (`Publish-Logs`) is the working example, and
-it is worth copying wholesale: a one-line status file goes every pass so
-its timestamp is proof of life, the bulky files go only when something
-happened, and the whole thing is wrapped so a dead share can never break
-the job it is reporting on.
-
-### Hive mirror layout
-
-Root: `/Volumes/proteomics-grp/STAN/` (already mounted and writable on Brett's dev box).
-
-Each instrument has its own subdirectory keyed by hostname:
-- `TIMS-10878/` — timsTOF HT
-- `DESKTOP-FOT3DAA/` — Exploris 480
-- `lumosRox/` — Lumos
-
-Inside each:
-- `stan.db` — full SQLite mirror. **Check its date first** (see above; it
-  has been stale since 11 Aug 2026 on TIMS-10878). Copy locally with `cp`
-  then query with `sqlite3` — direct query over the mount hits permission
-  errors. For run data prefer PG; this is only useful for instrument-local
-  state, and only if it is fresh.
-- `instruments.yml`, `community.yml`, `config/` — current instrument config
-- `logs/` — every backfill + watch_status + submit log, sorted by timestamp:
-  - `watch_status_YYYYMMDD_HHMMSS.log` — disk-vs-DB diff (columns: mtime, qc_match y/-, in_runs, in_sample_health, filename). Every file on disk is listed with its routing decision.
-  - `backfill_metrics_YYYYMMDD_HHMMSS.log` — metrics backfill summary
-  - `backfill_tic_YYYYMMDD_HHMMSS.log` — TIC backfill summary + skip-reason histogram (v0.2.152+)
-  - `backfill_peg_YYYYMMDD_HHMMSS.jsonl` — per-file PEG results
-  - `backfill_drift_YYYYMMDD_HHMMSS.jsonl` — per-file drift results and errors
-  - `submit_all_YYYYMMDD.jsonl` — community submission log
-- `status.json`, `failures/` — recent daemon state, per-job search failure logs
-- `instrument_library.parquet` — per-instrument reference library
+The same applies to `~/.stan/stan.db` on Brett's Mac: it is a local
+read-cache that a `stan dashboard` fills from PG, not a source of truth,
+and it holds whatever it last synced. Check its mtime before quoting it.
 
 ### Diagnosis protocol
 
-When Brett reports an issue, in order:
-
-1. **Check the mirror for the most recent relevant log**
+1. **Ask PG.** It is the store of record for runs, sample_health,
+   metrics, and dispatch state.
    ```bash
-   ls -lat /Volumes/proteomics-grp/STAN/<INSTRUMENT>/logs/ | head -20
+   ssh hive "bash -lc 'export PGPASSWORD=\$(cat /quobyte/proteomics-grp/brett/.pgfarm_token); \
+     /quobyte/proteomics-grp/brett/stan_venv/bin/python -'" < query.py
    ```
-2. **Grep the log for the file/run/error keyword Brett mentioned**
-3. **For DB-state questions, copy stan.db locally first (permission quirk) then query**:
-   ```bash
-   cp /Volumes/proteomics-grp/STAN/<INSTRUMENT>/stan.db /tmp/claude/x.db
-   sqlite3 /tmp/claude/x.db "SELECT ..."
-   ```
-4. **For raw-file questions on the original `.d`/`.raw`, SSH to Hive** (`ssh hive`) — the raw files live under `/quobyte/proteomics-grp/hela_qcs/<instrument>/` or `/quobyte/proteomics-grp/brett/stan_debug/` (recent troubleshooting files).
-5. **Only escalate back to Brett** when the answer genuinely isn't in the mirror — e.g., "is the watcher process running right now", "what does the cmd console say". Don't ask him to relay data that's already synced.
+   Pipe the script over stdin rather than nesting quotes in `ssh "..."` —
+   nested `"` inside a remote `bash -lc` is the single most reliable way
+   to waste a round trip here. If the connection reports an expired JWT,
+   re-mint the token before believing any other conclusion.
+2. **Check which version serves the surface in question** (see the table
+   above). A "bug" is very often a fix that is live on main and not yet
+   on Azure.
+3. **Check the Hive cron logs** for the tick that should have done the
+   work — `/quobyte/proteomics-grp/STAN/logs/`, and `squeue -u brettsp`
+   for jobs actually queued.
+4. **For raw-file questions**, the files are on the Flinders export
+   (`/nfs/lssc0/flinders/proteomics/Data/raw_data/<instrument>`),
+   readable from Hive.
+5. **Only escalate to Brett** for things genuinely outside the cluster —
+   what is physically on the instrument, or which hosted surface he has
+   open.
 
-### Ensure new code writes syncable output
+### New jobs must publish their own logs
 
-Any new CLI command, backfill, or background job that could fail silently MUST:
-- Write a log file to `~/STAN/logs/<command>_<timestamp>.{log,jsonl}` with per-step status and a summary at the end
-- Call `sync_to_hive_mirror(include_reports=False)` after the log is written (not during — avoid syncing partial state)
-- Log errors at `logger.warning` or `logger.error` minimum — DEBUG is stripped from syncs
+Any new CLI command, backfill, or background job that could fail
+silently MUST write `~/STAN/logs/<command>_<timestamp>.{log,jsonl}` with
+per-step status and a summary, and log errors at `logger.warning` or
+above. On Hive that lands under the shared `/quobyte/proteomics-grp/STAN/`
+tree where it is readable over ssh.
 
-**Past sync gaps that wasted cycles**:
-- v0.2.151 `backfill-tic` printed to console only — skip-reason histogram was unreachable from Hive until v0.2.152 added the log file
-- `stan watch` stderr isn't captured to a syncing file; watcher crashes are invisible to remote debugging. TODO: route watcher logs through `~/STAN/logs/watch_<ts>.log` so we can see cascade bugs or observer deaths without asking Brett to screenshot his cmd window.
-
-### When you cannot reach the mirror
-
-If `/Volumes/proteomics-grp/STAN/` isn't mounted (uncommon, but happens after reboot), use `ssh hive "cat /quobyte/proteomics-grp/STAN/<INSTRUMENT>/logs/<file>"` — the same files are accessible server-side.
+`sync_to_hive_mirror()` is retained for other labs' installs and is a
+harmless no-op here — do not rely on it to make anything visible, and
+never let a dead share break the job reporting through it.
 
 ### Config file locations
 
-- `~/.stan/instruments.yml` — instrument watch directories
-- `~/.stan/thresholds.yml` — QC thresholds (falls back to `config/thresholds.yml`)
-- `~/.stan/community.yml` — HF token and submission preferences
-- `~/.stan/stan.db` — SQLite database (or path configured in instruments.yml)
+Hive + hosted read config from the package and PG. `~/.stan/*.yml` is
+the single-lab install path (other labs), not this facility.
+
+- `~/.stan/instruments.yml` — watch directories (single-lab installs)
+- `~/.stan/thresholds.yml` — QC thresholds; falls back to `config/thresholds.yml`.
+  **No deployment currently ships one**, so `evaluate_gates` returns PASS
+  before comparing a single metric — which is why gate results are inert
+  and the dashboard colours off `ips_score` instead.
+- `config/` ships inside the Azure zip; `resolve_config_path()` looks in
+  `~/STAN/` then `<package>/config/`.
 
 ---
 
@@ -607,9 +649,11 @@ Mac:   feature_clouds (SQLite) → /api/runs/{id}/features-by-charge
   `stan backfill-feature-cloud --from-cache <dir>`.
 
 **Hive-side scripts** (canonical copies in `scripts/`, running copies in
-`/quobyte/proteomics-grp/STAN/`). They exist because the Hive checkout at
-`/quobyte/proteomics-grp/brett/stan` is a patched fork that is never
-pulled, so it will not pick up the in-repo CLI or the inline publish:
+`/quobyte/proteomics-grp/STAN/`). They wrap the CLI with the sharding,
+SLURM plumbing and JSON-cache fallback the bare command does not do.
+(The Hive checkout was once described here as an unpulled patched fork;
+that is no longer true — `stan_venv` imports straight from it and it
+tracks main, so `git pull` there is the deploy.)
 
 | Script | Does |
 |---|---|
@@ -648,15 +692,25 @@ extraction → DB → dashboard to confirm every value is actually populated.
 
 ## Deployment & Versioning
 
-- **Always bump both** `pyproject.toml` AND `stan/__init__.py` on every push — instrument PCs
-  verify code freshness via `stan version`. Never update one without the other.
-- **Always push to GitHub** after changes — Brett deploys to instrument PCs via `update-stan.bat`
-  which downloads from `github.com/bsphinney/stan/archive/refs/heads/main.zip`.
+- **Always bump both** `pyproject.toml` AND `stan/__init__.py` on every push. The
+  version is how you tell which of the three surfaces a fix has reached.
+- **A push to GitHub deploys nothing by itself.** Each surface updates separately:
+  | Surface | How it updates |
+  |---|---|
+  | Hive | `ssh hive "cd /quobyte/proteomics-grp/brett/stan && git pull"` — `stan_venv` is editable, so that is the whole deploy |
+  | Azure (`ucd.stan-proteomics.org`) | zip deploy, `docs/AZURE_DEPLOY.md`. Run `node scripts/check_jsx.js stan/dashboard/public/index.html` first — a JSX syntax error blanks the page rather than degrading |
+  | HF Space | see `reference_hf_space_deploy` / the Space repo |
+- **Say which surface you mean** when reporting a fix as shipped. "Pushed" is not "live".
+- `update-stan.bat` targets instrument PCs and is **not used at UC Davis** — those
+  boxes acquire only. It remains for single-lab installs elsewhere.
 - Baseline Builder has its own version banner (e.g. "v3") — bump it when baseline behavior changes.
 
 ---
 
 ## PowerShell 5.1 Compatibility (instrument PCs)
+
+> **Not used at UC Davis** — this facility's instrument PCs acquire only.
+> Kept because `scripts/*.ps1` still ships for single-lab installs elsewhere.
 
 Instrument PCs run Windows with PowerShell 5.1. When editing `.ps1` files:
 - **Always rewrite the entire file** — never patch individual lines (subtle parsing traps)
@@ -688,6 +742,10 @@ check plus tests is stronger evidence than a blind full-file rewrite.
 ---
 
 ## Instrument PC Constraints
+
+> **Not used at UC Davis** — all search runs on Hive under SLURM (see
+> the cluster-only search policy). These constraints govern the
+> single-lab install path that other labs run.
 
 - **Half CPU cores** for DIA-NN/Sage — `max(2, cpu_count // 2)`. These are instrument
   workstations that may be acquiring data simultaneously.
