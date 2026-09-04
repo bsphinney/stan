@@ -30,6 +30,10 @@ from stan.notify import (
 
 NOW = datetime(2026, 9, 3, 8, 0, tzinfo=timezone.utc)
 HOOK = "https://hooks.slack.com/services/T000/B000/xxxxxxxxxxxxxxxxxxxxxxxx"
+#: Shaped like a bot token only as far as bot_token() requires -- an `xoxb-`
+#: prefix. Deliberately NOT a real one's digits-digits-alnum layout: GitHub
+#: push protection matches that layout and blocked a push on 2026-09-03 over
+#: this fixture, which never was a credential.
 TOKEN = "xoxb-fake-token-for-tests-not-a-real-credential"
 CHAN = "C0123456789"
 
