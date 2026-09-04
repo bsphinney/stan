@@ -24,6 +24,7 @@ resolution and one place a secret could leak from.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import threading
 
@@ -87,6 +88,118 @@ def send_slack_alert(
         ],
     }
     _post_to_slack_async(webhook, payload)
+
+
+#: Gate metric names -> what to call them in a one-line summary. Anything not
+#: listed falls back to the metric name with underscores turned into spaces.
+_GATE_LABELS = {
+    "pct_delta_mass_lt5ppm": "mass calibration",
+    "n_precursors": "precursors",
+    "n_psms": "PSMs",
+    "n_peptides": "peptides",
+    "n_proteins": "proteins",
+    "ips_score": "IPS",
+}
+
+#: PEG is only worth a line when it is actually a problem. `classify_peg_score`
+#: calls 20-50 "trace", which is the normal background of shared plasticware and
+#: would fire on most runs; moderate (>=50) is where sample prep needs attention.
+_PEG_REPORT_FROM = 50.0
+
+_QC_SUMMARY_ENV = "STAN_SLACK_QC_SUMMARY"
+
+_RESULT_ICON = {"pass": ":large_green_circle:",
+                "warn": ":large_yellow_circle:",
+                "fail": ":red_circle:"}
+
+
+def qc_summary_enabled() -> bool:
+    """Per-run summaries on unless STAN_SLACK_QC_SUMMARY is set to a false value."""
+    val = os.environ.get(_QC_SUMMARY_ENV)
+    if val is None:
+        return True
+    return val.strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def format_qc_summary(instrument: str, run_name: str, metrics: dict,
+                      decision: GateDecision | None = None) -> str:
+    """One line: what was identified, and anything that flagged.
+
+    Deliberately reads the FLAGS OFF THE GATE DECISION rather than
+    re-comparing metrics to thresholds here. Two places deciding what counts
+    as out of spec drift apart, and then Slack and the dashboard disagree
+    about the same run.
+
+    PEG is the exception, because it is not a gate: it is computed after
+    ``insert_run`` and carried in ``metrics`` by the caller.
+    """
+    parts = []
+    n_prec = metrics.get("n_precursors")
+    n_psms = metrics.get("n_psms")
+    if n_prec:
+        parts.append(f"{int(n_prec):,} precursors")
+    elif n_psms:
+        parts.append(f"{int(n_psms):,} PSMs")
+    if metrics.get("n_proteins"):
+        parts.append(f"{int(metrics['n_proteins']):,} proteins")
+    if metrics.get("ips_score") is not None:
+        parts.append(f"IPS {int(metrics['ips_score'])}")
+
+    flags = []
+    peg = metrics.get("peg_score")
+    if peg is not None and peg >= _PEG_REPORT_FROM:
+        try:
+            from stan.metrics.peg import classify_peg_score
+            # Pass the ion count: the classifier needs it to avoid calling a
+            # two-ion coincidence "moderate", which is why it takes the argument.
+            label = classify_peg_score(
+                peg, metrics.get("peg_n_ions_detected", 999) or 999)
+        except Exception:  # noqa: BLE001 - a label is not worth failing over
+            label = "high"
+        flags.append(f"PEG {label} ({peg:.0f})")
+
+    if decision is not None:
+        for gate in list(decision.failed_gates) + list(decision.warned_gates):
+            label = _GATE_LABELS.get(gate, gate.replace("_", " "))
+            if gate == "pct_delta_mass_lt5ppm":
+                val = metrics.get(gate)
+                if val is not None:
+                    label = f"{label} ({val:.0f}% <5 ppm)"
+            flags.append(label)
+
+    icon = _RESULT_ICON.get(
+        decision.result.value.lower() if decision else "", ":white_circle:")
+    line = f"{icon} *{instrument}* `{run_name}`"
+    if parts:
+        line += " — " + " \u00b7 ".join(parts)
+    if flags:
+        line += "  :warning: " + ", ".join(flags)
+    return line
+
+
+def send_qc_summary(instrument: str, run_name: str, metrics: dict,
+                    decision: GateDecision | None = None) -> bool:
+    """Post the one-line QC summary. No-ops without a webhook, never raises.
+
+    CALL THIS AFTER PEG IS COMPUTED. On the Hive path PEG and window drift run
+    *after* ``insert_run`` (see ``hive_process`` module docs), so a call at
+    gate-evaluation time would report every run as PEG-free.
+    """
+    if not qc_summary_enabled():
+        return False
+    webhook = _get_slack_webhook()
+    if not webhook:
+        return False
+    try:
+        text = format_qc_summary(instrument, run_name, metrics, decision)
+    except Exception:  # noqa: BLE001 - a QC run must never fail over Slack
+        logger.debug("QC summary formatting failed", exc_info=True)
+        return False
+    _post_to_slack_async(webhook, {
+        "text": text,
+        "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+    })
+    return True
 
 
 def test_slack_alert(message: str = "STAN alert test") -> bool:

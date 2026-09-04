@@ -278,13 +278,19 @@ def _run_peg_and_drift(
     raw_path: Path,
     run_id: str,
     db_path: Path,
-) -> None:
+) -> dict:
     """Compute PEG + DIA window drift and persist to the runs row.
 
     Direct port of InstrumentWatcher._run_peg_and_drift — duplicated
     here so the production watcher stays untouched. Best-effort: any
     failure is logged at DEBUG and the pipeline continues.
+
+    Returns the PEG figures so the caller can fold them back into
+    ``metrics``. They are computed here, AFTER ``insert_run``, so anything
+    upstream of this point has no PEG to report -- the Slack QC summary in
+    particular. An empty dict means PEG could not be computed.
     """
+    out: dict = {}
     try:
         from stan.metrics.peg import detect_peg_in_spectra
         from stan.metrics.peg_io import read_ms1_any, PegReaderUnavailable
@@ -296,7 +302,7 @@ def _run_peg_and_drift(
         )
     except Exception:
         logger.debug("PEG/drift imports failed", exc_info=True)
-        return
+        return out
 
     is_bruker = raw_path.is_dir() and raw_path.suffix == ".d"
 
@@ -304,6 +310,12 @@ def _run_peg_and_drift(
     try:
         spectra = list(read_ms1_any(raw_path))
         peg = detect_peg_in_spectra(spectra)
+        out = {
+            "peg_score": peg.peg_score,
+            "peg_n_ions_detected": peg.n_ions_detected,
+            "peg_intensity_pct": peg.intensity_pct,
+            "peg_class": peg.peg_class,
+        }
         if not update_peg_result(
             run_id=run_id,
             peg_score=peg.peg_score,
@@ -352,7 +364,7 @@ def _run_peg_and_drift(
             pass
 
     if not peg_reader_available or not is_bruker:
-        return
+        return out
 
     try:
         drift = detect_window_drift(raw_path)
@@ -389,6 +401,8 @@ def _run_peg_and_drift(
                 logger.debug("drift cloud write failed", exc_info=True)
     except Exception:
         logger.debug("drift detection failed", exc_info=True)
+
+    return out
 
 
 def _persist_tic(raw_path: Path, run_id: str, db_path: Path) -> None:
@@ -693,7 +707,21 @@ def process_raw(
         record["run_id"] = run_id
         record["gate_result"] = decision.result.value
 
-        _run_peg_and_drift(raw_path, run_id, db_path)
+        peg_metrics = _run_peg_and_drift(raw_path, run_id, db_path)
+        # Guarded: this used to return None on three of its four paths, and an
+        # unguarded update() would have raised inside the QC pipeline.
+        if peg_metrics:
+            metrics.update(peg_metrics)
+
+        # One-line QC summary to Slack. HERE, not beside evaluate_gates:
+        # PEG is only computed by the call above, so an earlier post would
+        # report every run as PEG-free. Never raises, no-ops without a webhook.
+        try:
+            from stan.alerts import send_qc_summary
+            send_qc_summary(instrument, raw_path.name, metrics, decision)
+        except Exception:  # noqa: BLE001 - Slack must not fail a QC run
+            logger.debug("QC summary failed", exc_info=True)
+
         _persist_tic(raw_path, run_id, db_path)
         _run_4dff_inline(raw_path, run_id=run_id, db_path=db_path)
 
