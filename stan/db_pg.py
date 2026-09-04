@@ -660,12 +660,18 @@ def update_sample_health_spd_pg(updates: list[tuple[str, int]]) -> int:
 
 def spd_usage_by_instrument_pg(cutoff: str) -> dict[str, dict[int, int]]:
     """PG counterpart of ``stan.db.spd_usage_by_instrument``."""
+    # run_date is NOT the same type in the two tables: `runs.run_date` is
+    # timestamptz while `sample_health.run_date` is text. Unioning them raw
+    # fails, and so does substr() on a timestamptz -- "function
+    # substr(timestamp with time zone, integer, integer) does not exist".
+    # Cast both to text so the ISO-prefix comparison works on either.
+    # `runs.hidden` is an integer, not a boolean, so compare it to 0.
     sql = (
         "SELECT instrument, spd, COUNT(*) FROM ("
-        "  SELECT instrument, spd, run_date FROM runs"
-        "   WHERE hidden IS NULL OR hidden = false"
+        "  SELECT instrument, spd, run_date::text AS run_date FROM runs"
+        "   WHERE hidden IS NULL OR hidden = 0"
         "  UNION ALL"
-        "  SELECT instrument, spd, run_date FROM sample_health"
+        "  SELECT instrument, spd, run_date::text AS run_date FROM sample_health"
         ") u WHERE spd IS NOT NULL AND substr(run_date, 1, 10) >= %s "
         "GROUP BY instrument, spd"
     )
@@ -681,8 +687,8 @@ def spd_usage_by_instrument_pg(cutoff: str) -> dict[str, dict[int, int]]:
             with _connect() as pg, pg.cursor() as cur:
                 cur.execute(
                     "SELECT instrument, spd, COUNT(*) FROM runs "
-                    "WHERE spd IS NOT NULL AND substr(run_date, 1, 10) >= %s "
-                    "AND (hidden IS NULL OR hidden = false) "
+                    "WHERE spd IS NOT NULL AND substr(run_date::text, 1, 10) >= %s "
+                    "AND (hidden IS NULL OR hidden = 0) "
                     "GROUP BY instrument, spd", (cutoff,),
                 )
                 rows = cur.fetchall()

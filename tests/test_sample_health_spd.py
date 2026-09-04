@@ -13,6 +13,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from stan.db import init_db, insert_sample_health
 from stan.metrics.scoring import spd_from_filename
 
@@ -315,3 +317,49 @@ class TestPgInsertSurvivesThePreMigrationWindow:
             "run_date": "2026-09-02T10:00:00", "verdict": "pass", "spd": 100,
         })
         assert "spd" in captured["sql"]
+
+
+class TestPgQueriesMatchTheRealColumnTypes:
+    """`runs.run_date` and `sample_health.run_date` are NOT the same type.
+
+    In PG Farm `runs.run_date` is `timestamp with time zone` while
+    `sample_health.run_date` is `text`, and `runs.hidden` is `integer`,
+    not boolean. A UNION across the two without casts raises
+
+        function substr(timestamp with time zone, integer, integer)
+        does not exist
+
+    which `spd_usage_by_instrument_pg` catches and answers `{}` for —
+    so the per-instrument utilisation capacities silently fell back to
+    the global Evosep 100/60 pair and the feature looked unimplemented
+    rather than broken. SQLite stores both as TEXT, so nothing local
+    reproduces it.
+    """
+
+    def test_sql_casts_run_date_and_compares_hidden_as_integer(self):
+        import inspect
+        from stan import db_pg
+
+        src = inspect.getsource(db_pg.spd_usage_by_instrument_pg)
+        # Both arms of the UNION must cast, so the mixed types never meet.
+        # (The outer substr() reads the subquery alias, which is already
+        # text by then — that one is fine uncast.)
+        assert "run_date::text AS run_date FROM runs" in src
+        assert "run_date::text AS run_date FROM sample_health" in src
+        # The runs-only fallback casts inline instead.
+        assert "substr(run_date::text, 1, 10)" in src
+        # hidden is integer in PG; `= false` is a type error.
+        assert "hidden = false" not in src, "hidden is integer, compare to 0"
+        assert "hidden = 0" in src
+
+    @pytest.mark.integration
+    def test_returns_real_counts_against_pg(self):
+        """Runs only where PG is reachable (Hive). This is the check that
+        actually proves it — the source assertions above are a guard, not
+        a substitute."""
+        from stan.db_pg import spd_usage_by_instrument_pg, use_pg
+        if not use_pg():
+            pytest.skip("needs STAN_DB_BACKEND=pg")
+        usage = spd_usage_by_instrument_pg("2026-06-06")
+        assert usage, "query returned nothing — the casts regressed"
+        assert any(v for v in usage.values())

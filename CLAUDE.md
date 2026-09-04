@@ -146,18 +146,67 @@ Canonical copies live in `scripts/`.
 `export STAN_DB_BACKEND=pg` is set inside these scripts — that is what
 `use_pg()` keys off. A script that forgets it silently writes SQLite.
 
+### PG and SQLite do not share column types
+
+SQLite stores everything as TEXT, so **nothing you can run locally
+reproduces a PG type error**. Confirmed against the live DB 2026-09-04:
+
+| Column | PG | SQLite |
+|---|---|---|
+| `runs.run_date` | `timestamp with time zone` | TEXT |
+| `sample_health.run_date` | `text` | TEXT |
+| `runs.hidden` | `integer` (not boolean) | INTEGER |
+
+So `substr(run_date, 1, 10)` works on `sample_health` and raises
+*"function substr(timestamp with time zone, integer, integer) does not
+exist"* on `runs`, and a UNION of the two without casts fails outright.
+Cast both arms (`run_date::text AS run_date`) and compare `hidden` to
+`0`, never `false`.
+
+This shipped as a bug in v1.0.85: `spd_usage_by_instrument_pg` caught
+the error and returned `{}`, so per-instrument utilisation capacities
+silently fell back to the global Evosep 100/60 pair and the feature
+looked unimplemented rather than broken. **A `try/except` around a
+query turns a type error into a wrong answer** — when you add one, make
+the fallback path prove itself against PG, not just against SQLite.
+
 Login-node rules still apply: these only walk the filesystem, make
 symlinks and call `sbatch`. All real compute lands inside SLURM.
 
-### PG Farm auth
+### PG Farm auth — two credentials, and only one of them rots
 
-Token file `/quobyte/proteomics-grp/brett/.pgfarm_token`, minted from the
-long-lived service-account secret. **It expires and the failure is
-loud but late** — `psycopg2.OperationalError: The JWT token provided is
-not valid or has expired`. It was expired when checked on 2026-09-04.
-Re-mint with `scripts/pgfarm_refresh_token.py` before concluding that
-anything else is broken. DDL needs the table *owner* (`brettsp`, CAS);
-the service account has DML only. See `docs/PG_FARM.md`.
+`/quobyte/proteomics-grp/brett/.pgfarm_token` holds the **long-lived
+512-char service-account secret**, not a token, despite the name.
+`_resolve_pgpassword()` checks `_is_jwt()` and, finding a secret,
+exchanges it for a fresh JWT *on every use* — so that path is
+self-healing and **its mtime tells you nothing about validity**. Do not
+"fix" it because it looks old; it was last touched 23 Jul 2026 and works.
+This on-demand design replaced a cron-refresh one precisely because the
+cron dying on 2026-06-10 expired the JWT a week later.
+
+What does rot is `/quobyte/proteomics-grp/brett/.pgfarm_secret.json`,
+read only by `scripts/pgfarm_refresh_token.py`. The service account is
+shared with FRAN, so **a rotation there silently kills every other copy
+of the secret**. A stale copy mints nothing:
+
+```
+HTTP 400: {"error":"No access_token received from auth server"}
+```
+
+That is the signature of a superseded secret, not of a network or
+account problem. (Happened 2026-09-04: the file held the Jun 10 secret
+after a Jun 15 rotation. Fixed in place; dead copy kept at
+`.pgfarm_secret.json.dead-jun10.bak`.)
+
+DDL needs the table **owner**. Verified against the live DB 2026-09-04:
+all 15 public tables in the `stan` database are owned by `brettsp`, and
+`has_schema_privilege('genome-proteomics-service-account','public','CREATE')`
+is **false**. So a migration needs `pgfarm auth login` — a UCD CAS
+browser flow that cannot be automated. Note that `pgfarm auth whoami`
+will happily print `brettsp` from cache while the cached token is
+already rejected by the server, so it is not a login check.
+**This is stan-specific**: in the `delimp` database the service account
+owns its tables and can migrate itself. See `docs/PG_FARM.md`.
 
 ---
 
