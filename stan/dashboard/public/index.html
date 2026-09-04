@@ -5054,6 +5054,17 @@ function BFailTable({ rows }) {
       if (!s) return '—';
       return String(s).replace('T', ' ').slice(0, 16);
     }
+    /* Ages a person thinks in, not even pixel spacing. Shared by every
+       log-age axis so 30d sits the same distance along on all three charts --
+       once one chart compresses time and another does not, the eye compares
+       them anyway and gets it wrong. `zeroLabel` differs because zero means
+       "now" on a calendar axis and "the day it was fitted" on an age axis. */
+    function evAgeTicks(maxAge, zeroLabel = 'now') {
+      return [[0, zeroLabel], [7, '7d'], [30, '30d'], [90, '90d'],
+              [182, '6mo'], [365, '1y'], [730, '2y'], [1095, '3y']]
+        .filter(([d]) => d <= maxAge * 0.98);
+    }
+
     function evNum(v, d = 0) {
       return (v === null || v === undefined || isNaN(v)) ? '—' : Number(v).toFixed(d);
     }
@@ -5190,11 +5201,7 @@ function BFailTable({ rows }) {
          the JSX parser cannot see because the file is still valid JavaScript. */
       const Y = v => PADT + (1 - (v - yLo) / ((yHi - yLo) || 1)) * (H - PADT - PADB);
 
-      /* Ticks at ages a person thinks in, not at even pixel spacing. */
-      const AGE_TICKS = [
-        [0, 'now'], [7, '7d'], [30, '30d'], [90, '90d'],
-        [182, '6mo'], [365, '1y'], [730, '2y'], [1095, '3y'],
-      ].filter(([d]) => d <= maxAge * 0.98);
+      const AGE_TICKS = evAgeTicks(maxAge);
 
       const path = series
         .map((p, i) => `${i ? 'L' : 'M'}${X(times[i]).toFixed(1)},${Y(p.plateau_bar).toFixed(1)}`)
@@ -5621,7 +5628,7 @@ function BFailTable({ rows }) {
               cur.runs_remaining.gate_open
                 ? <EvTile label="Runs left on this column"
                           value={`≈ ${Math.round(cur.runs_remaining.estimate_low).toLocaleString()}–${Math.round(cur.runs_remaining.estimate_high).toLocaleString()}`}
-                          note={`at ${evNum(100 * cur.runs_remaining.pct_of_fresh, 0)}% of fresh flow · replace near ${evNum(cur.runs_remaining.trigger_flow_ul_min, 2)} µL/min`} />
+                          note={`at ${evNum(cur.runs_remaining.pct_of_fresh, 0)}% of fresh flow · replace near ${evNum(cur.runs_remaining.trigger_flow_ul_min, 2)} µL/min`} />
                 : <EvTile label="Runs left on this column" value="—"
                           note={cur.runs_remaining.gate_reason || 'not enough data to extrapolate'} />
             )}
@@ -5751,7 +5758,13 @@ function BFailTable({ rows }) {
       const aMax = Math.max(...allAge, 1);
       const fMin = Math.min(...allFr, 0.95), fMax = Math.max(...allFr, 1.0);
       const W = 720, H = 200, PADL = 46, PADB = 28, PADT = 12, PADR = 12;
-      const x = a => PADL + (a / aMax) * (W - PADL - PADR);
+      /* LOG AGE. Zero stays at the left edge, so this expands the young end
+         where the current column lives and where columns are actually decided
+         about. Linear, one 1101-day column pushed every other line into the
+         first tenth of the panel. */
+      const aLmax = Math.log1p(aMax);
+      const x = a => PADL + (Math.log1p(Math.max(0, a)) / aLmax) * (W - PADL - PADR);
+      const AGE_TICKS = evAgeTicks(aMax, 'new');
       const y = f => PADT + (1 - (f - fMin) / Math.max(1e-9, fMax - fMin)) * (H - PADT - PADB);
       const colours = ['#94a3b8', '#60a5fa', '#22c55e', '#a78bfa', '#f472b6'];
 
@@ -5768,6 +5781,10 @@ function BFailTable({ rows }) {
             Wash flow as a fraction of each column&rsquo;s <em>own</em> value when new, against days
             since it was fitted. Comparing columns at the same age rather than on a calendar —
             a line falling faster than the ones below it is a column fouling faster than the last.
+            {' '}<b style={{ color: 'var(--warn)' }}>Age is on a log scale</b> — the first weeks
+            take most of the width, because that is where a column's fate is decided and where
+            the current one sits; one 1101-day column would otherwise squeeze every other line
+            into the left tenth.
           </p>
           <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}
                role="img" aria-label="Column ageing curves, overlaid by age">
@@ -5809,9 +5826,19 @@ function BFailTable({ rows }) {
                 </g>
               );
             })}
-            <text x={PADL} y={H - 8} fontSize="9" fill="var(--muted)">0 days</text>
-            <text x={W - PADR} y={H - 8} fontSize="9" fill="var(--muted)"
-                  textAnchor="end">{Math.round(aMax)} days</text>
+            {AGE_TICKS.map(([d, lab]) => {
+              const tx = x(d);
+              return (
+                <g key={lab}>
+                  <line x1={tx} y1={PADT} x2={tx} y2={H - PADB}
+                        stroke="var(--border)" strokeDasharray="2 4" opacity="0.4" />
+                  <text x={tx} y={H - PADB + 9} fontSize="8" textAnchor="middle"
+                        fill="var(--muted)">{lab}</text>
+                </g>
+              );
+            })}
+            <text x={W - PADR} y={H - 6} fontSize="9" fill="var(--muted)"
+                  textAnchor="end">{Math.round(aMax)} days on the oldest column</text>
           </svg>
         </div>
       );
@@ -5826,8 +5853,17 @@ function BFailTable({ rows }) {
       const t0 = Math.min(...ts), t1 = Math.max(...ts);
       const f0 = Math.min(...fs), f1 = Math.max(...fs);
       const fLo = f0 - (f1 - f0) * 0.12, fHi = f1 + (f1 - f0) * 0.12;
-      const x = t => PADL + ((t - t0) / Math.max(1, t1 - t0)) * (W - PADL - PADR);
+      /* LOG-AGE X AXIS, matching the backpressure chart. Three years of
+         washes on a linear axis gives the column actually in use a couple of
+         pixels; the whole question here is what the CURRENT column is doing,
+         with the history there for comparison. Reversed so now sits right. */
+      const DAY = 86400000;
+      const wAge = t => Math.max(0, (t1 - t) / DAY);
+      const wMaxAge = Math.max(1, wAge(t0));
+      const wLmax = Math.log1p(wMaxAge);
+      const x = t => PADL + (1 - Math.log1p(wAge(t)) / wLmax) * (W - PADL - PADR);
       const y = f => PADT + (1 - (f - fLo) / Math.max(1e-9, fHi - fLo)) * (H - PADT - PADB);
+      const WASH_TICKS = evAgeTicks(wMaxAge);
 
       /* One polyline per column: joining across an install would draw a jump
          that reads as a measurement rather than a part change. */
@@ -5838,7 +5874,9 @@ function BFailTable({ rows }) {
       });
       const segs = Object.keys(bySeg).sort();
       const colours = ['#60a5fa', '#22c55e', '#a78bfa', '#f472b6', '#eab308'];
-      const fmt = t => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      /* With the year: the left end is 2023 and "Jul 16" read as this July. */
+      const fmt = t => new Date(t).toLocaleDateString(undefined,
+        { month: 'short', day: 'numeric', year: 'numeric' });
 
       return (
         <div style={{ marginTop: '1rem' }}>
@@ -5850,6 +5888,10 @@ function BFailTable({ rows }) {
             flow <em>is</em> the resistance: <b>falling means the column is closing up</b>. No
             baseline or reference is involved — every point is measured under the same condition.
             Only washes within {evNum(wf.tolerance_bar, 0)} bar of the setpoint are shown.
+            {' '}<b style={{ color: 'var(--warn)' }}>The time axis is logarithmic in age</b> —
+            recent washes take most of the width and older history compresses to the left, so
+            the column in use is readable beside three years of it. Ticks along the bottom show
+            how much of the panel each period occupies. Teal rules are column changes.
           </p>
           <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }}
                role="img" aria-label="Wash flow over time, split by column">
@@ -5863,8 +5905,19 @@ function BFailTable({ rows }) {
                       stroke="var(--border)" strokeDasharray="2 3" opacity="0.5" />
               </g>
             ))}
-            <text x={PADL} y={H - 8} fontSize="9" fill="var(--muted)">{fmt(t0)}</text>
-            <text x={W - PADR} y={H - 8} fontSize="9" fill="var(--muted)"
+            {WASH_TICKS.map(([dAgo, lab]) => {
+              const tx = x(t1 - dAgo * DAY);
+              return (
+                <g key={lab}>
+                  <line x1={tx} y1={PADT} x2={tx} y2={H - PADB}
+                        stroke="var(--border)" strokeDasharray="2 4" opacity="0.4" />
+                  <text x={tx} y={H - PADB + 9} fontSize="8" textAnchor="middle"
+                        fill="var(--muted)">{lab}</text>
+                </g>
+              );
+            })}
+            <text x={PADL} y={H - 6} fontSize="9" fill="var(--muted)">{fmt(t0)}</text>
+            <text x={W - PADR} y={H - 6} fontSize="9" fill="var(--muted)"
                   textAnchor="end">{fmt(t1)}</text>
             <text x={8} y={PADT + 4} fontSize="9" fill="var(--muted)">µL/min</text>
             {segs.map((k, i) => {
@@ -5878,9 +5931,14 @@ function BFailTable({ rows }) {
                 <g key={k}>
                   {i > 0 && (
                     <g>
+                      {/* Solid teal + tick: a column change HAPPENED. The dashed
+                          grey verticals on this chart are the age ruler. They were
+                          both dashed grey and indistinguishable. */}
                       <line x1={bx} y1={PADT} x2={bx} y2={H - PADB}
-                            stroke="var(--muted)" strokeDasharray="3 3" />
-                      <text x={bx + 3} y={PADT + 9} fontSize="8.5" fill="var(--muted)">
+                            stroke="#2dd4bf" strokeWidth="1.2" opacity="0.85" />
+                      <polygon points={`${bx - 3.5},${PADT} ${bx + 3.5},${PADT} ${bx},${PADT + 5}`}
+                               fill="#2dd4bf" opacity="0.95" />
+                      <text x={bx + 5} y={PADT + 12} fontSize="8.5" fill="#2dd4bf">
                         column {String(k).slice(0, 10)}
                       </text>
                     </g>
@@ -5936,6 +5994,11 @@ function BFailTable({ rows }) {
 
       const d = data;
       const col = d.column || {};
+      /* The wear projection lives under column_lifetimes.current, not under
+         column. Brett asked for it in the top banner: "how much life is left"
+         is the question the banner is read for, and it was two panels down. */
+      const curLife = (d.column_lifetimes || {}).current || {};
+      const rr = curLife.runs_remaining || null;
       const s = d.summary || {};
       const wear = d.wear || {};
 
@@ -6059,8 +6122,21 @@ function BFailTable({ rows }) {
                       : 'since an inferred baseline drop — no column change logged'} />
             <EvTile label="Injections on column" value={col.injections_since != null ? col.injections_since : '—'}
                     note="from the instrument's own lifetime counter" />
+            {/* THE FLOW-NORMALISED FIGURE. A bare "281 bar" invites comparison
+                with the 400+ bar the worn column was running, and those are not
+                comparable unless the flow is the same. Resistance is. */}
             <EvTile label="Baseline now" value={evNum(col.baseline_now_bar, 0)} unit="bar"
-                    note={`was ${evNum(col.baseline_at_install_bar, 0)} bar when installed`} />
+                    note={curLife.now_resistance_bar_per_ul_min
+                      ? `${evNum(curLife.now_resistance_bar_per_ul_min, 0)} bar per µL/min · was ${evNum(col.baseline_at_install_bar, 0)} bar when installed`
+                      : `was ${evNum(col.baseline_at_install_bar, 0)} bar when installed`} />
+            <EvTile label="Runs left on this column"
+                    value={rr && rr.gate_open
+                      ? `≈ ${Math.round(rr.estimate_low).toLocaleString()}–${Math.round(rr.estimate_high).toLocaleString()}`
+                      : '—'}
+                    tone={rr && rr.gate_open && rr.estimate_low < 100 ? 'var(--warn)' : 'var(--text)'}
+                    note={rr && rr.gate_open
+                      ? `injections until ${evNum(rr.trigger_flow_ul_min, 2)} µL/min, where the last column was replaced`
+                      : (rr && rr.gate_reason) || 'no wash data on this column yet'} />
             <EvTile label="Baseline change" value={`${rising ? '+' : ''}${evNum(col.baseline_change_pct, 1)}%`}
                     tone={col.baseline_change_pct > 15 ? 'var(--warn)' : 'var(--text)'}
                     note={rising ? 'backpressure is climbing' : 'backpressure is flat or falling'} />

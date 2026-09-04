@@ -46,9 +46,25 @@ STAGE=$(mktemp -d)
 rsync -a --exclude '__pycache__' --exclude '*.pyc' stan/ "$STAGE/stan/"
 cp pyproject.toml README.md "$STAGE/"
 cp deploy/requirements-azure.txt "$STAGE/requirements.txt"   # REQUIRED
+mkdir -p "$STAGE/config" && cp config/*.yml "$STAGE/config/"  # REQUIRED
 ( cd "$STAGE" && zip -qr /tmp/stan_deploy.zip . -x '*.pyc' '*__pycache__*' )
-unzip -l /tmp/stan_deploy.zip | grep requirements.txt        # verify before deploying
+unzip -l /tmp/stan_deploy.zip | grep -E 'requirements.txt|config/columns.yml'   # both, before deploying
 ```
+
+### config/ is part of the package
+
+`resolve_config_path()` looks in `~/STAN/` and then in `<package>/config/`,
+which on the App Service is `/home/site/wwwroot/config` -- inside the zip. A
+package built without it answers `/api/columns` with `{"columns": []}`, and
+the Maintenance panel then shows **"Column not recorded"** instead of the
+lab's standard column, because the frontend has no catalogue to look the
+default up in. That is what happened on 2026-09-04.
+
+Only the YAML ships. `config/` also holds `bruker_maintenance.json` and
+`evosep_column_health.json`, which are local extractor output and are the
+FILE FALLBACK those endpoints use when PG Farm is unreachable -- shipping a
+snapshot would serve months-old maintenance data as if it were current, with
+nothing on screen to say so. Absent, the panel hides itself instead.
 
 ## Deploy
 
