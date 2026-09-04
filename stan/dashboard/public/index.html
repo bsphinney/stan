@@ -5097,16 +5097,61 @@ function BFailTable({ rows }) {
      * gradient run at genuinely different pressures, so overlaying them on one
      * scale would compare nothing.
      * ────────────────────────────────────────────────────────────────────────── */
-    function EvBaselineChart({ method, ms, hue, flagsByRun, sinceDays }) {
+    /* LONG HISTORY WITHOUT SHIPPING IT ALL.
+       `methods[].series` is windowed to the last RUNS_WINDOW_DAYS (90) at the
+       source, because the whole 2023-onward per-run detail is ~13 MB and this
+       document lives in one PG row that every panel load fetches.
+       `methods[].steps` is NOT windowed -- it is the detected baseline level
+       and every time that level moved, per method, back to 2023. Replaying it
+       as a step function gives a truthful multi-year view for a few kilobytes.
+       It is a coarser curve, not the same curve zoomed out, so the panel says
+       which one it is drawing rather than letting them look alike. */
+    function evBaselineSkeleton(steps, tailStart, tailBar) {
+      if (!steps.length) return [];
+      const pts = [];
+      steps.forEach((st, i) => {
+        if (i === 0 && st.from_bar != null) {
+          pts.push({ start: st.previous_run || st.at, plateau_bar: st.from_bar, _lvl: true });
+        }
+        if (st.to_bar != null) pts.push({ start: st.at, plateau_bar: st.to_bar, _lvl: true });
+      });
+      /* Carry the last known level forward to the newest run, so the line ends
+         at "now" instead of at whenever the baseline last happened to move. */
+      if (tailStart && tailBar != null) pts.push({ start: tailStart, plateau_bar: tailBar, _lvl: true });
+      return pts;
+    }
+
+    function EvBaselineChart({ method, ms, hue, flagsByRun, sinceDays, installedAt }) {
+      const DAY = 86400000;
       const all = ms.series || [];
+      const allSteps = ms.steps || [];
+      const runFrom = all.length ? new Date(all[0].start).getTime() : null;
+      const wantFrom = sinceDays ? Date.now() - sinceDays * DAY : -Infinity;
+
       /* Windowed rather than a compressed axis. Squeezing older time to make
          recent time bigger would change every visible SLOPE, and slope is what
          this chart is read for -- "trend -3.5 bar/day" would no longer match
          what the line does. A window keeps one minute the same width
          everywhere and still gives the current column the whole panel. */
-      const series = sinceDays
-        ? all.filter(p => (Date.now() - new Date(p.start).getTime()) <= sinceDays * 86400000)
+      const runPts = sinceDays
+        ? all.filter(p => (Date.now() - new Date(p.start).getTime()) <= sinceDays * DAY)
         : all;
+
+      /* Fall back to the step skeleton ONLY when it reaches further back than
+         the per-run detail does. Where detail exists it is strictly better, so
+         a 30-day window never loses resolution to this. Before 2026-09-03 the
+         "1 year" and "All" buttons silently returned the same 90 days as
+         "90 days" -- the filter was correct, the data simply stopped there. */
+      const stepsInWindow = allSteps.filter(st => new Date(st.at).getTime() >= wantFrom);
+      const reachesBack = stepsInWindow.length > 1 && runFrom != null
+        && new Date(stepsInWindow[0].at).getTime() < runFrom - DAY;
+      const detail = !reachesBack;
+      const series = detail
+        ? runPts
+        : evBaselineSkeleton(
+            stepsInWindow,
+            all.length ? all[all.length - 1].start : null,
+            all.length ? all[all.length - 1].plateau_bar : null);
       if (series.length < 2) return null;
 
       const W = 1000, H = 150, PADL = 46, PADR = 12, PADT = 12, PADB = 20;
@@ -5133,7 +5178,6 @@ function BFailTable({ rows }) {
          they make the compression visible instead of implicit. The per-method
          trend in each header is computed from the data, never measured off
          this axis. */
-      const DAY = 86400000;
       const ageDays = t => Math.max(0, (t1 - t) / DAY);
       const maxAge = Math.max(1, ageDays(t0));
       const lmax = Math.log1p(maxAge);
@@ -5162,7 +5206,13 @@ function BFailTable({ rows }) {
       /* Sustained downward steps are candidate interventions — a new column, a
          wash, a seal service. They are what a rising baseline should be measured
          from, so they are drawn as rules rather than hidden. */
-      const drops = (ms.steps || []).filter(s => s.direction === 'drop');
+      const drops = (ms.steps || []).filter(s => {
+        if (s.direction !== 'drop') return false;
+        const t = new Date(s.at).getTime();
+        /* Unfiltered, older steps mapped to a negative x and were drawn off
+           the left edge of the viewBox -- invisible, but still in the DOM. */
+        return t >= t0 && t <= t1;
+      });
 
       return (
         <div style={{ marginBottom: '0.5rem' }}>
@@ -5172,8 +5222,21 @@ function BFailTable({ rows }) {
           }}>
             {/* Direct label — identity never rides on the line colour alone. */}
             <span style={{ color: hue, fontWeight: 700, fontSize: '0.85rem' }}>■ {method}</span>
+            {/* WHAT IS DRAWN, not what exists. "12843 runs" beside a line
+                holding 1083 of them invited reading the whole record off a
+                90-day window. */}
+            <span style={{
+              fontSize: '0.68rem', fontWeight: 700, padding: '0.05rem 0.35rem',
+              borderRadius: '0.25rem', whiteSpace: 'nowrap',
+              background: detail ? 'rgba(96,165,250,0.18)' : 'rgba(251,191,36,0.18)',
+              color: detail ? '#93c5fd' : '#fbbf24',
+            }}>
+              {detail
+                ? `per run · ${series.length.toLocaleString()} drawn`
+                : `baseline history · ${stepsInWindow.length} changes`}
+            </span>
             <span style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>
-              {ms.n_runs} runs · baseline {evNum(base, 0)} bar
+              {ms.n_runs.toLocaleString()} runs on record · baseline {evNum(base, 0)} bar
               {ms.plateau_sd_bar != null && <> · run-to-run sd {evNum(ms.plateau_sd_bar, 1)} bar</>}
               {ms.trend_bar_per_day != null &&
                 <> · trend {ms.trend_bar_per_day > 0 ? '+' : ''}{evNum(ms.trend_bar_per_day, 1)} bar/day</>}
@@ -5216,6 +5279,31 @@ function BFailTable({ rows }) {
                 </g>
               );
             })}
+            {/* THE COLUMN BOUNDARY. "This column" holds a 14-day floor so the
+                install step stays visible, which means a column fitted
+                yesterday is drawn beside two weeks of the column before it.
+                Unmarked, that reads as this column's history -- the thing this
+                panel exists to measure. Everything left of the rule is the
+                previous column. */}
+            {(() => {
+              if (!installedAt) return null;
+              const ti = new Date(installedAt).getTime();
+              if (!(ti > t0 && ti < t1)) return null;
+              const xi = X(ti);
+              return (
+                <g>
+                  <rect x={PADL} y={PADT} width={Math.max(0, xi - PADL)} height={H - PADT - PADB}
+                        fill="var(--muted)" opacity="0.13" />
+                  <line x1={xi} x2={xi} y1={PADT} y2={H - PADB}
+                        stroke="#f8fafc" strokeWidth="1.5"
+                        vectorEffect="non-scaling-stroke" opacity="0.9" />
+                  <text x={xi + 4} y={PADT + 9} fontSize="8.5" fill="#f8fafc" opacity="0.95">
+                    column installed
+                  </text>
+                  <title>{`Column installed ${evFmtDate(installedAt)}\nShaded area to the left is the PREVIOUS column`}</title>
+                </g>
+              );
+            })()}
             {drops.map((s, i) => {
               const x = X(new Date(s.at).getTime());
               return (
@@ -5238,8 +5326,10 @@ function BFailTable({ rows }) {
             <path d={path} fill="none" stroke={hue} strokeWidth="2"
                   vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
 
-            {/* Flagged runs carry a ring + status colour + hover text. */}
-            {series.map((p, i) => {
+            {/* Flagged runs carry a ring + status colour + hover text. Only in
+                per-run mode: a skeleton vertex is a baseline LEVEL, so a ring
+                on it would sit at a pressure that run never recorded. */}
+            {detail && series.map((p, i) => {
               const f = flagsByRun[p.start];
               if (!f) return null;
               const s = EV_SEV[f.severity] || EV_SEV.elevated;
@@ -5265,15 +5355,22 @@ function BFailTable({ rows }) {
             {series.map((p, i) => (
               <g key={`h${i}`}>
                 <circle cx={X(times[i])} cy={Y(p.plateau_bar)} r="7" fill="transparent" />
-                <title>{`${evFmtDate(p.start)} — ${p.plateau_bar} bar`}</title>
+                <title>{detail
+                  ? `${evFmtDate(p.start)} — ${p.plateau_bar} bar`
+                  : `baseline ${p.plateau_bar} bar from ${evFmtDate(p.start)}`}</title>
               </g>
             ))}
 
+            {/* The ENDS OF THE PLOTTED LINE. These read `ms.first_run` /
+                `ms.last_run` until 2026-09-03 -- the method's all-time extent,
+                which is not what is drawn: per-run detail is windowed to 90
+                days at the source, so every window, including "This column",
+                claimed to start in July 2023. */}
             <text x={PADL} y={H - 6} fill="var(--muted)" fontSize="10">
-              {evFmtDate(ms.first_run)}
+              {evFmtDate(series[0].start)}
             </text>
             <text x={W - PADR} y={H - 6} textAnchor="end" fill="var(--muted)" fontSize="10">
-              {evFmtDate(ms.last_run)}
+              {evFmtDate(series[series.length - 1].start)}
             </text>
           </svg>
         </div>
@@ -5994,6 +6091,17 @@ function BFailTable({ rows }) {
             Rings are flagged runs; hover for the run name. The faint dashed verticals are
             only the age ruler, labelled along the bottom.
             <br />
+            <b style={{ color: '#93c5fd' }}>Per-run detail is kept for 90 days</b> — the
+            full per-run history is ~13 MB and this panel is one database row, so beyond
+            that the chart switches to <b style={{ color: '#fbbf24' }}>baseline history</b>:
+            the detected baseline level and every time it moved, back to 2023. The badge on
+            each gradient says which one you are looking at. Flag rings appear in per-run
+            mode only. Where a column change falls inside the window, a white rule marks
+            it and <b>the shaded area to its left is the previous column</b> — the
+            &ldquo;This column&rdquo; view keeps a 14-day floor so the install itself stays
+            on screen, which means a column fitted yesterday is drawn beside the one before
+            it.
+            <br />
             <b style={{ color: 'var(--warn)' }}>The time axis is logarithmic in age:</b> the
             last 30 days take about half the width and older history compresses smoothly
             toward the left. The ticks along the bottom show how much of the panel each
@@ -6003,7 +6111,7 @@ function BFailTable({ rows }) {
           {analytical.map((ms, i) => (
             <EvBaselineChart key={ms.method} method={ms.method} ms={ms}
                              hue={EV_HUES[i % EV_HUES.length]} flagsByRun={flagsByRun}
-                             sinceDays={evSpanDays} />
+                             sinceDays={evSpanDays} installedAt={col.installed} />
           ))}
           </EvSection>
 

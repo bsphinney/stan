@@ -61,3 +61,7 @@ Thumbs.db
 .claude/
 .omc/
 **/.omc/
+
+# Opt-in dev deps for scripts/check_jsx.js and scripts/render_check.js
+node_modules/
+package-lock.json
