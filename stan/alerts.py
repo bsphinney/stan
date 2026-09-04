@@ -112,6 +112,34 @@ _RESULT_ICON = {"pass": ":large_green_circle:",
                 "warn": ":large_yellow_circle:",
                 "fail": ":red_circle:"}
 
+#: IPS bands, copied from IpsBadge in dashboard/public/index.html so the Slack
+#: line and the front-page gauges cannot disagree about the same run.
+_IPS_GREEN = 80
+_IPS_YELLOW = 60
+
+
+def _icon_for(metrics: dict, decision: GateDecision | None) -> str:
+    """Colour off IPS, the cohort-calibrated score the front-page gauges use.
+
+    Deliberately NOT off ``decision.result``. Gate thresholds live in a
+    thresholds.yml that no deployment actually has, so ``evaluate_gates``
+    short-circuits to PASS for every run -- all 4,540 rows in the runs table
+    are "pass", including 398 that identified nothing. Keying the icon on that
+    would paint every line green forever.
+
+    IPS is built from the lab's own accumulated baselines (see
+    ``IPS_REFERENCES_DDA``) and is the number the gauges already show, so it is
+    both meaningful and consistent with the dashboard. The gate decision is
+    kept only as a fallback for runs with no IPS at all.
+    """
+    ips = metrics.get("ips_score")
+    if ips is not None:
+        if ips >= _IPS_GREEN:
+            return ":large_green_circle:"
+        return ":large_yellow_circle:" if ips >= _IPS_YELLOW else ":red_circle:"
+    return _RESULT_ICON.get(
+        decision.result.value.lower() if decision else "", ":white_circle:")
+
 
 def qc_summary_enabled() -> bool:
     """Per-run summaries on unless STAN_SLACK_QC_SUMMARY is set to a false value."""
@@ -146,6 +174,12 @@ def format_qc_summary(instrument: str, run_name: str, metrics: dict,
         parts.append(f"IPS {int(metrics['ips_score'])}")
 
     flags = []
+    # An explicit zero, not a missing key: runs that never went through a
+    # search have no such key and must not be labelled dead.
+    ids = metrics.get("n_precursors", metrics.get("n_psms"))
+    if ids is not None and not ids:
+        flags.append("no identifications")
+
     peg = metrics.get("peg_score")
     if peg is not None and peg >= _PEG_REPORT_FROM:
         try:
@@ -167,8 +201,7 @@ def format_qc_summary(instrument: str, run_name: str, metrics: dict,
                     label = f"{label} ({val:.0f}% <5 ppm)"
             flags.append(label)
 
-    icon = _RESULT_ICON.get(
-        decision.result.value.lower() if decision else "", ":white_circle:")
+    icon = _icon_for(metrics, decision)
     line = f"{icon} *{instrument}* `{run_name}`"
     if parts:
         line += " — " + " \u00b7 ".join(parts)

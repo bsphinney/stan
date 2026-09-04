@@ -126,3 +126,64 @@ def test_every_return_path_yields_a_value():
             if isinstance(n, ast.Return) and n.value is None]
     assert not bare, f"bare return(s) at offset {bare} would give metrics.update(None)"
     assert isinstance(fn.body[-1], ast.Return), "falls off the end -> returns None"
+
+
+# ── icon colour comes from IPS, not the gate ───────────────────────
+#
+# Live runs on 2026-09-04 exposed this: FL030926_HeL50_90m_3.raw posted a
+# GREEN circle with "IPS 0" and no IDs at all. Every one of the 4,540 rows in
+# the runs table is gate_result="pass" -- thresholds.yml does not exist on any
+# deployment, so evaluate_gates short-circuits to PASS before it ever compares
+# a metric. Colouring off the gate meant the icon was a constant.
+#
+# IPS is cohort-calibrated from the lab's own baselines and is what the
+# front-page IpsBadge already uses, so these bands are copied from it.
+
+_PASS = GateDecision(result=GateResult.PASS)
+
+
+def test_dead_run_is_red_even_though_the_gate_says_pass():
+    """The FL030926_HeL50_90m_3.raw case, verbatim."""
+    line = format_qc_summary(
+        "Orbitrap Fusion Lumos", "FL030926_HeL50_90m_3.raw",
+        {"n_psms": 0, "n_proteins": 0, "ips_score": 0}, _PASS)
+    assert line.startswith(":red_circle:")
+    assert "no identifications" in line
+
+
+def test_healthy_run_from_the_same_plate_stays_green():
+    line = format_qc_summary(
+        "Orbitrap Fusion Lumos", "FL030926_HeL50_120m_2.raw",
+        {"n_psms": 53084, "n_proteins": 5430, "ips_score": 85}, _PASS)
+    assert line.startswith(":large_green_circle:")
+    assert "no identifications" not in line
+
+
+def test_middling_ips_is_yellow():
+    """IPS 74 -- the 35m run that posted alongside the dead one."""
+    line = format_qc_summary(
+        "Orbitrap Fusion Lumos", "FL030926_HeL50_35m_5.raw",
+        {"n_psms": 32074, "n_proteins": 3949, "ips_score": 74}, _PASS)
+    assert line.startswith(":large_yellow_circle:")
+
+
+@pytest.mark.parametrize("ips,icon", [
+    (80, ":large_green_circle:"), (79, ":large_yellow_circle:"),
+    (60, ":large_yellow_circle:"), (59, ":red_circle:"),
+])
+def test_band_boundaries_match_the_dashboard(ips, icon):
+    line = format_qc_summary("i", "r", {"n_psms": 1, "ips_score": ips}, _PASS)
+    assert line.startswith(icon)
+
+
+def test_without_ips_it_falls_back_to_the_gate():
+    line = format_qc_summary("i", "r", {"n_psms": 5000},
+                             GateDecision(result=GateResult.FAIL,
+                                          failed_gates=["n_psms"]))
+    assert line.startswith(":red_circle:")
+
+
+def test_a_run_that_was_never_searched_is_not_called_dead():
+    """No ID key at all != zero IDs. Monitor-pipeline runs must not be flagged."""
+    line = format_qc_summary("i", "r", {"n_ms2_frames": 12000}, None)
+    assert "no identifications" not in line
