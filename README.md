@@ -205,6 +205,8 @@ What ships today vs. what's still planned.
 | Arcade → shared leaderboard | Done | Game over prompts for an optional name + affiliation and posts to `POST /api/arcade/score`; scores live in the PG Farm `arcade_scores` table (shared by every install) or local SQLite when there is no PG. The public dashboard reads the board and refuses writes (`STAN_DASHBOARD_READONLY`). The HF Space relay endpoints are still undeployed and are only a read fallback. |
 | Bruker `.d` XML method-tree parser | Done | Reads `<N>.m/submethods.xml`, `hystar.method`, `SampleInfo.xml` for authoritative SPD + Evosep detection. |
 | `validate_spd_from_metadata()` | Done | XML → MethodName → `Frames.Time` span fallback chain. |
+| SPD on non-QC acquisitions | Done | `sample_health.spd`, resolved per-file at ingest (metadata, then filename token — never the cohort default). Backfill with `stan fix-sample-spds`. Lets the dashboard's TIC overlay filter Sample and Blank traces by gradient instead of dropping them. |
+| Per-instrument utilisation capacity | Done | Utilisation is scored against each instrument's two most-used gradients (`spd_usage_by_instrument()`), not a fixed Evosep 100/60 pair. |
 | `detect_lc_system()` | Done | Evosep vs custom from `.d` method tree + TrayType; powers the LC filter on the community TIC overlay. |
 | Real acquisition-date preservation | Done | Bruker `analysis.tdf.AcquisitionDateTime` / Thermo `fisher_py` CreationDate, not insertion time. |
 | DIA-NN filename `--` sanitizer | Done | Junction/symlink workaround for the DIA-NN argv-parsing bug. |

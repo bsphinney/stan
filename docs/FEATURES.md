@@ -71,7 +71,13 @@ SPD_bucket)` so a 60-SPD run on a Lumos compares against other 60-SPD
 Lumos runs, not a 100-SPD timstof. Default load 50 ng HeLa.
 
 `stan fix-spds` re-resolves NULL `spd` rows from existing raw metadata
-when the chain is improved.
+when the chain is improved. `stan fix-sample-spds` does the same for
+non-QC acquisitions in `sample_health` (v1.0.85), which is what lets
+the TIC overlay's SPD filter keep Sample and Blank traces instead of
+emptying both panels.
+
+Utilisation percentages are scored against each instrument's own two
+most-used gradients, not a fixed Evosep 100/60 pair.
 
 ---
 
@@ -156,7 +162,7 @@ Major commands:
 - `stan version|doctor|verify` — diagnostics
 - `stan submit-all [--backend pg]` — push to community relay
 - `stan hive-dispatch|hive-process|ingest-orphans` — HPC + recovery
-- `stan backfill-tic|backfill-metrics|fix-spds` — re-derive metrics
+- `stan backfill-tic|backfill-metrics|fix-spds|fix-sample-spds` — re-derive metrics
 - `stan baseline` — retroactive QC over existing dirs
 - `stan backfill-from-dir` — retroactively search + extract a dir of raws
 - `stan hive-upload` — SMB-upload a single raw to the Hive incoming dir

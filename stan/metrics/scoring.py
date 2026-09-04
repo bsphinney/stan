@@ -277,6 +277,32 @@ def _spd_from_method_string(method: str) -> int | None:
     return None
 
 
+def spd_from_filename(name) -> int | None:
+    r"""Last-resort SPD from a run name, when the raw file can't answer.
+
+    Delegates to the same whitelist the method-name parser uses rather
+    than a bare ``(\d+)[\s_-]*spd`` regex, because the loose form reads
+    "0604202560Spd" — a date with a throughput token glued to it — as
+    604,202,560 SPD. The whitelist only recognises throughputs that
+    exist, and its ``(?<!\d)``/``(?!\d)`` guards refuse to pull a
+    number out of a longer digit run. Refusing to guess is the correct
+    outcome here: a NULL renders as "SPD unknown", a wrong value
+    silently bucket-mixes a cohort.
+
+    Args:
+        name: A run name, filename, or Path. The suffix is ignored.
+
+    Returns:
+        SPD as int if the name carries a recognised throughput token,
+        else None.
+    """
+    from pathlib import Path as _Path
+    if not name:
+        return None
+    stem = _Path(str(name)).stem
+    return _spd_from_method_string(stem)
+
+
 def _bruker_spd_from_xml(d_path) -> int | None:
     """Read the Evosep method label from Bruker `.d` XML method files.
 

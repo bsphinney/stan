@@ -237,6 +237,30 @@ the same layered fallback:
 the chain now produces a definitive answer. Idempotent; safe to
 re-run.
 
+**Sample runs carry an SPD too (v1.0.85).** `sample_health.spd` is
+resolved in `stan.db._resolve_sample_spd` — raw metadata first, then
+`spd_from_filename()`, and *deliberately not* the instruments.yml
+cohort default: a QC injection is always the same method, while a
+core facility switches gradients between users through the day, so
+the blanket would bucket-mix. Backfill with `stan fix-sample-spds`
+(backend-aware — writes PG when `STAN_DB_BACKEND=pg`; run it where
+the raw files are).
+
+Without that column the dashboard's TIC overlay reported
+`Sample (0) · Blank (0)` on a week with 185 sample acquisitions,
+because the API stubbed `spd: None` and the UI filter compares
+`String(r.spd) === String(spdFilter)`. Any new panel that filters by
+SPD must therefore decide what an *unresolved* gradient means — the
+overlay offers an explicit "SPD unknown" bucket and says how many
+traces it is holding back, rather than showing a silent zero.
+
+**Utilisation capacity is per-instrument**, from the gradients that
+instrument actually runs (`spd_usage_by_instrument()` over `runs` +
+`sample_health`, top two by count). The Hive counter's global
+`CAPACITIES = (100, 60)` is Evosep's timsTOF ladder and is only the
+fallback — scoring an Exploris against 100 SPD reports a percentage
+of a method that lab has never run.
+
 **Adding a new Evosep gradient**: extend `_EVOSEP_METHOD_PATTERNS`
 in `stan/metrics/scoring.py` AND `GRADIENT_TO_SPD` snapping table,
 and add a regression test against a real `.d` method XML in

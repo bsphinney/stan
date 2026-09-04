@@ -3010,21 +3010,48 @@
       // only had data.runs (QC) — fall back to that shape so a stale
       // backend doesn't break the UI.
       const rawFacets = data.facets || { qc: data.runs || [], sample: [], blank: [] };
+      const allRows = ['qc', 'sample', 'blank'].flatMap(k => rawFacets[k] || []);
       const spdValues = Array.from(new Set(
-        ['qc', 'sample', 'blank']
-          .flatMap(k => rawFacets[k] || [])
-          .map(r => r.spd)
-          .filter(v => v != null)
+        allRows.map(r => r.spd).filter(v => v != null)
       )).sort((a, b) => a - b);
+      // Runs whose gradient never resolved. Before v1.0.85 that was
+      // every Sample and Blank row — sample_health had no spd column at
+      // all — so picking a gradient silently emptied both panels and
+      // the card read "Sample (0)" on a week with 185 of them. They are
+      // counted rather than quietly dropped now, and selectable.
+      const nUnknownSpd = allRows.filter(r => r.spd == null).length;
+      const matchesSpd = r => spdFilter === '__all__'
+        || (spdFilter === '__none__'
+              ? r.spd == null
+              : String(r.spd) === String(spdFilter));
       const facets = spdFilter === '__all__' ? rawFacets : Object.fromEntries(
         ['qc', 'sample', 'blank'].map(k =>
-          [k, (rawFacets[k] || []).filter(r => String(r.spd) === String(spdFilter))])
+          [k, (rawFacets[k] || []).filter(matchesSpd)])
       );
       const totalRuns = (facets.qc?.length || 0)
                       + (facets.sample?.length || 0)
                       + (facets.blank?.length || 0);
-      if (totalRuns === 0) {
+      const hiddenNoSpd =
+        (spdFilter === '__all__' || spdFilter === '__none__') ? 0 : nUnknownSpd;
+      if (allRows.length === 0) {
         return null;  // QuickStatus already says "no runs today"
+      }
+      if (totalRuns === 0) {
+        // Don't vanish — an empty SPD bucket is a real answer, and a
+        // silently missing card reads as "nothing ran".
+        return (
+          <div className="card" style={{marginTop:'1rem'}}>
+            <h3>Last {days} day{days === 1 ? '' : 's'} · TIC overlay</h3>
+            <div style={{color:'var(--muted)', fontSize:'0.85rem'}}>
+              No traces at {spdFilter === '__none__' ? 'an unresolved gradient'
+                                                    : `${spdFilter} SPD`}.
+              {' '}{allRows.length} run{allRows.length === 1 ? '' : 's'} in this
+              window at other gradients —{' '}
+              <a href="#" onClick={e => { e.preventDefault(); setSpdFilter('__all__'); }}
+                 style={{color:'var(--accent)'}}>show all SPD</a>.
+            </div>
+          </div>
+        );
       }
       const totalWithTic =
         (facets.qc?.filter(r => r.has_tic).length || 0)
@@ -3104,7 +3131,7 @@
               {/* SPD filter, mirroring the community site. Only shown
                   when the runs in view actually span >1 gradient —
                   a one-method day doesn't need a chooser. */}
-              {spdValues.length > 1 && (
+              {(spdValues.length > 1 || (spdValues.length && nUnknownSpd > 0)) && (
                 <select value={spdFilter}
                         onChange={e => setSpdFilter(e.target.value)}
                         title="Overlay only runs acquired at this samples-per-day gradient. Traces from different gradients aren't directly comparable."
@@ -3113,6 +3140,9 @@
                   {spdValues.map(v => (
                     <option key={v} value={v}>{v} SPD</option>
                   ))}
+                  {nUnknownSpd > 0 && (
+                    <option value="__none__">SPD unknown ({nUnknownSpd})</option>
+                  )}
                 </select>
               )}
               {/* TIC | BPC toggle — only rendered when at least one
@@ -3157,6 +3187,15 @@
             Triangles at the bottom of QC = cIRT anchor peptide RTs for the most
             recent QC run (green &lt;0.5 min drift, yellow &lt;1.5, red ≥1.5).
           </p>
+          {hiddenNoSpd > 0 && (
+            <p style={{fontSize:'0.75rem', color:'var(--warn, #c93)', margin:'0 0 0.5rem 0'}}>
+              {hiddenNoSpd} trace{hiddenNoSpd === 1 ? '' : 's'} hidden — no
+              gradient resolved for {hiddenNoSpd === 1 ? 'it' : 'them'}. Pick
+              “SPD unknown” to see {hiddenNoSpd === 1 ? 'it' : 'them'}, or run{' '}
+              <code>stan fix-sample-spds</code> where the raw files live to fill
+              the gap in.
+            </p>
+          )}
           {['qc', 'sample', 'blank'].map(cls => {
             if (filter !== 'all' && filter !== cls) return null;
             const items = facets[cls] || [];
@@ -8147,10 +8186,23 @@ function BFailTable({ rows }) {
        table: STAN only ingests QC/HeLa runs, so `runs` sees a handful of
        injections a day out of a hundred real ones and would understate
        utilisation by an order of magnitude. */
-    function UtilizationPanel() {
+    function UtilizationPanel({ instrument, onInstrument }) {
       const [days, setDays] = useState(60);
-      const [inst, setInst] = useState('');
       const { data, loading, error } = useFetch(`/api/utilization?days=${days || 14}`, [days]);
+
+      // v1.0.85: the instrument choice lives in SamplesTab now so the
+      // Sample health table below shares it — picking timsTOF here used
+      // to leave that table listing every Lumos and Exploris file.
+      // Computed above the early returns because a hook can't sit
+      // behind a conditional. When nothing is chosen yet (or the choice
+      // isn't in this snapshot) we adopt names[0], which is what the
+      // chart falls back to, so the two panels can never disagree about
+      // which instrument is on screen.
+      const names = Object.keys((data && data.instruments) || {});
+      useEffect(() => {
+        if (!names.length) return;
+        if (!instrument || !names.includes(instrument)) onInstrument(names[0]);
+      }, [data, instrument]);
 
       if (loading && !data) return <div className="card">Loading throughput…</div>;
       if (error) return <div className="card" style={{ color: '#c33' }}>Error: {error}</div>;
@@ -8165,20 +8217,22 @@ function BFailTable({ rows }) {
           </div>
         );
       }
-      const names = Object.keys(data.instruments || {});
       if (!names.length) return null;
-      const active = inst && names.includes(inst) ? inst : names[0];
+      const active = instrument && names.includes(instrument) ? instrument : names[0];
       const b = data.instruments[active];
       const daily = Object.entries(b.daily).map(([k, v]) => ({ label: k, value: v }));
       const weekly = Object.entries(b.weekly).map(([k, v]) => ({ label: k, value: v }));
-      const caps = data.capacities || [100, 60];
+      // Per-instrument capacities (v1.0.85) — the gradients this
+      // instrument actually runs. data.capacities is the old global
+      // Evosep pair, kept as the fallback for a stale backend.
+      const caps = b.capacities || data.capacities || [100, 60];
 
       return (
         <div className="card">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: '0.5rem' }}>
             <h3 style={{ marginBottom: 0 }}>Throughput &amp; utilisation</h3>
             <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', fontSize: '0.8rem' }}>
-              <select value={active} onChange={e => setInst(e.target.value)}>
+              <select value={active} onChange={e => onInstrument(e.target.value)}>
                 {names.map(n => <option key={n} value={n}>{n}</option>)}
               </select>
               <select value={days} onChange={e => setDays(Number(e.target.value))}>
@@ -8240,10 +8294,14 @@ function BFailTable({ rows }) {
        Throughput + utilisation first (the question asked most often),
        then per-sample health below. */
     function SamplesTab() {
+      // One instrument selector for the whole tab. UtilizationPanel
+      // renders the <select> (it is the panel that knows the names),
+      // but the state lives here so Sample health filters to match.
+      const [instrument, setInstrument] = useState('');
       return (
         <>
-          <UtilizationPanel />
-          <SampleHealthPanel />
+          <UtilizationPanel instrument={instrument} onInstrument={setInstrument} />
+          <SampleHealthPanel instrument={instrument} />
         </>
       );
     }
@@ -8251,10 +8309,15 @@ function BFailTable({ rows }) {
     /* ── Sample Health tab ─────────────────────────────────────────
        Shows non-QC files the rawmeat monitor flagged. Separate from
        QC History so QC and non-QC don't share the same table. */
-    function SampleHealthPanel() {
+    function SampleHealthPanel({ instrument }) {
       const [verdictFilter, setVerdictFilter] = useState('');
-      const url = '/api/sample-health' + (verdictFilter ? `?verdict=${verdictFilter}` : '');
-      const { data, loading, error, reload } = useFetch(url, [verdictFilter]);
+      // /api/sample-health has always accepted `instrument`; the panel
+      // just never sent it, so the table ignored the tab's selector.
+      const qs = [];
+      if (verdictFilter) qs.push('verdict=' + encodeURIComponent(verdictFilter));
+      if (instrument) qs.push('instrument=' + encodeURIComponent(instrument));
+      const url = '/api/sample-health' + (qs.length ? '?' + qs.join('&') : '');
+      const { data, loading, error, reload } = useFetch(url, [verdictFilter, instrument]);
 
       useEffect(() => {
         const t = setInterval(reload, 60000);
@@ -8295,7 +8358,7 @@ function BFailTable({ rows }) {
             (Bruker <code>.d</code> only in v0.2.89; Thermo support TBD.)
           </p>
           {rows.length === 0 ? (
-            <p style={{ color: '#666' }}>No sample health rows yet. Enable <code>monitor_all_files: true</code> on a Bruker instrument to populate.</p>
+            <p style={{ color: '#666' }}>No sample health rows{instrument ? ` for ${instrument}` : ''} yet. Enable <code>monitor_all_files: true</code> on that instrument to populate.</p>
           ) : (
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
               <thead>

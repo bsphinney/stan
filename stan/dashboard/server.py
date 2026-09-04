@@ -756,7 +756,7 @@ async def api_today_tic_overview(
             sh_params.append(instrument)
         sh_sql = (
             "SELECT s.id AS run_id, s.run_name, s.instrument, "
-            "       s.run_date, s.verdict AS gate_result, "
+            "       s.run_date, s.verdict AS gate_result, s.spd, "
             "       s.dynamic_range_log10, s.ms1_total_tic, "
             "       t.rt_min AS tic_rt, t.intensity AS tic_intensity, t.bp_intensity AS tic_bp "
             "FROM sample_health s "
@@ -767,9 +767,18 @@ async def api_today_tic_overview(
         try:
             sh_rows = con.execute(sh_sql, sh_params).fetchall()
         except sqlite3.OperationalError:
-            # health_tic_traces may not exist on older DBs that haven't
-            # migrated yet — gracefully degrade to no Sample/Blank facets.
-            sh_rows = []
+            # health_tic_traces (or sample_health.spd, added v1.0.85) may
+            # not exist on a DB that hasn't migrated. Retry without the
+            # spd column before giving up, so a pre-migration install
+            # still gets its Sample/Blank facets — just unfiltered by SPD.
+            try:
+                sh_rows = con.execute(
+                    sh_sql.replace("s.verdict AS gate_result, s.spd, ",
+                                   "s.verdict AS gate_result, "),
+                    sh_params,
+                ).fetchall()
+            except sqlite3.OperationalError:
+                sh_rows = []
 
         # Pull cIRT observations for just these runs in a second query,
         # keyed by run_id. Joining this into the main SELECT would
@@ -886,7 +895,9 @@ async def api_today_tic_overview(
         d["has_tic"] = has_tic
         d["tic"] = tic_payload
         # Stub fields the QC schema has so the UI's Sparkline component
-        # doesn't choke on missing keys.
+        # doesn't choke on missing keys. `spd` is a real column as of
+        # v1.0.85 and setdefault leaves it alone when present — it only
+        # fills in for the pre-migration fallback query above.
         d.setdefault("mode", None)
         d.setdefault("ips_score", None)
         d.setdefault("spd", None)
@@ -2395,6 +2406,21 @@ async def api_utilization(days: int = 90) -> dict:
 
     cutoff = date.today() - timedelta(days=int(days))
     caps = raw.get("capacities") or [100, 60]
+
+    # Per-instrument capacity, from the gradients the instrument
+    # actually runs. The snapshot's global [100, 60] is Evosep's
+    # timsTOF ladder; scoring an Exploris against it says "42 % of 100
+    # SPD" about a lab that has never run a 100 SPD method, which is a
+    # number with no meaning. Falls back to the global list when
+    # nothing resolvable is stored for that instrument.
+    from stan.db import spd_usage_by_instrument
+    try:
+        usage = spd_usage_by_instrument(days=int(days))
+    except Exception:  # noqa: BLE001
+        logger.debug("SPD usage lookup failed; using global capacities",
+                     exc_info=True)
+        usage = {}
+
     out: dict = {}
     for name, blk in (raw.get("instruments") or {}).items():
         daily_all = blk.get("daily") or {}
@@ -2424,6 +2450,7 @@ async def api_utilization(days: int = 90) -> dict:
 
         active = [n for n in daily.values() if n > 0]
         mean_active = (sum(active) / len(active)) if active else 0.0
+        inst_caps = _instrument_capacities(usage.get(name), caps)
         out[name] = {
             "daily": dict(sorted(daily.items())),
             "weekly": dict(sorted(weekly.items())),
@@ -2431,17 +2458,39 @@ async def api_utilization(days: int = 90) -> dict:
             "active_days": len(active),
             "mean_per_active_day": round(mean_active, 1),
             "peak_day": max(daily.values()) if daily else 0,
+            "capacities": inst_caps,
             "utilization_pct": {
-                str(c): round(100.0 * mean_active / c, 1) for c in caps
+                str(c): round(100.0 * mean_active / c, 1) for c in inst_caps
             },
             "hour_grid": grid_days,
             "peak_utilization_pct": {
                 str(c): round(100.0 * (max(daily.values()) if daily else 0) / c, 1)
-                for c in caps
+                for c in inst_caps
             },
         }
     return {"available": True, "generated_at": raw.get("generated_at"),
             "capacities": caps, "days": days, "instruments": out}
+
+
+def _instrument_capacities(
+    spd_counts: dict | None, fallback: list,
+) -> list[int]:
+    """Pick the SPD values to score one instrument's utilisation against.
+
+    The two gradients it runs most, highest throughput first, so the
+    tiles keep reading like the old fixed "@ 100 SPD / @ 60 SPD" pair
+    while actually describing this instrument. Two rather than one
+    because a core facility genuinely alternates -- the timsTOF splits
+    roughly evenly between 60 and 100 SPD -- and a single number would
+    hide half the week.
+
+    Ties break toward the higher SPD, so the ordering is stable run to
+    run instead of flipping on one acquisition.
+    """
+    if not spd_counts:
+        return [int(c) for c in fallback]
+    ranked = sorted(spd_counts.items(), key=lambda kv: (-kv[1], -kv[0]))
+    return sorted((int(spd) for spd, _n in ranked[:2]), reverse=True)
 
 
 def _parse_day(s: str):

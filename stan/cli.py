@@ -1947,6 +1947,163 @@ def fix_spds(
         "to the community benchmark.[/dim]"
     )
 
+@app.command("fix-sample-spds")
+def fix_sample_spds(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show proposed changes without writing."
+    ),
+    force: bool = typer.Option(
+        False, "--force",
+        help="Re-resolve every row, not just the ones missing an SPD.",
+    ),
+    limit: int = typer.Option(
+        0, "--limit",
+        help="Stop after this many rows (0 = no cap). Newest first, so a "
+             "small cap catches up the recent archive cheaply.",
+    ),
+) -> None:
+    """Backfill ``sample_health.spd`` for non-QC acquisitions.
+
+    The column landed in v1.0.85; every row written before it is NULL,
+    and the dashboard's TIC overlay drops NULL-SPD traces the moment a
+    gradient is selected, so the Sample and Blank facets read zero.
+
+    Writes to whichever backend this install uses -- PG when
+    ``STAN_DB_BACKEND=pg``, SQLite otherwise. Run it where the raw files
+    actually are: on Hive for the fleet, on the instrument PC for a
+    single-lab install. A row whose raw file is unreachable falls back
+    to a filename token, and is left NULL if that does not resolve
+    either -- guessing would bucket-mix cohorts, which is the failure
+    this column exists to prevent.
+    """
+    import sqlite3
+    from collections import Counter
+    from datetime import datetime as _dt
+
+    from stan.db import get_db_path, init_db
+    from stan.db_pg import use_pg
+    from stan.metrics.scoring import (
+        spd_from_filename, validate_spd_from_metadata,
+    )
+
+    on_pg = use_pg()
+    if on_pg:
+        from stan.db_pg import (
+            sample_health_spd_candidates_pg, update_sample_health_spd_pg,
+        )
+        rows = sample_health_spd_candidates_pg(force=force)
+        backend = "postgres"
+    else:
+        init_db()
+        db_path = get_db_path()
+        where = "" if force else "WHERE spd IS NULL"
+        with sqlite3.connect(str(db_path)) as con:
+            con.row_factory = sqlite3.Row
+            rows = [dict(r) for r in con.execute(
+                "SELECT id, run_name, raw_path, spd FROM sample_health "
+                f"{where} ORDER BY run_date DESC"
+            ).fetchall()]
+        backend = str(db_path)
+
+    if limit > 0:
+        rows = rows[:limit]
+
+    console.print(
+        f"Resolving SPD for [bold]{len(rows)}[/bold] sample_health rows "
+        f"([dim]{backend}[/dim])..."
+    )
+
+    updates: list[tuple[str, int]] = []
+    sources: Counter = Counter()
+
+    for row in rows:
+        spd = None
+        raw_path_str = row.get("raw_path")
+        if raw_path_str:
+            raw_path = Path(raw_path_str)
+            if raw_path.exists():
+                try:
+                    spd = validate_spd_from_metadata(raw_path)
+                except Exception:
+                    logger.debug("metadata SPD failed for %s", raw_path,
+                                 exc_info=True)
+                if spd:
+                    sources["raw metadata"] += 1
+            else:
+                sources["raw file missing"] += 1
+        else:
+            sources["no raw_path"] += 1
+
+        if not spd:
+            spd = spd_from_filename(row.get("run_name"))
+            if spd:
+                sources["filename token"] += 1
+
+        if not spd:
+            sources["unresolved (left NULL)"] += 1
+            continue
+        if row.get("spd") == int(spd):
+            sources["already correct"] += 1
+            continue
+        updates.append((row["id"], int(spd)))
+
+    console.print()
+    for reason, n in sorted(sources.items(), key=lambda x: -x[1]):
+        console.print(f"  {reason:<24} [cyan]{n}[/cyan]")
+    console.print()
+    console.print(f"[bold]{len(updates)}[/bold] rows to update.")
+
+    if updates:
+        by_id = {r["id"]: r for r in rows}
+        console.print("[dim]Examples (first 10):[/dim]")
+        for rid, spd in updates[:10]:
+            console.print(f"  {by_id[rid]['run_name']}  -> {spd} SPD")
+
+    if dry_run:
+        console.print("[yellow]--dry-run: no changes written.[/yellow]")
+        return
+
+    written = 0
+    if updates:
+        if on_pg:
+            written = update_sample_health_spd_pg(updates)
+        else:
+            with sqlite3.connect(str(get_db_path())) as con:
+                con.executemany(
+                    "UPDATE sample_health SET spd = ? WHERE id = ?",
+                    [(spd, rid) for rid, spd in updates],
+                )
+                con.commit()
+            written = len(updates)
+        console.print(f"[green]Updated {written} rows.[/green]")
+
+    # Summary log to ~/STAN/logs so a Hive-side run stays diagnosable
+    # without asking anyone to screenshot a terminal.
+    try:
+        from stan.config import get_user_config_dir, sync_to_hive_mirror
+        _log_dir = get_user_config_dir() / "logs"
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        _log_path = _log_dir / f"fix_sample_spds_{_stamp}.log"
+        _lines = [
+            f"fix-sample-spds  force={force}  limit={limit}",
+            f"backend: {backend}",
+            f"considered: {len(rows)}",
+            f"updated: {written}",
+            "",
+            "Resolution sources:",
+        ]
+        for reason, n in sorted(sources.items(), key=lambda x: -x[1]):
+            _lines.append(f"  {reason:<24} {n}")
+        _log_path.write_text("\n".join(_lines) + "\n", encoding="utf-8")
+        try:
+            sync_to_hive_mirror(include_reports=False)
+        except Exception:
+            pass
+        console.print(f"[dim]Log: {_log_path}[/dim]")
+    except Exception:
+        logger.debug("Failed to write fix-sample-spds log", exc_info=True)
+
 
 @app.command("repair-metadata")
 def repair_metadata(

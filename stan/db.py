@@ -266,7 +266,15 @@ CREATE TABLE IF NOT EXISTS sample_health (
     drift_coverage          REAL,
     drift_median_im         REAL,
     drift_p90_abs_im        REAL,
-    drift_class             TEXT
+    drift_class             TEXT,
+
+    -- Samples per day (v1.0.85). Resolved per-file at ingest from the
+    -- raw file's own metadata, exactly like runs.spd -- never from the
+    -- instruments.yml cohort default, which stamps every acquisition
+    -- with one value and bucket-mixes cohorts the moment an operator
+    -- switches gradient mid-day. NULL means "could not resolve", which
+    -- the dashboard shows as "SPD unknown" rather than guessing.
+    spd                     INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_health_instrument ON sample_health(instrument);
@@ -579,6 +587,11 @@ def _migrate(con: sqlite3.Connection) -> None:
         ("drift_median_im", "ALTER TABLE sample_health ADD COLUMN drift_median_im REAL"),
         ("drift_p90_abs_im", "ALTER TABLE sample_health ADD COLUMN drift_p90_abs_im REAL"),
         ("drift_class", "ALTER TABLE sample_health ADD COLUMN drift_class TEXT"),
+        # spd (v1.0.85) — the TIC overlay's SPD filter compares against
+        # this. Until it existed the column was stubbed NULL in the API,
+        # so selecting any gradient dropped every Sample and Blank trace
+        # and the panel read "Sample (0)" on a day with 185 of them.
+        ("spd", "ALTER TABLE sample_health ADD COLUMN spd INTEGER"),
     ]
     for col, ddl in sh_migrations:
         if sh_existing and col not in sh_existing:
@@ -1142,6 +1155,33 @@ def get_cirt_history(
 
 
 @with_sqlite_retry
+def _resolve_sample_spd(raw_path, run_name: str) -> int | None:
+    """Resolve a sample acquisition's SPD from the file, then the name.
+
+    Deliberately shorter than ``InstrumentWatcher._resolve_spd``: it
+    stops before that chain's instruments.yml cohort default. The
+    default is a blanket that stamps every acquisition with one value,
+    which is tolerable for a QC injection (always the same method) and
+    actively wrong for sample runs, where a core facility switches
+    gradients between users through the day. A NULL here renders as
+    "SPD unknown"; a wrong value silently mixes two cohorts.
+
+    Never raises — sample health is a monitoring side-channel and must
+    not be able to fail an ingest.
+    """
+    try:
+        from stan.metrics.scoring import (
+            spd_from_filename, validate_spd_from_metadata,
+        )
+        spd = validate_spd_from_metadata(raw_path)
+        if spd:
+            return int(spd)
+        return spd_from_filename(run_name)
+    except Exception:  # noqa: BLE001
+        logger.debug("SPD resolution failed for %s", raw_path, exc_info=True)
+        return None
+
+
 def insert_sample_health(
     instrument: str,
     run_name: str,
@@ -1151,6 +1191,7 @@ def insert_sample_health(
     reasons: list[str],
     rawmeat_summary: dict,
     db_path: Path | None = None,
+    spd: int | None = None,
 ) -> str:
     """Store a Sample Health Monitor result.
 
@@ -1159,6 +1200,12 @@ def insert_sample_health(
     users. Keeping them in `sample_health` avoids polluting cohort
     percentiles with non-QC injections.
 
+    Args:
+        spd: Samples per day. Left None, it is resolved from
+            ``raw_path`` here rather than at the call sites, so the
+            watcher and the Hive pipeline can never drift apart on how
+            a sample's gradient gets decided.
+
     Returns the generated row id.
     """
     import uuid
@@ -1166,6 +1213,8 @@ def insert_sample_health(
         db_path = get_db_path()
     row_id = uuid.uuid4().hex[:12]
     s = rawmeat_summary or {}
+    if spd is None:
+        spd = _resolve_sample_spd(raw_path, run_name)
 
     # Flatten once, so both backends store identical data and the
     # rawmeat-summary key mapping lives in exactly one place.
@@ -1183,6 +1232,7 @@ def insert_sample_health(
         "pressure_mean_mbar": s.get("pressure_mean_mbar"),
         "pressure_range_mbar": s.get("pressure_range_mbar"),
         "median_ms1_acc_ms": s.get("median_ms1_acc_ms"),
+        "spd": spd,
     }
 
     # PG mode: the monitor pipeline was the last concurrent SQLite writer on
@@ -1200,8 +1250,8 @@ def insert_sample_health(
             "(id, instrument, run_name, run_date, raw_path, verdict, reasons, "
             " n_ms1_frames, n_ms2_frames, rt_duration_min, ms1_max_intensity, "
             " ms1_total_tic, dynamic_range_log10, dropout_rate_per_100_ms1, "
-            " pressure_mean_mbar, pressure_range_mbar, median_ms1_acc_ms) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " pressure_mean_mbar, pressure_range_mbar, median_ms1_acc_ms, spd) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 row_id, instrument, run_name, run_date, raw_path, verdict,
                 json.dumps(reasons or []),
@@ -1210,7 +1260,7 @@ def insert_sample_health(
                 s.get("ms1_total_tic"), s.get("dynamic_range_log10"),
                 s.get("dropout_rate_per_100_ms1"),
                 s.get("pressure_mean_mbar"), s.get("pressure_range_mbar"),
-                s.get("median_ms1_acc_ms"),
+                s.get("median_ms1_acc_ms"), spd,
             ),
         )
     return row_id
@@ -2114,6 +2164,66 @@ def _filter_qc(rows: list[dict]) -> list[dict]:
         r for r in rows
         if r.get("run_name") and pat.search(Path(r["run_name"]).stem)
     ]
+
+
+def spd_usage_by_instrument(
+    days: int = 90, db_path: Path | None = None,
+) -> dict[str, dict[int, int]]:
+    """Count acquisitions per (instrument, SPD) over the last ``days``.
+
+    Unions ``runs`` (QC injections) with ``sample_health`` (everything
+    else the watcher saw), because "what gradient does this instrument
+    actually run" is answered by the sample load, not by the handful of
+    QC injections bracketing it. Rows with a NULL SPD are skipped rather
+    than bucketed as zero.
+
+    Returns:
+        ``{instrument: {spd: n_acquisitions}}``, empty when nothing
+        resolvable is stored.
+    """
+    from datetime import datetime, timedelta
+
+    from stan.db_pg import spd_usage_by_instrument_pg, use_pg
+    cutoff = (datetime.now() - timedelta(days=max(1, days))).strftime("%Y-%m-%d")
+    if use_pg():
+        return spd_usage_by_instrument_pg(cutoff)
+
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return {}
+    sql = (
+        "SELECT instrument, spd, COUNT(*) FROM ("
+        "  SELECT instrument, spd, run_date FROM runs"
+        "   WHERE hidden IS NULL OR hidden = 0"
+        "  UNION ALL"
+        "  SELECT instrument, spd, run_date FROM sample_health"
+        ") WHERE spd IS NOT NULL AND substr(run_date, 1, 10) >= ? "
+        "GROUP BY instrument, spd"
+    )
+    out: dict[str, dict[int, int]] = {}
+    try:
+        with connect(db_path) as con:
+            for inst, spd, n in con.execute(sql, (cutoff,)).fetchall():
+                if inst and spd is not None:
+                    out.setdefault(inst, {})[int(spd)] = int(n)
+    except sqlite3.OperationalError:
+        # sample_health.spd predates v1.0.85; fall back to runs alone so
+        # a not-yet-migrated DB still gets per-instrument capacities.
+        try:
+            with connect(db_path) as con:
+                rows = con.execute(
+                    "SELECT instrument, spd, COUNT(*) FROM runs "
+                    "WHERE spd IS NOT NULL AND substr(run_date, 1, 10) >= ? "
+                    "AND (hidden IS NULL OR hidden = 0) "
+                    "GROUP BY instrument, spd", (cutoff,),
+                ).fetchall()
+            for inst, spd, n in rows:
+                if inst and spd is not None:
+                    out.setdefault(inst, {})[int(spd)] = int(n)
+        except sqlite3.OperationalError:
+            logger.debug("spd_usage_by_instrument unavailable", exc_info=True)
+    return out
 
 
 def get_runs(

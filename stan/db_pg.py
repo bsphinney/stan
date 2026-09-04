@@ -559,8 +559,44 @@ _SH_COLUMNS = (
     "reasons", "n_ms1_frames", "n_ms2_frames", "rt_duration_min",
     "ms1_max_intensity", "ms1_total_tic", "dynamic_range_log10",
     "dropout_rate_per_100_ms1", "pressure_mean_mbar", "pressure_range_mbar",
-    "median_ms1_acc_ms", "host_origin",
+    "median_ms1_acc_ms", "host_origin", "spd",
 )
+
+
+#: Cached set of columns ``sample_health`` actually has in PG, or None
+#: before the first lookup. The code ships ahead of the owner migration
+#: -- instrument PCs pull main automatically, while ALTER TABLE on PG
+#: Farm needs the table owner's CAS login -- so between the two there is
+#: a window where the INSERT below would name a column that does not
+#: exist yet and every sample-health write on Hive would fail. Narrowing
+#: the column list to what is really there keeps ingest running through
+#: that window; the new column simply stays NULL until the migration
+#: lands. Cached for the life of the process, which is right for a
+#: short-lived Hive job and picked up on the next dashboard restart.
+_SH_PG_COLUMNS: set | None = None
+
+
+def _sample_health_pg_columns() -> set:
+    """Columns present on the PG ``sample_health`` table.
+
+    Returns an empty set if introspection fails, which callers read as
+    "don't narrow anything" -- a lookup problem must not silently drop
+    data from a write.
+    """
+    global _SH_PG_COLUMNS
+    if _SH_PG_COLUMNS is None:
+        try:
+            with _connect() as pg, pg.cursor() as cur:
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'sample_health'"
+                )
+                _SH_PG_COLUMNS = {r[0] for r in cur.fetchall()}
+        except Exception:  # noqa: BLE001
+            logger.debug("sample_health column introspection failed",
+                         exc_info=True)
+            _SH_PG_COLUMNS = set()
+    return _SH_PG_COLUMNS
 
 
 def insert_sample_health_pg(row: dict) -> str:
@@ -569,7 +605,9 @@ def insert_sample_health_pg(row: dict) -> str:
     ``row`` is already flattened by ``stan.db.insert_sample_health`` so the
     rawmeat-summary key mapping lives in exactly one place.
     """
-    cols = [c for c in _SH_COLUMNS if c in row]
+    present = _sample_health_pg_columns()
+    cols = [c for c in _SH_COLUMNS
+            if c in row and (not present or c in present)]
     placeholders = ",".join(["%s"] * len(cols))
     updates = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols if c != "id")
     with _connect() as pg, pg.cursor() as cur:
@@ -580,6 +618,81 @@ def insert_sample_health_pg(row: dict) -> str:
         )
         pg.commit()
     return str(row.get("id"))
+
+
+def sample_health_spd_candidates_pg(force: bool = False) -> list[dict]:
+    """Rows the SPD backfill should consider, newest first.
+
+    Only rows still missing an SPD unless ``force``, so the routine
+    Hive tick stays cheap once the archive is caught up.
+    """
+    where = "" if force else "WHERE spd IS NULL"
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            f"SELECT id, run_name, raw_path, spd FROM sample_health {where} "
+            "ORDER BY run_date DESC"
+        )
+        names = [d[0] for d in cur.description]
+        return [dict(zip(names, r)) for r in cur.fetchall()]
+
+
+def update_sample_health_spd_pg(updates: list[tuple[str, int]]) -> int:
+    """Write resolved SPDs back to PG. ``updates`` is [(row_id, spd)].
+
+    Batched in one statement per chunk rather than one round trip per
+    row -- the first sweep of this table is a few thousand rows against
+    a database on the other side of campus.
+    """
+    if not updates:
+        return 0
+    n = 0
+    with _connect() as pg, pg.cursor() as cur:
+        for i in range(0, len(updates), 500):
+            chunk = updates[i:i + 500]
+            cur.executemany(
+                "UPDATE sample_health SET spd = %s WHERE id = %s",
+                [(spd, rid) for rid, spd in chunk],
+            )
+            n += len(chunk)
+        pg.commit()
+    return n
+
+
+def spd_usage_by_instrument_pg(cutoff: str) -> dict[str, dict[int, int]]:
+    """PG counterpart of ``stan.db.spd_usage_by_instrument``."""
+    sql = (
+        "SELECT instrument, spd, COUNT(*) FROM ("
+        "  SELECT instrument, spd, run_date FROM runs"
+        "   WHERE hidden IS NULL OR hidden = false"
+        "  UNION ALL"
+        "  SELECT instrument, spd, run_date FROM sample_health"
+        ") u WHERE spd IS NOT NULL AND substr(run_date, 1, 10) >= %s "
+        "GROUP BY instrument, spd"
+    )
+    out: dict[str, dict[int, int]] = {}
+    try:
+        with _connect() as pg, pg.cursor() as cur:
+            cur.execute(sql, (cutoff,))
+            rows = cur.fetchall()
+    except Exception:  # noqa: BLE001 - sample_health.spd may predate v1.0.85
+        logger.debug("spd usage union failed; falling back to runs",
+                     exc_info=True)
+        try:
+            with _connect() as pg, pg.cursor() as cur:
+                cur.execute(
+                    "SELECT instrument, spd, COUNT(*) FROM runs "
+                    "WHERE spd IS NOT NULL AND substr(run_date, 1, 10) >= %s "
+                    "AND (hidden IS NULL OR hidden = false) "
+                    "GROUP BY instrument, spd", (cutoff,),
+                )
+                rows = cur.fetchall()
+        except Exception:  # noqa: BLE001
+            logger.debug("spd usage unavailable", exc_info=True)
+            return {}
+    for inst, spd, n in rows:
+        if inst and spd is not None:
+            out.setdefault(inst, {})[int(spd)] = int(n)
+    return out
 
 
 def get_sample_health_pg(
