@@ -61,7 +61,7 @@ const windowStub = {
 };
 const ReactDOMStub = { createRoot: () => ({ render: noop, unmount: noop }), render: noop };
 
-const names = ['EvBaselineChart', 'evBaselineSkeleton'];
+const names = ['EvBaselineChart', 'evBaselineSkeleton', 'EvWashFlow', 'EvColumnLifetimes', 'EvColumnAging'];
 const factory = new Function(
   'React', 'ReactDOM', 'window', 'document', 'localStorage', 'sessionStorage',
   'fetch', 'navigator', 'location', 'alert', 'console',
@@ -128,5 +128,60 @@ for (const [label, sinceDays] of WINDOWS) {
     console.log(`ok    ${label.padEnd(12)} ${ms.method.padEnd(22)} ${mode.padEnd(9)} axis ${dates[0] || '?'} -> ${dates[dates.length - 1] || '?'}${bound}`);
   }
 }
+/* THE SILENT EM-DASH. evNum(undefined) renders "—", so a field-name drift
+   between the extractor and the page shows up as a blank tile under a live
+   count rather than as an error. `b.median` vs `b.median_ul_min` sat that way
+   until Brett spotted it on 2026-09-03. Assert the numbers the document
+   actually carries are the numbers on screen. */
+function render(name, props) {
+  try {
+    return ReactDOMServer.renderToStaticMarkup(React.createElement(exported[name], props));
+  } catch (e) {
+    console.error(`FAIL  ${name}: ${e.message}`);
+    console.error(e.stack.split('\n').slice(0, 4).join('\n'));
+    fails++; return null;
+  }
+}
+
+const wf = doc.wash_flow, cl = doc.column_lifetimes;
+if (wf && wf.available) {
+  const out = render('EvWashFlow', { wf });
+  if (out !== null) {
+    rendered++;
+    let bad = 0;
+    (wf.by_segment || []).forEach(b => {
+      if (b.median_ul_min == null) return;
+      /* Scope the assertion to THIS SEGMENT'S TILE. A bare out.includes() passes
+         on a broken build: the same number turns up in some data point's hover
+         title, so the check found 2.284 in the chart while the tile said "—". */
+      const label = `Column ${String(b.installed || '?').slice(0, 10)}`;
+      const at = out.indexOf(label);
+      if (at < 0) {
+        console.error(`FAIL  EvWashFlow: no tile for segment ${b.installed}`); bad++; return;
+      }
+      const tile = out.slice(at, at + 600);
+      const want = b.median_ul_min.toFixed(3);
+      if (tile.includes('\u2014')) {
+        console.error(`FAIL  EvWashFlow: tile "${label}" renders an em-dash; ` +
+                      `document has median_ul_min ${b.median_ul_min}`);
+        bad++;
+      } else if (!tile.includes(want)) {
+        console.error(`FAIL  EvWashFlow: tile "${label}" does not show ${want}`);
+        bad++;
+      }
+    });
+    if (bad) fails += bad;
+    else console.log(`ok    EvWashFlow          ${(wf.by_segment || []).length} segment median(s) rendered`);
+  }
+}
+if (cl && cl.available) {
+  const out = render('EvColumnLifetimes', { cl });
+  if (out !== null) { rendered++; console.log(`ok    EvColumnLifetimes   ${cl.n_columns} columns`); }
+}
+if (wf && cl) {
+  const out = render('EvColumnAging', { wf, cl });
+  if (out !== null) { rendered++; console.log('ok    EvColumnAging'); }
+}
+
 console.log(`\n${rendered} render(s), ${fails} failure(s)`);
 process.exit(fails ? 1 : 0);

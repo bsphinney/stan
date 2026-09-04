@@ -5898,8 +5898,13 @@ function BFailTable({ rows }) {
           {!!(wf.by_segment || []).length && (
             <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', marginTop: '0.4rem' }}>
               {wf.by_segment.map((b, i) => (
+                /* `median_ul_min`, not `median`: the extractor suffixes every
+                   flow figure with its unit (p5_ul_min, p95_ul_min, ...) and
+                   this one call dropped it, so evNum(undefined) rendered an
+                   em-dash under a live wash count -- "median of 830 washes"
+                   beside no median. */
                 <EvTile key={i} label={`Column ${String(b.installed || '?').slice(0, 10)}`}
-                        value={evNum(b.median, 3)} unit="µL/min"
+                        value={evNum(b.median_ul_min, 3)} unit="µL/min"
                         note={`median of ${b.n} wash${b.n === 1 ? '' : 'es'}`} />
               ))}
             </div>
