@@ -124,7 +124,7 @@ if [ "$MODE" = full ]; then
     else
         jid=$(sbatch --parsable --partition=high --account=genome-center-grp \
               --qos=genome-center-grp-high-qos --cpus-per-task=4 --mem=16G \
-              --time=02:00:00 --job-name=ev-full-publish \
+              --time=04:00:00 --job-name=ev-full-publish \
               --output=/quobyte/proteomics-grp/STAN/logs/ev_full_%j.out \
               --wrap="export STAN_DB_BACKEND=pg; \
 tmp=\$(mktemp ${FULL}.XXXX); \
