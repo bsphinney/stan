@@ -5132,7 +5132,7 @@ function BFailTable({ rows }) {
       return pts;
     }
 
-    function EvBaselineChart({ method, ms, hue, flagsByRun, sinceDays, installedAt }) {
+    function EvBaselineChart({ method, ms, hue, flagsByRun, sinceDays, installedAt, installedTitle }) {
       const DAY = 86400000;
       const all = ms.series || [];
       const allSteps = ms.steps || [];
@@ -5307,7 +5307,8 @@ function BFailTable({ rows }) {
                   <text x={xi + 4} y={PADT + 9} fontSize="8.5" fill="#f8fafc" opacity="0.95">
                     column installed
                   </text>
-                  <title>{`Column installed ${evFmtDate(installedAt)}\nShaded area to the left is the PREVIOUS column`}</title>
+                  <title>{installedTitle
+                    || `Column installed ${evFmtDate(installedAt)}\nShaded area to the left is the PREVIOUS column`}</title>
                 </g>
               );
             })()}
@@ -5999,6 +6000,24 @@ function BFailTable({ rows }) {
          is the question the banner is read for, and it was two panels down. */
       const curLife = (d.column_lifetimes || {}).current || {};
       const rr = curLife.runs_remaining || null;
+      /* WHICH INSTALL TIME TO DRAW. `column.installed` is the LOGGED event, and
+         a logged date carries a placeholder time -- here 05:00 against a real
+         change at 11:50, which the document itself reports as
+         logged_minus_detected_hours -6.84. Drawn at the logged stamp the rule
+         landed 6.8 h early and put the old column's last two runs, including a
+         520 bar cut-out at 10:47, on the new column's side of the line.
+         column_lifetimes.current.installed is the boundary DETECTED from wash
+         flow, and the lifetimes table below already uses it -- so the two
+         halves of one page disagreed. Prefer the detected one. */
+      const installMark = curLife.installed || col.installed;
+      const loggedOff = curLife.logged_minus_detected_hours;
+      const installTitle = `Column installed ${evFmtDate(installMark)}`
+        + (curLife.installed ? '\ndetected from wash flow' : '\nfrom the logged maintenance event')
+        + (curLife.installed && curLife.logged_at && loggedOff
+            ? `\nlogged as ${evFmtDate(curLife.logged_at)} — ${Math.abs(loggedOff).toFixed(1)} h `
+              + `${loggedOff < 0 ? 'early' : 'late'}`
+            : '')
+        + '\nShaded area to the left is the PREVIOUS column';
       const s = d.summary || {};
       const wear = d.wear || {};
 
@@ -6228,7 +6247,8 @@ function BFailTable({ rows }) {
           {analytical.map((ms, i) => (
             <EvBaselineChart key={ms.method} method={ms.method} ms={ms}
                              hue={EV_HUES[i % EV_HUES.length]} flagsByRun={flagsByRun}
-                             sinceDays={evSpanDays} installedAt={col.installed} />
+                             sinceDays={evSpanDays} installedAt={installMark}
+                             installedTitle={installTitle} />
           ))}
           </EvSection>
 

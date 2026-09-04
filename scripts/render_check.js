@@ -92,6 +92,17 @@ if (!analytical.length) { console.error('document has no analytical methods'); p
 
 /* Every window the UI offers, including the 'This column' derivation. */
 const colDays = Math.max(14, Math.ceil((doc.column && doc.column.days_since || 0) + 3));
+/* The boundary the panel draws must be the DETECTED one where it exists, not
+   the logged event: a logged date carries a placeholder time (05:00 against a
+   real 11:50 change on 2026-09-02), which drew the rule 6.8 h early and put the
+   old column's 520 bar cut-out on the new column's side. */
+const curLife = (doc.column_lifetimes || {}).current || {};
+const installMark = curLife.installed || (doc.column && doc.column.installed);
+if (curLife.installed && doc.column && doc.column.installed
+    && curLife.installed !== doc.column.installed) {
+  console.log(`note  install boundary: drawing detected ${curLife.installed}, ` +
+              `not logged ${doc.column.installed}`);
+}
 const WINDOWS = [['This column', colDays], ['90 days', 90], ['1 year', 365], ['All', 0]];
 
 let fails = 0, rendered = 0;
@@ -102,7 +113,7 @@ for (const [label, sinceDays] of WINDOWS) {
       out = ReactDOMServer.renderToStaticMarkup(
         React.createElement(exported.EvBaselineChart, {
           method: ms.method, ms, hue: '#60a5fa', flagsByRun, sinceDays,
-          installedAt: doc.column && doc.column.installed,
+          installedAt: installMark,
         }));
     } catch (e) {
       console.error(`FAIL  ${label.padEnd(12)} ${ms.method}: ${e.message}`);
