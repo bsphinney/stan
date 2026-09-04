@@ -6122,13 +6122,28 @@ function BFailTable({ rows }) {
                       : 'since an inferred baseline drop — no column change logged'} />
             <EvTile label="Injections on column" value={col.injections_since != null ? col.injections_since : '—'}
                     note="from the instrument's own lifetime counter" />
-            {/* THE FLOW-NORMALISED FIGURE. A bare "281 bar" invites comparison
-                with the 400+ bar the worn column was running, and those are not
-                comparable unless the flow is the same. Resistance is. */}
-            <EvTile label="Baseline now" value={evNum(col.baseline_now_bar, 0)} unit="bar"
-                    note={curLife.now_resistance_bar_per_ul_min
-                      ? `${evNum(curLife.now_resistance_bar_per_ul_min, 0)} bar per µL/min · was ${evNum(col.baseline_at_install_bar, 0)} bar when installed`
-                      : `was ${evNum(col.baseline_at_install_bar, 0)} bar when installed`} />
+            {/* RESISTANCE LEADS, PRESSURE FOLLOWS. This tile answers "how worn is
+                this column", and pressure cannot: the same column read 124-418
+                bar across four methods in one week, purely from their flows.
+                Resistance divides the flow out, and the lab already knows its
+                fresh value by heart -- 186.1 / 185.5 / 186.9 on three separate
+                columns -- so the number carries its own reference.
+                It is a SLOPE, not a forecast: the retired column's 100 SPD ratio
+                was 278.5, yet 60 SPD at exactly 1.0 uL/min read 233 bar, not 278.
+                Hence "bar per uL/min" and the method named, never "at 1 uL/min".
+                Raw pressure stays in the note and on the over-pressure tile,
+                because the 520 bar cut-out trips on pressure. */}
+            {curLife.now_resistance_bar_per_ul_min ? (
+              <EvTile label="Resistance now"
+                      value={evNum(curLife.now_resistance_bar_per_ul_min, 0)}
+                      unit="bar per µL/min"
+                      note={`fresh ${evNum(curLife.fresh_resistance_bar_per_ul_min, 0)}`
+                            + ` · ${evNum(col.baseline_now_bar, 0)} bar`
+                            + (col.method ? ` on ${col.method}` : '')} />
+            ) : (
+              <EvTile label="Baseline now" value={evNum(col.baseline_now_bar, 0)} unit="bar"
+                      note={`was ${evNum(col.baseline_at_install_bar, 0)} bar when installed`} />
+            )}
             <EvTile label="Runs left on this column"
                     value={rr && rr.gate_open
                       ? `≈ ${Math.round(rr.estimate_low).toLocaleString()}–${Math.round(rr.estimate_high).toLocaleString()}`
