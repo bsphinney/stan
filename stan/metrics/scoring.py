@@ -51,7 +51,7 @@ def spd_bucket(spd: int) -> str:
     return "deep"
 
 
-def gradient_min_to_spd(minutes: int) -> int:
+def gradient_min_to_spd(minutes: int) -> int | None:
     """Estimate SPD from gradient length.
 
     For common Evosep methods (30/60/100 SPD), snaps to the exact value
@@ -62,8 +62,14 @@ def gradient_min_to_spd(minutes: int) -> int:
         20-22 min → 60 SPD
         43-45 min → 30 SPD
     """
+    # No measurable gradient means we do not know the throughput. This
+    # used to return 30, which is indistinguishable from a genuine 30 SPD
+    # Evosep method once it is stored -- a silent wrong answer in the
+    # column the whole cohort key rests on. A derived value from a real
+    # gradient is defensible (see below); a value conjured from no
+    # gradient at all is not.
     if minutes <= 0:
-        return 30
+        return None
 
     # Snap to known Evosep methods
     if 10 <= minutes <= 13:
@@ -73,7 +79,15 @@ def gradient_min_to_spd(minutes: int) -> int:
     if 40 <= minutes <= 46:
         return 30
 
-    # Otherwise estimate from cycle time with 25% overhead
+    # Otherwise derive throughput from cycle time with 25% overhead.
+    # This is NOT a method name and will not match an Evosep label, but
+    # it is an honest answer for the instruments that do not run Evosep
+    # at all: a 30 min Orbitrap gradient really is ~38 samples/day, and
+    # it is what the utilisation panel scores those instruments against.
+    # It is also deterministic, so two runs on the same gradient land in
+    # the same cohort. Do not replace it with None -- that blanks ~61 %
+    # of runs.spd and sends the Orbitraps back to being scored against
+    # an Evosep ladder they never run.
     cycle = minutes * 1.25
     return max(1, int(1440 / cycle))
 
@@ -475,7 +489,19 @@ def throughput_bucket(spd: int | None = None, gradient_min: int | None = None) -
     if spd is not None and spd > 0:
         return spd_bucket(spd)
     if gradient_min is not None and gradient_min > 0:
-        return spd_bucket(gradient_min_to_spd(gradient_min))
+        # gradient_min_to_spd may now answer None (no measurable
+        # gradient). spd_bucket takes an int and `None >= 200` raises,
+        # so guard rather than pass it through.
+        derived = gradient_min_to_spd(gradient_min)
+        if derived:
+            return spd_bucket(derived)
+    # TODO(brett): this default is the same class of bug as the
+    # `minutes <= 0 -> 30` fallback just removed -- a run with no
+    # throughput information is bucketed as though it were a 30 SPD
+    # method, and nothing downstream can tell the two apart. Fixing it
+    # properly means an "unknown" cohort bucket, which is a new value in
+    # the community benchmark's cohort ids, so it needs your call rather
+    # than a quiet change here.
     return spd_bucket(30)  # default: 30 SPD
 
 

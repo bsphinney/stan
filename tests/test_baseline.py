@@ -251,17 +251,20 @@ def test_gradient_min_to_spd_monotonic() -> None:
 
 
 def test_gradient_min_to_spd_zero_or_negative() -> None:
-    """gradient_min_to_spd should handle zero/negative gracefully."""
+    """No measurable gradient answers None, not a fabricated default.
+
+    This used to assert `isinstance(int) and > 0`, which the function
+    satisfied by returning 30 — a value indistinguishable from a genuine
+    30 SPD Evosep method once it is stored in runs.spd. The original
+    intent of the test was "handle zero/negative gracefully" rather than
+    "return 30 specifically", and None is still graceful: it does not
+    crash, and it renders as "SPD unknown" instead of quietly joining a
+    cohort it does not belong to.
+    """
     from stan.metrics.scoring import gradient_min_to_spd
 
-    # Should not crash — returns a default
-    spd_zero = gradient_min_to_spd(0)
-    assert isinstance(spd_zero, int)
-    assert spd_zero > 0
-
-    spd_neg = gradient_min_to_spd(-5)
-    assert isinstance(spd_neg, int)
-    assert spd_neg > 0
+    assert gradient_min_to_spd(0) is None
+    assert gradient_min_to_spd(-5) is None
 
 
 def test_gradient_min_to_spd_returns_int() -> None:

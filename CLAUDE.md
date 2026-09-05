@@ -383,6 +383,41 @@ instrument actually runs (`spd_usage_by_instrument()` over `runs` +
 fallback — scoring an Exploris against 100 SPD reports a percentage
 of a method that lab has never run.
 
+### Derived SPD is honest; conjured SPD is not
+
+`gradient_min_to_spd()` snaps three Evosep windows (10-13 -> 100,
+19-23 -> 60, 40-46 -> 30) and otherwise **derives** throughput as
+`1440 / (minutes x 1.25)`. Measured against the live DB 2026-09-04,
+60.8 % of `runs.spd` (2,751 of 4,524) holds a derived value rather than
+an Evosep number, and that is correct, not a bug:
+
+| runs.spd | gradient | instrument |
+|---|---|---|
+| 38 (728 rows) | 30 min | Exploris 480 |
+| 19 (701) | 61 min | Exploris 480 |
+| 32 (614) | 36 min | Lumos |
+| 12 (541) | 96 min | Lumos |
+
+These labs do not run Evosep. A 30 min gradient really is ~38
+samples/day, the derivation is deterministic so equal gradients share a
+cohort, and it is what the utilisation panel scores those instruments
+against. **Do not "fix" this by returning None outside the snap
+windows** — that blanks 61 % of the column and sends both Orbitraps back
+to being measured against an Evosep ladder they never touch.
+
+What is *not* defensible is inventing a number with no gradient behind
+it. `minutes <= 0` returned a hardcoded 30 until v1.0.87 — a value
+indistinguishable from a real 30 SPD method once stored. It answers
+None now. `throughput_bucket()` still has the same shape in its final
+`return spd_bucket(30)`, left in place with a TODO because fixing it
+means adding an "unknown" cohort bucket, which changes community
+benchmark cohort ids.
+
+Two known-suspect populations, both awaiting a decision rather than a
+patch: 265 `sample_health` rows at **128 SPD** (a 9 min gradient, just
+below the 100 SPD window — probably real 100 SPD blanks) and 4 rows at
+576/192/230 (2/6/5 min runs).
+
 **Adding a new Evosep gradient**: extend `_EVOSEP_METHOD_PATTERNS`
 in `stan/metrics/scoring.py` AND `GRADIENT_TO_SPD` snapping table,
 and add a regression test against a real `.d` method XML in

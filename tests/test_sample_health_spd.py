@@ -363,3 +363,42 @@ class TestPgQueriesMatchTheRealColumnTypes:
         usage = spd_usage_by_instrument_pg("2026-06-06")
         assert usage, "query returned nothing — the casts regressed"
         assert any(v for v in usage.values())
+
+
+class TestGradientToSpdRefusesToInventFromNothing:
+    """`minutes <= 0` used to return 30 — a fabricated value that is
+    indistinguishable from a genuine 30 SPD Evosep method once stored.
+
+    The *derived* values are deliberately kept: a 30 min Orbitrap
+    gradient really is ~38 samples/day, it is deterministic so equal
+    gradients share a cohort, and it is what the utilisation panel
+    scores non-Evosep instruments against. Returning None there would
+    blank ~61% of runs.spd and send both Orbitraps back to being scored
+    against an Evosep ladder they never run.
+    """
+
+    def test_no_measurable_gradient_returns_none_not_thirty(self):
+        from stan.metrics.scoring import gradient_min_to_spd
+        assert gradient_min_to_spd(0) is None
+        assert gradient_min_to_spd(-5) is None
+
+    def test_known_evosep_windows_still_snap_exactly(self):
+        from stan.metrics.scoring import gradient_min_to_spd
+        assert gradient_min_to_spd(11) == 100
+        assert gradient_min_to_spd(21) == 60
+        assert gradient_min_to_spd(44) == 30
+
+    def test_real_orbitrap_gradients_still_derive(self):
+        from stan.metrics.scoring import gradient_min_to_spd
+        # The values actually in runs.spd today, and what produced them.
+        assert gradient_min_to_spd(30) == 38    # Exploris
+        assert gradient_min_to_spd(61) == 18    # ~19, Exploris long
+        assert gradient_min_to_spd(36) == 32    # Lumos
+        assert gradient_min_to_spd(96) == 12    # Lumos long
+
+    def test_throughput_bucket_survives_a_none_derivation(self):
+        from stan.metrics.scoring import throughput_bucket
+        # gradient_min > 0 guard means None can't reach spd_bucket, but
+        # the guard is what keeps `None >= 200` from raising.
+        assert isinstance(throughput_bucket(gradient_min=30), str)
+        assert isinstance(throughput_bucket(spd=None, gradient_min=None), str)
