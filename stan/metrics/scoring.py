@@ -196,8 +196,14 @@ def validate_spd_from_metadata(raw_path) -> int | None:
                 spd = _spd_from_method_string(method)
                 if spd:
                     return spd
+        except ImportError:
+            # fisher_py is genuinely optional -- Hive does not install it
+            # and the TRFP path below is the supported route. Not worth a
+            # warning on every Thermo file.
+            logger.debug("fisher_py unavailable for %s", path)
         except Exception:
-            pass
+            logger.debug("fisher_py SPD lookup failed for %s",
+                         path, exc_info=True)
 
         # Fall back to TRFP-parsed gradient length.
         try:
@@ -213,6 +219,21 @@ def validate_spd_from_metadata(raw_path) -> int | None:
             if grad_min and int(grad_min) > 0:
                 return gradient_min_to_spd(int(grad_min))
         except Exception:
+            # WARNING, not debug, and deliberately so. This handler used to
+            # swallow silently, which made a broken TOOL indistinguishable
+            # from unresolvable DATA: TRFP's .NET runtime was missing from
+            # the SLURM environment, every Thermo file answered None, and
+            # 1,579 sample_health rows looked like they simply had no
+            # recoverable gradient. It cost most of a day on 2026-09-04 and
+            # three wrong root causes. DEBUG is stripped from synced logs
+            # (see CLAUDE.md), so this has to be warning to be visible at
+            # all on Hive.
+            logger.warning(
+                "TRFP gradient lookup failed for %s -- SPD will be NULL. "
+                "A missing .NET runtime presents exactly like unresolvable "
+                "data; check `module load dotnet-core-sdk` in the job env.",
+                path, exc_info=True,
+            )
             return None
         return None
 

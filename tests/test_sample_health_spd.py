@@ -402,3 +402,43 @@ class TestGradientToSpdRefusesToInventFromNothing:
         # the guard is what keeps `None >= 200` from raising.
         assert isinstance(throughput_bucket(gradient_min=30), str)
         assert isinstance(throughput_bucket(spd=None, gradient_min=None), str)
+
+
+class TestBrokenToolIsDistinguishableFromMissingData:
+    """A swallowed exception made a broken dependency look like data.
+
+    TRFP's .NET runtime was absent from the SLURM environment, so
+    `validate_spd_from_metadata` answered None for every Thermo file and
+    1,579 sample_health rows appeared to have no recoverable gradient.
+    The handler logged nothing, so there was no way to tell "this file
+    has no gradient" from "the tool that reads gradients is broken".
+    """
+
+    def test_trfp_failure_is_logged_at_warning_not_swallowed(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+        from stan.metrics import scoring
+
+        raw = tmp_path / "FLsep_wa_20260904145507.raw"
+        raw.write_bytes(b"not really a raw file")
+
+        def _boom(_path):
+            raise RuntimeError("dotnet not found. On HPC, try: module load "
+                               "dotnet-core-sdk")
+
+        # stan.tools.trfp is imported inside the function, so patch the
+        # module attribute the import will resolve to.
+        import stan.tools.trfp as trfp_mod
+        monkeypatch.setattr(trfp_mod, "extract_metadata", _boom)
+
+        with caplog.at_level(logging.WARNING, logger=scoring.__name__):
+            result = scoring.validate_spd_from_metadata(raw)
+
+        assert result is None, "still returns None — behaviour unchanged"
+        assert caplog.records, "the failure must not be silent"
+        msg = caplog.records[-1].getMessage()
+        assert "TRFP" in msg
+        # DEBUG is stripped from synced logs, so this has to be >= WARNING
+        # to be visible on Hive at all.
+        assert caplog.records[-1].levelno >= logging.WARNING
