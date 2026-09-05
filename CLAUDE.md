@@ -142,9 +142,46 @@ Canonical copies live in `scripts/`.
 | `cron_ioncloud.sh` | hourly | Feature-cloud backfill from existing 4DFF sidecars |
 | `cron_community_sync.sh` | */6 h | Push to the community benchmark |
 | `cron_bruker_maintenance.sh` | daily 20:00 | Compass BACKUP → maintenance document |
+| `cron_stan_db_backup.sh` | daily 03:17 (**staged, not installed**) | pg_dump PG Farm → Flinders |
 
 `export STAN_DB_BACKEND=pg` is set inside these scripts — that is what
 `use_pg()` keys off. A script that forgets it silently writes SQLite.
+
+### Database backups
+
+PG Farm is the store of record and **is not known to keep its own
+backups**. STAN had none at all until 2026-09-04 — `de-limp-db-backups`
+sat next to an empty space where STAN's should have been. The dump is
+now `scripts/stan_db_backup.sbatch` (running copy at
+`/quobyte/proteomics-grp/STAN/`), writing to
+`/nfs/lssc0/flinders/proteomics/Data/stan-db-backups`. 42.7 MB, ~15 s,
+30 daily generations.
+
+Modelled on FRAN's `fran_db_backup.sbatch`, which paid for each guard
+once. The ones that matter:
+
+- **No `pg_dump` on Hive** — use `/quobyte/proteomics-grp/apptainers/postgres16.sif`
+  (16.15 client vs 16.14 server; a client OLDER than the server is
+  refused outright). Dumps written by an 18.4 client are archive 1.16 and
+  `pg_restore` 16.15 cannot even list them, so pin the client.
+- **`--bind /nfs/lssc0/flinders/proteomics` is required** — apptainer
+  mounts `$HOME` and defaults but NOT `/nfs`, so pg_dump fails with "No
+  such file or directory" even though the job can stat the destination.
+- **`APPTAINERENV_PGPASSWORD`, never `--env PGPASSWORD=`** — an `--env`
+  flag lands in apptainer's own argv and argv is world-readable; /proc on
+  the compute nodes has no hidepid.
+- **`--no-owner --no-privileges`** — the 15 tables are owned by
+  `brettsp` while the dump runs as the service account.
+- **`.part` → verify → rename** — and verification checks for TABLE DATA
+  sections, not just that `pg_restore --list` parses. A schema-only dump
+  parses perfectly and restores an empty database.
+- **Report bytes with `stat`, not `du -h`** — on this NFS export `du`
+  reports block usage that reads as "512" for a 44 MB file, which looks
+  exactly like an empty dump in the log.
+
+The service account can SELECT all 15 public tables, so the dump is
+complete and runs unattended off the self-refreshing secret — no CAS
+dependency and no 7-day expiry to babysit.
 
 ### PG and SQLite do not share column types
 
