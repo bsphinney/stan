@@ -1615,7 +1615,7 @@ async def api_ht_rerun_queue(
         parse_well(r["run_name"])))
 
     rd = (run_date or _dt.date.today().strftime("%Y%m%d"))
-    rows = ROWS = "ABCDEFGH"
+    rows = "ABCDEFGH"
     slots = [f"S1-{r}{c}" for c in range(1, 13) for r in rows]
 
     wb = openpyxl.Workbook()
