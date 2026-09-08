@@ -4797,6 +4797,37 @@ const bCatClass = c => ({
   'Connection lost': { bg: 'rgba(147,133,233,.18)', fg: '#c9c0f4' },
 }[c] || { bg: 'rgba(160,180,204,.15)', fg: 'var(--muted)' });
 
+/* A date rendered in muted grey is not a warning.
+ *
+ * The nightly Compass backup stopped arriving on 2026-08-31. This panel
+ * kept saying "Snapshot 2026-08-31" in passing prose for eight days while
+ * every tile above it looked perfectly current, and PG's updated_at went
+ * on refreshing nightly because the extract job itself still ran happily
+ * against the stale file. Nobody had to be careless to miss it -- reading
+ * it as stale required subtracting the date from today by eye.
+ *
+ * So say it out loud, with the number of days computed, and name the
+ * likely cause so the next person starts where the fault actually is.
+ * maxAgeDays is the feed's own cadence plus slack, not a guess: a daily
+ * backup two days behind has missed one. */
+function StaleBanner({ what, dateStr, maxAgeDays, hint }) {
+  if (!dateStr) return null;
+  const t = Date.parse(dateStr);
+  if (!Number.isFinite(t)) return null;
+  const ageDays = Math.floor((Date.now() - t) / 86400000);
+  if (ageDays <= maxAgeDays) return null;
+  return (
+    <div style={{
+      background: 'rgba(201,153,51,0.12)', border: '1px solid #c93',
+      borderRadius: '0.5rem', padding: '0.5rem 0.7rem',
+      margin: '0 0 0.8rem 0', fontSize: '0.82rem', color: '#e0b054',
+    }}>
+      <strong>⚠ {what} is {ageDays} days old</strong> ({String(dateStr).slice(0, 10)}).
+      {' '}{hint}
+    </div>
+  );
+}
+
 function BrukerAcquisitionPanel() {
   const { data, loading, error } = useFetch('/api/maintenance/bruker', []);
   if (loading) return <div className="card"><h3>Bruker instrument health</h3>
@@ -4824,6 +4855,9 @@ function BrukerAcquisitionPanel() {
           the Bruker Compass Server database ({s.first_run} → {String(s.last_run).slice(0, 10)}).
           Snapshot {data.backup_date}. Read-only — the dashboard never touches the instrument DB.
         </p>
+        <StaleBanner what="This snapshot" dateStr={data.backup_date} maxAgeDays={2}
+                     hint={"The nightly Compass backup has not reached the share since then, so every "
+                         + "figure below describes the instrument as of that date — not today."} />
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '0.7rem' }}>
           {tiles.map(([l, v, n]) => (
             <div key={l} style={{ background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '0.6rem', padding: '0.7rem 0.8rem' }}>
@@ -6115,6 +6149,15 @@ function BFailTable({ rows }) {
             {' '}300-520 bar and ~1.7 µL/min while the low-pressure pumps A-D stay under 10 bar.
             {' '}Extracted {evFmtDate(d.generated_at)}.
           </div>
+          {/* Keyed on the newest RUN, not on generated_at. After the
+              2026-09-08 extractor fix the extract runs fine and publishes
+              daily, so an extraction stamp now looks healthy while the log
+              mirror behind it can still be days behind. The question the
+              reader actually has is "how old is the newest data", and only
+              last_run answers it. */}
+          <StaleBanner what="The newest procedure run here" dateStr={s.last_run} maxAgeDays={2}
+                       hint={"The Evosep log mirror has not received anything newer, so recent runs "
+                           + "are missing from every trend below."} />
 
           {/* WHICH COLUMN, stated prominently. Every absolute figure on this
               panel -- baseline, expected pressure, headroom to 520 bar, the
