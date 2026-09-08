@@ -27,13 +27,25 @@
       * One stable destination, <share>\evosep_logs\<COMPUTERNAME>_mirror,
         instead of a new timestamped folder per run. Analysis always reads
         the same path and never has to be told which copy is newest.
-      * A file already present at the same size is SKIPPED. So the first run
-        is the big one (roughly 14 GB for 2023-onward) and every run after
-        that copies only what is new.
+      * IT WORKS PER PROCEDURE-RUN DIRECTORY, NOT PER FILE. The Evosep
+        writes <method>_YYYY-MM-DD_HH-MM-SS\ with ~28 files inside, and
+        31,463 of those directories is where the 880,903 files come from.
+        The date is in the DIRECTORY NAME, so choosing what to consider
+        costs a string match and no disk access at all. A run directory
+        already mirrored with the same file count is skipped whole -- one
+        listing instead of 28 network round-trips. A finished procedure run
+        never changes, so "same count" is a sound completeness test.
       * Interrupting it is safe. Re-run and it picks up where it stopped --
         nothing is deleted, nothing on C: is ever written.
       * Files touched in the last 60 seconds are skipped: the Evosep may
         still be writing them, and half a trace is worse than no trace.
+
+    WHY THE OLD VERSION WAS SLOW. It did Get-ChildItem -Recurse over the
+    whole tree, materialised 880,903 FileInfo objects, and then called
+    Get-Item on the SHARE once per file to compare sizes. That is 880,903
+    SMB round-trips to discover that nothing changed. The scheduled task
+    passes -Days 30, so a routine hourly pass now examines a few dozen
+    directory names and copies whatever is new.
 
 .PARAMETER Days
     Limit to files changed in the last N days. 0 (the default) means the
@@ -78,7 +90,7 @@ $ErrorActionPreference = 'Stop'
 # These scripts get copied to instrument PCs and then live there on
 # their own, so "is the copy in front of me current?" has to be
 # answerable without a git checkout.
-$ScriptVersion = '1.0.94'
+$ScriptVersion = '1.0.96'
 
 $TaskName = 'STAN Evosep log mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
@@ -88,7 +100,17 @@ $LogPath = Join-Path $InstallDir 'copy_evosep_logs.log'
 function Say($m, $c = 'Gray') {
     if ($Scheduled) {
         $line = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
-        try { Add-Content -LiteralPath $LogPath -Value $line -EA SilentlyContinue } catch { }
+        # Add-Content does not create the parent, and the whole call is
+        # wrapped in try/catch -- so without this a scheduled run whose
+        # install dir is missing logs absolutely nothing, silently. That is
+        # the one situation where the log is the only way to find out what
+        # happened.
+        try {
+            if (-not (Test-Path -LiteralPath $InstallDir)) {
+                New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+            }
+            Add-Content -LiteralPath $LogPath -Value $line -EA SilentlyContinue
+        } catch { }
     } else {
         Write-Host $m -ForegroundColor $c
     }
@@ -165,7 +187,10 @@ function Install-Task {
     # SYSTEM context cannot see the operator's mapped Y: drive. The UNC
     # fallback covers it either way, but the user context is what makes the
     # ordinary path work.
-    $argline = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstalledPath`" -Scheduled"
+    # -Days 30 on the SCHEDULED pass only. An hourly job has no business
+    # re-examining 31,463 folders back to 2023; a manual run keeps the
+    # full-history default so it still backfills anything ever missed.
+    $argline = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstalledPath`" -Scheduled -Days 30"
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argline
     $atLogon = New-ScheduledTaskTrigger -AtLogOn
     $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
@@ -237,71 +262,82 @@ Say 'Scanning the source (this can take a minute on a long history)...'
 $settled = (Get-Date).AddSeconds(-60)
 if ($Days -gt 0) { $cut = (Get-Date).AddDays(-$Days) } else { $cut = [datetime]'1900-01-01' }
 
-# Explicit foreach rather than a Where-Object pipeline: PS 5.1 pipelines here
-# have bitten this repo before, and the loop is also measurably faster over a
-# 100k-file tree.
-$all = @(Get-ChildItem $Source -Recurse -File -EA SilentlyContinue)
-$picked = New-Object 'System.Collections.Generic.List[object]'
-foreach ($f in $all) {
-    if ($f.LastWriteTime -gt $cut -and $f.LastWriteTime -lt $settled) { $picked.Add($f) }
+# Enumerate procedure-run directories, not files. The Evosep lays out
+#     <serial>\<method>_YYYY-MM-DD_HH-MM-SS\<28 files>
+# so one listing per serial gives every run, and the run's date is readable
+# straight off the name -- no stat, no recursion, no 880k-element array.
+$runDirs = New-Object 'System.Collections.Generic.List[object]'
+foreach ($serial in @(Get-ChildItem -LiteralPath $Source -Directory -EA SilentlyContinue)) {
+    foreach ($d in @(Get-ChildItem -LiteralPath $serial.FullName -Directory -EA SilentlyContinue)) {
+        $runDirs.Add($d)
+    }
+}
+Say ("Found {0:N0} procedure-run folder(s)." -f $runDirs.Count)
+
+# Date from the directory NAME. Falling back to LastWriteTime keeps an
+# unexpected layout working rather than silently skipping it.
+$considered = New-Object 'System.Collections.Generic.List[object]'
+foreach ($d in $runDirs) {
+    $runDate = $d.LastWriteTime
+    if ($d.Name -match '_(\d{4}-\d{2}-\d{2})_') {
+        try { $runDate = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd', $null) } catch { }
+    }
+    if ($runDate -ge $cut) { $considered.Add($d) }
+}
+if ($Days -gt 0) {
+    Say ("{0:N0} of them fall in the last {1} day(s)." -f $considered.Count, $Days)
 }
 
-if ($picked.Count -eq 0) {
-    Say 'No settled files in the window.' 'Yellow'
-    Pause-IfInteractive
-    exit 0
-}
-
-# NEWEST FIRST. 2026-09-02: this was oldest-first for about an hour, on the
-# reasoning that an interrupted run then leaves a contiguous history. That was
-# the wrong optimisation. A full pull is ~16 GB and runs for hours, and the
-# question actually being asked -- did the column change on 2026-07-31 show up
-# in the pressure -- needs the LAST few months, which oldest-first delivers
-# LAST. Newest-first puts the decision-relevant window on the share within
-# minutes and lets the 2023 tail arrive whenever it arrives.
-$files = @($picked | Sort-Object LastWriteTime -Descending)
-
-Say ("Found {0:N0} file(s) in the source window." -f $files.Count)
-Say ''
-
-$madeDirs = New-Object 'System.Collections.Generic.HashSet[string]'
 $srcLen = $Source.Length
-$copied = 0; $skipped = 0; $failed = 0; $bytes = 0L
+$copied = 0; $skippedDirs = 0; $skipped = 0; $failed = 0; $bytes = 0L
 $capped = $false
 $sw = [Diagnostics.Stopwatch]::StartNew()
+$examined = 0
 
-foreach ($f in $files) {
-    $rel = $f.FullName.Substring($srcLen).TrimStart('\')
-    $dst = Join-Path $dest $rel
+# Newest first: the decision-relevant window lands on the share within
+# minutes and the 2023 tail arrives whenever it arrives.
+foreach ($d in @($considered | Sort-Object Name -Descending)) {
+    $examined++
+    $rel = $d.FullName.Substring($srcLen).TrimStart('\', '/')
+    $dstDir = Join-Path $dest $rel
 
-    # Already mirrored at the same size -- the common case on every run
-    # after the first, so it is checked before anything expensive.
-    $existing = Get-Item -LiteralPath $dst -EA SilentlyContinue
-    if ($existing -and $existing.Length -eq $f.Length) { $skipped++; continue }
+    $srcFiles = @(Get-ChildItem -LiteralPath $d.FullName -File -EA SilentlyContinue)
+    if ($srcFiles.Count -eq 0) { continue }
 
-    if (($bytes + $f.Length) -gt ([long]$MaxMB * 1MB)) { $capped = $true; break }
+    # ONE listing of the destination, not a stat per file. A finished
+    # procedure run is immutable, so an equal file count means done.
+    $dstFiles = @(Get-ChildItem -LiteralPath $dstDir -File -EA SilentlyContinue)
+    if ($dstFiles.Count -ge $srcFiles.Count) { $skippedDirs++; $skipped += $srcFiles.Count; continue }
 
-    $parent = Split-Path $dst
-    if (-not $madeDirs.Contains($parent)) {
-        if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-        [void]$madeDirs.Add($parent)
+    $haveNames = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($x in $dstFiles) { [void]$haveNames.Add($x.Name) }
+    if (-not (Test-Path -LiteralPath $dstDir)) {
+        New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
     }
 
-    try {
-        Copy-Item -LiteralPath $f.FullName -Destination $dst -Force
-        $copied++; $bytes += $f.Length
-    } catch {
-        $failed++
-        if ($failed -le 5) { Say ("  skip (unreadable): {0}" -f $f.FullName) 'DarkYellow' }
+    foreach ($f in $srcFiles) {
+        if ($f.LastWriteTime -ge $settled) { continue }   # still being written
+        if ($haveNames.Contains($f.Name)) { $skipped++; continue }
+        if (($bytes + $f.Length) -gt ([long]$MaxMB * 1MB)) { $capped = $true; break }
+        try {
+            Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $dstDir $f.Name) -Force
+            $copied++; $bytes += $f.Length
+        } catch {
+            $failed++
+            if ($failed -le 5) { Say ("  skip (unreadable): {0}" -f $f.FullName) 'DarkYellow' }
+        }
     }
+    if ($capped) { break }
 
-    if ((($copied + $skipped) % 500) -eq 0) {
-        $pct = [math]::Round(100.0 * ($copied + $skipped) / $files.Count, 1)
-        Say ("  {0,5}% - {1:N0} new, {2:N0} already there, {3:N1} MB, {4:N0}s" -f $pct, $copied, $skipped, ($bytes / 1MB), $sw.Elapsed.TotalSeconds)
+    if (($examined % 250) -eq 0) {
+        Say ("  {0:N0}/{1:N0} folders - {2:N0} new file(s), {3:N1} MB, {4:N0}s" -f `
+             $examined, $considered.Count, $copied, ($bytes / 1MB), $sw.Elapsed.TotalSeconds)
     }
 }
 $sw.Stop()
 
+Say ''
+Say ("Examined {0:N0} folder(s); {1:N0} were already complete." -f $examined, $skippedDirs)
 Say ''
 if ($capped) {
     Say "*** SIZE CAP ${MaxMB}MB REACHED - HISTORY IS INCOMPLETE ***" 'Red'

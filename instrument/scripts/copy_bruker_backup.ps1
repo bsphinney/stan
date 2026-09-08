@@ -65,7 +65,7 @@ $ErrorActionPreference = 'Stop'
 # These scripts get copied to instrument PCs and then live there on
 # their own, so "is the copy in front of me current?" has to be
 # answerable without a git checkout.
-$ScriptVersion = '1.0.94'
+$ScriptVersion = '1.0.96'
 
 $TaskName = 'STAN Bruker backup mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
@@ -75,7 +75,17 @@ $LogPath = Join-Path $InstallDir 'copy_bruker_backup.log'
 function Say($m, $c = 'Gray') {
     if ($Scheduled) {
         $line = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
-        try { Add-Content -LiteralPath $LogPath -Value $line -EA SilentlyContinue } catch { }
+        # Add-Content does not create the parent, and the whole call is
+        # wrapped in try/catch -- so without this a scheduled run whose
+        # install dir is missing logs absolutely nothing, silently. That is
+        # the one situation where the log is the only way to find out what
+        # happened.
+        try {
+            if (-not (Test-Path -LiteralPath $InstallDir)) {
+                New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+            }
+            Add-Content -LiteralPath $LogPath -Value $line -EA SilentlyContinue
+        } catch { }
     } else {
         Write-Host $m -ForegroundColor $c
     }
