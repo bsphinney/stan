@@ -78,7 +78,7 @@ from datetime import datetime, timedelta, timezone
 # ── Constants ─────────────────────────────────────────────────────────────
 
 #: Default location of the mirrored Evosep log tree on Hive.
-DEFAULT_ROOT = "/quobyte/proteomics-grp/brett/evosep_logs"
+DEFAULT_ROOT = "/quobyte/proteomics-grp/STAN/evosep_logs"
 
 #: Bruker maintenance extract, used only to score this feature against the
 #: instrument's own failure log. Absence is not fatal.

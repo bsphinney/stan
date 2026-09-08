@@ -117,7 +117,7 @@ function Get-ParamDefault($ast, $paramName) {
 
 # ------------------------------------- 3. the Bruker destination, the bug
 # cron_bruker_maintenance.sh does:
-#     find /quobyte/proteomics-grp/brett/BrukerDBBackup -name '*.backup'
+#     find /quobyte/proteomics-grp/STAN/BrukerDBBackup -name '*.backup'
 # and derives the snapshot date from the PARENT DIRECTORY NAME. The previous
 # version of this script wrote to bruker_db/backup_<HOST>_<stamp>/ instead,
 # which the extractor never reads -- so a scheduled copy would have looked
@@ -126,8 +126,8 @@ Write-Host ""
 Write-Host "3. bruker copies where the extractor actually looks"
 $brOut = Get-ParamDefault $brAst "OutRoot"
 $brUnc = Get-ParamDefault $brAst "OutRootUnc"
-Check "OutRoot is BrukerDBBackup"      $brOut 'Y:\brett\BrukerDBBackup'
-Check "UNC fallback matches it"        $brUnc '\\128.120.208.42\proteomics-grp\brett\BrukerDBBackup'
+Check "OutRoot is BrukerDBBackup"      $brOut 'Y:\STAN\BrukerDBBackup'
+Check "UNC fallback matches it"        $brUnc '\\128.120.208.42\proteomics-grp\STAN\BrukerDBBackup'
 # The old destination must be gone from the CODE. It is still named in the
 # docstring, deliberately, because a reader needs to know what changed.
 $brCodeHasOld = $false
@@ -152,7 +152,7 @@ Check "snapshot date survives"         $stampDir.Substring(0, 10) '2026-08-31'
 Write-Host ""
 Write-Host "4. evosep still mirrors to the stable per-host path"
 $evOut = Get-ParamDefault $evAst "OutRoot"
-Check "evosep OutRoot unchanged"    $evOut 'Y:\brett\evosep_logs'
+Check "evosep OutRoot unchanged"    $evOut 'Y:\STAN\evosep_logs'
 Check "mirror dir is <HOST>_mirror" `
     ($evAst.Extent.Text -match '\$\(\$env:COMPUTERNAME\)_mirror') "True"
 

@@ -87,7 +87,7 @@ on `PATH`, so this one line is enough):
 bash extract_bruker.sh --out bruker_maintenance.json
 
 # or a specific backup
-bash extract_bruker.sh --backup /quobyte/proteomics-grp/brett/BrukerDBBackup/weekly/<date>/compass.backup --out out.json
+bash extract_bruker.sh --backup /quobyte/proteomics-grp/STAN/BrukerDBBackup/weekly/<date>/compass.backup --out out.json
 ```
 
 Flags: `--backup <path>` (default: newest `daily/*/compass.backup`), `--out <file>`

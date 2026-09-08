@@ -51,7 +51,7 @@ source /etc/profile.d/hpccf.sh   2>/dev/null || true
 set -u
 
 EV=/quobyte/proteomics-grp/STAN/evosep
-LOGS=/quobyte/proteomics-grp/brett/evosep_logs
+LOGS=/quobyte/proteomics-grp/STAN/evosep_logs
 VENV=/quobyte/proteomics-grp/brett/stan_venv
 FULL=/quobyte/proteomics-grp/STAN/evosep_column_health.json
 RECENT="$EV/evosep_recent.json"

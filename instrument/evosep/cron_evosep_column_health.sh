@@ -17,7 +17,7 @@ export LOGNAME="${LOGNAME:-$(id -un)}"; export USER="${USER:-$LOGNAME}"
 set +u; source /etc/profile.d/modules.sh 2>/dev/null || true; source /etc/profile.d/hpccf.sh 2>/dev/null || true; set -u
 
 EV=/quobyte/proteomics-grp/STAN/evosep
-LOGS=/quobyte/proteomics-grp/brett/evosep_logs
+LOGS=/quobyte/proteomics-grp/STAN/evosep_logs
 OUT=/quobyte/proteomics-grp/STAN/evosep_column_health.json
 mkdir -p /quobyte/proteomics-grp/STAN/logs
 LOG=/quobyte/proteomics-grp/STAN/logs/cron_evosep_health_$(date +%Y%m%d).log

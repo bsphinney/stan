@@ -18,7 +18,7 @@
     This used to write to Y:\brett\bruker_db\backup_<HOST>_<timestamp>\.
     The Hive extractor does not look there. cron_bruker_maintenance.sh runs
 
-        find /quobyte/proteomics-grp/brett/BrukerDBBackup -name '*.backup'
+        find /quobyte/proteomics-grp/STAN/BrukerDBBackup -name '*.backup'
 
     and takes the newest, then derives the snapshot date from the PARENT
     DIRECTORY NAME (2026-08-31_180000 -> 2026-08-31). So the copy has to
@@ -43,8 +43,8 @@
 [CmdletBinding()]
 param(
     [string] $Source       = 'D:\BrukerDBBackup',
-    [string] $OutRoot      = 'Y:\brett\BrukerDBBackup',
-    [string] $OutRootUnc   = '\\128.120.208.42\proteomics-grp\brett\BrukerDBBackup',
+    [string] $OutRoot      = 'Y:\STAN\BrukerDBBackup',
+    [string] $OutRootUnc   = '\\128.120.208.42\proteomics-grp\STAN\BrukerDBBackup',
     [int]    $MaxTotalMB   = 8192,
     [int]    $EveryMinutes = 240,
     [switch] $All,
@@ -65,7 +65,7 @@ $ErrorActionPreference = 'Stop'
 # These scripts get copied to instrument PCs and then live there on
 # their own, so "is the copy in front of me current?" has to be
 # answerable without a git checkout.
-$ScriptVersion = '1.0.98'
+$ScriptVersion = '1.0.99'
 
 $TaskName = 'STAN Bruker backup mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
@@ -303,6 +303,6 @@ Say ("Copied  {0:N0} new file(s), {1:N1} MB." -f $copied, ($bytes / 1MB)) 'Green
 Say ("Skipped {0:N0} already mirrored" -f $skipped)
 if ($failed -gt 0) { Say ("Failed  {0:N0} unreadable file(s)" -f $failed) 'Yellow' }
 Say ''
-Say 'On Hive: /quobyte/proteomics-grp/brett/BrukerDBBackup' 'Cyan'
+Say 'On Hive: /quobyte/proteomics-grp/STAN/BrukerDBBackup' 'Cyan'
 Say 'The nightly extractor reads the newest *.backup from there.' 'Cyan'
 Pause-IfInteractive

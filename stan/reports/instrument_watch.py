@@ -713,11 +713,11 @@ def check_feed_freshness(evosep: dict | None, bruker: dict | None,
         ("evosep_stale", "Evosep procedure logs", EVOSEP_STALE_DAYS,
          ((evosep or {}).get("summary") or {}).get("last_run"),
          evosep_label(evosep) if evosep else station,
-         "Y:\\brett\\evosep_logs -- copy_evosep_logs.bat on the instrument"),
+         "Y:\\STAN\\evosep_logs -- copy_evosep_logs.bat on the instrument"),
         ("bruker_stale", "Bruker Compass backup", BRUKER_STALE_DAYS,
          (bruker or {}).get("backup_date"),
          bruker_label(bruker) if bruker else station,
-         "Y:\\brett\\BrukerDBBackup -- copy_bruker_backup.bat on the instrument"),
+         "Y:\\STAN\\BrukerDBBackup -- copy_bruker_backup.bat on the instrument"),
     ]
 
     for kind, what, max_days, newest, label, where in feeds:

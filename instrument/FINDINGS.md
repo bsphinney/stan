@@ -320,7 +320,7 @@ these logs are the only place a pressure trace exists.
 
 | item | where |
 |---|---|
-| Log mirror (2023-07 → now, 31,432 runs) | `/quobyte/proteomics-grp/brett/evosep_logs/TIMS-10878_mirror/S00230/` |
+| Log mirror (2023-07 → now, 31,432 runs) | `/quobyte/proteomics-grp/STAN/evosep_logs/TIMS-10878_mirror/S00230/` |
 | Collector (run on the instrument PC) | `Y:\brett\scripts\copy_evosep_logs.bat` — full history is the DEFAULT, mirrors incrementally, skips files already present, safe to interrupt |
 | Extractor + tests (versioned) | `STAN/instrument/evosep/` |
 | Deployed copy the cron runs | `/quobyte/proteomics-grp/STAN/evosep/` |

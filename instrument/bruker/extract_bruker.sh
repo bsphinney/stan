@@ -21,7 +21,7 @@
 set -uo pipefail
 
 SIF="${SIF:-/quobyte/proteomics-grp/apptainers/postgres16.sif}"
-BACKUP_ROOT="${BACKUP_ROOT:-/quobyte/proteomics-grp/brett/BrukerDBBackup}"
+BACKUP_ROOT="${BACKUP_ROOT:-/quobyte/proteomics-grp/STAN/BrukerDBBackup}"
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 BACKUP=""
 OUT=""

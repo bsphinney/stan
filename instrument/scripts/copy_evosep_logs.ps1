@@ -40,30 +40,34 @@
       * Files touched in the last 60 seconds are skipped: the Evosep may
         still be writing them, and half a trace is worse than no trace.
 
-    NEWEST FIRST, BOUNDED, AND IT REMEMBERS. A folder proven complete is
-    recorded in <ProgramData>\STAN\copy_evosep_logs.done and never checked
-    again, because a finished procedure run is immutable. That is what turns
-    a routine pass from "listing 31,463 folders on the share" into "listing
-    the couple of dozen that are new". Each pass also stops after
-    -MaxFolders folders: a cold mirror is ~16 GB and cannot finish in one
-    hourly run, so it takes a bite newest-first, saves what it proved, and
-    the next run resumes further back. -Recheck forgets the memory, for when
-    the mirror has been touched by something other than this script.
+    IT USES ROBOCOPY, because Copy-Item in a loop is what made it slow.
+    The PowerShell version did one directory listing against the SHARE per
+    candidate folder plus a Copy-Item per file, single-threaded. Measured on
+    TIMS-10878: 2,000 folders took 60 s and copied nothing -- 30 ms of SMB
+    round-trip each, purely to confirm files that were already there. At
+    that rate one full verification of 31,463 folders is ~16 hourly passes.
 
-    WHY THE OLD VERSION WAS SLOW. It did Get-ChildItem -Recurse over the
-    whole tree, materialised 880,903 FileInfo objects, and then called
-    Get-Item on the SHARE once per file to compare sizes. That is 880,903
-    SMB round-trips to discover that nothing changed. The scheduled task
-    passes -Days 30, so a routine hourly pass now examines a few dozen
-    directory names and copies whatever is new.
+    Robocopy ships with Windows, does the same size/timestamp comparison
+    natively, and does it across /MT threads. flinders_copy.ps1 already
+    copies acquisitions this way; this is the same decision for the same
+    reason.
+
+    The folder walk that remains exists for one thing robocopy cannot do:
+    exclude a procedure run that is STILL BEING WRITTEN. Robocopy's age
+    filters are whole days, so it cannot express "settled for 60 seconds".
+    Any run folder touched within the last minute is handed to robocopy as
+    /XD and picked up next pass -- half a trace is worse than no trace.
+
+    -Days becomes robocopy's /MAXAGE, so the scheduled hourly pass considers
+    recent files only and a manual run still sweeps the whole history.
 
 .PARAMETER Days
     Limit to files changed in the last N days. 0 (the default) means the
     entire history.
 
-.PARAMETER MaxMB
-    Safety cap on a single run. Generous by design; if it is ever reached the
-    script says so loudly rather than quietly truncating your history.
+.PARAMETER Threads
+    Robocopy /MT thread count. Higher hides more SMB latency; 16 is
+    robocopy's own documented sweet spot for a network target.
 
 .PARAMETER Scheduled
     Set by the scheduled task only. Never type it: it suppresses the
@@ -77,14 +81,12 @@
 [CmdletBinding()]
 param(
     [string] $Source      = 'C:\ProgramData\Evosep\EvosepOne\Procedure logs',
-    [string] $OutRoot     = 'Y:\brett\evosep_logs',
-    [string] $OutRootUnc  = '\\128.120.208.42\proteomics-grp\brett\evosep_logs',
+    [string] $OutRoot     = 'Y:\STAN\evosep_logs',
+    [string] $OutRootUnc  = '\\128.120.208.42\proteomics-grp\STAN\evosep_logs',
     [int]    $Days        = 0,
-    [int]    $MaxMB       = 60000,
-    # Most folders a single pass will look at. A cold mirror is ~16 GB
-    # and cannot finish in one hourly run; this bounds the pass and the
-    # next one resumes further back, newest-first throughout.
-    [int]    $MaxFolders  = 2000,
+    # Robocopy threads. The copy is latency-bound against a network target,
+    # not CPU-bound, so this is about hiding round-trips rather than cores.
+    [int]    $Threads     = 16,
     [int]    $EveryMinutes = 60,
     [switch] $Recent,
     [switch] $Scheduled,
@@ -92,7 +94,6 @@ param(
     # Forget which folders are known complete and re-verify every one of
     # them against the share. For when the mirror has been touched by
     # something other than this script.
-    [switch] $Recheck,
     # The elevated half of the self-install re-launches the script with
     # this. It MUST be a declared parameter: under [CmdletBinding()]
     # PowerShell rejects an unknown named parameter outright rather than
@@ -108,17 +109,12 @@ $ErrorActionPreference = 'Stop'
 # These scripts get copied to instrument PCs and then live there on
 # their own, so "is the copy in front of me current?" has to be
 # answerable without a git checkout.
-$ScriptVersion = '1.0.98'
+$ScriptVersion = '1.0.99'
 
 $TaskName = 'STAN Evosep log mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
 $InstalledPath = Join-Path $InstallDir 'copy_evosep_logs.ps1'
 $LogPath = Join-Path $InstallDir 'copy_evosep_logs.log'
-# Folders already verified complete on the share. A finished procedure run
-# is immutable, so re-checking one is a wasted SMB round-trip -- and at
-# 31,463 folders that is the whole cost of a pass. Remembering them turns a
-# routine run into "check the couple of dozen that are new".
-$StatePath = Join-Path $InstallDir 'copy_evosep_logs.done'
 
 function Say($m, $c = 'Gray') {
     if ($Scheduled) {
@@ -147,43 +143,6 @@ function Pause-IfInteractive {
     Say ''
     Say 'Press any key to continue . . .'
     try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { }
-}
-
-function Get-DoneSet {
-    # Header line records the destination. A different mirror path means the
-    # remembered folders say nothing about it, so the set is discarded rather
-    # than trusted -- a stale "already done" is the one failure that would
-    # silently skip real work.
-    # `return ,$set`, with the comma, at EVERY exit. PowerShell unrolls a
-    # collection on return: a plain `return $set` hands back $null when the
-    # set is empty, which is precisely the cold-start case, and the caller
-    # then dies on $done.Contains() with "You cannot call a method on a
-    # null-valued expression". CLAUDE.md documents this and it still caught
-    # me. The caller does not wrap in @(), so the comma is required.
-    $set = New-Object 'System.Collections.Generic.HashSet[string]'
-    if ($Recheck) { return ,$set }
-    if (-not (Test-Path -LiteralPath $StatePath)) { return ,$set }
-    try {
-        $lines = @(Get-Content -LiteralPath $StatePath -EA SilentlyContinue)
-    } catch { return ,$set }
-    if ($lines.Count -eq 0) { return ,$set }
-    if ($lines[0] -ne "dest=$dest") { return ,$set }
-    for ($i = 1; $i -lt $lines.Count; $i++) {
-        if ($lines[$i]) { [void]$set.Add($lines[$i]) }
-    }
-    return ,$set
-}
-
-function Save-DoneSet($set) {
-    try {
-        if (-not (Test-Path -LiteralPath $InstallDir)) {
-            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-        }
-        $out = New-Object 'System.Collections.Generic.List[string]'
-        $out.Add("dest=$dest")
-        foreach ($k in $set) { $out.Add($k) }
-        Set-Content -LiteralPath $StatePath -Value $out -EA SilentlyContinue
-    } catch { }
 }
 
 function Test-Task {
@@ -347,13 +306,12 @@ if ($Days -gt 0) { Say "window: last $Days day(s)" } else { Say 'window: entire 
 Say ''
 Say 'Scanning the source (this can take a minute on a long history)...'
 
+# A procedure run still being written must not be mirrored half-copied.
+# Robocopy's age filters are whole days and cannot express "settled for 60
+# seconds", so the in-flight folders are found here and excluded by name.
+# Only the newest handful can possibly be in flight, so this costs one
+# local directory listing, not a walk.
 $settled = (Get-Date).AddSeconds(-60)
-if ($Days -gt 0) { $cut = (Get-Date).AddDays(-$Days) } else { $cut = [datetime]'1900-01-01' }
-
-# Enumerate procedure-run directories, not files. The Evosep lays out
-#     <serial>\<method>_YYYY-MM-DD_HH-MM-SS\<28 files>
-# so one listing per serial gives every run, and the run's date is readable
-# straight off the name -- no stat, no recursion, no 880k-element array.
 $runDirs = New-Object 'System.Collections.Generic.List[object]'
 foreach ($serial in @(Get-ChildItem -LiteralPath $Source -Directory -EA SilentlyContinue)) {
     foreach ($d in @(Get-ChildItem -LiteralPath $serial.FullName -Directory -EA SilentlyContinue)) {
@@ -362,115 +320,58 @@ foreach ($serial in @(Get-ChildItem -LiteralPath $Source -Directory -EA Silently
 }
 Say ("Found {0:N0} procedure-run folder(s)." -f $runDirs.Count)
 
-# Date from the directory NAME. Falling back to LastWriteTime keeps an
-# unexpected layout working rather than silently skipping it.
-$considered = New-Object 'System.Collections.Generic.List[object]'
+$excludes = New-Object 'System.Collections.Generic.List[string]'
 foreach ($d in $runDirs) {
-    $runDate = $d.LastWriteTime
-    if ($d.Name -match '_(\d{4}-\d{2}-\d{2})_') {
-        try { $runDate = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd', $null) } catch { }
-    }
-    if ($runDate -ge $cut) { $considered.Add($d) }
+    if ($d.LastWriteTime -ge $settled) { $excludes.Add($d.FullName) }
 }
-if ($Days -gt 0) {
-    Say ("{0:N0} of them fall in the last {1} day(s)." -f $considered.Count, $Days)
+if ($excludes.Count -gt 0) {
+    Say ("{0} folder(s) still being written -- left for the next pass." -f $excludes.Count) 'Yellow'
 }
 
-$srcLen = $Source.Length
-$copied = 0; $skippedDirs = 0; $skipped = 0; $failed = 0; $bytes = 0L
-$capped = $false
+# Robocopy does the comparison. /E every subdirectory, /XO never overwrite a
+# newer destination, /MT for parallelism, /R:1 /W:2 so an unreadable file
+# costs seconds rather than minutes. No /Z or /IPG: both are silently
+# incompatible with /MT, and throughput matters more here than politeness
+# because the payload is small text files rather than a 2 GB acquisition.
+$roboLog = Join-Path $InstallDir 'copy_evosep_logs.robocopy.log'
+$roboArgs = New-Object 'System.Collections.Generic.List[string]'
+$roboArgs.Add("`"$Source`"")
+$roboArgs.Add("`"$dest`"")
+$roboArgs.Add("/E"); $roboArgs.Add("/XO")
+$roboArgs.Add("/MT:$Threads")
+$roboArgs.Add("/R:1"); $roboArgs.Add("/W:2")
+$roboArgs.Add("/NP"); $roboArgs.Add("/NFL"); $roboArgs.Add("/NDL"); $roboArgs.Add("/NJH")
+if ($Days -gt 0) { $roboArgs.Add("/MAXAGE:$Days") }
+foreach ($x in $excludes) { $roboArgs.Add("/XD"); $roboArgs.Add("`"$x`"") }
+$roboArgs.Add("/LOG+:`"$roboLog`"")
+
+Say ''
+Say ("Mirroring with robocopy ({0} threads{1})..." -f $Threads, $(if ($Days -gt 0) { ", last $Days day(s)" } else { ", entire history" }))
 $sw = [Diagnostics.Stopwatch]::StartNew()
-$examined = 0
-$verified = 0
-
-# Folders proven complete on a previous run. Checking one costs an SMB
-# listing, and a finished procedure run is immutable, so this is the whole
-# difference between "look at 31,463 folders" and "look at the couple of
-# dozen that are new".
-$done = Get-DoneSet
-$known = $done.Count
-if ($known -gt 0) { Say ("{0:N0} folder(s) already known complete -- not re-checked." -f $known) }
-
-# Work newest-first and cap it. A cold mirror is ~16 GB and cannot finish in
-# one hourly pass, so rather than running for hours it takes a bite, saves
-# what it proved, and the next run resumes further back. The newest data is
-# on the share within minutes either way.
-$todo = New-Object 'System.Collections.Generic.List[object]'
-foreach ($d in @($considered | Sort-Object Name -Descending)) {
-    if ($done.Contains($d.Name)) { $skippedDirs++; continue }
-    $todo.Add($d)
-}
-if ($todo.Count -gt $MaxFolders) {
-    Say ("{0:N0} folder(s) to check; doing the newest {1:N0} this pass, rest next run." -f `
-         $todo.Count, $MaxFolders) 'Yellow'
-}
-
-foreach ($d in $todo) {
-    if ($examined -ge $MaxFolders) { break }
-    $examined++
-    $rel = $d.FullName.Substring($srcLen).TrimStart('\', '/')
-    $dstDir = Join-Path $dest $rel
-
-    $srcFiles = @(Get-ChildItem -LiteralPath $d.FullName -File -EA SilentlyContinue)
-    if ($srcFiles.Count -eq 0) { continue }
-
-    # ONE listing of the destination folder, not a stat per file.
-    $dstFiles = @(Get-ChildItem -LiteralPath $dstDir -File -EA SilentlyContinue)
-    if ($dstFiles.Count -ge $srcFiles.Count) {
-        $skipped += $srcFiles.Count
-        [void]$done.Add($d.Name); $verified++
-        continue
-    }
-
-    $haveNames = New-Object 'System.Collections.Generic.HashSet[string]'
-    foreach ($x in $dstFiles) { [void]$haveNames.Add($x.Name) }
-    if (-not (Test-Path -LiteralPath $dstDir)) {
-        New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
-    }
-
-    $unsettled = 0
-    foreach ($f in $srcFiles) {
-        if ($f.LastWriteTime -ge $settled) { $unsettled++; continue }
-        if ($haveNames.Contains($f.Name)) { $skipped++; continue }
-        if (($bytes + $f.Length) -gt ([long]$MaxMB * 1MB)) { $capped = $true; break }
-        try {
-            Copy-Item -LiteralPath $f.FullName -Destination (Join-Path $dstDir $f.Name) -Force
-            $copied++; $bytes += $f.Length
-        } catch {
-            $failed++
-            if ($failed -le 5) { Say ("  skip (unreadable): {0}" -f $f.FullName) 'DarkYellow' }
-        }
-    }
-    if ($capped) { break }
-    # Only remember it as done when the whole folder really is there. A run
-    # still being written, or a file that would not copy, must be revisited.
-    if ($unsettled -eq 0 -and $failed -eq 0) { [void]$done.Add($d.Name); $verified++ }
-
-    if (($examined % 250) -eq 0) {
-        Say ("  {0:N0}/{1:N0} folders - {2:N0} new file(s), {3:N1} MB, {4:N0}s" -f `
-             $examined, $todo.Count, $copied, ($bytes / 1MB), $sw.Elapsed.TotalSeconds)
-    }
-}
+$proc = Start-Process robocopy.exe -ArgumentList $roboArgs -WindowStyle Hidden -PassThru
+try { $proc.PriorityClass = 'BelowNormal' } catch { }
+$proc.WaitForExit()
 $sw.Stop()
-Save-DoneSet $done
-$remaining = $todo.Count - $examined
-if ($remaining -gt 0) {
-    Say ("{0:N0} older folder(s) still to verify -- the next run continues from there." -f $remaining) 'Yellow'
+$rc = $proc.ExitCode
+
+# Robocopy exit codes are a BITMASK, not a status: 1 copied, 2 extras,
+# 4 mismatched, 8 failed, 16 fatal. Anything under 8 is success, and
+# treating a plain non-zero as failure would report every successful copy
+# as an error.
+Say ''
+if ($rc -ge 8) {
+    Say ("robocopy reported a failure (exit $rc) after {0:N0}s -- see $roboLog" -f $sw.Elapsed.TotalSeconds) 'Red'
+} elseif ($rc -eq 0) {
+    Say ("Nothing new. Mirror already current ({0:N0}s)." -f $sw.Elapsed.TotalSeconds) 'Green'
+} else {
+    Say ("Mirror updated in {0:N0}s (robocopy exit $rc)." -f $sw.Elapsed.TotalSeconds) 'Green'
 }
 
 Say ''
-Say ("Checked {0:N0} folder(s) this pass; {1:N0} skipped from memory, {2:N0} newly verified." -f $examined, $skippedDirs, $verified)
-Say ''
-if ($capped) {
-    Say "*** SIZE CAP ${MaxMB}MB REACHED - HISTORY IS INCOMPLETE ***" 'Red'
-    Say '    Re-run this script: it resumes where it stopped.' 'Red'
-    Say '    Or raise the cap with -MaxMB.' 'Red'
-    Say ''
+Say "On Hive: /quobyte/proteomics-grp/STAN/evosep_logs/$($env:COMPUTERNAME)_mirror" 'Cyan'
+if ($excludes.Count -gt 0) {
+    Say ("{0} in-flight folder(s) will arrive on the next pass." -f $excludes.Count) 'Yellow'
+} elseif ($rc -lt 8) {
+    Say 'Mirror is complete. Safe to close.' 'Green'
 }
-Say ("Copied  {0:N0} new file(s), {1:N1} MB in {2:N0}s" -f $copied, ($bytes / 1MB), $sw.Elapsed.TotalSeconds) 'Green'
-Say ("Skipped {0:N0} already mirrored" -f $skipped)
-if ($failed -gt 0) { Say ("Failed  {0:N0} unreadable file(s)" -f $failed) 'Yellow' }
-Say ''
-Say "On Hive: /quobyte/proteomics-grp/brett/evosep_logs/$($env:COMPUTERNAME)_mirror" 'Cyan'
-if (-not $capped -and $failed -eq 0) { Say 'Mirror is complete. Safe to close.' 'Green' }
 Pause-IfInteractive

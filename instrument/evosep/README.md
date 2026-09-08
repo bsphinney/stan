@@ -171,7 +171,7 @@ python3 extract_evosep.py --host-dir TIMS-10878_mirror \
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--root` | `/quobyte/proteomics-grp/brett/evosep_logs` | Log mirror root |
+| `--root` | `/quobyte/proteomics-grp/STAN/evosep_logs` | Log mirror root |
 | `--host-dir` | newest | Specific `<HOST>_<timestamp>` folder |
 | `--since` | none | Only runs on/after this date |
 | `--max-runs` | none | Keep only the newest N |

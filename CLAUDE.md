@@ -163,7 +163,7 @@ one that ever got a scheduled task.
 Two things that must not regress, both covered by
 `tests/test_instrument_copy_scripts.ps1`:
 
-- **The Bruker destination is `Y:\brett\BrukerDBBackup`**, preserving
+- **The Bruker destination is `Y:\STAN\BrukerDBBackup`**, preserving
   Bruker's `daily/<stamp>/` layout. `cron_bruker_maintenance.sh` finds
   the newest `*.backup` under that exact path and reads the snapshot date
   off the **parent directory name**. The old script wrote to
