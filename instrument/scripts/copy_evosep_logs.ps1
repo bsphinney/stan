@@ -62,7 +62,14 @@ param(
     [int]    $EveryMinutes = 60,
     [switch] $Recent,
     [switch] $Scheduled,
-    [switch] $Uninstall
+    [switch] $Uninstall,
+    # The elevated half of the self-install re-launches the script with
+    # this. It MUST be a declared parameter: under [CmdletBinding()]
+    # PowerShell rejects an unknown named parameter outright rather than
+    # passing it through to $MyInvocation.UnboundArguments, so reading it
+    # from there meant the elevated child died on parameter binding and
+    # the task was never created. Not for typing.
+    [switch] $InstallOnly
 )
 $ErrorActionPreference = 'Stop'
 
@@ -71,7 +78,7 @@ $ErrorActionPreference = 'Stop'
 # These scripts get copied to instrument PCs and then live there on
 # their own, so "is the copy in front of me current?" has to be
 # answerable without a git checkout.
-$ScriptVersion = '1.0.93'
+$ScriptVersion = '1.0.94'
 
 $TaskName = 'STAN Evosep log mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
@@ -181,19 +188,12 @@ function Install-Task {
     return $true
 }
 
-# -InstallOnly is the elevated half of the self-install re-launching itself.
-# It is not in param() because nothing outside this script should pass it.
-$installOnly = $false
-foreach ($a in $MyInvocation.UnboundArguments) {
-    if ("$a" -eq '-InstallOnly') { $installOnly = $true }
-}
-
 Say "STAN Evosep log mirror  v$ScriptVersion" 'Cyan'
 Say "  running from: $PSCommandPath"
 Say ''
 
 if ($Uninstall) { $null = Remove-Task; Pause-IfInteractive; exit 0 }
-if ($installOnly) { $ok = Install-Task; if ($ok) { exit 0 } else { exit 1 } }
+if ($InstallOnly) { $ok = Install-Task; if ($ok) { exit 0 } else { exit 1 } }
 
 if ($Recent -and $Days -le 0) { $Days = 30 }
 

@@ -196,6 +196,44 @@ foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
         ($ast.Extent.Text -match 'v\$ScriptVersion') "True"
 }
 
+# ------------------- 7. the script accepts every flag it launches itself with
+# THE BUG THIS EXISTS FOR. Install-Task re-launches the script elevated with
+# -InstallOnly, and -InstallOnly was not a declared parameter -- it was read
+# out of $MyInvocation.UnboundArguments. Under [CmdletBinding()] PowerShell
+# rejects an unknown named parameter outright and never populates
+# UnboundArguments, so the elevated child died on parameter binding, the task
+# was never registered, and the operator saw "The task still is not there
+# after elevating" on a real instrument.
+#
+# The structural checks above all passed while that was broken, because they
+# never asked whether the script could actually be invoked the way it invokes
+# itself. This asks exactly that.
+Write-Host ""
+Write-Host "7. self-relaunch flags are declared parameters"
+# Flags belonging to powershell.exe itself, not to our script.
+$hostFlags = @("-NoProfile", "-ExecutionPolicy", "-File", "-WindowStyle",
+               "-Bypass", "-Hidden", "-Command", "-NoExit")
+foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+    $name = $pair[0]; $ast = $pair[1]
+    $declared = @()
+    if ($ast.ParamBlock) {
+        foreach ($p in $ast.ParamBlock.Parameters) { $declared += "-" + $p.Name.VariablePath.UserPath }
+    }
+    $missing = @()
+    foreach ($sc in $ast.FindAll({
+        $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)) {
+        $v = $sc.Value
+        if ($v -match '^-[A-Za-z][A-Za-z0-9]*$') {
+            if ($hostFlags -notcontains $v -and $declared -notcontains $v) { $missing += $v }
+        }
+    }
+    $missing = @($missing | Sort-Object -Unique)
+    Check "$name passes no undeclared flag to itself" ($missing -join ",") ""
+    Check "$name declares -InstallOnly" ($declared -contains "-InstallOnly") "True"
+    Check "$name declares -Scheduled"   ($declared -contains "-Scheduled") "True"
+    Check "$name declares -Uninstall"   ($declared -contains "-Uninstall") "True"
+}
+
 Write-Host ""
 if ($Failures -gt 0) { Write-Host "$Failures failure(s)"; exit 1 }
 Write-Host "all checks passed"
