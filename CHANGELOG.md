@@ -11,6 +11,329 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.0.89] — 2026-09-04
+
+### Fixed
+- **CI lint had been red on `main` for three days.** `ruff check stan/` has
+  failed since v1.0.52 on 2026-09-01, and `ci.yml` runs it on every push and
+  PR, so every build in between was red. The cause was one character:
+  `rows = ROWS = "ABCDEFGH"` in the sample queue export, where `ROWS` is never
+  read (F841). Worth noting for anyone reading the ruff config comment — the
+  deliberately narrow selection is doing its job: a broader run reports 145
+  line-length and ~200 style findings that are noise here, and the one real
+  defect sat inside the four families that were kept.
+
+---
+
+## [1.0.88] — 2026-09-04
+
+### Fixed
+- **A broken SPD tool now says so instead of returning `None`.**
+  `validate_spd_from_metadata`'s TRFP branch ended in a bare
+  `except Exception: return None`. TRFP's .NET runtime is missing from the
+  SLURM environment, so every Thermo file answered `None` and 1,579
+  `sample_health` rows looked as though they simply had no recoverable
+  gradient. Nothing distinguished "this file has no gradient" from "the tool
+  that reads gradients is broken."
+
+  That cost most of 2026-09-04 and produced three successive wrong root causes,
+  two of them artifacts of probe scripts placed in
+  `/quobyte/proteomics-grp/brett`, where the checkout is itself named `stan`
+  and shadows the package. None of it would have started if the handler had
+  logged the `RuntimeError` it was already catching.
+
+  It logs at WARNING, not DEBUG, and the level is the point: DEBUG is stripped
+  from synced logs, so a debug line would have been as invisible on Hive as no
+  line at all. Behaviour is unchanged — still returns `None`, still never
+  raises into the ingest path. Only the silence is fixed.
+
+  Found while scanning for this bug class: **67 handlers across the codebase
+  turn an exception into a return value with no log**, 8 of them in
+  `stan/metrics` where the result becomes a stored scientific value. The other
+  7 are reported rather than changed.
+
+---
+
+## [1.0.87] — 2026-09-04
+
+### Added
+- **PG Farm is backed up to Flinders, daily.** PG Farm is the store of record
+  for every run, every `sample_health` row and the whole community submission
+  history; it is not known to keep its own backups, and STAN had none — that
+  was the only copy. Daily rather than FRAN's weekly, because STAN's dump is
+  42.7 MB in 15 s against FRAN's 228 GB in 5.5 h, so there is no reason to
+  accept a week of data loss. 30 generations is ~1.3 GB against 70 TB free.
+
+  Every correctness guard is carried over from `fran_db_backup.sbatch`:
+  container-pinned `pg_dump`, `--bind` for `/nfs`, `APPTAINERENV_PGPASSWORD`
+  rather than `--env` (argv is world-readable on nodes without hidepid),
+  `.part`-then-rename, `pg_restore --list` verification, and retention that can
+  never prune below one surviving dump. Two additions of our own: a **TABLE
+  DATA check**, because `pg_restore --list` succeeding only proves the archive
+  parses and a schema-only dump parses perfectly while restoring an empty
+  database; and size reported from `stat` rather than `du -h`, which on this
+  NFS export printed "512" for a 44,754,852-byte dump. The cron entry is
+  staged, not installed.
+
+### Fixed
+- **Stopped conjuring an SPD when there is no gradient.**
+  `gradient_min_to_spd` returned a hardcoded 30 for minutes <= 0. Stored in
+  `runs.spd` that is indistinguishable from a genuine 30 SPD Evosep method. It
+  answers `None` now.
+
+  The *derived* values are deliberately kept, against an earlier recommendation
+  to make the function refuse outside its three Evosep snap windows. Measuring
+  the live table first showed that would have been the wrong change: 2,751 of
+  4,524 rows (60.8%) of `runs.spd` are derived, and inverting the arithmetic
+  shows they are right — 38 SPD from a 30 min Exploris gradient, 32 from a
+  36 min Lumos one. Those instruments do not run Evosep. Returning `None` would
+  have blanked 61% of the column and sent both Orbitraps back to being measured
+  against an Evosep ladder they never run.
+
+---
+
+## [1.0.86] — 2026-09-04
+
+### Fixed
+- **The PG capacity query could not execute at all.** v1.0.85 shipped
+  per-instrument utilisation capacities with a query that fails on PG:
+  `function substr(timestamp with time zone, integer, integer) does not exist`.
+  `runs.run_date` is `timestamptz`, `sample_health.run_date` is text, and
+  `runs.hidden` is integer rather than boolean, so the UNION fails,
+  `spd_usage_by_instrument_pg` catches it and returns `{}`, and
+  `_instrument_capacities` reads that as "nothing resolved" and falls back to
+  the global Evosep 100/60 pair — leaving the Exploris and Lumos showing the
+  exact numbers the fix was meant to correct.
+
+  SQLite stores every column as TEXT, so 744 local tests pass and nothing on a
+  dev Mac touches this. **A try/except around a query converts a type error
+  into a wrong answer, so a fallback path has to prove itself against PG.**
+  Verified live: Exploris [38, 19], Lumos [32, 12], timsTOF [100, 60].
+
+---
+
+## [1.0.85] — 2026-09-04
+
+### Fixed
+- **Sample runs had no SPD, so the TIC overlay read 0.** Brett: *"there has
+  been a few hundred samples run in the last 7 days on the timstof and it is
+  reading 0."* Not a data problem — `sample_health` never had an `spd` column,
+  so the API stubbed `spd: None` on every Sample and Blank row and the UI
+  filters on string equality. Selecting any gradient dropped 100% of both
+  facets. The same week held 138 samples and 27 blanks on that instrument,
+  every one with a stored TIC trace.
+
+  The column is now resolved per-file at ingest, inside `insert_sample_health`
+  rather than at its two call sites, so the watcher and the Hive pipeline
+  cannot drift apart. The chain deliberately stops one step short of the
+  watcher's: raw metadata, then a filename token, and **not** the
+  `instruments.yml` cohort default — a blanket default is tolerable for a QC
+  injection and wrong for sample runs, where the facility switches gradients
+  between users through the day. Backfill is `stan fix-sample-spds`.
+
+  Rows that genuinely cannot resolve are no longer silently dropped: there is
+  an explicit "SPD unknown" bucket and the panel says how many traces the
+  filter is holding back. A silent zero is what made this look like an outage.
+
+  Two more from the same report: sample health ignored the Samples tab's
+  instrument selector, and utilisation was scored against a hardcoded Evosep
+  100/60 pair for every instrument.
+
+### Changed
+- **The docs were rewritten around 100% Hive + PG Farm.** Brett: *"we have
+  transitioned to be 100% hive and PG farm."* CLAUDE.md described a facility
+  that no longer exists, and several of its claims were repeated back as fact —
+  that instrument PCs run STAN, that the per-host Hive mirror is worth
+  troubleshooting from, that the Hive checkout is an unpulled fork, that Hive
+  has no psycopg2, that the dashboard is reached over a tunnel. Every one was
+  wrong.
+
+  The part worth the most: **three surfaces drift independently.** Measured
+  that day, Hive was on 1.0.84, ucd.stan-proteomics.org on 1.0.82, and `main`
+  on 1.0.85. "Is the fix live?" is three questions, and a GitHub push answers
+  none of them by itself.
+
+---
+
+## [1.0.84] — 2026-09-04
+
+### Fixed
+- **The QC summary is coloured off IPS, not the gate.** The first real runs
+  posted a GREEN circle on `FL030926_HeL50_90m_3.raw` — IPS 0, no precursors,
+  no proteins. Not a formatting slip: the icon was keyed on
+  `GateDecision.result`, and that is a constant.
+
+  `evaluate_gates` loads a `thresholds.yml` that **no deployment has**. Nothing
+  in the tree writes it, there is no template, and it is not gitignored — it
+  was never created. With no thresholds the function returns PASS at
+  `evaluator.py:96` before comparing a single metric. Every one of the 4,540
+  rows in the runs table is `pass`, including 398 that identified nothing. See
+  [`docs/qc_gating_and_slack_summary.md`](docs/qc_gating_and_slack_summary.md).
+
+  The icon now reads `ips_score`, using the exact bands from `IpsBadge` in
+  `dashboard/public/index.html` (>=80 green, >=60 yellow, else red). IPS is
+  cohort-calibrated from the lab's own accumulated baselines and is what the
+  front-page gauges display, so Slack and the gauges agree by construction
+  rather than by coincidence. The gate decision survives only as a fallback for
+  runs carrying no IPS.
+
+  Also flags "no identifications" on an explicit zero — guarded on the key
+  being present, not merely falsy, so monitor-pipeline runs that were never
+  searched are not mislabelled dead.
+
+---
+
+## [1.0.83] — 2026-09-04
+
+### Added
+- **A one-line QC summary to Slack for every run.** Brett asked for *"a one
+  line with the precursors and proteins id'd and anything that flagged like
+  high peg or mass out of calibration"*. Posts what was identified plus
+  anything that flagged.
+
+  Placement is the whole point: the call sits **after** `_run_peg_and_drift` in
+  `process_raw`, not beside `evaluate_gates`, because on the Hive path PEG is
+  computed after `insert_run` — a call at gate-evaluation time would report
+  every run as PEG-free. `_run_peg_and_drift` previously returned `None` on
+  three of its four paths; it now returns a dict on every path, and the caller
+  guards anyway.
+
+  PEG is reported only from `peg_score >= 50` (moderate). `classify_peg_score`
+  calls 20–50 "trace", which is the normal background of shared plasticware and
+  would fire on nearly every run.
+
+  Never raises and no-ops without a webhook: a QC run must not fail because
+  Slack is unreachable. `STAN_SLACK_QC_SUMMARY=0` turns it off.
+
+---
+
+## [1.0.82] — 2026-09-04
+
+### Fixed
+- **The column boundary was drawn from the logged placeholder, not the
+  detection.** Brett: *"shouldn't it be after the last red dot that was an
+  overpressure?"* Yes. The chart drew `column.installed`, the logged
+  maintenance event, and a logged date carries a placeholder time — 05:00
+  against a real change at 11:50. Drawn 6.8 h early, the rule put the old
+  column's last two runs on the new column's side of the line, including the
+  452.6 bar cut-out, so the panel showed a fresh column apparently hitting the
+  pump limit in its first hour. The lifetimes table below already used the
+  detected boundary, so the two halves of the same page disagreed about when
+  the column was fitted.
+
+---
+
+## [1.0.81] — 2026-09-04
+
+### Changed
+- **The wear tile says what the pressure actually is, not "baseline".** Brett:
+  *"it's just confusing what a baseline of 281 bar really means."* It is —
+  "baseline 281 bar" omits the two facts that give the number meaning, which
+  method and at what flow. The tile now reads `187 bar per µL/min`, with
+  `fresh 187 · 281 bar at 1.50 µL/min (100-samples-per-day)` beneath it and a
+  hover explaining that resistance is comparable across methods and columns
+  while raw pressure is not, and that the 520 bar cut-out trips on the raw
+  pressure rather than on this. The flow is derived (pressure / resistance)
+  rather than carried as a new field, so it cannot disagree with the two
+  numbers beside it.
+
+### Changed
+- **The Evosep full-extract wall was raised from 2 h to 4 h.** Runtimes are
+  creeping as the log mirror grows — 1:10, 1:20, 1:26, 1:41, 1:53, 1:45 against
+  a 2:00:00 limit. When one crosses the wall SLURM kills it, no document is
+  published, and the panel silently serves yesterday's numbers.
+
+---
+
+## [1.0.80] — 2026-09-04
+
+### Changed
+- **The wear tile leads with resistance, not pressure.** It answers "how worn
+  is this column", and pressure cannot: the retired column read 124–418 bar
+  across four methods in one week purely from their flows, so no single
+  pressure describes it. Resistance divides flow out, and the lab knows its
+  fresh value by heart — 186.1 / 185.5 / 186.9 on three separate columns — so
+  the number arrives with its own reference.
+
+  Kept deliberately: raw pressure in the note and on the over-pressure tile,
+  because the 520 bar cut-out trips on pressure; the wording "bar per µL/min"
+  rather than "at 1 µL/min", because it is a slope and not a forecast; and the
+  method named in the note, because resistance is only comparable like-for-like.
+
+---
+
+## [1.0.79] — 2026-09-04
+
+### Fixed
+- **`config/` was never shipped, so the column catalogue did not exist.**
+  `/api/columns` answered `{"columns": []}` because `resolve_config_path()`
+  looks in `<package>/config/`, which on the App Service is
+  `/home/site/wwwroot/config`, and the deploy package never contained it. The
+  banner fell through from "PepSep Max C18 · assumed" to "not recorded". Only
+  the YAML ships — the JSON files in `config/` are the file-fallback for the
+  maintenance endpoints, and a shipped snapshot would serve months-old data as
+  current.
+
+### Changed
+- **Wash flow and column ageing use the same log-age axis as backpressure**, via
+  a shared `evAgeTicks()` so 30d sits the same distance along on all three. On a
+  linear axis the column in use got a few pixels, and one 1101-day column
+  squeezed every other line into the left tenth.
+- **"Runs left on this column" is now a banner tile.** The projection already
+  existed but rendered two panels down. Its percentage line said "at 7670% of
+  fresh flow" — `pct_of_fresh` is already a percentage and the UI multiplied by
+  100 again.
+
+---
+
+## [1.0.77] — 2026-09-03
+
+### Fixed
+- **Wash-flow tiles were empty.** Brett: *"for the column wash flow the ul min
+  are still empty."* The extractor suffixes every flow figure with its unit —
+  `median_ul_min`, `p5_ul_min`, `p95_ul_min` — and this one call site dropped
+  it. `evNum(undefined)` returns an em-dash, so each tile showed "— µL/min"
+  under a live count ("median of 830 washes"), which reads as missing data
+  rather than a bug.
+
+  `render_check.js` now renders `EvWashFlow`, `EvColumnLifetimes` and
+  `EvColumnAging` too. The first version of that assertion **passed a broken
+  build** — a bare `out.includes("2.284")` matched the number in a hover title
+  while the tile said "—" — so it now scopes the search to the tile and fails
+  on an em-dash there.
+
+---
+
+## [1.0.76] — 2026-09-03
+
+### Fixed
+- **The backpressure chart drew 90 days while labelling it 2023.** Brett:
+  *"90-days, 1 year and all look almost identical."* `methods[].series` is
+  windowed to the last 90 days at the source, but the chart labelled its x-axis
+  with the method's all-time extent — so every window claimed to start
+  2023-07-13 while plotting from 2026-06-04, and the range filter appeared
+  broken when it was never at fault.
+
+  Beyond the per-run window the chart now draws `methods[].steps`, which is not
+  windowed: the detected baseline level and every time it moved, back to 2023.
+  "All" spans 2023-07-14 → 2026-09-02 for a few kilobytes instead of shipping
+  13 MB.
+
+  `scripts/render_check.js` answers "why didn't any of the tests catch this?".
+  `check_jsx.js` proves the file is valid JavaScript, which is why it passed
+  v1.0.69 and v1.0.71 — both blank Maintenance tabs. The new check transpiles
+  the page, evaluates it with browser stubs and server-renders the charts
+  against a real document for all four windows.
+
+### Security
+- **A test fixture imitated a real bot token's layout.** GitHub push protection
+  blocked the v1.0.73–76 push over `tests/test_slack_threading.py`. The value
+  was synthetic — all-zero and all-one digit groups — but copied a real token's
+  digits-digits-alnum shape, which is what the detector matches. **No credential
+  was ever committed.**
+
+---
+
 ## [1.0.75] — 2026-09-03
 
 ### Changed

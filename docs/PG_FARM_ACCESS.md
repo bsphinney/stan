@@ -189,6 +189,53 @@ WHERE table_name = 'runs' ORDER BY ordinal_position;
 
 ---
 
+## Privileges — what the service account can and cannot do
+
+Connecting as `genome-proteomics-service-account`. Measured against live PG on
+2026-09-04:
+
+| operation | allowed |
+|---|---|
+| `SELECT` / `INSERT` / `UPDATE` on the existing tables | **yes** |
+| `CREATE` on database `stan` | **no** |
+| `CREATE` on schema `public` | **no** |
+| `USAGE` on schema `public` | yes |
+
+**All 15 tables in `public` are owned by `brettsp`, not the service account.**
+Schema changes therefore need the owner — put them in `migrations/` and have
+Brett run them (e.g. `migrations/2026-09-04_sample_health_spd.sql` from
+v1.0.85). Code that needs a new column must tolerate the window between the
+code shipping and the migration running.
+
+### The trap: `CREATE TABLE IF NOT EXISTS` fails on tables that already exist
+
+Postgres checks schema permission **before** it checks existence, so this is a
+hard error rather than a no-op:
+
+```
+CREATE TABLE IF NOT EXISTS feature_clouds (...)
+  -> InsufficientPrivilege: permission denied for schema public
+```
+
+That error also **poisons the surrounding transaction**, so a subsequent
+`INSERT` on the same connection fails with "current transaction is aborted"
+even though the insert itself is permitted.
+
+Consequences in the current tree:
+
+- `publish_bruker_pg.py` is deliberately **DDL-free** — a bare
+  `INSERT ... ON CONFLICT`. This is why the nightly Bruker maintenance publish
+  works. Its docstring records the reason; do not "helpfully" add an ensure step.
+- `ensure_feature_clouds_table_pg()` fails and returns `False` on **every**
+  call, logging a warning each time. Harmless — it uses its own connection, so
+  the following insert is not poisoned, and the table already exists — but it
+  is permanently noisy in the logs.
+- `upsert_bruker_maintenance_pg()` in `stan/db_pg.py` runs its ensure on the
+  *same* cursor with no `try`, so it would fail if used. It currently has **zero
+  callers**; do not wire it up without removing the DDL first.
+
+---
+
 ## Don'ts
 
 - Don't use `sslmode=verify-full` (broken cert path on Mac).
@@ -196,5 +243,7 @@ WHERE table_name = 'runs' ORDER BY ordinal_position;
   slow; reuse the connection (`stan/db_pg.py::_connect()` caches it).
 - Don't run heavy queries from a Hive **login node** — submit via SLURM.
 - Don't commit the secret or token to git.
+- Don't issue DDL as the service account — not even
+  `CREATE TABLE IF NOT EXISTS`. See Privileges above.
 
 See `docs/PG_FARM.md` for everything else.

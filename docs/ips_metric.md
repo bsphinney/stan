@@ -4,6 +4,9 @@
 **Calibration set:** 359 real UC Davis HeLa QC runs (timsTOF HT, Exploris 480, Orbitrap Lumos), April 2026
 **Range:** 0–100 integer, higher is better
 **Version:** v2 (cohort-calibrated) — replaces the v1 composite that is retained only in git history
+**See also:** [`qc_gating_and_slack_summary.md`](qc_gating_and_slack_summary.md) — IPS is
+the QC signal in practice: it supplies the front-page gauge colours and the Slack run
+summary, because `stan/gating/` has no thresholds and passes every run.
 
 ---
 

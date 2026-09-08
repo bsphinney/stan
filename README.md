@@ -293,6 +293,7 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 | [`docs/INSTALL_MODE_C_HPC.md`](docs/INSTALL_MODE_C_HPC.md) | Mode C — SLURM/HPC install and configuration. |
 | [`docs/user_guide.md`](docs/user_guide.md) | Day-to-day manual: all CLI commands, dashboard tour, config reference, troubleshooting. |
 | [`docs/ips_metric.md`](docs/ips_metric.md) | IPS formula, cohort references, why protein count is excluded. |
+| [`docs/qc_gating_and_slack_summary.md`](docs/qc_gating_and_slack_summary.md) | The per-run Slack QC summary, the IPS colour bands, and why `stan/gating/` is inert. |
 | [`docs/external_tools.md`](docs/external_tools.md) | DIA-NN, Sage, ThermoRawFileParser: CLI flags, version pins, container paths, gotchas. |
 | [`docs/HPC_PATHS.md`](docs/HPC_PATHS.md) | Hive HPC reference paths for SLURM integration. |
 | [`docs/PG_FARM.md`](docs/PG_FARM.md) | PG Farm Postgres backend: connection, schema, `STAN_DB_BACKEND=pg`, sync, token rotation. |
