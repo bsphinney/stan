@@ -6277,12 +6277,36 @@ function BFailTable({ rows }) {
             <EvTile label="Baseline change" value={`${rising ? '+' : ''}${evNum(col.baseline_change_pct, 1)}%`}
                     tone={col.baseline_change_pct > 15 ? 'var(--warn)' : 'var(--text)'}
                     note={rising ? 'backpressure is climbing' : 'backpressure is flat or falling'} />
-            <EvTile label="Runs stopped by over-pressure" value={s.n_at_ceiling}
-                    tone={s.n_at_ceiling ? 'var(--fail)' : 'var(--pass)'}
-                    note={`hit the ${d.ceiling_bar} bar pump limit and were cut off — all ${(s.n_runs || 0).toLocaleString()} runs on record`} />
-            <EvTile label="Flagged runs" value={`${s.n_flagged}`}
-                    tone={s.n_critical ? 'var(--warn)' : 'var(--text)'}
-                    note={`${s.n_critical} critical, of ${s.n_runs} runs`} />
+            {/* SCOPED TO THE FITTED COLUMN. These two sat in a row whose other
+                five tiles are all "on this column" -- days, injections,
+                resistance now, runs left, baseline change -- in identical
+                styling, while counting every run on record. Read left to
+                right that says 32 over-pressure cut-outs happened on a column
+                fitted 2.6 days ago; the real figure was 32 across 27,253 runs
+                and three years of columns. summary.current_column carries the
+                same counts under the same definitions, cut at the wash-flow
+                DETECTED install boundary. Falls back to the lifetime numbers,
+                labelled as such, when no column change has been detected. */}
+            {(() => {
+              const cc = s.current_column;
+              const since = cc ? evFmtDate(cc.since) : null;
+              return (
+                <>
+                  <EvTile label="Runs stopped by over-pressure"
+                          value={cc ? cc.n_at_ceiling : s.n_at_ceiling}
+                          tone={(cc ? cc.n_at_ceiling : s.n_at_ceiling) ? 'var(--fail)' : 'var(--pass)'}
+                          note={cc
+                            ? `hit the ${d.ceiling_bar} bar pump limit — of ${(cc.n_runs || 0).toLocaleString()} runs on this column since ${since}`
+                            : `hit the ${d.ceiling_bar} bar pump limit — all ${(s.n_runs || 0).toLocaleString()} runs on record (no column change detected)`} />
+                  <EvTile label="Flagged runs"
+                          value={`${cc ? cc.n_flagged : s.n_flagged}`}
+                          tone={(cc ? cc.n_critical : s.n_critical) ? 'var(--warn)' : 'var(--text)'}
+                          note={cc
+                            ? `${cc.n_critical} critical, of ${(cc.n_runs || 0).toLocaleString()} runs on this column`
+                            : `${s.n_critical} critical, of ${s.n_runs} runs on record (no column change detected)`} />
+                </>
+              );
+            })()}
           </div>
 
           {/* ── Chart A ── */}

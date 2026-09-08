@@ -3131,6 +3131,43 @@ def main(argv=None) -> int:
     full_n_critical = sum(1 for f in flags if f["severity"] == "critical")
     full_n_at_ceiling = sum(d["n_at_ceiling"] for d in daily)
 
+    # The same three counts, scoped to the column currently fitted.
+    #
+    # The panel's tile row is read left to right as one thought -- days on
+    # this column, injections on this column, resistance now, runs left,
+    # baseline change -- and then two lifetime figures in the same row and
+    # the same styling. An operator scanning it sees "32 runs stopped by
+    # over-pressure" next to "2.6 days on this column" and reads the 32 as
+    # belonging to this column. It is 32 across 27,253 runs and three years
+    # of columns.
+    #
+    # Counted here rather than in the browser so there is ONE definition of
+    # each: at-ceiling stays `peak_bar >= CEILING_BAR - 5` and critical stays
+    # `severity == "critical"`, matching the lifetime counts exactly. A
+    # client-side reimplementation would drift from these the first time
+    # either rule changed.
+    #
+    # The boundary is `current.installed` from column_lifetimes -- the change
+    # DETECTED from wash flow, not the logged maintenance event. The logged
+    # stamp carries a placeholder time and has been off by 6.8 h, which put
+    # the previous column's 520 bar cut-out on the new column's side of the
+    # line. The chart and the lifetimes table already use the detected
+    # boundary; these counts now agree with them.
+    cur_life = (lifetimes or {}).get("current") or {}
+    cur_start = cur_life.get("installed")
+    col_counts = None
+    if cur_start:
+        col_runs = [r for r in runs if r["start"] >= cur_start]
+        col_flags = [f for f in flags if f.get("start", "") >= cur_start]
+        col_counts = {
+            "since": cur_start,
+            "n_runs": len(col_runs),
+            "n_flagged": len(col_flags),
+            "n_critical": sum(1 for f in col_flags if f["severity"] == "critical"),
+            "n_at_ceiling": sum(1 for r in col_runs
+                                if (r.get("peak_bar") or 0) >= CEILING_BAR - 5),
+        }
+
     # ── Windowing ────────────────────────────────────────────────────────
     window = None
     if args.runs_window_days and args.runs_window_days > 0:
@@ -3195,6 +3232,10 @@ def main(argv=None) -> int:
             "n_flagged": full_n_flagged,
             "n_critical": full_n_critical,
             "n_at_ceiling": full_n_at_ceiling,
+            # None when no column change has been detected yet -- the panel
+            # then falls back to the lifetime figures and says so, rather
+            # than showing a column-scoped zero it cannot justify.
+            "current_column": col_counts,
             "n_analytical_methods": sum(1 for m in methods.values()
                                         if m.get("analytical")),
             "n_days": len(daily),
