@@ -184,6 +184,19 @@ the copy in front of me current?" has to be answerable without a git
 checkout, and a banner that has rotted answers it wrongly and
 confidently. Bump both when you touch either script.
 
+**The Evosep mirror is incremental by memory, not by scanning.** The
+source is `<serial>\<method>_YYYY-MM-DD_HH-MM-SS\` with ~28 files
+inside; 31,463 of those folders is where its 880,903 files come from.
+Folders proven complete are recorded in
+`<ProgramData>\STAN\copy_evosep_logs.done` and never re-checked, because
+a finished procedure run is immutable — that is the difference between
+listing 31,463 folders on the share and listing the two dozen that are
+new. Enumerating the names is cheap (measured: 0.89 s for all 31,463);
+the cost was always the per-folder SMB round-trip, so that is what the
+memory removes. Each pass is capped at `-MaxFolders` and resumes further
+back next run, so a cold ~16 GB mirror fills newest-first over several
+hours instead of blocking one. `-Recheck` discards the memory.
+
 There is no PowerShell on the dev Mac. Verify with a portable `pwsh`:
 `pwsh -NoProfile -File tests/test_instrument_copy_scripts.ps1`. The test
 reads the shipped files through the AST rather than by regex over the

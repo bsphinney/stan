@@ -40,6 +40,16 @@
       * Files touched in the last 60 seconds are skipped: the Evosep may
         still be writing them, and half a trace is worse than no trace.
 
+    NEWEST FIRST, BOUNDED, AND IT REMEMBERS. A folder proven complete is
+    recorded in <ProgramData>\STAN\copy_evosep_logs.done and never checked
+    again, because a finished procedure run is immutable. That is what turns
+    a routine pass from "listing 31,463 folders on the share" into "listing
+    the couple of dozen that are new". Each pass also stops after
+    -MaxFolders folders: a cold mirror is ~16 GB and cannot finish in one
+    hourly run, so it takes a bite newest-first, saves what it proved, and
+    the next run resumes further back. -Recheck forgets the memory, for when
+    the mirror has been touched by something other than this script.
+
     WHY THE OLD VERSION WAS SLOW. It did Get-ChildItem -Recurse over the
     whole tree, materialised 880,903 FileInfo objects, and then called
     Get-Item on the SHARE once per file to compare sizes. That is 880,903
@@ -71,10 +81,18 @@ param(
     [string] $OutRootUnc  = '\\128.120.208.42\proteomics-grp\brett\evosep_logs',
     [int]    $Days        = 0,
     [int]    $MaxMB       = 60000,
+    # Most folders a single pass will look at. A cold mirror is ~16 GB
+    # and cannot finish in one hourly run; this bounds the pass and the
+    # next one resumes further back, newest-first throughout.
+    [int]    $MaxFolders  = 2000,
     [int]    $EveryMinutes = 60,
     [switch] $Recent,
     [switch] $Scheduled,
     [switch] $Uninstall,
+    # Forget which folders are known complete and re-verify every one of
+    # them against the share. For when the mirror has been touched by
+    # something other than this script.
+    [switch] $Recheck,
     # The elevated half of the self-install re-launches the script with
     # this. It MUST be a declared parameter: under [CmdletBinding()]
     # PowerShell rejects an unknown named parameter outright rather than
@@ -90,12 +108,17 @@ $ErrorActionPreference = 'Stop'
 # These scripts get copied to instrument PCs and then live there on
 # their own, so "is the copy in front of me current?" has to be
 # answerable without a git checkout.
-$ScriptVersion = '1.0.97'
+$ScriptVersion = '1.0.98'
 
 $TaskName = 'STAN Evosep log mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
 $InstalledPath = Join-Path $InstallDir 'copy_evosep_logs.ps1'
 $LogPath = Join-Path $InstallDir 'copy_evosep_logs.log'
+# Folders already verified complete on the share. A finished procedure run
+# is immutable, so re-checking one is a wasted SMB round-trip -- and at
+# 31,463 folders that is the whole cost of a pass. Remembering them turns a
+# routine run into "check the couple of dozen that are new".
+$StatePath = Join-Path $InstallDir 'copy_evosep_logs.done'
 
 function Say($m, $c = 'Gray') {
     if ($Scheduled) {
@@ -124,6 +147,43 @@ function Pause-IfInteractive {
     Say ''
     Say 'Press any key to continue . . .'
     try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { }
+}
+
+function Get-DoneSet {
+    # Header line records the destination. A different mirror path means the
+    # remembered folders say nothing about it, so the set is discarded rather
+    # than trusted -- a stale "already done" is the one failure that would
+    # silently skip real work.
+    # `return ,$set`, with the comma, at EVERY exit. PowerShell unrolls a
+    # collection on return: a plain `return $set` hands back $null when the
+    # set is empty, which is precisely the cold-start case, and the caller
+    # then dies on $done.Contains() with "You cannot call a method on a
+    # null-valued expression". CLAUDE.md documents this and it still caught
+    # me. The caller does not wrap in @(), so the comma is required.
+    $set = New-Object 'System.Collections.Generic.HashSet[string]'
+    if ($Recheck) { return ,$set }
+    if (-not (Test-Path -LiteralPath $StatePath)) { return ,$set }
+    try {
+        $lines = @(Get-Content -LiteralPath $StatePath -EA SilentlyContinue)
+    } catch { return ,$set }
+    if ($lines.Count -eq 0) { return ,$set }
+    if ($lines[0] -ne "dest=$dest") { return ,$set }
+    for ($i = 1; $i -lt $lines.Count; $i++) {
+        if ($lines[$i]) { [void]$set.Add($lines[$i]) }
+    }
+    return ,$set
+}
+
+function Save-DoneSet($set) {
+    try {
+        if (-not (Test-Path -LiteralPath $InstallDir)) {
+            New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        }
+        $out = New-Object 'System.Collections.Generic.List[string]'
+        $out.Add("dest=$dest")
+        foreach ($k in $set) { $out.Add($k) }
+        Set-Content -LiteralPath $StatePath -Value $out -EA SilentlyContinue
+    } catch { }
 }
 
 function Test-Task {
@@ -321,10 +381,32 @@ $copied = 0; $skippedDirs = 0; $skipped = 0; $failed = 0; $bytes = 0L
 $capped = $false
 $sw = [Diagnostics.Stopwatch]::StartNew()
 $examined = 0
+$verified = 0
 
-# Newest first: the decision-relevant window lands on the share within
-# minutes and the 2023 tail arrives whenever it arrives.
+# Folders proven complete on a previous run. Checking one costs an SMB
+# listing, and a finished procedure run is immutable, so this is the whole
+# difference between "look at 31,463 folders" and "look at the couple of
+# dozen that are new".
+$done = Get-DoneSet
+$known = $done.Count
+if ($known -gt 0) { Say ("{0:N0} folder(s) already known complete -- not re-checked." -f $known) }
+
+# Work newest-first and cap it. A cold mirror is ~16 GB and cannot finish in
+# one hourly pass, so rather than running for hours it takes a bite, saves
+# what it proved, and the next run resumes further back. The newest data is
+# on the share within minutes either way.
+$todo = New-Object 'System.Collections.Generic.List[object]'
 foreach ($d in @($considered | Sort-Object Name -Descending)) {
+    if ($done.Contains($d.Name)) { $skippedDirs++; continue }
+    $todo.Add($d)
+}
+if ($todo.Count -gt $MaxFolders) {
+    Say ("{0:N0} folder(s) to check; doing the newest {1:N0} this pass, rest next run." -f `
+         $todo.Count, $MaxFolders) 'Yellow'
+}
+
+foreach ($d in $todo) {
+    if ($examined -ge $MaxFolders) { break }
     $examined++
     $rel = $d.FullName.Substring($srcLen).TrimStart('\', '/')
     $dstDir = Join-Path $dest $rel
@@ -332,10 +414,13 @@ foreach ($d in @($considered | Sort-Object Name -Descending)) {
     $srcFiles = @(Get-ChildItem -LiteralPath $d.FullName -File -EA SilentlyContinue)
     if ($srcFiles.Count -eq 0) { continue }
 
-    # ONE listing of the destination, not a stat per file. A finished
-    # procedure run is immutable, so an equal file count means done.
+    # ONE listing of the destination folder, not a stat per file.
     $dstFiles = @(Get-ChildItem -LiteralPath $dstDir -File -EA SilentlyContinue)
-    if ($dstFiles.Count -ge $srcFiles.Count) { $skippedDirs++; $skipped += $srcFiles.Count; continue }
+    if ($dstFiles.Count -ge $srcFiles.Count) {
+        $skipped += $srcFiles.Count
+        [void]$done.Add($d.Name); $verified++
+        continue
+    }
 
     $haveNames = New-Object 'System.Collections.Generic.HashSet[string]'
     foreach ($x in $dstFiles) { [void]$haveNames.Add($x.Name) }
@@ -343,8 +428,9 @@ foreach ($d in @($considered | Sort-Object Name -Descending)) {
         New-Item -ItemType Directory -Path $dstDir -Force | Out-Null
     }
 
+    $unsettled = 0
     foreach ($f in $srcFiles) {
-        if ($f.LastWriteTime -ge $settled) { continue }   # still being written
+        if ($f.LastWriteTime -ge $settled) { $unsettled++; continue }
         if ($haveNames.Contains($f.Name)) { $skipped++; continue }
         if (($bytes + $f.Length) -gt ([long]$MaxMB * 1MB)) { $capped = $true; break }
         try {
@@ -356,16 +442,24 @@ foreach ($d in @($considered | Sort-Object Name -Descending)) {
         }
     }
     if ($capped) { break }
+    # Only remember it as done when the whole folder really is there. A run
+    # still being written, or a file that would not copy, must be revisited.
+    if ($unsettled -eq 0 -and $failed -eq 0) { [void]$done.Add($d.Name); $verified++ }
 
     if (($examined % 250) -eq 0) {
         Say ("  {0:N0}/{1:N0} folders - {2:N0} new file(s), {3:N1} MB, {4:N0}s" -f `
-             $examined, $considered.Count, $copied, ($bytes / 1MB), $sw.Elapsed.TotalSeconds)
+             $examined, $todo.Count, $copied, ($bytes / 1MB), $sw.Elapsed.TotalSeconds)
     }
 }
 $sw.Stop()
+Save-DoneSet $done
+$remaining = $todo.Count - $examined
+if ($remaining -gt 0) {
+    Say ("{0:N0} older folder(s) still to verify -- the next run continues from there." -f $remaining) 'Yellow'
+}
 
 Say ''
-Say ("Examined {0:N0} folder(s); {1:N0} were already complete." -f $examined, $skippedDirs)
+Say ("Checked {0:N0} folder(s) this pass; {1:N0} skipped from memory, {2:N0} newly verified." -f $examined, $skippedDirs, $verified)
 Say ''
 if ($capped) {
     Say "*** SIZE CAP ${MaxMB}MB REACHED - HISTORY IS INCOMPLETE ***" 'Red'
