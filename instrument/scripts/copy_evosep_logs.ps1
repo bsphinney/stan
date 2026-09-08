@@ -66,6 +66,13 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# Kept in step with stan/__init__.py by
+# tests/test_instrument_copy_scripts.ps1, which fails if they drift.
+# These scripts get copied to instrument PCs and then live there on
+# their own, so "is the copy in front of me current?" has to be
+# answerable without a git checkout.
+$ScriptVersion = '1.0.93'
+
 $TaskName = 'STAN Evosep log mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
 $InstalledPath = Join-Path $InstallDir 'copy_evosep_logs.ps1'
@@ -180,6 +187,10 @@ $installOnly = $false
 foreach ($a in $MyInvocation.UnboundArguments) {
     if ("$a" -eq '-InstallOnly') { $installOnly = $true }
 }
+
+Say "STAN Evosep log mirror  v$ScriptVersion" 'Cyan'
+Say "  running from: $PSCommandPath"
+Say ''
 
 if ($Uninstall) { $null = Remove-Task; Pause-IfInteractive; exit 0 }
 if ($installOnly) { $ok = Install-Task; if ($ok) { exit 0 } else { exit 1 } }

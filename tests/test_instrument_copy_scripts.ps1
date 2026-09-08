@@ -166,6 +166,36 @@ foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
     Check "$name has no Where-Object pipeline" ($t -match "\|\s*Where-Object") "False"
 }
 
+# ------------------------------------------------- 6. version banners
+# These files get copied onto instrument PCs and then live there alone, so
+# "is the copy in front of me current?" has to be answerable without a git
+# checkout. A banner that drifts from the package is worse than none -- it
+# answers the question wrongly and confidently -- so the version is asserted
+# equal to stan/__init__.py rather than merely present.
+Write-Host ""
+Write-Host "6. version banners match stan/__init__.py"
+$initPath = Join-Path $repoRoot "stan/__init__.py"
+$pkgVersion = ""
+foreach ($line in (Get-Content -LiteralPath $initPath)) {
+    if ($line -match '^__version__\s*=\s*"([^"]+)"') { $pkgVersion = $Matches[1] }
+}
+Check "found package version" ($pkgVersion -ne "") "True"
+
+foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+    $name = $pair[0]; $ast = $pair[1]
+    $scriptVersion = ""
+    foreach ($a in $ast.FindAll({
+        $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
+        if ($a.Left.Extent.Text -eq '$ScriptVersion') {
+            $scriptVersion = $a.Right.Extent.Text.Trim("'", '"')
+        }
+    }
+    Check "$name banner = $pkgVersion" $scriptVersion $pkgVersion
+    # It must actually reach the operator, not just sit in a variable.
+    Check "$name prints its version" `
+        ($ast.Extent.Text -match 'v\$ScriptVersion') "True"
+}
+
 Write-Host ""
 if ($Failures -gt 0) { Write-Host "$Failures failure(s)"; exit 1 }
 Write-Host "all checks passed"

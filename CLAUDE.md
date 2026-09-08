@@ -175,6 +175,15 @@ Two things that must not regress, both covered by
   ReadKey holds the task open until the execution time limit kills it,
   every tick.
 
+**Both carry `$ScriptVersion` and print it on every run**, including
+scheduled runs, where it lands in the log so you can tell which version
+produced a given line. The version equals `stan/__init__.py`, and
+`tests/test_instrument_copy_scripts.ps1` fails if they drift — these
+files get copied onto instrument PCs and then live there alone, so "is
+the copy in front of me current?" has to be answerable without a git
+checkout, and a banner that has rotted answers it wrongly and
+confidently. Bump both when you touch either script.
+
 There is no PowerShell on the dev Mac. Verify with a portable `pwsh`:
 `pwsh -NoProfile -File tests/test_instrument_copy_scripts.ps1`. The test
 reads the shipped files through the AST rather than by regex over the
