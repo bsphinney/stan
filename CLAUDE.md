@@ -147,6 +147,27 @@ Canonical copies live in `scripts/`.
 `export STAN_DB_BACKEND=pg` is set inside these scripts — that is what
 `use_pg()` keys off. A script that forgets it silently writes SQLite.
 
+### Do not relocate STAN's processing output without telling FRAN
+
+FRAN's corpus scanner treats any directory holding a DIA-NN report as a
+customer search. STAN writes a `report.parquet` for **every QC run** —
+3,147 under `/quobyte/proteomics-grp/STAN/processing` alone — so a sweep
+that could see them returns 4,493 candidates of which 4,427 are QC.
+
+The only thing preventing that is a hardcoded path prefix in FRAN:
+
+```python
+# ~/Documents/FRAN/ingest/find_uningested.py:143
+DEFAULT_EXCLUDES = [
+    "/quobyte/proteomics-grp/STAN/",   # STAN QC — a separate system with its own database
+```
+
+That exclusion is **load-bearing and lives in the other repo**. Moving
+STAN's processing output out from under `/quobyte/proteomics-grp/STAN/`
+would silently ingest every QC run as a customer search and corrupt
+every count in the FRAN corpus — with nothing in this repo to warn you.
+If the path ever changes, update the exclude in the same change.
+
 ### Database backups
 
 PG Farm is the store of record and **is not known to keep its own
