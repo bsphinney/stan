@@ -664,6 +664,95 @@ def check_bruker(doc: dict, now: datetime | None = None,
     return alerts
 
 
+#: How stale a feed's newest DATA may get before it is worth a human.
+#:
+#: Evosep gets more slack than Bruker because its logs only appear when the
+#: Evosep actually runs: a Friday-to-Tuesday holiday weekend is four quiet
+#: days and entirely normal. Bruker's backup is written at 18:00 whether or
+#: not anyone acquires, so two days means two unconditional misses and is
+#: genuinely broken.
+EVOSEP_STALE_DAYS = 3.0
+BRUKER_STALE_DAYS = 2.0
+
+
+def check_feed_freshness(evosep: dict | None, bruker: dict | None,
+                         now: datetime | None = None,
+                         station: str = DEFAULT_STATION) -> list[Alert]:
+    """Alert when an instrument feed stops arriving.
+
+    THIS FIRES ON ABSENCE, NOT ON FAILURE, and that is the whole point.
+
+    The obvious design is to have the copy script Slack us when it errors.
+    That would have caught none of what actually happened. The Evosep mirror
+    stopped on 2026-09-03 and the Bruker backups on 2026-09-01, and neither
+    copy ever failed -- they simply never ran again, because nothing was
+    scheduled to run them. A component cannot report its own silence. Worse,
+    the Hive consumers kept succeeding against the frozen inputs: the nightly
+    Bruker extract re-published the same 2026-08-31 backup for eight days,
+    stamping a fresh `updated_at` each time, so every freshness signal in the
+    system said "fine" while the panel showed a column that had been replaced.
+
+    So the check lives here, on Hive, where something is still alive, and
+    watches the one number that cannot be faked: how old the newest DATA is.
+    `generated_at` deliberately goes unread -- it says the job ran, not that
+    anything arrived.
+
+    Args:
+        evosep: Evosep column-health document, or None if absent.
+        bruker: Bruker maintenance document, or None if absent.
+        now: Override for tests.
+        station: Instrument label for the alert.
+
+    Returns:
+        Zero, one or two alerts. Silent when both feeds are current.
+    """
+    now = now or datetime.now(timezone.utc)
+    alerts: list[Alert] = []
+
+    feeds = [
+        ("evosep_stale", "Evosep procedure logs", EVOSEP_STALE_DAYS,
+         ((evosep or {}).get("summary") or {}).get("last_run"),
+         evosep_label(evosep) if evosep else station,
+         "Y:\\brett\\evosep_logs -- copy_evosep_logs.bat on the instrument"),
+        ("bruker_stale", "Bruker Compass backup", BRUKER_STALE_DAYS,
+         (bruker or {}).get("backup_date"),
+         bruker_label(bruker) if bruker else station,
+         "Y:\\brett\\BrukerDBBackup -- copy_bruker_backup.bat on the instrument"),
+    ]
+
+    for kind, what, max_days, newest, label, where in feeds:
+        if not newest:
+            continue
+        at = _parse(newest)
+        if at is None:
+            continue
+        age_days = (now - at).total_seconds() / 86400.0
+        if age_days <= max_days:
+            continue
+        whole = int(age_days)
+        alerts.append(Alert(
+            key=f"{kind}:{station}",
+            kind=kind,
+            instrument=label,
+            severity="critical" if age_days >= max_days * 3 else "warning",
+            headline=f"{what} stopped arriving {whole} days ago",
+            detail=[
+                f"*Newest data:* {str(newest)[:16].replace('T', ' ')} "
+                f"({whole}d old, alerting past {max_days:g}d)",
+                f"*Feed:* {where}",
+                "The panel keeps rendering, so this is invisible on the "
+                "dashboard until someone checks the date.",
+            ],
+            # The condition persists, so re-alerting every 20 min would be
+            # noise. The signature is the whole-day age, so it speaks again
+            # once a day while broken and escalates rather than going quiet.
+            signature=f"{whole}d",
+            cool_off_hours=24.0,
+            at=at.strftime("%Y-%m-%d %H:%M"),
+            extra={"age_days": round(age_days, 1), "newest": str(newest)},
+        ))
+    return alerts
+
 # ── entry point ──────────────────────────────────────────────────
 
 
@@ -820,6 +909,10 @@ def run_watch(dry_run: bool = False, seed: bool = False,
     if bruker:
         alerts += check_bruker(bruker, now=now, station=station,
                                lookback_hours=bruker_lookback_hours)
+
+    # Evaluated on whatever loaded, including nothing: a feed that has gone
+    # silent is exactly the case where the document is stale or missing.
+    alerts += check_feed_freshness(evosep, bruker, now=now, station=station)
 
     store = store if store is not None else AlertStore()
 
