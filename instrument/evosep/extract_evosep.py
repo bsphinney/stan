@@ -2041,10 +2041,26 @@ def column_lifetimes(runs: list[dict], methods: dict, events: list[dict],
         near = [t for t in logged
                 if abs((datetime.fromisoformat(t) - datetime.fromisoformat(c["at"]))
                        .total_seconds()) / 3600.0 <= COLUMN_LOGGED_TOL_H]
+        # .get(), not [], for resistance_change_pct. `detected` is the
+        # merge of TWO detectors and only one of them measures resistance:
+        # detect_column_changes_by_wash() works off wash flow and emits
+        # {at, provenance, prev_fresh_flow, fell_to_pct_of_fresh,
+        # recovered_to_pct_of_fresh} with no resistance figure at all --
+        # not an oversight, it has none to report. A wash-level detection
+        # the resistance channel does not corroborate is appended
+        # standalone, and indexing it here raised
+        # KeyError: 'resistance_change_pct' and killed the whole extract.
+        #
+        # That is what stopped this panel on 2026-09-03: the column fitted
+        # on 2026-09-02 fired the wash detector alone, and every 30 min
+        # thereafter a 20-minute full extract failed on the `high`
+        # partition without publishing. None is already the expected value
+        # here -- the logged-only branch below sets it explicitly, and the
+        # consumer skips keys whose value is None.
         b = {"at": c["at"], "provenance": c["provenance"],
              "resistance_before": c.get("resistance_before"),
              "resistance_after": c.get("resistance_after"),
-             "resistance_change_pct": c["resistance_change_pct"],
+             "resistance_change_pct": c.get("resistance_change_pct"),
              "wash_flow_change_pct": c.get("wash_flow_change_pct")}
         if near:
             b["provenance"] = "logged+detected"
