@@ -234,6 +234,45 @@ foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
     Check "$name declares -Uninstall"   ($declared -contains "-Uninstall") "True"
 }
 
+# ------------------------------- 8. the installed copy gets refreshed
+# The scheduled task runs the COPY under ProgramData taken when it was first
+# registered. Updating the share changed nothing about what actually ran, so
+# an installed task would have kept its original version forever -- the same
+# silent-staleness shape as every other failure in this system.
+Write-Host ""
+Write-Host "8. a re-run refreshes a stale installed copy"
+foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+    $name = $pair[0]; $ast = $pair[1]; $t = $ast.Extent.Text
+    $funcs = @()
+    foreach ($f in $ast.FindAll({
+        $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        $funcs += $f.Name
+    }
+    Check "$name has Get-InstalledVersion" ($funcs -contains "Get-InstalledVersion") "True"
+    Check "$name compares versions"        ($t -match '\$installedVersion -eq \$ScriptVersion') "True"
+
+    # The pattern must not contain a bare "$ScriptVersion", because a
+    # double-quoted PowerShell string interpolates it and the regex then
+    # matches nothing -- Get-InstalledVersion silently answers "" forever and
+    # the task reinstalls on every run. That shipped once; this pins it.
+    $gv = $null
+    foreach ($f in $ast.FindAll({
+        $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        if ($f.Name -eq "Get-InstalledVersion") { $gv = $f }
+    }
+    $gvText = ""
+    if ($gv) { $gvText = $gv.Extent.Text }
+    Check "$name version regex does not interpolate" `
+        ($gvText -match '-match "[^"]*\$ScriptVersion') "False"
+}
+
+# And prove the extraction actually works, rather than merely existing.
+$verLine = ""
+foreach ($line in (Get-Content -LiteralPath (Join-Path $repoRoot "instrument/scripts/copy_evosep_logs.ps1"))) {
+    if ($line -match "ScriptVersion\s*=\s*'([^']+)'") { $verLine = $Matches[1]; break }
+}
+Check "extraction returns the real version" $verLine $pkgVersion
+
 Write-Host ""
 if ($Failures -gt 0) { Write-Host "$Failures failure(s)"; exit 1 }
 Write-Host "all checks passed"

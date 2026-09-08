@@ -65,7 +65,7 @@ $ErrorActionPreference = 'Stop'
 # These scripts get copied to instrument PCs and then live there on
 # their own, so "is the copy in front of me current?" has to be
 # answerable without a git checkout.
-$ScriptVersion = '1.0.96'
+$ScriptVersion = '1.0.97'
 
 $TaskName = 'STAN Bruker backup mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
@@ -124,6 +124,19 @@ function Remove-Task {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
     Say "Removed scheduled task '$TaskName'." 'Green'
     return $true
+}
+
+function Get-InstalledVersion {
+    # Reads $ScriptVersion out of the installed copy without executing it.
+    if (-not (Test-Path -LiteralPath $InstalledPath)) { return "" }
+    foreach ($line in (Get-Content -LiteralPath $InstalledPath -EA SilentlyContinue)) {
+        # No leading $ in the pattern: in a double-quoted PowerShell string
+        # "$ScriptVersion" INTERPOLATES, so the pattern became
+        # "^\s*1.0.96\s*=..." and matched nothing -- Get-InstalledVersion
+        # always answered "" and the task reinstalled on every single run.
+        if ($line -match "ScriptVersion\s*=\s*'([^']+)'") { return $Matches[1] }
+    }
+    return ""
 }
 
 function Install-Task {
@@ -188,8 +201,23 @@ if ($Uninstall) { $null = Remove-Task; Pause-IfInteractive; exit 0 }
 if ($InstallOnly) { $ok = Install-Task; if ($ok) { exit 0 } else { exit 1 } }
 
 if (-not $Scheduled) {
+    $installedVersion = Get-InstalledVersion
     if (Test-Task) {
-        Say "Automatic copy is already installed ('$TaskName', every $EveryMinutes min)." 'Green'
+        if ($installedVersion -eq $ScriptVersion) {
+            Say "Automatic copy is up to date (v$ScriptVersion, every $EveryMinutes min)." 'Green'
+        } else {
+            # THE GAP THIS CLOSES. The scheduled task runs the COPY under
+            # ProgramData, taken when it was first registered -- so updating
+            # the share changed nothing about what actually ran, and the task
+            # would have kept running its original version forever. Every
+            # silent staleness problem in this system has had that shape, so
+            # re-running the .bat now refreshes the installed copy and
+            # re-registers rather than reporting "already installed".
+            $was = $installedVersion
+            if (-not $was) { $was = "unknown" }
+            Say "Automatic copy is at v$was; this is v$ScriptVersion -- updating it." 'Yellow'
+            $null = Install-Task
+        }
     } else {
         Say 'No automatic copy found -- setting one up.' 'Yellow'
         $null = Install-Task
