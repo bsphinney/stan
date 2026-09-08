@@ -443,6 +443,19 @@ of a method that lab has never run.
 
 ### Derived SPD is honest; conjured SPD is not
 
+**`spd` means two different things depending on the instrument, and
+that is the whole reason this function is easy to get wrong.** On the
+Bruker/Evosep side SPD is a *method identity* — "100 SPD" is a named
+method an operator selected, so a derived 128 invents a method that
+does not exist. On the Orbitraps there is no Evosep ladder at all and
+SPD is a *throughput estimate* — 1440/(30x1.25) = 38 for a 30 min
+gradient is simply a true statement about that gradient. One function,
+two meanings. Applying the Bruker meaning to both is what makes
+"refuse anything outside the snap windows" look correct when it is not.
+
+The cut that follows from this: kill fabrication-from-nothing, keep
+derivation-from-a-real-gradient.
+
 `gradient_min_to_spd()` snaps three Evosep windows (10-13 -> 100,
 19-23 -> 60, 40-46 -> 30) and otherwise **derives** throughput as
 `1440 / (minutes x 1.25)`. Measured against the live DB 2026-09-04,
