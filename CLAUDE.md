@@ -147,6 +147,41 @@ Canonical copies live in `scripts/`.
 `export STAN_DB_BACKEND=pg` is set inside these scripts — that is what
 `use_pg()` keys off. A script that forgets it silently writes SQLite.
 
+### Instrument-side copies install themselves
+
+`instrument/scripts/copy_evosep_logs.ps1` and `copy_bruker_backup.ps1`
+register their own scheduled task on first run — no flag, no separate
+installer. Run once (double-click the `.bat`, accept the UAC prompt) and
+the feed is permanent. Both are read-only on the instrument.
+
+They were manual before, and both stopped: Evosep on 2026-09-03, Bruker
+on 2026-09-01. The Evosep column panel then showed six-day-old numbers
+about a column that had already been replaced, and the raw copy
+(`flinders_copy.ps1`) kept working throughout — because it was the only
+one that ever got a scheduled task.
+
+Two things that must not regress, both covered by
+`tests/test_instrument_copy_scripts.ps1`:
+
+- **The Bruker destination is `Y:\brett\BrukerDBBackup`**, preserving
+  Bruker's `daily/<stamp>/` layout. `cron_bruker_maintenance.sh` finds
+  the newest `*.backup` under that exact path and reads the snapshot date
+  off the **parent directory name**. The old script wrote to
+  `bruker_db/backup_<HOST>_<stamp>/`, which nothing reads — scheduling
+  that version would have copied faithfully into a void while every part
+  looked healthy.
+- **The `ReadKey` must stay inside `Pause-IfInteractive`**, which returns
+  early under `-Scheduled`. A scheduled run has no console; an ungated
+  ReadKey holds the task open until the execution time limit kills it,
+  every tick.
+
+There is no PowerShell on the dev Mac. Verify with a portable `pwsh`:
+`pwsh -NoProfile -File tests/test_instrument_copy_scripts.ps1`. The test
+reads the shipped files through the AST rather than by regex over the
+text — an earlier version compared over-escaped patterns and its
+"old path is gone" check passed because the pattern matched nothing,
+which is the worst way for a test to be green.
+
 ### Do not relocate STAN's processing output without telling FRAN
 
 FRAN's corpus scanner treats any directory holding a DIA-NN report as a

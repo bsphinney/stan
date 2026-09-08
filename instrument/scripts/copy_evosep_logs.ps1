@@ -1,6 +1,7 @@
-﻿<#
+<#
 .SYNOPSIS
-    Mirror the Evosep One procedure logs to the Quobyte share. Read-only on the source.
+    Mirror the Evosep One procedure logs to the Quobyte share, and keep
+    doing it. Read-only on the source.
 
 .DESCRIPTION
     The Evosep records Pressure [bar], Actual flow, Displacement and Setpoint
@@ -10,10 +11,17 @@
     are the only place a pressure trace exists -- which makes them the basis
     for column-clog trending and column-lifetime curves.
 
-    2026-09-02: this now MIRRORS the whole history by default. The previous
-    version defaulted to the last 30 days and needed -All for everything,
-    which is why the first pull landed only 2026-08-14 onward and the column
-    panel could not see past columns at all.
+    IT INSTALLS ITSELF. Run it once (double-click the .bat). If the scheduled
+    task is not already there it copies itself to a stable location, registers
+    the task, and then does the copy. Every run after that finds the task and
+    just copies. There is no flag to remember and no separate installer.
+
+    Why that matters here: these logs reached Hive exactly twice, by hand, and
+    then stopped -- 2026-09-03 was the last one. The extractor kept running
+    against the frozen mirror and the column-health panel showed six-day-old
+    numbers about a column that had already been replaced. The copy was the
+    only manual link in an otherwise automatic chain, so it is the link that
+    broke.
 
     How the mirror works
       * One stable destination, <share>\evosep_logs\<COMPUTERNAME>_mirror,
@@ -35,30 +43,166 @@
     Safety cap on a single run. Generous by design; if it is ever reached the
     script says so loudly rather than quietly truncating your history.
 
+.PARAMETER Scheduled
+    Set by the scheduled task only. Never type it: it suppresses the
+    self-install and the "press any key", and sends output to a log file.
+
 .EXAMPLE
-    .\copy_evosep_logs.ps1               # everything, incremental
+    .\copy_evosep_logs.ps1               # everything, incremental, self-installing
     .\copy_evosep_logs.ps1 -Days 30      # just the last 30 days
+    .\copy_evosep_logs.ps1 -Uninstall    # remove the scheduled task
 #>
 [CmdletBinding()]
 param(
-    [string] $Source     = 'C:\ProgramData\Evosep\EvosepOne\Procedure logs',
-    [string] $OutRoot    = 'Y:\brett\evosep_logs',
-    [string] $OutRootUnc = '\\128.120.208.42\proteomics-grp\brett\evosep_logs',
-    [int]    $Days       = 0,
-    [int]    $MaxMB      = 60000,
-    [switch] $Recent
+    [string] $Source      = 'C:\ProgramData\Evosep\EvosepOne\Procedure logs',
+    [string] $OutRoot     = 'Y:\brett\evosep_logs',
+    [string] $OutRootUnc  = '\\128.120.208.42\proteomics-grp\brett\evosep_logs',
+    [int]    $Days        = 0,
+    [int]    $MaxMB       = 60000,
+    [int]    $EveryMinutes = 60,
+    [switch] $Recent,
+    [switch] $Scheduled,
+    [switch] $Uninstall
 )
 $ErrorActionPreference = 'Stop'
-function Say($m, $c = 'Gray') { Write-Host $m -ForegroundColor $c }
+
+$TaskName = 'STAN Evosep log mirror'
+$InstallDir = Join-Path $env:ProgramData 'STAN'
+$InstalledPath = Join-Path $InstallDir 'copy_evosep_logs.ps1'
+$LogPath = Join-Path $InstallDir 'copy_evosep_logs.log'
+
+function Say($m, $c = 'Gray') {
+    if ($Scheduled) {
+        $line = "{0}  {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
+        try { Add-Content -LiteralPath $LogPath -Value $line -EA SilentlyContinue } catch { }
+    } else {
+        Write-Host $m -ForegroundColor $c
+    }
+}
+
+function Pause-IfInteractive {
+    # A scheduled run has no console. ReadKey there does not "wait for a key",
+    # it throws or blocks forever holding the task open, which is why this is
+    # gated rather than simply left at the end of the file.
+    if ($Scheduled) { return }
+    Say ''
+    Say 'Press any key to continue . . .'
+    try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { }
+}
+
+function Test-Task {
+    $t = Get-ScheduledTask -TaskName $TaskName -EA SilentlyContinue
+    if ($t) { return $true }
+    return $false
+}
+
+function Test-Elevated {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p = New-Object Security.Principal.WindowsPrincipal($id)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Remove-Task {
+    if (-not (Test-Task)) { Say "No scheduled task named '$TaskName'." 'Yellow'; return $true }
+    if (-not (Test-Elevated)) {
+        Say 'Removing the scheduled task needs administrator rights.' 'Yellow'
+        $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath, '-Uninstall')
+        try { Start-Process powershell.exe -Verb RunAs -ArgumentList $args -Wait -EA Stop }
+        catch { Say 'The administrator prompt was refused.' 'Red'; return $false }
+        return (-not (Test-Task))
+    }
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Say "Removed scheduled task '$TaskName'." 'Green'
+    return $true
+}
+
+function Install-Task {
+    # Copy to a stable path first. Registering the task against wherever the
+    # operator happened to double-click it from -- Downloads, a USB stick, a
+    # share -- gives a task that works today and silently stops the moment
+    # that folder moves.
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    }
+    if ($PSCommandPath -ne $InstalledPath) {
+        Copy-Item -LiteralPath $PSCommandPath -Destination $InstalledPath -Force
+    }
+
+    if (-not (Test-Elevated)) {
+        Say ''
+        Say 'Setting up the automatic hourly copy needs administrator rights.'
+        Say 'Say Yes to the Windows prompt that is about to appear.'
+        $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass',
+                  '-File', $InstalledPath, '-InstallOnly')
+        try {
+            Start-Process powershell.exe -Verb RunAs -ArgumentList $args -Wait -EA Stop
+        } catch {
+            Say ''
+            Say 'The administrator prompt was refused or cancelled.' 'Red'
+            Say 'The copy below will still run, but it will not repeat by itself.' 'Yellow'
+            return $false
+        }
+        if (Test-Task) { Say "Scheduled task '$TaskName' created, every $EveryMinutes minutes." 'Green'; return $true }
+        Say 'The task still is not there after elevating.' 'Red'
+        return $false
+    }
+
+    # Runs as the logged-on user ON PURPOSE, never SYSTEM: an elevated or
+    # SYSTEM context cannot see the operator's mapped Y: drive. The UNC
+    # fallback covers it either way, but the user context is what makes the
+    # ordinary path work.
+    $argline = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstalledPath`" -Scheduled"
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argline
+    $atLogon = New-ScheduledTaskTrigger -AtLogOn
+    $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
+        -RepetitionInterval (New-TimeSpan -Minutes $EveryMinutes) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+        -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 12) `
+        -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $action `
+            -Trigger @($atLogon, $repeat) -Settings $settings -Force -EA Stop | Out-Null
+    } catch {
+        Say ''
+        Say "Could not create the scheduled task: $($_.Exception.Message)" 'Red'
+        return $false
+    }
+    # Never claim success without looking.
+    if (-not (Test-Task)) { Say 'The task did not appear after registering.' 'Red'; return $false }
+    Say "Scheduled task '$TaskName' created, every $EveryMinutes minutes." 'Green'
+    return $true
+}
+
+# -InstallOnly is the elevated half of the self-install re-launching itself.
+# It is not in param() because nothing outside this script should pass it.
+$installOnly = $false
+foreach ($a in $MyInvocation.UnboundArguments) {
+    if ("$a" -eq '-InstallOnly') { $installOnly = $true }
+}
+
+if ($Uninstall) { $null = Remove-Task; Pause-IfInteractive; exit 0 }
+if ($installOnly) { $ok = Install-Task; if ($ok) { exit 0 } else { exit 1 } }
 
 if ($Recent -and $Days -le 0) { $Days = 30 }
 
+# THE SELF-INSTALL. Only when interactive and only when the task is absent,
+# so a scheduled run never tries to reinstall itself and a second manual run
+# is a no-op.
+if (-not $Scheduled) {
+    if (Test-Task) {
+        Say "Automatic copy is already installed ('$TaskName', every $EveryMinutes min)." 'Green'
+    } else {
+        Say "No automatic copy found -- setting one up." 'Yellow'
+        $null = Install-Task
+    }
+    Say ''
+}
+
 if (-not (Test-Path $Source)) {
     Say "Source not found: $Source" 'Red'
-    Say "Pass the right path with -Source if Evosep writes elsewhere." 'Yellow'
-    Say ''
-    Say 'Press any key to continue . . .'
-    $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+    Say 'Pass the right path with -Source if Evosep writes elsewhere.' 'Yellow'
+    Pause-IfInteractive
     exit 1
 }
 
@@ -75,22 +219,26 @@ if (-not (Test-Path $dest)) { New-Item -ItemType Directory -Path $dest -Force | 
 
 Say "source: $Source"
 Say "mirror: $dest"
-if ($Days -gt 0) { Say "window: last $Days day(s)" } else { Say "window: entire history" }
+if ($Days -gt 0) { Say "window: last $Days day(s)" } else { Say 'window: entire history' }
 Say ''
 Say 'Scanning the source (this can take a minute on a long history)...'
 
 $settled = (Get-Date).AddSeconds(-60)
-$cut = if ($Days -gt 0) { (Get-Date).AddDays(-$Days) } else { [datetime]'1900-01-01' }
+if ($Days -gt 0) { $cut = (Get-Date).AddDays(-$Days) } else { $cut = [datetime]'1900-01-01' }
 
-$files = @(Get-ChildItem $Source -Recurse -File -EA SilentlyContinue |
-           Where-Object { $_.LastWriteTime -gt $cut -and $_.LastWriteTime -lt $settled })
+# Explicit foreach rather than a Where-Object pipeline: PS 5.1 pipelines here
+# have bitten this repo before, and the loop is also measurably faster over a
+# 100k-file tree.
+$all = @(Get-ChildItem $Source -Recurse -File -EA SilentlyContinue)
+$picked = New-Object 'System.Collections.Generic.List[object]'
+foreach ($f in $all) {
+    if ($f.LastWriteTime -gt $cut -and $f.LastWriteTime -lt $settled) { $picked.Add($f) }
+}
 
-if (-not $files -or $files.Count -eq 0) {
+if ($picked.Count -eq 0) {
     Say 'No settled files in the window.' 'Yellow'
-    Say ''
-    Say 'Press any key to continue . . .'
-    $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
-    exit 1
+    Pause-IfInteractive
+    exit 0
 }
 
 # NEWEST FIRST. 2026-09-02: this was oldest-first for about an hour, on the
@@ -100,7 +248,7 @@ if (-not $files -or $files.Count -eq 0) {
 # in the pressure -- needs the LAST few months, which oldest-first delivers
 # LAST. Newest-first puts the decision-relevant window on the share within
 # minutes and lets the 2023 tail arrive whenever it arrives.
-$files = @($files | Sort-Object LastWriteTime -Descending)
+$files = @($picked | Sort-Object LastWriteTime -Descending)
 
 Say ("Found {0:N0} file(s) in the source window." -f $files.Count)
 Say ''
@@ -120,10 +268,7 @@ foreach ($f in $files) {
     $existing = Get-Item -LiteralPath $dst -EA SilentlyContinue
     if ($existing -and $existing.Length -eq $f.Length) { $skipped++; continue }
 
-    if (($bytes + $f.Length) -gt ([long]$MaxMB * 1MB)) {
-        $capped = $true
-        break
-    }
+    if (($bytes + $f.Length) -gt ([long]$MaxMB * 1MB)) { $capped = $true; break }
 
     $parent = Split-Path $dst
     if (-not $madeDirs.Contains($parent)) {
@@ -149,8 +294,8 @@ $sw.Stop()
 Say ''
 if ($capped) {
     Say "*** SIZE CAP ${MaxMB}MB REACHED - HISTORY IS INCOMPLETE ***" 'Red'
-    Say "    Re-run this script: it resumes where it stopped." 'Red'
-    Say "    Or raise the cap with -MaxMB." 'Red'
+    Say '    Re-run this script: it resumes where it stopped.' 'Red'
+    Say '    Or raise the cap with -MaxMB.' 'Red'
     Say ''
 }
 Say ("Copied  {0:N0} new file(s), {1:N1} MB in {2:N0}s" -f $copied, ($bytes / 1MB), $sw.Elapsed.TotalSeconds) 'Green'
@@ -158,9 +303,5 @@ Say ("Skipped {0:N0} already mirrored" -f $skipped)
 if ($failed -gt 0) { Say ("Failed  {0:N0} unreadable file(s)" -f $failed) 'Yellow' }
 Say ''
 Say "On Hive: /quobyte/proteomics-grp/brett/evosep_logs/$($env:COMPUTERNAME)_mirror" 'Cyan'
-if (-not $capped -and $failed -eq 0) {
-    Say 'Mirror is complete. Safe to close.' 'Green'
-}
-Say ''
-Say 'Press any key to continue . . .'
-$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+if (-not $capped -and $failed -eq 0) { Say 'Mirror is complete. Safe to close.' 'Green' }
+Pause-IfInteractive
