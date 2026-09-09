@@ -122,16 +122,20 @@ if [ "$MODE" = full ]; then
     elif ! command -v sbatch >/dev/null 2>&1; then
         echo 'sbatch unavailable; skipping the full extract this tick'
     else
+        # A SCRIPT, NOT A --wrap. The wrap version leaked its mktemp on
+        # every failed extract -- 135 zero-byte evosep_column_health.json.*
+        # had accumulated beside the real document by 2026-09-09 -- because
+        # only its "no runs" branch removed the temp, not the extract-failed
+        # one. It also carried a nested-quoted Python guard through two
+        # layers of shell quoting, which is how a good 856 KB document got
+        # deleted after a 16-minute extract when the inner quotes were
+        # stripped and the guard raised NameError instead of checking
+        # anything. ev_full_publish.sh has a trap and no quoting layers.
         jid=$(sbatch --parsable --partition=high --account=genome-center-grp \
               --qos=genome-center-grp-high-qos --cpus-per-task=4 --mem=16G \
               --time=04:00:00 --job-name=ev-full-publish \
               --output=/quobyte/proteomics-grp/STAN/logs/ev_full_%j.out \
-              --wrap="export STAN_DB_BACKEND=pg; \
-tmp=\$(mktemp ${FULL}.XXXX); \
-$VENV/bin/python $EV/extract_evosep.py --root $LOGS --instrument '$INSTRUMENT' --out \$tmp || exit 1; \
-$VENV/bin/python -c \"import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get('summary',{}).get('n_runs',0)>0 and d.get('daily') else 1)\" \$tmp || { echo 'no runs/daily; keeping previous'; rm -f \$tmp; exit 1; }; \
-mv -f \$tmp $FULL; \
-$VENV/bin/python $EV/publish_evosep_pg.py $FULL evosep_column_health" 2>&1)
+              /quobyte/proteomics-grp/STAN/ev_full_publish.sh 2>&1)
         echo "submitted full extract + publish as job $jid"
     fi
 fi
