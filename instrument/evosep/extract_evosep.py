@@ -2255,7 +2255,18 @@ def column_lifetimes(runs: list[dict], methods: dict, events: list[dict],
                     if len(healthy) >= COLUMN_HEALTHY_MIN_COLUMNS else None)
             if base:
                 entry["healthy_resistance_bar_per_ul_min"] = round(base, 1)
-            if (fresh >= was * (1 - COLUMN_RESET_FRAC)
+            # ONLY on a boundary somebody actually logged. "You fitted a
+            # column and it cleared nothing" is a claim about a real action;
+            # on a merely-inferred boundary the likelier reading is that the
+            # inference is wrong, and pairing two uncertain claims produces a
+            # confident wrong one. The wash-level channel has no resistance
+            # step BY CONSTRUCTION, so without this every wash-level boundary
+            # during an elevated stretch trips the flag: the first full run
+            # reported 8 of these, and the 5 that were not logged --
+            # 2024-03-21, 2024-09-16, 2024-10-30, 2025-03-27, 2025-12-08 --
+            # were all wash-level inferences, not changes anyone recorded.
+            if ("logged" in str(b["provenance"])
+                    and fresh >= was * (1 - COLUMN_RESET_FRAC)
                     and base and was > base * (1 + COLUMN_RESET_FRAC)):
                 entry["install_cleared_nothing"] = True
                 entry["install_note"] = (

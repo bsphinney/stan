@@ -228,6 +228,25 @@ def test_a_column_swap_that_does_not_relieve_a_restriction_is_flagged():
         == ["2026-06-19"]
 
 
+def test_an_inferred_boundary_is_never_flagged_as_clearing_nothing():
+    """A wash-level boundary has no resistance step by construction.
+
+    Saying "this column change cleared nothing" about a change nobody logged
+    stacks an uncertain inference on an uncertain verdict. The flag is about
+    an action someone took, so it needs a logged event behind it.
+    """
+    runs = _history({**_HEALTHY,
+                     **_levels("2026-05-15", "2026-06-18", (185, 196)),
+                     **_levels("2026-06-19", "2026-07-20", 196)})
+    detected = [{"at": "2026-05-15T00:00:00", "provenance": "detected-wash-level"},
+                {"at": "2026-06-19T00:00:00", "provenance": "detected-wash-level"}]
+    out = ex.column_lifetimes(runs, _METHODS, _HEALTHY_EVENTS, detected)
+    fitted = [c for c in out["columns"] if c["installed"][:10] == "2026-06-19"][0]
+    assert fitted["boundary_provenance"] == "detected-wash-level"
+    assert "install_cleared_nothing" not in fitted
+    assert out["changes_that_cleared_nothing"] == []
+
+
 def test_a_column_swap_that_does_relieve_it_is_not_flagged():
     """The 2026-07-30 case: the swap that actually cleared it."""
     runs = _history({**_HEALTHY,
