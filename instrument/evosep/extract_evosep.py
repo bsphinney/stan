@@ -189,6 +189,34 @@ STEP_FRAC = 0.06
 #: days apart.
 STEP_MAX_GAP_DAYS = 21.0
 
+#: How long a new level must survive before the step that made it counts as an
+#: intervention. Four runs was not nearly enough. On 2025-07-02 the resistance
+#: dipped from ~200 to 134 for about that many 100 SPD injections and then
+#: returned to ~200, where it stayed through the operator's actual column
+#: change on 07-07 and for the 156 runs after it. The old rule called that dip
+#: a column change, so the record carried a 27-injection column that never
+#: existed AND put the boundary five days before the real one.
+#:
+#: A physical intervention holds for days, so the horizon is stated in hours
+#: as well as in runs: 12 runs is only ~3 h at 100 SPD (14 min/injection) and
+#: ~5 h at 60 SPD, which a long clog can outlast. Runs are taken forward until
+#: BOTH are satisfied, capped so one boundary cannot scan the whole record —
+#: and a real change followed quickly by another must still pass, so the
+#: window stops at 48 h rather than at a comfortable week (the 2026-06-25 and
+#: 07-01 columns are six days apart, and 2026-09-02 followed 07-30 by five
+#: weeks).
+#: ...and an UPPER bound on the same window, because "at least 48 h" alone
+#: reaches as far as it needs to when the instrument is idle. Without this the
+#: window after the 2024-07-01 change ran on until it met 12 runs, swept up
+#: the next month's fouling, and rejected a boundary whose level plainly held
+#: (157.4 at the step, 157.7 two days later, 158.6 after a week). The window
+#: is therefore 48 h to 7 days: long enough that a clog cannot fake it, short
+#: enough to stay on the same column.
+STEP_HOLD_RUNS = 12
+STEP_HOLD_HOURS = 48.0
+STEP_HOLD_MAX_HOURS = 168.0
+STEP_HOLD_MAX_RUNS = 200
+
 #: Flow bin width for the per-column pressure table, in uL/min. Fine enough
 #: to separate the methods actually run (the 30/60/100 SPD gradients sit at
 #: distinct nano-flow rates) without splitting one method across two bins.
@@ -274,6 +302,51 @@ WASH_REPLACE_FRAC = 0.767
 
 #: Washes at each end used for a column's fresh and current wash flow.
 WASH_FRESH_N = 5
+
+#: How far a new column's fresh resistance must fall below the level the
+#: OUTGOING column ended at before the swap counts as having cleared the
+#: restriction. Fitting a column is the one intervention that must reset
+#: analytical resistance, so a change that does not is evidence about WHERE
+#: the blockage is -- it is not in the column.
+#:
+#: This is not hypothetical. Between 2026-05-15 and 07-30 three columns went
+#: in (logged 05-27, 06-25, 07-01, all confirmed with the operator) while
+#: resistance climbed 185 -> 219 bar/(uL/min) without a break, in the 100 and
+#: 60 SPD series alike. The ramp only cleared on 07-30, when a new tip went in
+#: alongside the column. Two of those three columns were spent chasing a
+#: restriction that was never in them.
+#:
+#: 5 % because that is comfortably outside run-to-run scatter on this system
+#: (consecutive 100 SPD injections sit within ~1 %) while still catching a
+#: swap that bought nothing.
+COLUMN_RESET_FRAC = 0.05
+
+#: ...but "the swap did not lower resistance" is only worth saying when there
+#: was something to lower. A column replaced on schedule while the system sat
+#: at its normal level also fails to drop anything, and calling that out
+#: teaches the reader to ignore the flag. So the outgoing level must ALSO be
+#: elevated against what this system runs at when healthy -- the median fresh
+#: resistance of the columns fitted over the preceding
+#: COLUMN_HEALTHY_LOOKBACK_D days.
+#:
+#: On the real record this is the whole difference between a useful flag and
+#: a noisy one. It takes the five swaps that cleared nothing down to three:
+#: silent on 2025-12-23 and 2026-05-27, where the outgoing column was at
+#: ~184-195 against a similar healthy baseline and nothing was wrong, and
+#: firing on 2026-06-25 and 07-01, where the system sat at ~196 against a
+#: ~183 baseline and two columns went in without touching it.
+#:
+#: 2025-07-07 still fires and is the known marginal case: resistance had
+#: drifted up to ~194 against a ~180 baseline built from columns fitted
+#: months earlier, so a slow secular drift reads as a restriction. The column
+#: then ran 3,623 injections, the longest life in the record, so "restricted"
+#: was the wrong word for it. A shorter lookback trades this against a
+#: baseline too thin to be stable; the note prints both numbers so a reader
+#: can see the margin rather than take the verdict on trust. Separating the
+#: two properly needs a TREND test -- 06-25 and 07-01 sit on a live ramp
+#: while 07-07 sits on a stable plateau -- which is not built.
+COLUMN_HEALTHY_LOOKBACK_D = 180.0
+COLUMN_HEALTHY_MIN_COLUMNS = 2
 
 #: Gate on the SIGNAL, not on injection count. Below this decline an
 #: extrapolation is fitting noise: at 266 injections the retired column read
@@ -743,9 +816,27 @@ def detect_steps(series: list[tuple[str, float]]) -> list[dict]:
         if abs(frac) < STEP_FRAC:
             continue
         mid = (v0 + v1) / 2.0
-        # The step must HOLD: the median of the next few runs has to stay on
-        # the new side of the midpoint between the old and new level.
-        after = [v for _, v in series[i:i + 4]]
+        # The step must HOLD: the median of the following runs has to stay on
+        # the new side of the midpoint between the old and new level. The
+        # window runs forward until it covers both STEP_HOLD_RUNS runs and
+        # STEP_HOLD_HOURS of wall clock, because neither alone is enough --
+        # see the constants for the 2025-07-02 dip that satisfied a 4-run
+        # window and invented a column.
+        after = []
+        for t2, v2 in series[i:i + STEP_HOLD_MAX_RUNS]:
+            try:
+                spanned = ((datetime.fromisoformat(t2)
+                            - datetime.fromisoformat(t1)).total_seconds() / 3600.0)
+            except ValueError:
+                break
+            # Never look further than the cap -- but a sparse tail must still
+            # yield the three runs the test needs, or the newest column (the
+            # one the panel is about) could never be found.
+            if spanned > STEP_HOLD_MAX_HOURS and len(after) >= 3:
+                break
+            after.append(v2)
+            if len(after) >= STEP_HOLD_RUNS and spanned >= STEP_HOLD_HOURS:
+                break
         if len(after) < 3:
             continue
         held = (st.median(after) > mid) if frac > 0 else (st.median(after) < mid)
@@ -2145,6 +2236,37 @@ def column_lifetimes(runs: list[dict], methods: dict, events: list[dict],
                   "resistance_change_pct", "wash_flow_change_pct"):
             if b.get(k) is not None:
                 entry[k] = b[k]
+        # Did fitting this column actually clear anything? Comparing its
+        # fresh level against where the PREVIOUS column ended is the only
+        # form of this question that survives a change with no detected step
+        # -- `resistance_change_pct` is absent for a bare `logged` boundary,
+        # which is exactly the case worth flagging.
+        if fresh and cols and cols[-1].get("now_resistance_bar_per_ul_min"):
+            was = cols[-1]["now_resistance_bar_per_ul_min"]
+            entry["resistance_at_previous_retirement"] = was
+            entry["install_drop_pct"] = round((fresh - was) / was * 100, 1)
+            healthy = [c["fresh_resistance_bar_per_ul_min"] for c in cols
+                       if c.get("fresh_resistance_bar_per_ul_min")
+                       and not c.get("fresh_is_start_of_record")
+                       and (datetime.fromisoformat(lo)
+                            - datetime.fromisoformat(c["installed"])).days
+                       <= COLUMN_HEALTHY_LOOKBACK_D]
+            base = (_median(healthy)
+                    if len(healthy) >= COLUMN_HEALTHY_MIN_COLUMNS else None)
+            if base:
+                entry["healthy_resistance_bar_per_ul_min"] = round(base, 1)
+            if (fresh >= was * (1 - COLUMN_RESET_FRAC)
+                    and base and was > base * (1 + COLUMN_RESET_FRAC)):
+                entry["install_cleared_nothing"] = True
+                entry["install_note"] = (
+                    f"The system was restricted and fitting this column did "
+                    f"not relieve it: {was} bar/(uL/min) on the outgoing "
+                    f"column against {round(base, 1)} when healthy, and "
+                    f"{round(fresh, 1)} on this one. A column swap is the one "
+                    f"intervention that must reset analytical resistance, so "
+                    f"the restriction is very likely NOT in the column — look "
+                    f"upstream at the emitter, tip, capillary and fittings "
+                    f"before fitting another.")
         if big:
             entry["spans_gaps_days"] = big
             entry["injections_is_lower_bound"] = True
@@ -2222,6 +2344,19 @@ def column_lifetimes(runs: list[dict], methods: dict, events: list[dict],
         "previous": prev,
         "lifetime_distribution": dist,
         "columns": cols,
+        # Surfaced at the top level as well as on each column, because this
+        # is the one finding here that changes what someone does next and it
+        # must not need a walk of 30-odd entries to notice.
+        "changes_that_cleared_nothing": [
+            {"installed": c["installed"],
+             "boundary_provenance": c["boundary_provenance"],
+             "resistance_at_previous_retirement":
+                 c.get("resistance_at_previous_retirement"),
+             "fresh_resistance_bar_per_ul_min":
+                 c.get("fresh_resistance_bar_per_ul_min"),
+             "install_drop_pct": c.get("install_drop_pct")}
+            for c in cols if c.get("install_cleared_nothing")
+        ],
         "limits": [
             "A boundary is `logged+detected`, `detected-confirmed`, "
             "`detected`, `logged` or `start-of-record`. Counts either side of "
@@ -2232,13 +2367,37 @@ def column_lifetimes(runs: list[dict], methods: dict, events: list[dict],
             "reported as `logged_minus_detected_hours`.",
             "Counts include analytical, flow-controlled injections only — not "
             "washes, Preparation or Diagnostics.",
-            "These lifetimes are treated as COMPLETE because the operator "
-            "changes columns only on failure, never on a schedule — so a "
-            "column change always leaves the decline-then-recovery signature "
-            "the wash-level rule detects. That completeness rests on stated "
-            "practice, not on the data proving no change was missed. If the "
-            "practice changes, proactively-replaced columns become invisible "
-            "and these become lower bounds again.",
+            "These lifetimes rest on the practice that columns are changed "
+            "only on failure, so every change leaves a decline-then-recovery "
+            "signature. Scored against the operator's own record of 9 "
+            "changes between 2025-07-07 and 2026-09-04, that practice HELD "
+            "and the boundaries are broadly sound \u2014 but the scoring cut "
+            "both ways, so read it before trusting either source alone. "
+            "Detected exactly: 2025-11-06 and 2026-07-30. Within a week: "
+            "2025-07-02 for a logged 07-07, 2026-09-02 for a logged 09-04. "
+            "ONE TRUE MISS: 2026-03-12 is a sustained drop of only -4.6 %, "
+            "visible in the 100 and 60 SPD series alike (188.6 -> 179.9 and "
+            "187.7 -> 177.3) and held for weeks, but under STEP_FRAC so "
+            "detect_steps never saw it. A new column need not be much less "
+            "restrictive than the one it replaces, so lifetimes ARE lower "
+            "bounds by however many such changes hide under the threshold.",
+            "A COLUMN CHANGE THAT DOES NOT MOVE THE BASELINE IS A REAL "
+            "THING, and it is a diagnosis, not a logging error. Four of "
+            "those nine changes \u2014 2025-12-23, 2026-05-27, 2026-06-25, "
+            "2026-07-01, all confirmed with the operator \u2014 left the "
+            "resistance untouched. The May-July trio is the clear case: "
+            "across 2026-05-15 to 2026-07-30 resistance climbs steadily "
+            "185 -> 219 in the 100 and 60 SPD series alike, three columns go "
+            "in during that climb, and lowering STEP_FRAC to 0.015 finds "
+            "nothing in the window but the ramp itself. Then on 07-30 a "
+            "column AND a new tip together take it to 172.5 (run 23229 is "
+            "`...oldtip-new-zdf-column...`, 23232 the first with the new "
+            "tip). The restriction was never in the analytical column, so "
+            "swapping the column could not clear it. Read that pattern as "
+            "evidence about WHERE the blockage is: a logged column_change "
+            "with no step is the system telling you to look upstream, and "
+            "counting injections across it as one column is the one thing "
+            "you must not do.",
             "`runs_remaining` extrapolates wash flow to 76.7 % of this "
             "column's own fresh value. That threshold was derived from the "
             "one column it was then tested on, so the retrospective fit is "

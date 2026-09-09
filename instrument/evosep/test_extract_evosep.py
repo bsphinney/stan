@@ -136,6 +136,126 @@ def test_a_sustained_step_is_an_intervention():
     assert steps[0]["change_pct"] == -25.0
 
 
+def test_a_dip_lasting_a_few_runs_is_not_an_intervention():
+    """The 2025-07-02 false positive, in miniature.
+
+    Resistance sat at ~200, dipped to ~135 for four 100 SPD injections, then
+    came back to ~200 and stayed there. A four-run hold window called that a
+    column change and carved a 27-injection column out of the record, five
+    days before the operator's real change on 07-07.
+    """
+    vals = [200] * 8 + [135, 135, 135, 135] + [200] * 20
+    series = [(f"2025-07-01T{i // 4:02d}:{(i % 4) * 14:02d}:00", v)
+              for i, v in enumerate(vals)]
+    assert [s for s in ex.detect_steps(series) if s["direction"] == "drop"] == []
+
+
+def test_a_drop_that_holds_past_the_window_is_an_intervention():
+    """Same shape, except the new level never comes back."""
+    vals = [200] * 8 + [135] * 30
+    series = [(f"2025-07-{1 + i // 24:02d}T{i % 24:02d}:00:00", v)
+              for i, v in enumerate(vals)]
+    drops = [s for s in ex.detect_steps(series) if s["direction"] == "drop"]
+    assert len(drops) == 1
+    assert drops[0]["from_bar"] == 200 and drops[0]["to_bar"] == 135
+
+
+def test_a_hold_window_shorter_than_the_record_still_resolves():
+    """A change near the end of the log has no 48 h of future to prove itself.
+
+    It must still be callable off the runs that do exist -- otherwise the most
+    recent column, the one the panel is actually about, can never be found.
+    """
+    vals = [200] * 8 + [135] * 4
+    series = [(f"2025-07-01T{i:02d}:00:00", v) for i, v in enumerate(vals)]
+    drops = [s for s in ex.detect_steps(series) if s["direction"] == "drop"]
+    assert len(drops) == 1
+
+
+def _inj(start, bar, flow=0.5, method="100-samples-per-day"):
+    return {"start": start, "method": method, "control_mode": "flow",
+            "plateau_bar": bar, "plateau_flow_ul_min": flow}
+
+
+def _history(levels):
+    """{'YYYY-MM-DD': resistance} -> four injections that day at that level."""
+    return [_inj(f"{day}T{h * 4:02d}:00:00", res * 0.5)
+            for day, res in sorted(levels.items()) for h in range(4)]
+
+
+def _levels(lo, hi, res):
+    """Every day from lo to hi inclusive at `res` (a number or a ramp pair)."""
+    from datetime import date, timedelta
+    d0, d1 = date.fromisoformat(lo), date.fromisoformat(hi)
+    n = (d1 - d0).days
+    out = {}
+    for i in range(n + 1):
+        if isinstance(res, tuple):
+            a, b = res
+            out[(d0 + timedelta(days=i)).isoformat()] = a + (b - a) * i / max(n, 1)
+        else:
+            out[(d0 + timedelta(days=i)).isoformat()] = res
+    return out
+
+
+#: Three columns at a steady 185, which is what this system runs at healthy.
+_HEALTHY = {**_levels("2026-01-01", "2026-01-14", 185),
+            **_levels("2026-01-15", "2026-03-14", 185),
+            **_levels("2026-03-15", "2026-05-14", 185)}
+_HEALTHY_EVENTS = [{"event_date": "2026-01-15T00:00:00"},
+                   {"event_date": "2026-03-15T00:00:00"}]
+_METHODS = {"100-samples-per-day": {"analytical": True}}
+
+
+def test_a_column_swap_that_does_not_relieve_a_restriction_is_flagged():
+    """The 2026-06-25 / 07-01 case: two columns, one uncleared restriction.
+
+    Resistance ramps 185 -> 196 on the column fitted 05-15, a new column goes
+    in on 06-19, and the level carries on at 196. There is no detected step to
+    hang the observation on, so the swap-versus-baseline comparison is the
+    only thing that can say it.
+    """
+    runs = _history({**_HEALTHY,
+                     **_levels("2026-05-15", "2026-06-18", (185, 196)),
+                     **_levels("2026-06-19", "2026-07-20", 196)})
+    events = _HEALTHY_EVENTS + [{"event_date": "2026-05-15T00:00:00"},
+                                {"event_date": "2026-06-19T00:00:00"}]
+    out = ex.column_lifetimes(runs, _METHODS, events, [])
+    fitted = [c for c in out["columns"] if c["installed"][:10] == "2026-06-19"][0]
+    assert fitted["install_cleared_nothing"] is True
+    assert "look upstream" in fitted["install_note"]
+    assert [c["installed"][:10] for c in out["changes_that_cleared_nothing"]] \
+        == ["2026-06-19"]
+
+
+def test_a_column_swap_that_does_relieve_it_is_not_flagged():
+    """The 2026-07-30 case: the swap that actually cleared it."""
+    runs = _history({**_HEALTHY,
+                     **_levels("2026-05-15", "2026-06-18", (185, 196)),
+                     **_levels("2026-06-19", "2026-07-20", 172)})
+    events = _HEALTHY_EVENTS + [{"event_date": "2026-05-15T00:00:00"},
+                                {"event_date": "2026-06-19T00:00:00"}]
+    out = ex.column_lifetimes(runs, _METHODS, events, [])
+    fitted = [c for c in out["columns"] if c["installed"][:10] == "2026-06-19"][0]
+    assert "install_cleared_nothing" not in fitted
+    assert fitted["install_drop_pct"] < 0
+    assert out["changes_that_cleared_nothing"] == []
+
+
+def test_a_routine_swap_on_a_healthy_system_is_not_flagged():
+    """2025-07-07 and 2025-12-23: nothing was wrong, so nothing was cleared.
+
+    A column replaced while the system sits at its normal level also fails to
+    drop resistance. Flagging that would train the reader to ignore the flag.
+    """
+    runs = _history({**_HEALTHY, **_levels("2026-05-15", "2026-07-20", 185)})
+    events = _HEALTHY_EVENTS + [{"event_date": "2026-05-15T00:00:00"}]
+    out = ex.column_lifetimes(runs, _METHODS, events, [])
+    fitted = [c for c in out["columns"] if c["installed"][:10] == "2026-05-15"][0]
+    assert "install_cleared_nothing" not in fitted
+    assert out["changes_that_cleared_nothing"] == []
+
+
 # ── parsing ───────────────────────────────────────────────────────────────
 
 def test_parse_series_skips_a_truncated_final_line(tmp_path):
