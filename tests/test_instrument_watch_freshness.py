@@ -122,3 +122,75 @@ class TestDegradesQuietly:
 
     def test_empty_documents_do_not_raise(self):
         assert check_feed_freshness({}, {}, now=NOW) == []
+
+
+class TestPublishFreshnessIsADifferentQuestion:
+    """Data arriving and the panel updating are two separate failures.
+
+    On 2026-09-17 only the second was true: Evosep logs landed through the
+    current day while the panel served a document last written eight days
+    earlier, because cron_evosep.sh had silently lost its execute bit. The
+    data-age check could not see it -- cron_evosep.sh hands instrument-watch
+    a freshly generated extract via --evosep-json, so last_run read as today.
+    """
+
+    def _fake_pg(self, monkeypatch, updated):
+        """Stand in for PG so the check can be exercised off-cluster."""
+        import stan.db_pg as db_pg
+        from stan.reports import instrument_watch as iw
+
+        class _Cur:
+            def execute(self, sql):
+                self._t = "evosep" if "evosep" in sql else "bruker"
+            def fetchone(self):
+                return (updated.get(self._t),)
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        class _Con:
+            def cursor(self): return _Cur()
+            def rollback(self): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        monkeypatch.setattr(db_pg, "use_pg", lambda: True)
+        monkeypatch.setattr(db_pg, "_connect", lambda: _Con())
+        return iw
+
+    def test_stalled_publish_alerts_even_though_data_is_current(self, monkeypatch):
+        iw = self._fake_pg(monkeypatch, {
+            "evosep": NOW - timedelta(days=8),   # the real incident
+            "bruker": NOW - timedelta(hours=6),
+        })
+        alerts = iw.check_publish_freshness(now=NOW)
+        kinds = [a.kind for a in alerts]
+        assert kinds == ["evosep_publish_stale"]
+        assert "8 days" in alerts[0].headline
+
+    def test_silent_when_both_are_being_republished(self, monkeypatch):
+        iw = self._fake_pg(monkeypatch, {
+            "evosep": NOW - timedelta(hours=3),
+            "bruker": NOW - timedelta(hours=10),
+        })
+        assert iw.check_publish_freshness(now=NOW) == []
+
+    def test_escalates_when_badly_overdue(self, monkeypatch):
+        iw = self._fake_pg(monkeypatch, {
+            "evosep": NOW - timedelta(days=8), "bruker": NOW - timedelta(days=9)})
+        alerts = iw.check_publish_freshness(now=NOW)
+        assert all(a.severity == "critical" for a in alerts)
+
+    def test_no_op_without_pg(self, monkeypatch):
+        """A single-lab SQLite install publishes nothing and must stay quiet."""
+        import stan.db_pg as db_pg
+        from stan.reports import instrument_watch as iw
+        monkeypatch.setattr(db_pg, "use_pg", lambda: False)
+        assert iw.check_publish_freshness(now=NOW) == []
+
+    def test_never_raises_when_pg_is_unreachable(self, monkeypatch):
+        import stan.db_pg as db_pg
+        from stan.reports import instrument_watch as iw
+        monkeypatch.setattr(db_pg, "use_pg", lambda: True)
+        def _boom(): raise RuntimeError("pg down")
+        monkeypatch.setattr(db_pg, "_connect", _boom)
+        assert iw.check_publish_freshness(now=NOW) == []

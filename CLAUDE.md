@@ -143,6 +143,7 @@ Canonical copies live in `scripts/`.
 | `cron_community_sync.sh` | */6 h | Push to the community benchmark |
 | `cron_bruker_maintenance.sh` | daily 20:00 | Compass BACKUP → maintenance document |
 | `cron_stan_db_backup.sh` | daily 03:17 (**staged, not installed**) | pg_dump PG Farm → Flinders |
+| `cron_stan_alerts.sh` | */20 min | Feed + publish staleness → Slack. **Runs via `bash`, not as an executable** |
 
 `export STAN_DB_BACKEND=pg` is set inside these scripts — that is what
 `use_pg()` keys off. A script that forgets it silently writes SQLite.
@@ -260,6 +261,33 @@ once. The ones that matter:
 The service account can SELECT all 15 public tables, so the dump is
 complete and runs unattended off the self-refreshing secret — no CAS
 dependency and no 7-day expiry to babysit.
+
+### A watchdog must not live inside what it watches
+
+Feed alerting used to be a line inside `cron_evosep.sh`. On 2026-09-09
+that script lost its execute bit, cron answered `Permission denied` into
+nothing, and the alerting died with it — eight days of silence that
+looked exactly like "nothing is wrong". The alarm was wired to the thing
+it was meant to alarm about.
+
+It is now `cron_stan_alerts.sh`, on its own crontab entry, and the
+crontab line invokes it as **`bash <script>`** rather than executing it
+— so a lost execute bit cannot repeat the failure on the watchdog
+itself. Worth considering for the other entries.
+
+**Two different staleness questions, and both are needed:**
+
+- `check_feed_freshness` — has the DATA stopped arriving? Reads
+  `summary.last_run` / `backup_date`.
+- `check_publish_freshness` — has the JOB that publishes it stopped?
+  Reads `updated_at` straight from PG.
+
+On 2026-09-17 only the second was true: Evosep logs were landing through
+the current day while the panel served a document written eight days
+earlier. The data check could not see it, because `cron_evosep.sh` hands
+`instrument-watch` a freshly generated extract via `--evosep-json` and a
+fresh document always looks fresh. That is why the watchdog passes no
+`--evosep-json` — it must read what the dashboard reads.
 
 ### PG and SQLite do not share column types
 

@@ -753,6 +753,91 @@ def check_feed_freshness(evosep: dict | None, bruker: dict | None,
         ))
     return alerts
 
+#: How long a published telemetry document may go unrefreshed. Evosep
+#: republishes whenever the live document passes 20 h, Bruker nightly, so two
+#: days is two missed cycles either way.
+PUBLISH_STALE_DAYS = 2.0
+
+#: The PG documents the dashboard actually serves, and the cron that should
+#: be refreshing each one.
+_PUBLISHED_DOCS = (
+    ("evosep_publish_stale", "evosep_column_health",
+     "Evosep column health", "cron_evosep.sh (every 30 min)"),
+    ("bruker_publish_stale", "bruker_maintenance",
+     "Bruker maintenance", "cron_bruker_maintenance.sh (nightly 20:00)"),
+)
+
+
+def check_publish_freshness(now: datetime | None = None,
+                            station: str = DEFAULT_STATION) -> list[Alert]:
+    """Alert when a document stops being REPUBLISHED, even with fresh data.
+
+    check_feed_freshness answers "did the data stop arriving". This answers
+    the other half: "did the job that turns data into a panel stop running".
+    They are genuinely different, and on 2026-09-17 only the second was true
+    -- Evosep logs were landing through the current day while the panel
+    served a document last written eight days earlier, because
+    cron_evosep.sh had silently lost its execute bit.
+
+    The data-age check could not see it. cron_evosep.sh hands
+    instrument-watch a FRESHLY GENERATED extract via --evosep-json, so
+    last_run read as today and the check was satisfied. Only the published
+    row was stale, so only the published row can reveal it.
+
+    Reads PG directly rather than any document passed in, for exactly that
+    reason: a caller holding a fresh copy is the situation this is meant to
+    catch. No-ops on a SQLite install, which has no published documents.
+    """
+    now = now or datetime.now(timezone.utc)
+    try:
+        from stan.db_pg import use_pg
+        if not use_pg():
+            return []
+        from stan.db_pg import _connect
+    except Exception:  # noqa: BLE001
+        return []
+
+    alerts: list[Alert] = []
+    try:
+        with _connect() as con, con.cursor() as cur:
+            for kind, table, label, who in _PUBLISHED_DOCS:
+                try:
+                    cur.execute(f"SELECT updated_at FROM {table}")  # noqa: S608
+                    row = cur.fetchone()
+                except Exception:  # noqa: BLE001 - table absent on an older DB
+                    con.rollback()
+                    continue
+                if not row or not row[0]:
+                    continue
+                ts = row[0]
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                age_days = (now - ts).total_seconds() / 86400.0
+                if age_days <= PUBLISH_STALE_DAYS:
+                    continue
+                whole = int(age_days)
+                alerts.append(Alert(
+                    key=f"{kind}:{station}",
+                    kind=kind,
+                    instrument=station,
+                    severity="critical" if age_days >= PUBLISH_STALE_DAYS * 3 else "warning",
+                    headline=f"{label} has not been republished for {whole} days",
+                    detail=[
+                        f"*Last published:* {ts:%Y-%m-%d %H:%M} UTC ({whole}d ago, "
+                        f"alerting past {PUBLISH_STALE_DAYS:g}d)",
+                        f"*Expected from:* {who}",
+                        "New data may still be arriving -- this says the job that "
+                        "publishes it has stopped, which the panel cannot show.",
+                    ],
+                    signature=f"{whole}d",
+                    cool_off_hours=24.0,
+                    at=ts.strftime("%Y-%m-%d %H:%M"),
+                    extra={"table": table, "age_days": round(age_days, 1)},
+                ))
+    except Exception:  # noqa: BLE001 - never break the watch over telemetry
+        logger.debug("publish-freshness check failed", exc_info=True)
+    return alerts
+
 # ── entry point ──────────────────────────────────────────────────
 
 
@@ -913,6 +998,11 @@ def run_watch(dry_run: bool = False, seed: bool = False,
     # Evaluated on whatever loaded, including nothing: a feed that has gone
     # silent is exactly the case where the document is stale or missing.
     alerts += check_feed_freshness(evosep, bruker, now=now, station=station)
+
+    # The other half: data can be arriving while the job that publishes it
+    # has stopped. Reads PG, not the documents above, because a caller
+    # holding a freshly generated one is exactly the case this catches.
+    alerts += check_publish_freshness(now=now, station=station)
 
     store = store if store is not None else AlertStore()
 
