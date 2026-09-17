@@ -849,14 +849,27 @@ def check_publish_freshness(now: datetime | None = None,
 #: writing its log has stopped, whatever the reason -- wrong permissions, a
 #: syntax error, a dead interpreter, an unmounted share, a removed crontab
 #: line. All of them look identical from here, and all of them matter.
-CRON_MAX_SILENCE_H = {
-    "evosep": 3.0,               # */30 min
-    "ht_watch": 3.0,             # */20 min
-    "stan_alerts": 3.0,          # */20 min
-    "flinders_dispatch": 3.0,    # */5  min
-    "count_acq": 6.0,            # */15 min
-    "bruker_maint": 30.0,        # nightly 20:00
-    "community_sync": 14.0,      # */6  h
+#: job label -> (log glob, hours of silence allowed).
+#:
+#: The glob is explicit rather than derived from the label, because the log
+#: names do not follow one rule: the acquisition counter writes
+#: count_acq_submit_*, the Flinders dispatcher writes cron_flinders_*, and a
+#: pattern built from the job name silently matched NEITHER -- a heartbeat
+#: check quietly monitoring five of eight jobs, which is the failure it
+#: exists to prevent.
+#:
+#: Anchored on "20" so cron_evosep_20260917.log matches and
+#: cron_evosep_watch_20260917.log does not. Without that, a dead
+#: cron_evosep would be masked by its sibling still writing.
+CRON_LOGS = {
+    "evosep":             ("cron_evosep_20*.log", 3.0),
+    "ht_watch":           ("cron_ht_watch_20*.log", 3.0),
+    "stan_alerts":        ("cron_stan_alerts_20*.log", 3.0),
+    "flinders_dispatch":  ("cron_flinders_20*.log", 3.0),
+    "count_acquisitions": ("count_acq_submit_20*.log", 6.0),
+    "ioncloud":           ("cron_ioncloud_20*.log", 6.0),
+    "community_sync":     ("cron_community_sync_20*.log", 14.0),
+    "bruker_maint":       ("cron_bruker_maint_20*.log", 30.0),
 }
 
 #: Where the cron scripts write their per-day logs.
@@ -883,9 +896,9 @@ def check_cron_heartbeat(now: datetime | None = None,
     root = log_dir or CRON_LOG_DIR
     alerts: list[Alert] = []
 
-    for name, max_h in sorted(CRON_MAX_SILENCE_H.items()):
+    for name, (pattern, max_h) in sorted(CRON_LOGS.items()):
         try:
-            hits = glob.glob(os.path.join(root, f"cron_{name}_*.log"))
+            hits = glob.glob(os.path.join(root, pattern))
         except Exception:  # noqa: BLE001
             continue
         if not hits:

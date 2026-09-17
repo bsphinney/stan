@@ -207,8 +207,11 @@ class TestCronHeartbeat:
 
     def _logs(self, tmp_path, ages_hours):
         import os, time
+        from stan.reports.instrument_watch import CRON_LOGS
         for name, age in ages_hours.items():
-            f = tmp_path / f"cron_{name}_20260917.log"
+            # Build the filename from the real glob, so the test cannot pass
+            # against a pattern that would miss the actual log on Hive.
+            f = tmp_path / CRON_LOGS[name][0].replace("*", "260917")
             f.write_text("tick\n")
             t = time.time() - age * 3600
             os.utime(f, (t, t))
@@ -247,9 +250,31 @@ class TestCronHeartbeat:
     def test_the_watchdog_watches_itself(self, tmp_path):
         """stan_alerts is in the table, so if the watchdog stops and anything
         else still runs a watch, its own silence is reported."""
-        from stan.reports.instrument_watch import CRON_MAX_SILENCE_H
-        assert "stan_alerts" in CRON_MAX_SILENCE_H
+        from stan.reports.instrument_watch import CRON_LOGS
+        assert "stan_alerts" in CRON_LOGS
 
     def test_missing_log_dir_does_not_raise(self):
         from stan.reports.instrument_watch import check_cron_heartbeat
         assert check_cron_heartbeat(log_dir="/no/such/place") == []
+
+
+class TestHeartbeatCoversEveryScheduledJob:
+    def test_a_dead_job_is_not_masked_by_a_sibling_log(self, tmp_path):
+        """cron_evosep_*.log also matched cron_evosep_watch_*.log, so a dead
+        cron_evosep could hide behind its sibling. The glob is anchored on
+        the date to keep them apart."""
+        import os, time
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        dead = tmp_path / "cron_evosep_20260909.log"; dead.write_text("x")
+        t = time.time() - 24 * 8 * 3600; os.utime(dead, (t, t))
+        sibling = tmp_path / "cron_evosep_watch_20260917.log"; sibling.write_text("x")
+        alerts = check_cron_heartbeat(log_dir=str(tmp_path))
+        assert [a.extra["cron"] for a in alerts] == ["evosep"], \
+            "the sibling log masked a dead job"
+
+    def test_the_oddly_named_logs_are_covered(self):
+        """count_acq_submit_* and cron_flinders_* do not follow the naming of
+        the others, and a pattern derived from the job name missed both."""
+        from stan.reports.instrument_watch import CRON_LOGS
+        assert CRON_LOGS["count_acquisitions"][0].startswith("count_acq_submit")
+        assert CRON_LOGS["flinders_dispatch"][0].startswith("cron_flinders_")
