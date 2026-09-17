@@ -1,42 +1,52 @@
 #!/bin/bash
-# =============================================================================
-# cron_bruker_maintenance.sh   (SUGGESTED -- do not install without review)
+# STAN Hive cron: refresh Bruker maintenance signals from the newest Compass
+# backup on Quobyte. Reads the backup Bruker's own tooling produced (already
+# authenticated -> no DB password), extracts a compact JSON of maintenance
+# analytics, and publishes it to a stable path for the dashboard.
 #
-# Refresh the Bruker maintenance cache the STAN dashboard serves.
-# Login-node-safe: runs the pinned postgres apptainer directly (~40s, read-only),
-# no SLURM needed. Mirrors the style of the other /quobyte/proteomics-grp/STAN
-# cron_*.sh scripts.
+# Installed in brettsp's crontab, nightly after the instrument has copied the
+# day's 18:00 backup to Quobyte:
+#   0 20 * * * flock -n /tmp/stan_bruker_maint.lock /quobyte/proteomics-grp/STAN/cron_bruker_maintenance.sh
 #
-# Suggested crontab entry (every 30 min, single-flighted with flock):
-#   */30 * * * * flock -n /tmp/stan_bruker_maint.lock /quobyte/proteomics-grp/STAN/cron_bruker_maintenance.sh
-# =============================================================================
+# Login-node-safe: the heavy restore runs inside the pinned apptainer against a
+# throwaway postgres in $TMPDIR, torn down on exit. Read-only on all Bruker
+# data. flock means a slow run is skipped, never stacked.
 set -uo pipefail
+export LOGNAME="${LOGNAME:-$(id -un)}"; export USER="${USER:-$LOGNAME}"
+set +u; source /etc/profile.d/modules.sh 2>/dev/null || true; source /etc/profile.d/hpccf.sh 2>/dev/null || true; set -u
 
-EXTRACTOR=/quobyte/proteomics-grp/brett/HT_bruker_scratch/extract_bruker.sh   # or wherever you deploy HT_work/bruker/
-OUT_CANON=/quobyte/proteomics-grp/STAN/bruker_maintenance.json                # served cache (next to acq_date_cache.json)
-LOG=/quobyte/proteomics-grp/STAN/logs/bruker_maint.log
-TMP="$(mktemp /tmp/bruker_maint_XXXXXX.json)"
-trap 'rm -f "$TMP"' EXIT
+BR=/quobyte/proteomics-grp/STAN/bruker
+OUT=/quobyte/proteomics-grp/STAN/bruker_maintenance.json
+mkdir -p /quobyte/proteomics-grp/STAN/logs
+LOG=/quobyte/proteomics-grp/STAN/logs/cron_bruker_maint_$(date +%Y%m%d).log
 
-mkdir -p "$(dirname "$LOG")"
+{
+  echo "===== tick $(date '+%Y-%m-%d %H:%M:%S') ====="
+  newest=$(find /quobyte/proteomics-grp/STAN/BrukerDBBackup -type f -iname '*.backup' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+  if [ -z "$newest" ]; then echo 'no backup found on Quobyte; skipping'; exit 0; fi
+  echo "newest backup: $newest"
+  tmp=$(mktemp "${OUT}.XXXX")
+  if "$BR/extract_bruker.sh" --backup "$newest" --out "$tmp" 2>&1; then
+    mv -f "$tmp" "$OUT"
+    echo "published -> $OUT ($(stat -c%s "$OUT") bytes)"
+    # Push the document into PG Farm so the HOSTED dashboard serves it. The
+    # endpoint reads PG first and falls back to the bundled file, so this is
+    # what turns the panel from deploy-frozen into nightly-fresh. DDL-free:
+    # the table is owned by brettsp via migration, this account has DML only.
+    export STAN_DB_BACKEND=pg
+    export PATH=/quobyte/proteomics-grp/brett/stan_venv/bin:$PATH
+    ( cd /quobyte/proteomics-grp/brett/stan && \
+      python3 "$BR/publish_bruker_pg.py" "$OUT" bruker_maintenance ) 2>&1 || \
+      echo 'PG Farm publish failed (non-fatal; file cache still updated)'
 
-# Extract to a temp file first so a half-written cache never reaches the dashboard.
-if "$EXTRACTOR" --out "$TMP" >>"$LOG" 2>&1 && [ -s "$TMP" ]; then
-  # sanity: must be JSON with a summary block before we publish it
-  if grep -q '"summary"' "$TMP"; then
-    mv -f "$TMP" "$OUT_CANON"
-    echo "$(date '+%F %T') OK -> $OUT_CANON ($(wc -c <"$OUT_CANON") bytes)" >>"$LOG"
-  else
-    echo "$(date '+%F %T') ABORT: output missing summary block" >>"$LOG"; exit 1
+  # Email any NEW instrumentation failures (missing Evotip, LC clog, MS error,
+  # connection lost). Dedups by acquisition filename against a state file, so a
+  # failure is reported once. Nightly, because the backup it reads is nightly.
+  if [ -s "$OUT" ]; then
+    python3 "$BR/bruker_alert.py" --json "$OUT" 2>&1 || echo "alerter failed (non-fatal)"
   fi
-else
-  echo "$(date '+%F %T') ABORT: extractor failed or produced no output" >>"$LOG"; exit 1
-fi
 
-# --- Delivery to the dashboard host ---------------------------------------
-# The line above publishes the cache into the STAN dir on Hive. If the
-# dashboard that serves the Maintenance tab runs ON Hive, resolve_config_path
-# finds it there and you are done. If the dashboard runs elsewhere (the hosted
-# PG-Farm dashboard), sync the file to that host's ~/STAN/ dir, e.g.:
-#   rsync -az "$OUT_CANON" dashboardhost:STAN/bruker_maintenance.json
-# (add such a line here once the target host is known).
+  else
+    echo 'extract FAILED; keeping previous JSON'; rm -f "$tmp"; exit 1
+  fi
+} >> "$LOG" 2>&1
