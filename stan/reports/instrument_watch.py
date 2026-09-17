@@ -838,6 +838,88 @@ def check_publish_freshness(now: datetime | None = None,
         logger.debug("publish-freshness check failed", exc_info=True)
     return alerts
 
+#: Every scheduled job on Hive, and how long its silence may run before that
+#: silence is itself the news. Each is several missed cycles, not one, so a
+#: slow tick or a reboot does not cry wolf.
+#:
+#: This is the generic form of the 2026-09-09 failure: cron_evosep.sh lost
+#: its execute bit, cron answered "Permission denied" into nothing, and
+#: nobody found out for eight days. No per-feed check catches that, because
+#: the symptom is a job producing NO output at all. A job that has stopped
+#: writing its log has stopped, whatever the reason -- wrong permissions, a
+#: syntax error, a dead interpreter, an unmounted share, a removed crontab
+#: line. All of them look identical from here, and all of them matter.
+CRON_MAX_SILENCE_H = {
+    "evosep": 3.0,               # */30 min
+    "ht_watch": 3.0,             # */20 min
+    "stan_alerts": 3.0,          # */20 min
+    "flinders_dispatch": 3.0,    # */5  min
+    "count_acq": 6.0,            # */15 min
+    "bruker_maint": 30.0,        # nightly 20:00
+    "community_sync": 14.0,      # */6  h
+}
+
+#: Where the cron scripts write their per-day logs.
+CRON_LOG_DIR = "/quobyte/proteomics-grp/STAN/logs"
+
+
+def check_cron_heartbeat(now: datetime | None = None,
+                         log_dir: str | None = None,
+                         station: str = DEFAULT_STATION) -> list[Alert]:
+    """Alert on a scheduled job that has stopped producing output.
+
+    Deliberately measures the LOG FILE's mtime rather than asking whether
+    the work succeeded. A job can fail loudly every tick and still be alive;
+    what went unnoticed for eight days was a job that stopped saying
+    anything. Silence is the signal.
+
+    Skips a job with no log at all rather than alerting: that is a job never
+    installed on this host, not one that has died.
+    """
+    import glob
+    import os
+
+    now = now or datetime.now(timezone.utc)
+    root = log_dir or CRON_LOG_DIR
+    alerts: list[Alert] = []
+
+    for name, max_h in sorted(CRON_MAX_SILENCE_H.items()):
+        try:
+            hits = glob.glob(os.path.join(root, f"cron_{name}_*.log"))
+        except Exception:  # noqa: BLE001
+            continue
+        if not hits:
+            continue
+        try:
+            newest = max(hits, key=os.path.getmtime)
+            seen = datetime.fromtimestamp(os.path.getmtime(newest), tz=timezone.utc)
+        except OSError:
+            continue
+        age_h = (now - seen).total_seconds() / 3600.0
+        if age_h <= max_h:
+            continue
+        hours = int(age_h)
+        alerts.append(Alert(
+            key=f"cron_silent:{name}",
+            kind="cron_silent",
+            instrument=station,
+            severity="critical" if age_h >= max_h * 4 else "warning",
+            headline=f"cron_{name}.sh has written nothing for {hours} h",
+            detail=[
+                f"*Last output:* {seen:%Y-%m-%d %H:%M} UTC "
+                f"({hours}h ago, alerting past {max_h:g}h)",
+                f"*Log:* {newest}",
+                "The job is not running, or is dying before it can log. "
+                "Check the execute bit first -- that is how this failed on "
+                "2026-09-09.",
+            ],
+            signature=f"{hours // 24}d",
+            cool_off_hours=24.0,
+            at=seen.strftime("%Y-%m-%d %H:%M"),
+            extra={"cron": name, "age_hours": round(age_h, 1)},
+        ))
+    return alerts
+
 # ── entry point ──────────────────────────────────────────────────
 
 
@@ -1003,6 +1085,10 @@ def run_watch(dry_run: bool = False, seed: bool = False,
     # has stopped. Reads PG, not the documents above, because a caller
     # holding a freshly generated one is exactly the case this catches.
     alerts += check_publish_freshness(now=now, station=station)
+
+    # And the generic form: a scheduled job that has stopped saying
+    # anything at all, which no per-feed check can see.
+    alerts += check_cron_heartbeat(now=now, station=station)
 
     store = store if store is not None else AlertStore()
 

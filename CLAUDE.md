@@ -275,12 +275,19 @@ crontab line invokes it as **`bash <script>`** rather than executing it
 — so a lost execute bit cannot repeat the failure on the watchdog
 itself. Worth considering for the other entries.
 
-**Two different staleness questions, and both are needed:**
+**Three different staleness questions, and all are needed:**
 
 - `check_feed_freshness` — has the DATA stopped arriving? Reads
   `summary.last_run` / `backup_date`.
 - `check_publish_freshness` — has the JOB that publishes it stopped?
   Reads `updated_at` straight from PG.
+- `check_cron_heartbeat` — has a scheduled JOB stopped saying anything at
+  all? Reads the mtime of `logs/cron_<name>_*.log`. This is the generic
+  form: it measures silence, not failure, so it catches a lost execute
+  bit, a syntax error, a dead interpreter, an unmounted share or a
+  deleted crontab line identically — all of which look the same from
+  outside and all of which matter. `stan_alerts` is in the table too, so
+  the watchdog's own silence is reported by anything else still watching.
 
 On 2026-09-17 only the second was true: Evosep logs were landing through
 the current day while the panel served a document written eight days

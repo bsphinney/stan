@@ -194,3 +194,62 @@ class TestPublishFreshnessIsADifferentQuestion:
         def _boom(): raise RuntimeError("pg down")
         monkeypatch.setattr(db_pg, "_connect", _boom)
         assert iw.check_publish_freshness(now=NOW) == []
+
+
+class TestCronHeartbeat:
+    """The generic form of the 2026-09-09 failure.
+
+    cron_evosep.sh lost its execute bit, cron answered "Permission denied"
+    into nothing, and nobody found out for eight days. No per-feed check
+    catches that: the symptom is a job producing NO output at all. A job
+    that has stopped writing its log has stopped, whatever the cause.
+    """
+
+    def _logs(self, tmp_path, ages_hours):
+        import os, time
+        for name, age in ages_hours.items():
+            f = tmp_path / f"cron_{name}_20260917.log"
+            f.write_text("tick\n")
+            t = time.time() - age * 3600
+            os.utime(f, (t, t))
+        return str(tmp_path)
+
+    def test_silent_job_alerts(self, tmp_path):
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        # evosep is a */30 job; 8 days of nothing is the real incident.
+        d = self._logs(tmp_path, {"evosep": 24 * 8, "ht_watch": 0.2})
+        alerts = check_cron_heartbeat(log_dir=d)
+        assert [a.extra["cron"] for a in alerts] == ["evosep"]
+        assert "192 h" in alerts[0].headline or "h" in alerts[0].headline
+
+    def test_healthy_jobs_are_silent(self, tmp_path):
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        d = self._logs(tmp_path, {"evosep": 0.4, "ht_watch": 0.3,
+                                  "bruker_maint": 12, "community_sync": 4})
+        assert check_cron_heartbeat(log_dir=d) == []
+
+    def test_nightly_job_gets_a_nightly_allowance(self, tmp_path):
+        """bruker_maint runs once a day; 12 h of quiet is normal and 40 is not."""
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        assert check_cron_heartbeat(log_dir=self._logs(tmp_path, {"bruker_maint": 12})) == []
+        assert check_cron_heartbeat(log_dir=self._logs(tmp_path, {"bruker_maint": 40})) != []
+
+    def test_a_job_never_installed_here_is_not_an_alert(self, tmp_path):
+        """No log at all means not deployed on this host, not dead."""
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        assert check_cron_heartbeat(log_dir=str(tmp_path)) == []
+
+    def test_escalates_when_very_overdue(self, tmp_path):
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        d = self._logs(tmp_path, {"evosep": 24 * 8})
+        assert check_cron_heartbeat(log_dir=d)[0].severity == "critical"
+
+    def test_the_watchdog_watches_itself(self, tmp_path):
+        """stan_alerts is in the table, so if the watchdog stops and anything
+        else still runs a watch, its own silence is reported."""
+        from stan.reports.instrument_watch import CRON_MAX_SILENCE_H
+        assert "stan_alerts" in CRON_MAX_SILENCE_H
+
+    def test_missing_log_dir_does_not_raise(self):
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        assert check_cron_heartbeat(log_dir="/no/such/place") == []
