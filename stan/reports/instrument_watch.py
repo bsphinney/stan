@@ -862,9 +862,14 @@ def check_publish_freshness(now: datetime | None = None,
 #: cron_evosep_watch_20260917.log does not. Without that, a dead
 #: cron_evosep would be masked by its sibling still writing.
 #:
-#: Two of them append to ONE undated file instead of rotating daily, which
+#: Three of them append to ONE undated file instead of rotating daily, which
 #: is a third naming convention and the reason a date-anchored pattern found
-#: neither. Those are named exactly, so nothing can shadow them.
+#: none of them. Those are named exactly, so nothing can shadow them.
+#:
+#: db_backup is the one entry here whose absence would be silent in a way
+#: that matters most: PG Farm keeps no backups of its own, so if that job
+#: stops, nothing else in the system notices and the loss only surfaces when
+#: a restore is needed. It is a daily 03:17 tick, so 30 h is one missed run.
 CRON_LOGS = {
     "evosep":             ("cron_evosep_20*.log", 3.0),
     "ht_watch":           ("cron_ht_watch_20*.log", 3.0),
@@ -874,6 +879,7 @@ CRON_LOGS = {
     "ioncloud":           ("cron_ioncloud.log", 6.0),
     "community_sync":     ("cron_community_sync_20*.log", 14.0),
     "bruker_maint":       ("cron_bruker_maint_20*.log", 30.0),
+    "db_backup":          ("db_backup_submit.log", 30.0),
 }
 
 #: Where the cron scripts write their per-day logs.

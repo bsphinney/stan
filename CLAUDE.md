@@ -142,7 +142,7 @@ Canonical copies live in `scripts/`.
 | `cron_ioncloud.sh` | hourly | Feature-cloud backfill from existing 4DFF sidecars |
 | `cron_community_sync.sh` | */6 h | Push to the community benchmark |
 | `cron_bruker_maintenance.sh` | daily 20:00 | Compass BACKUP → maintenance document |
-| `cron_stan_db_backup.sh` | daily 03:17 (**staged, not installed**) | pg_dump PG Farm → Flinders |
+| `cron_stan_db_backup.sh` | daily 03:17 | pg_dump PG Farm → Flinders. **Runs via `bash`, not as an executable** |
 | `cron_stan_alerts.sh` | */20 min | Feed + publish staleness → Slack. **Runs via `bash`, not as an executable** |
 
 `export STAN_DB_BACKEND=pg` is set inside these scripts — that is what
@@ -233,8 +233,34 @@ backups**. STAN had none at all until 2026-09-04 — `de-limp-db-backups`
 sat next to an empty space where STAN's should have been. The dump is
 now `scripts/stan_db_backup.sbatch` (running copy at
 `/quobyte/proteomics-grp/STAN/`), writing to
-`/nfs/lssc0/flinders/proteomics/Data/stan-db-backups`. 42.7 MB, ~15 s,
+`/nfs/lssc0/flinders/proteomics/Data/stan-db-backups`. 50.2 MB, ~15 s,
 30 daily generations.
+
+**The cron was only installed on 2026-09-17**, thirteen days after the job
+was written and tested by hand. For those thirteen days the directory held
+exactly the two dumps from the afternoon it was built, which is the shape
+this failure always takes: a backup that has been *written* reads as a
+backup that is *running*, and nothing distinguishes them but the crontab.
+
+And it would not have worked if it had been installed on day one. The
+preamble seeded `LOGNAME` **after** sourcing `/etc/profile.d/modules.sh`
+and never dropped `set -u` across it — so under cron's environment the
+shell exited inside the source, before the script could write the log line
+that would have reported it. Two things make that worth remembering:
+
+- **`|| true` does not catch it.** Under `set -u` an unbound variable exits
+  the *shell*, not the sourced file, so the `|| true` is never evaluated.
+- **`LOGNAME` is only the first unbound variable.** modules.sh line 19
+  reads `MANPATH`, which cron does not set either, so seeding LOGNAME alone
+  still died — measured under `env -i`: exit 127, zero bytes logged. The
+  guard must be `set +u` **around the sourcing**, the way
+  `cron_flinders_dispatch.sh` has always done it.
+
+`bash -n` and a `diff` against this repo both pass on the broken version,
+which is why this is now asserted by position in
+`tests/test_cron_scripts_executable.py` rather than left to care. All ten
+cron scripts that source the system profile were audited; this was the only
+one wrong, and the only one that had never actually run.
 
 Modelled on FRAN's `fran_db_backup.sbatch`, which paid for each guard
 once. The ones that matter:
@@ -906,7 +932,7 @@ tracks main, so `git pull` there is the deploy.)
 |---|---|
 | `feature_cloud_backfill.py` + `.sbatch` | Extract + publish clouds from sidecars that already exist. Cheap (~80 s for a full 1,600-run scan), idempotent, 4 shards on `low`. |
 | `feature_cloud_4dff.py` + `.sbatch` | Generate the *missing* sidecars with 4DFF first, then publish. Expensive (minutes + ~100 MB per run). |
-| `cron_ioncloud.sh` | Hourly tick that submits the cheap one. **Staged, not installed** — add the crontab line at the top of the file to enable. |
+| `cron_ioncloud.sh` | Hourly tick that submits the cheap one. Installed at `17 * * * *`. |
 
 Anything new placed on Hive must go under `/quobyte/proteomics-grp/STAN/`,
 **not** `/quobyte/proteomics-grp/brett/` — Python puts the script's own
