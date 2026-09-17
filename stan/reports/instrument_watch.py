@@ -861,13 +861,17 @@ def check_publish_freshness(now: datetime | None = None,
 #: Anchored on "20" so cron_evosep_20260917.log matches and
 #: cron_evosep_watch_20260917.log does not. Without that, a dead
 #: cron_evosep would be masked by its sibling still writing.
+#:
+#: Two of them append to ONE undated file instead of rotating daily, which
+#: is a third naming convention and the reason a date-anchored pattern found
+#: neither. Those are named exactly, so nothing can shadow them.
 CRON_LOGS = {
     "evosep":             ("cron_evosep_20*.log", 3.0),
     "ht_watch":           ("cron_ht_watch_20*.log", 3.0),
     "stan_alerts":        ("cron_stan_alerts_20*.log", 3.0),
     "flinders_dispatch":  ("cron_flinders_20*.log", 3.0),
-    "count_acquisitions": ("count_acq_submit_20*.log", 6.0),
-    "ioncloud":           ("cron_ioncloud_20*.log", 6.0),
+    "count_acquisitions": ("count_acq_submit.log", 6.0),
+    "ioncloud":           ("cron_ioncloud.log", 6.0),
     "community_sync":     ("cron_community_sync_20*.log", 14.0),
     "bruker_maint":       ("cron_bruker_maint_20*.log", 30.0),
 }
@@ -896,12 +900,42 @@ def check_cron_heartbeat(now: datetime | None = None,
     root = log_dir or CRON_LOG_DIR
     alerts: list[Alert] = []
 
+    # If NOT ONE expected log exists, this is not Hive -- a single-lab
+    # install runs none of these -- and the whole check no-ops. But once any
+    # of them is present, a missing one is a real absence rather than a
+    # different deployment, and saying nothing about it is how this check
+    # reported five of eight jobs healthy while watching only five.
+    present = 0
+    for _n, (pat, _h) in CRON_LOGS.items():
+        try:
+            if glob.glob(os.path.join(root, pat)):
+                present += 1
+        except Exception:  # noqa: BLE001
+            pass
+    if present == 0:
+        return []
+
     for name, (pattern, max_h) in sorted(CRON_LOGS.items()):
         try:
             hits = glob.glob(os.path.join(root, pattern))
         except Exception:  # noqa: BLE001
             continue
         if not hits:
+            alerts.append(Alert(
+                key=f"cron_nolog:{name}",
+                kind="cron_silent",
+                instrument=station,
+                severity="warning",
+                headline=f"cron_{name} has never written a log",
+                detail=[
+                    f"*Expected:* {os.path.join(root, pattern)}",
+                    "Either the job has never run here, or its log name "
+                    "changed and this check has been skipping it silently.",
+                ],
+                signature="missing",
+                cool_off_hours=24.0,
+                extra={"cron": name, "missing_log": True},
+            ))
             continue
         try:
             newest = max(hits, key=os.path.getmtime)

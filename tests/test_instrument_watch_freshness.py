@@ -221,7 +221,10 @@ class TestCronHeartbeat:
         from stan.reports.instrument_watch import check_cron_heartbeat
         # evosep is a */30 job; 8 days of nothing is the real incident.
         d = self._logs(tmp_path, {"evosep": 24 * 8, "ht_watch": 0.2})
-        alerts = check_cron_heartbeat(log_dir=d)
+        # Filter to jobs that went QUIET; the fixture deliberately omits the
+        # other logs, which now report separately as never-seen.
+        alerts = [a for a in check_cron_heartbeat(log_dir=d)
+                  if not a.extra.get("missing_log")]
         assert [a.extra["cron"] for a in alerts] == ["evosep"]
         assert "192 h" in alerts[0].headline or "h" in alerts[0].headline
 
@@ -229,13 +232,17 @@ class TestCronHeartbeat:
         from stan.reports.instrument_watch import check_cron_heartbeat
         d = self._logs(tmp_path, {"evosep": 0.4, "ht_watch": 0.3,
                                   "bruker_maint": 12, "community_sync": 4})
-        assert check_cron_heartbeat(log_dir=d) == []
+        assert [a for a in check_cron_heartbeat(log_dir=d)
+                if not a.extra.get("missing_log")] == []
 
     def test_nightly_job_gets_a_nightly_allowance(self, tmp_path):
         """bruker_maint runs once a day; 12 h of quiet is normal and 40 is not."""
         from stan.reports.instrument_watch import check_cron_heartbeat
-        assert check_cron_heartbeat(log_dir=self._logs(tmp_path, {"bruker_maint": 12})) == []
-        assert check_cron_heartbeat(log_dir=self._logs(tmp_path, {"bruker_maint": 40})) != []
+        def quiet(h):
+            return [a for a in check_cron_heartbeat(log_dir=self._logs(tmp_path, {"bruker_maint": h}))
+                    if not a.extra.get("missing_log")]
+        assert quiet(12) == []
+        assert quiet(40) != []
 
     def test_a_job_never_installed_here_is_not_an_alert(self, tmp_path):
         """No log at all means not deployed on this host, not dead."""
@@ -245,7 +252,9 @@ class TestCronHeartbeat:
     def test_escalates_when_very_overdue(self, tmp_path):
         from stan.reports.instrument_watch import check_cron_heartbeat
         d = self._logs(tmp_path, {"evosep": 24 * 8})
-        assert check_cron_heartbeat(log_dir=d)[0].severity == "critical"
+        quiet = [a for a in check_cron_heartbeat(log_dir=d)
+                 if not a.extra.get("missing_log")]
+        assert quiet[0].severity == "critical"
 
     def test_the_watchdog_watches_itself(self, tmp_path):
         """stan_alerts is in the table, so if the watchdog stops and anything
@@ -268,7 +277,8 @@ class TestHeartbeatCoversEveryScheduledJob:
         dead = tmp_path / "cron_evosep_20260909.log"; dead.write_text("x")
         t = time.time() - 24 * 8 * 3600; os.utime(dead, (t, t))
         sibling = tmp_path / "cron_evosep_watch_20260917.log"; sibling.write_text("x")
-        alerts = check_cron_heartbeat(log_dir=str(tmp_path))
+        alerts = [a for a in check_cron_heartbeat(log_dir=str(tmp_path))
+                  if not a.extra.get("missing_log")]
         assert [a.extra["cron"] for a in alerts] == ["evosep"], \
             "the sibling log masked a dead job"
 
@@ -278,3 +288,29 @@ class TestHeartbeatCoversEveryScheduledJob:
         from stan.reports.instrument_watch import CRON_LOGS
         assert CRON_LOGS["count_acquisitions"][0].startswith("count_acq_submit")
         assert CRON_LOGS["flinders_dispatch"][0].startswith("cron_flinders_")
+
+
+class TestMissingLogIsReportedNotSkipped:
+    """A log the check cannot find used to be skipped in silence. That is
+    how it monitored five of eight jobs and reported everything healthy."""
+
+    def test_missing_log_alerts_once_others_are_present(self, tmp_path):
+        import os, time
+        from stan.reports.instrument_watch import check_cron_heartbeat, CRON_LOGS
+        # One healthy job present, so this is clearly the Hive log dir...
+        f = tmp_path / CRON_LOGS["evosep"][0].replace("*", "260917")
+        f.write_text("tick"); t = time.time(); os.utime(f, (t, t))
+        alerts = check_cron_heartbeat(log_dir=str(tmp_path))
+        kinds = {a.key for a in alerts}
+        assert "cron_nolog:ioncloud" in kinds
+        assert "cron_nolog:bruker_maint" in kinds
+
+    def test_empty_dir_is_not_hive_and_stays_quiet(self, tmp_path):
+        """A single-lab install runs none of these; it must not be spammed."""
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        assert check_cron_heartbeat(log_dir=str(tmp_path)) == []
+
+    def test_the_two_undated_logs_are_named_exactly(self):
+        from stan.reports.instrument_watch import CRON_LOGS
+        assert CRON_LOGS["count_acquisitions"][0] == "count_acq_submit.log"
+        assert CRON_LOGS["ioncloud"][0] == "cron_ioncloud.log"
