@@ -160,7 +160,7 @@ def validate_spd_from_metadata(raw_path) -> int | None:
                         try:
                             minutes = float(row[0])
                             if minutes > 1:
-                                return gradient_min_to_spd(int(round(minutes)))
+                                return _bruker_spd_or_none(int(round(minutes)))
                         except (ValueError, TypeError):
                             pass
 
@@ -173,7 +173,7 @@ def validate_spd_from_metadata(raw_path) -> int | None:
                     if grad_sec > 0:
                         grad_min = int(round(grad_sec / 60))
                         if grad_min > 0:
-                            return gradient_min_to_spd(grad_min)
+                            return _bruker_spd_or_none(grad_min)
         except sqlite3.Error:
             return None
         return None
@@ -309,6 +309,33 @@ def _spd_from_method_string(method: str) -> int | None:
     for pattern, spd in _EVOSEP_METHOD_PATTERNS:
         if re.search(pattern, text):
             return spd
+    return None
+
+
+#: Throughputs that correspond to a real method someone can select. Derived
+#: from _EVOSEP_METHOD_PATTERNS, which is the list of labels an operator can
+#: actually load in HyStar.
+KNOWN_METHOD_SPD = frozenset({500, 300, 200, 100, 60, 40, 30, 15})
+
+
+def _bruker_spd_or_none(minutes: int) -> int | None:
+    """Snap a Bruker gradient to a METHOD, or answer None.
+
+    On Bruker/Evosep, spd is a method IDENTITY -- "100 SPD" is a thing the
+    operator loaded -- so a value derived from cycle time that matches no
+    method is not a weaker answer, it is a wrong one. Measured 2026-09-17,
+    285 sample_health rows carried exactly that: 128 SPD on 278 blanks whose
+    method XML says nothing (they are blanks, they have no throughput), plus
+    192/230/576/1152 on calibration runs of one to six minutes.
+
+    Thermo is the opposite case and deliberately keeps the derived value:
+    those instruments run no Evosep ladder, so 76 SPD for a 15 min gradient
+    is simply a true statement about that gradient. See CLAUDE.md, "spd means
+    two different things".
+    """
+    spd = gradient_min_to_spd(minutes)
+    if spd in KNOWN_METHOD_SPD:
+        return spd
     return None
 
 

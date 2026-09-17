@@ -442,3 +442,37 @@ class TestBrokenToolIsDistinguishableFromMissingData:
         # DEBUG is stripped from synced logs, so this has to be >= WARNING
         # to be visible on Hive at all.
         assert caplog.records[-1].levelno >= logging.WARNING
+
+
+class TestBrukerRefusesNonMethods:
+    """On Bruker, spd is a method identity, so a derived non-method is wrong.
+
+    Measured 2026-09-17: 285 sample_health rows carried values that match no
+    method -- 128 SPD on 278 blanks (8.98 min, method XML silent), and
+    192/230/576/1152 on 1-6 minute calibration runs. Thermo keeps its derived
+    values, because those instruments run no Evosep ladder at all.
+    """
+
+    def test_known_methods_pass_through(self):
+        from stan.metrics.scoring import _bruker_spd_or_none
+        assert _bruker_spd_or_none(11) == 100
+        assert _bruker_spd_or_none(21) == 60
+        assert _bruker_spd_or_none(44) == 30
+
+    def test_the_real_bogus_durations_are_refused(self):
+        from stan.metrics.scoring import _bruker_spd_or_none
+        # The exact gradients behind the 285 rows.
+        assert _bruker_spd_or_none(9) is None      # 128 SPD, the blanks
+        assert _bruker_spd_or_none(6) is None      # 192
+        assert _bruker_spd_or_none(5) is None      # 230
+        assert _bruker_spd_or_none(2) is None      # 576
+        assert _bruker_spd_or_none(1) is None      # 1152
+
+    def test_thermo_derivation_is_untouched(self):
+        """The Orbitrap values are correct and must survive: 76 SPD for a
+        15 min gradient, 38 for 30 min, 19 for 60, 12 for 90."""
+        from stan.metrics.scoring import gradient_min_to_spd
+        assert gradient_min_to_spd(15) == 76
+        assert gradient_min_to_spd(30) == 38
+        assert gradient_min_to_spd(60) == 19
+        assert gradient_min_to_spd(90) == 12
