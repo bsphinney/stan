@@ -21,6 +21,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from stan.tdf import connect_tdf
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,7 +78,7 @@ def extract_dia_windows(d_path: Path) -> WindowLayout | None:
         return None
 
     try:
-        with sqlite3.connect(str(tdf)) as con:
+        with connect_tdf(tdf) as con:
             # Check if diaPASEF tables exist
             tables = {
                 r[0] for r in

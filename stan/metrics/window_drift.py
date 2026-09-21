@@ -45,9 +45,10 @@ from __future__ import annotations
 
 import logging
 import random
-import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from stan.tdf import connect_tdf
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,7 @@ def _extract_sub_windows(d_path: Path, scan_to_mobility) -> list[_SubWindow]:
     tdf = d_path / "analysis.tdf"
     if not tdf.exists():
         return []
-    with sqlite3.connect(str(tdf)) as con:
+    with connect_tdf(tdf) as con:
         cols = {
             r[1] for r in
             con.execute("PRAGMA table_info(DiaFrameMsMsWindows)").fetchall()

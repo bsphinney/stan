@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Read frame counts + TIC straight from each .d/analysis.tdf, then flag outliers
 by robust z (median / MAD), the same |z| > 3.5 rule the HT tab uses."""
-import glob, os, re, sqlite3, sys, json
+import glob, os, re, sys, json
+
+from stan.tdf import connect_tdf
 
 D = "/quobyte/proteomics-grp/STAN/incoming/TIMS-10878"
 pats = [f"{D}/*_793_*.d", f"{D}/20260828_*S5-*.d"]
@@ -27,7 +29,7 @@ for p in pats:
         tdf = os.path.join(d, "analysis.tdf")
         rec = {"run": name, "plate": well(name)[0], "well": well(name)[1], "inj": inj(name)}
         try:
-            con = sqlite3.connect(f"file:{tdf}?mode=ro", uri=True, timeout=30)
+            con = connect_tdf(tdf, timeout=30)
             cols = [r[1] for r in con.execute("PRAGMA table_info(Frames)")]
             tic = "SummedIntensities" if "SummedIntensities" in cols else "AccumulatedIntensity"
             rec["ms1"] = con.execute("SELECT COUNT(*) FROM Frames WHERE MsMsType=0").fetchone()[0]

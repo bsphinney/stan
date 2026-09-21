@@ -118,6 +118,8 @@ def validate_spd_from_metadata(raw_path) -> int | None:
     from pathlib import Path as _Path
     import sqlite3
 
+    from stan.tdf import connect_tdf
+
     path = _Path(raw_path)
     if not path.exists():
         return None
@@ -137,7 +139,7 @@ def validate_spd_from_metadata(raw_path) -> int | None:
         if not tdf.exists():
             return None
         try:
-            with sqlite3.connect(str(tdf)) as con:
+            with connect_tdf(tdf) as con:
                 # 1. Pattern-match the PAC method name next — unreliable
                 #    for UC Davis files but useful for labs that include
                 #    an explicit "SPD" token in the method name.

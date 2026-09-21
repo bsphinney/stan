@@ -29,6 +29,8 @@ import sqlite3
 import statistics
 from pathlib import Path
 
+from stan.tdf import connect_tdf
+
 logger = logging.getLogger(__name__)
 
 _MSMS_LABELS = {0: "MS1", 2: "MS2", 8: "ddaPASEF", 9: "diaPASEF"}
@@ -57,7 +59,7 @@ def extract_rawmeat_metrics(d_path) -> dict:
         return {}
 
     try:
-        with sqlite3.connect(str(tdf)) as con:
+        with connect_tdf(tdf) as con:
             col_names = {r[1] for r in con.execute("PRAGMA table_info(Frames)")}
             has_pressure = "Pressure" in col_names
             has_acc_time = "AccumulationTime" in col_names

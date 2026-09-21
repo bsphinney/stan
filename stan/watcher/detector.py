@@ -14,6 +14,8 @@ import subprocess
 from enum import Enum
 from pathlib import Path
 
+from stan.tdf import connect_tdf
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,7 @@ def detect_bruker_mode(d_path: Path) -> AcquisitionMode:
         return AcquisitionMode.UNKNOWN
 
     try:
-        with sqlite3.connect(str(tdf)) as con:
+        with connect_tdf(tdf) as con:
             rows = con.execute(
                 "SELECT DISTINCT MsmsType FROM Frames WHERE MsmsType > 0"
             ).fetchall()

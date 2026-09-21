@@ -27,6 +27,8 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+from stan.tdf import connect_tdf
+
 import polars as pl
 
 logger = logging.getLogger(__name__)
@@ -273,9 +275,7 @@ def _compute_pts_peak_bruker(
     # cleanup branch below doesn't shutil.rmtree the original location.
     tmp_dir: str | None = None
     try:
-        con = sqlite3.connect(
-            f"file:{tdf_path}?mode=ro&immutable=1", uri=True,
-        )
+        con = connect_tdf(tdf_path)
         con.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
     except sqlite3.Error:
         logger.debug("Direct sqlite3 read of %s failed; falling back to temp copy", tdf_path)
@@ -283,7 +283,7 @@ def _compute_pts_peak_bruker(
             tmp_dir = tempfile.mkdtemp(prefix="stan_tdf_")
             tmp_tdf = Path(tmp_dir) / "analysis.tdf"
             shutil.copy2(tdf_path, tmp_tdf)
-            con = sqlite3.connect(str(tmp_tdf))
+            con = connect_tdf(tmp_tdf)
         except Exception:
             logger.exception("Failed to copy analysis.tdf to temp dir")
             if tmp_dir:

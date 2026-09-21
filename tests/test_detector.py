@@ -7,6 +7,8 @@ from pathlib import Path
 
 from stan.watcher.detector import AcquisitionMode, detect_bruker_mode, is_dda, is_dia
 
+from stan.tdf import synthetic_tdf_write_uri
+
 
 def test_detect_bruker_dia(mock_d_dir: Path) -> None:
     """diaPASEF .d directory (MsmsType=9) should be detected as DIA_PASEF."""
@@ -33,7 +35,7 @@ def test_detect_bruker_ms1_only(tmp_path: Path) -> None:
     d_dir = tmp_path / "ms1_only.d"
     d_dir.mkdir()
     tdf = d_dir / "analysis.tdf"
-    con = sqlite3.connect(str(tdf))
+    con = sqlite3.connect(synthetic_tdf_write_uri(tdf), uri=True)
     con.execute("CREATE TABLE Frames (Id INTEGER, MsmsType INTEGER)")
     con.execute("INSERT INTO Frames VALUES (1, 0)")
     con.commit()

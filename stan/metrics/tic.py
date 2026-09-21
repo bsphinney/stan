@@ -17,6 +17,8 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from stan.tdf import connect_tdf
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,7 +73,7 @@ def extract_tic_bruker(d_path: Path) -> TICTrace | None:
         return None
 
     try:
-        with sqlite3.connect(str(tdf)) as con:
+        with connect_tdf(tdf) as con:
             # Check which intensity column exists
             cols = [r[1] for r in con.execute("PRAGMA table_info(Frames)").fetchall()]
 

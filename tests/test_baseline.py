@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from stan.tdf import synthetic_tdf_write_uri
+
 
 # ── 1. LC_METHODS importable and well-structured ──────────────────
 
@@ -121,7 +123,7 @@ def test_extract_bruker_metadata_gradient(tmp_path: Path) -> None:
     d_dir.mkdir()
     tdf = d_dir / "analysis.tdf"
 
-    con = sqlite3.connect(str(tdf))
+    con = sqlite3.connect(synthetic_tdf_write_uri(tdf), uri=True)
     # GlobalMetadata for instrument model
     con.execute("CREATE TABLE GlobalMetadata (Key TEXT, Value TEXT)")
     con.execute("INSERT INTO GlobalMetadata VALUES ('InstrumentName', 'timsTOF Ultra')")
@@ -166,7 +168,7 @@ def test_extract_file_metadata_bruker_structure(tmp_path: Path) -> None:
     d_dir = tmp_path / "test.d"
     d_dir.mkdir()
     tdf = d_dir / "analysis.tdf"
-    con = sqlite3.connect(str(tdf))
+    con = sqlite3.connect(synthetic_tdf_write_uri(tdf), uri=True)
     con.execute("CREATE TABLE GlobalMetadata (Key TEXT, Value TEXT)")
     con.execute("INSERT INTO GlobalMetadata VALUES ('InstrumentName', 'timsTOF HT')")
     con.execute("CREATE TABLE Frames (Id INTEGER, Time REAL, MsmsType INTEGER)")

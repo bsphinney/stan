@@ -22,6 +22,8 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from stan.tdf import connect_tdf
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,7 +60,7 @@ def validate_bruker_d(path: Path) -> None:
 
     # Verify .tdf is a readable SQLite database
     try:
-        with sqlite3.connect(f"file:{tdf}?mode=ro", uri=True, timeout=5) as con:
+        with connect_tdf(tdf, timeout=5) as con:
             cur = con.cursor()
             cur.execute("SELECT COUNT(*) FROM Frames")
             n_frames = cur.fetchone()[0]

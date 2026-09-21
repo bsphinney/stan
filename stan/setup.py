@@ -443,10 +443,10 @@ def _probe_existing_files(watch_dir: str) -> None:
     try:
         if raw_file.suffix.lower() == ".d" and raw_file.is_dir():
             # Bruker — quick TDF read
-            import sqlite3
+            from stan.tdf import connect_tdf
             tdf = raw_file / "analysis.tdf"
             if tdf.exists():
-                with sqlite3.connect(str(tdf)) as con:
+                with connect_tdf(tdf) as con:
                     model = con.execute(
                         "SELECT Value FROM GlobalMetadata WHERE Key='InstrumentName'"
                     ).fetchone()

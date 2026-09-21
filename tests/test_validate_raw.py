@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from stan.tdf import synthetic_tdf_write_uri
+
 from stan.watcher.validate_raw import (
     RawFileValidationError,
     validate_bruker_d,
@@ -17,7 +19,7 @@ from stan.watcher.validate_raw import (
 
 def _make_valid_tdf(path: Path) -> None:
     """Create a minimal valid analysis.tdf SQLite database."""
-    with sqlite3.connect(str(path)) as con:
+    with sqlite3.connect(synthetic_tdf_write_uri(path), uri=True) as con:
         con.execute("CREATE TABLE Frames (Id INTEGER, MsmsType INTEGER, Time REAL)")
         con.execute("INSERT INTO Frames VALUES (1, 8, 0.5)")
         con.execute("INSERT INTO Frames VALUES (2, 9, 1.0)")
@@ -65,7 +67,9 @@ def test_bruker_d_empty_frames(tmp_path: Path) -> None:
     """An .tdf with zero frames should fail."""
     d = tmp_path / "bad.d"
     d.mkdir()
-    with sqlite3.connect(str(d / "analysis.tdf")) as con:
+    with sqlite3.connect(
+        synthetic_tdf_write_uri(d / "analysis.tdf"), uri=True
+    ) as con:
         con.execute("CREATE TABLE Frames (Id INTEGER, MsmsType INTEGER)")
         con.commit()
     (d / "analysis.tdf_bin").write_bytes(b"x")

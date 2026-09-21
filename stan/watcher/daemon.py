@@ -180,8 +180,8 @@ def _model_from_raw(raw_path: Path) -> str | None:
         if raw_path.is_dir() and raw_path.suffix == ".d":
             tdf = raw_path / "analysis.tdf"
             if tdf.exists():
-                import sqlite3 as _sq
-                with _sq.connect(str(tdf)) as con:
+                from stan.tdf import connect_tdf
+                with connect_tdf(tdf) as con:
                     row = con.execute(
                         "SELECT Value FROM GlobalMetadata WHERE Key='InstrumentName'"
                     ).fetchone()
@@ -289,8 +289,8 @@ def _resolve_instrument_name(config: dict) -> str:
             if not tdf.exists():
                 continue
             try:
-                import sqlite3 as _sq
-                with _sq.connect(str(tdf)) as con:
+                from stan.tdf import connect_tdf
+                with connect_tdf(tdf) as con:
                     row = con.execute(
                         "SELECT Value FROM GlobalMetadata WHERE Key='InstrumentName'"
                     ).fetchone()

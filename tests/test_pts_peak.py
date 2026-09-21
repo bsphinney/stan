@@ -18,6 +18,8 @@ from pathlib import Path
 import polars as pl
 import pytest
 
+from stan.tdf import synthetic_tdf_write_uri
+
 
 def _build_fake_tdf(
     tdf_path: Path,
@@ -29,7 +31,7 @@ def _build_fake_tdf(
     pts/peak algorithm reads. Mirrors Bruker TDF's real column types
     so the queries in extractor.py work unchanged.
     """
-    con = sqlite3.connect(str(tdf_path))
+    con = sqlite3.connect(synthetic_tdf_write_uri(tdf_path), uri=True)
     con.execute("""
         CREATE TABLE Frames (
             Id INTEGER PRIMARY KEY,
@@ -183,7 +185,7 @@ def test_multiple_wg_per_frame_counted_once(tmp_path):
     # Build a TDF where frame 1 has BOTH WG=1 and WG=2 rows (bypass the
     # PK constraint in _build_fake_tdf by inserting manually).
     tdf = d / "analysis.tdf"
-    con = sqlite3.connect(str(tdf))
+    con = sqlite3.connect(synthetic_tdf_write_uri(tdf), uri=True)
     con.execute("CREATE TABLE Frames (Id INTEGER PRIMARY KEY, Time REAL NOT NULL, MsMsType INTEGER NOT NULL)")
     con.execute("CREATE TABLE DiaFrameMsMsInfo (Frame INTEGER NOT NULL, WindowGroup INTEGER NOT NULL)")
     con.execute("CREATE TABLE DiaFrameMsMsWindows (WindowGroup INTEGER NOT NULL, IsolationMz REAL NOT NULL, IsolationWidth REAL NOT NULL)")

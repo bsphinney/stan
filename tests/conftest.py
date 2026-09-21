@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from stan.tdf import synthetic_tdf_write_uri
+
 
 @pytest.fixture()
 def tmp_stan_dir(tmp_path: Path) -> Path:
@@ -69,7 +71,7 @@ def mock_d_dir(tmp_path: Path) -> Path:
     d_dir.mkdir()
 
     tdf_path = d_dir / "analysis.tdf"
-    con = sqlite3.connect(str(tdf_path))
+    con = sqlite3.connect(synthetic_tdf_write_uri(tdf_path), uri=True)
     con.execute("CREATE TABLE Frames (Id INTEGER, MsmsType INTEGER)")
     con.execute("INSERT INTO Frames VALUES (1, 0)")   # MS1
     con.execute("INSERT INTO Frames VALUES (2, 9)")   # diaPASEF
@@ -90,7 +92,7 @@ def mock_d_dir_dda(tmp_path: Path) -> Path:
     d_dir.mkdir()
 
     tdf_path = d_dir / "analysis.tdf"
-    con = sqlite3.connect(str(tdf_path))
+    con = sqlite3.connect(synthetic_tdf_write_uri(tdf_path), uri=True)
     con.execute("CREATE TABLE Frames (Id INTEGER, MsmsType INTEGER)")
     con.execute("INSERT INTO Frames VALUES (1, 0)")   # MS1
     con.execute("INSERT INTO Frames VALUES (2, 8)")   # ddaPASEF

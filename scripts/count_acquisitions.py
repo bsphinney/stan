@@ -27,12 +27,13 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
+
+from stan.tdf import connect_tdf
 
 logger = logging.getLogger("count_acq")
 
@@ -88,7 +89,7 @@ def _acq_date_bruker(d: Path) -> str | None:
     if not tdf.exists():
         return None
     try:
-        con = sqlite3.connect(f"file:{tdf}?mode=ro", uri=True, timeout=5)
+        con = connect_tdf(tdf, timeout=5)
         row = con.execute(
             "SELECT Value FROM GlobalMetadata WHERE Key = ?",
             ("AcquisitionDateTime",),
@@ -107,7 +108,7 @@ def _acq_ts_bruker(d: Path) -> str | None:
     if not tdf.exists():
         return None
     try:
-        con = sqlite3.connect(f"file:{tdf}?mode=ro", uri=True, timeout=5)
+        con = connect_tdf(tdf, timeout=5)
         row = con.execute(
             "SELECT Value FROM GlobalMetadata WHERE Key = ?",
             ("AcquisitionDateTime",),

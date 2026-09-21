@@ -9,9 +9,10 @@ Returns ISO 8601 datetime string or None if extraction fails.
 from __future__ import annotations
 
 import logging
-import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+from stan.tdf import connect_tdf
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def _bruker_acquisition_date(d_path: Path) -> str | None:
     if not tdf.exists():
         return None
     try:
-        with sqlite3.connect(str(tdf)) as con:
+        with connect_tdf(tdf) as con:
             row = con.execute(
                 "SELECT Value FROM GlobalMetadata WHERE Key = 'AcquisitionDateTime'"
             ).fetchone()

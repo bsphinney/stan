@@ -38,6 +38,7 @@ from rich.prompt import Confirm, FloatPrompt, IntPrompt, Prompt
 from rich.table import Table
 
 from stan.config import get_user_config_dir, load_community
+from stan.tdf import connect_tdf
 from stan.watcher.detector import AcquisitionMode, detect_bruker_mode, is_dda, is_dia
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,7 @@ def _extract_bruker_metadata(d_path: Path) -> dict:
     tdf = d_path / "analysis.tdf"
     if tdf.exists():
         try:
-            with sqlite3.connect(str(tdf)) as con:
+            with connect_tdf(tdf) as con:
                 # Instrument model from GlobalMetadata
                 for key in ["InstrumentName", "InstrumentType"]:
                     row = con.execute(

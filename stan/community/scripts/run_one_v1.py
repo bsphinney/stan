@@ -187,11 +187,11 @@ def _resolve_instrument(family: str, vendor: str, raw: Path | None = None) -> st
     if family == "timsTOF":
         if raw is not None:
             try:
-                import sqlite3 as _sqlite3
+                from stan.tdf import connect_tdf
 
                 tdf = raw / "analysis.tdf" if raw.is_dir() else None
                 if tdf and tdf.exists():
-                    with _sqlite3.connect(f"file:{tdf}?mode=ro", uri=True) as con:
+                    with connect_tdf(tdf) as con:
                         row = con.execute(
                             "SELECT Value FROM GlobalMetadata "
                             "WHERE Key = 'InstrumentName' LIMIT 1"
