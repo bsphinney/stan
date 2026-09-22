@@ -11,6 +11,43 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.1.8] — 2026-09-22
+
+### Fixed
+- **PG Farm egress: ~20 GB/day of reads for data that had not changed.** PG
+  Farm is on Google Cloud, and every byte read out of it is billed to the
+  Library. On 2026-09-22 they reported ~$150/month, mostly ours.
+  - **Dashboard mirror** (`stan/sync/pg_to_sqlite.py`): each refresh used to
+    copy `runs`, every TIC array and seven detail tables in full: 73 MB,
+    every ~5.5 minutes, from the always-on Azure app. Each table is now
+    fingerprinted on `xmin`, and only the keys whose fingerprint moved are
+    fetched. Measured on live PG: 3 KB per quiet tick, and the local copy
+    matches PG row for row.
+  - **Rollout-safe:** a change in which columns are copied re-fetches that
+    table once.
+  - **Ion clouds** go through the same path. A re-backfilled cloud now
+    arrives on its own, and `STAN_PG_CLOUD_FULL_REFRESH` is ignored: while
+    set, it used to re-download 50 clouds on every tick.
+  - **Hive crons**, measured on the wire:
+    - Dispatcher: 263 → 3 MB/day. It sends PG the walked paths and gets back
+      only the unknown ones, and a failure still falls back to per-file checks.
+    - ht-watch: 340 → ~115 MB/day, reading a 50-day window.
+    - Watchdog/Evosep documents: 72 → 1 MB/day, via an xmin-keyed cache and
+      `STAN_PG_DOC_CACHE_DIR`.
+    - Ion-cloud backfill: 36 → 5 MB/day.
+    - Evosep index: 7 → 0.06 MB/day.
+  - Community sync is deliberately unchanged. A 30-day window would save
+    ~11 MB/day, but it would silently never push a run that becomes
+    submittable late.
+- **Dispatcher: one unreadable watch dir no longer aborts the tick for every
+  instrument.** The walk now happens before dispatch, so an ESTALE on one
+  share would otherwise have stopped them all.
+- The weekly `delimp` pg_dump, FRAN's backup and ~500 GB on the wire each
+  Saturday, now runs monthly. That change is in the FRAN repo and the Hive
+  crontab.
+
+---
+
 ## [1.0.89] — 2026-09-04
 
 ### Fixed

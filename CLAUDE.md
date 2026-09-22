@@ -288,6 +288,67 @@ The service account can SELECT all 15 public tables, so the dump is
 complete and runs unattended off the self-refreshing secret — no CAS
 dependency and no 7-day expiry to babysit.
 
+### PG Farm bills every byte you read out of it
+
+PG Farm is on **Google Cloud** (`pgfarm.library.ucdavis.edu` →
+34.170.150.232, AS396982 Google LLC). Ingress is free and egress is billed
+to the Library, so every reader is a cost, whether it is Azure, a Hive cron,
+a Mac `stan dashboard` or pg_dump. On 2026-09-22 Justin Merz (Library)
+reported ~$150/month of egress, most of it from our databases. The
+diagnosis found two sources, both of them ours:
+
+| Source | Volume | Fix |
+|---|---|---|
+| Azure dashboard mirror (`stan/sync/pg_to_sqlite.py`) re-copying `runs`, every TIC array and 7 detail tables on every 5-min tick | 73 MB × ~264 ticks = **~19 GB/day** | v1.1.8: xmin-fingerprinted incremental sync. Measured live: 3 KB per quiet tick |
+| Weekly pg_dump of the `delimp` database (FRAN's backup, Hive crontab) | **~500 GB every Saturday** on the wire — pg_dump compresses on the client, so the 49 GB file is not what crossed | Monthly since 2026-09-22 (`41 2 1 * *`; `~/Documents/FRAN/ingest/fran_db_backup.sbatch`) |
+
+Neither was a leak. Nobody outside was pulling data: in three days of
+Azure logs the site served ~50 real API calls, and the internet scanners
+probing for `.env` and `.git/config` got 404s.
+
+The Hive crons were a third, smaller source: ~720 MB/day between them. Each
+was re-downloading a whole table to find out that nothing was new. v1.1.8
+cut them, measured on the wire against live PG:
+
+| Reader | Before | After | How |
+|---|---|---|---|
+| Dispatcher (*/5) | 263 MB/day | ~3 MB/day | Walks the dirs first, then sends the candidate paths to PG (`unknown_raw_paths_pg`), which returns only the unknown ones. On any failure it falls back to per-file checks, never to "everything is new" |
+| ht-watch (*/20) | 340 MB/day | ~115 MB/day | Reads 50 days (`since=` on `get_*_pg`), widening only when a watched submission reaches further back. 50 = the 14-day watch window + 35 days, the most time 300 injections have taken on the HT (32 d over idle weeks) |
+| Alert docs (watchdog + evosep) | 72 MB/day | ~1 MB/day | xmin-keyed cache for the Evosep/Bruker docs, in memory and in `STAN_PG_DOC_CACHE_DIR` (`/quobyte/proteomics-grp/STAN/cache`, set in both cron scripts) |
+| Ion-cloud backfill (hourly × 4) | 36 MB/day | ~5 MB/day | NOT EXISTS plus the shard filter in SQL |
+| Community sync (6-hourly) | 11 MB/day | unchanged, on purpose | A 30-day `--since` would silently never push a run that becomes submittable late (run_date is the acquisition date). Worth a narrower candidate query in `submit-all` someday, not a window |
+| Evosep sample index (*/30) | 7 MB/day | 0.06 MB/day | The 3-day `--since` extract filters in SQL |
+
+`sample_health` only started filling in late August, so most of what
+ht-watch still reads is inside its window. The window caps it as history
+grows.
+
+**The rule that follows: a scheduled reader may only move what changed.**
+`drift_peak_clouds` cost 40 MB a tick for 81 rows. Every table in the
+mirror was small on the day it was added, and that is exactly how the
+full-copy approach grew to 73 MB. Before adding any loop that reads PG,
+either fingerprint it (`_XMIN_FP` in `pg_to_sqlite.py`: count plus an md5 of
+the sorted xmins, so a quiet tick costs ~50 bytes), or send PG the keys
+and have it return only the rows that are wanted. Do not load every key in
+order to diff locally.
+
+**How to measure a reader** (the three methods used on 2026-09-22):
+- **Size one query:** run it wrapped as `SELECT count(*),
+  sum(octet_length(t::text)) FROM (<query>) t`. psycopg2 uses the text
+  protocol and the wire is uncompressed, so this matches the bytes out to
+  within ~0.2%.
+- **Find who is reading on a schedule:** take deltas of
+  `pg_stat_user_tables.seq_scan` and `last_seq_scan`. A full-copy loop shows
+  up as every table ticking together on a fixed period.
+- **Don't identify clients from PG:** `pg_stat_activity.client_addr` is
+  always the PG Farm proxy (10.100.5.19). Justin's per-connection view has
+  the real IPs: 169.237.253.42 is the Hive login node, 169.237.233.14 the
+  compute nodes, and 52.183.85.212 the outbound IP both Azure apps share.
+
+`STAN_PG_REFRESH_SECONDS` on Azure was raised to 3600 as the stop-gap on
+2026-09-22, before v1.1.8 existed. Once v1.1.8 is on Azure it can go back
+to 300: a quiet tick is now 3 KB.
+
 ### A watchdog must not live inside what it watches
 
 Feed alerting used to be a line inside `cron_evosep.sh`. On 2026-09-09
@@ -909,11 +970,14 @@ Mac:   feature_clouds (SQLite) → /api/runs/{id}/features-by-charge
   4DFF features with an exact charge per point. Different writers — a
   shared `(run_id, source)` key means whichever backfill finished last
   silently clobbers the other.
-- `feature_clouds` rows are ~330 KB each, two orders of magnitude fatter
-  than the other detail tables, so `_pull_feature_clouds` pulls only keys
-  the local DB is missing, newest first, capped per refresh
-  (`STAN_PG_CLOUD_MAX_PULL`, default 50). Do not fold it into the blanket
-  `_DETAIL_TABLES` copy — that would drag ~170 MB every refresh tick.
+- `feature_clouds` rows are ~150 KB each (88 MB for 597 rows, measured
+  2026-09-22), so `_pull_feature_clouds` pulls only keys the local DB is
+  missing or whose xmin fingerprint moved, newest first, capped per refresh
+  (`STAN_PG_CLOUD_MAX_PULL`, default 50). So a *re-backfilled* cloud now
+  arrives on its own. `STAN_PG_CLOUD_FULL_REFRESH` is ignored since v1.1.8:
+  while set, it used to re-download the newest 50 clouds on every tick,
+  about 2 GB/day as an Azure app setting. No mirrored table has a blanket
+  copy any more; see "PG Farm bills every byte you read out of it".
 - PG DDL needs the table **owner** (`brettsp`, CAS login) —
   `genome-proteomics-service-account` has DML but no CREATE on schema
   public. When the table is missing, the Hive driver falls back to a JSON

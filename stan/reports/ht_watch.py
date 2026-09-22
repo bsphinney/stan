@@ -40,6 +40,45 @@ STANDARDS_DECLINE_PCT = -25.0
 #: email rather than one per cron tick.
 STATE_FILENAME = "ht_watch_state.json"
 
+#: Submissions are discovered from runs this recent. Alerts are about what is
+#: happening now; a plate from March helps nobody.
+RECENT_DAYS = 14
+
+#: How far back each tick reads from PG. Every 20 minutes this used to pull
+#: the whole of `sample_health` and `runs` -- 4,719,497 B on the wire, ~340
+#: MB/day of PG Farm egress -- and then drop all but 14 days in Python. A
+#: 30-day window was 1,159,775 B on the same day (2026-09-22), nearly all of it
+#: sample_health, which only began filling in late August and so is still
+#: mostly inside the window; the saving grows as history accumulates.
+#:
+#: Why this long: the analysis is not a date filter. analyse_submission pulls
+#: in a submission's whole tray and up to NEIGHBOURHOOD (300) injections
+#: either side of it, so a plate discovered in the last RECENT_DAYS can reach
+#: much further back. Clip the start of a plate and a complete plate becomes
+#: "incomplete", and its membership and rerun cohort stop matching what the
+#: dashboard's HT tab (which reads everything) shows. RECENT_DAYS plus
+#: HT_MARGIN_DAYS, so a submission that started inside the recent window never
+#: needs a widening read.
+HT_LOOKBACK_DAYS = 50
+
+#: The window must also reach this far before the earliest run of every
+#: submission being watched: the time 300 injections take. That is NOT the
+#: ~3-5 days the SPD suggests -- instruments idle. Measured on the timsTOF HT
+#: over the 120 days to 2026-09-22 (sample_health + runs): median 9.0 days,
+#: p95 19.6, max 32, with the quiet June/July weeks at ~15 injections a day.
+#: 35 covers the worst case seen. (A first cut used 7; a 120-day replay found
+#: no difference only because the 30-day floor happened to cover it.)
+HT_MARGIN_DAYS = 35
+
+#: Widenings allowed before giving up and reading everything. One is enough
+#: for a long-running submission; a chain that is still reaching back after
+#: it is a short sample code matched all through history, and only a full
+#: read gives the same answer the unbounded analysis would.
+HT_MAX_WIDEN = 1
+
+#: Row cap per table, as before the bound existed.
+HT_ROW_LIMIT = 20000
+
 
 def _state_path(state_dir: Path | None = None) -> Path:
     base = state_dir or (Path.home() / ".stan")
@@ -232,6 +271,117 @@ def recipient() -> str | None:
         return None
 
 
+def _fetch_ht_rows(since: datetime | None) -> tuple[list[dict], list[dict]]:
+    """(sample_health rows, QC runs rows) acquired on or after ``since``.
+
+    None reads everything, as the watcher always did. In PG mode the bound is
+    applied in SQL, so the older rows never cross the wire; the PG readers
+    are called directly because `stan.db`'s wrappers take no bound, and this
+    does what those wrappers do on the way (decode `reasons`).
+
+    A SQLite install has no egress to save but gets the same window, filtered
+    here, so the two backends cannot alert differently. Same rule as the SQL:
+    date prefix with a day of slack, undated rows kept.
+    """
+    from stan.db_pg import use_pg
+
+    if use_pg():
+        from stan.db import _decode_reasons
+        from stan.db_pg import get_runs_pg, get_sample_health_pg
+
+        health = [_decode_reasons(r) for r in
+                  get_sample_health_pg(limit=HT_ROW_LIMIT, since=since) or []]
+        qc = get_runs_pg(limit=HT_ROW_LIMIT, since=since) or []
+        return health, qc
+
+    from stan.db import get_runs, get_sample_health
+    from stan.db_pg import _text_date_floor
+
+    health = get_sample_health(limit=HT_ROW_LIMIT) or []
+    qc = get_runs(limit=HT_ROW_LIMIT) or []
+    if since is None:
+        return health, qc
+    floor = _text_date_floor(since)
+
+    def keep(r: dict) -> bool:
+        day = str(r.get("run_date") or "")[:10]
+        return not day or day >= floor
+
+    return [r for r in health if keep(r)], [r for r in qc if keep(r)]
+
+
+def _recent(rows: list[dict], now: datetime) -> list[dict]:
+    """Rows from the last RECENT_DAYS -- the ones submissions are found in."""
+    cutoff = (now - timedelta(days=RECENT_DAYS)).isoformat()[:10]
+    return [r for r in rows if str(r.get("run_date") or "")[:10] >= cutoff]
+
+
+def _earliest_match(submissions: list[str], rows: list[dict]) -> datetime | None:
+    """When the earliest run belonging (by name) to any of ``submissions`` was.
+
+    The same matching analyse_submission starts its expansion from, so the
+    window is derived from the very rows the analysis will anchor on.
+    """
+    from stan.metrics.ht_outliers import matches_submission
+
+    earliest = None
+    for r in rows:
+        name = r.get("run_name")
+        if not any(matches_submission(name, q) for q in submissions):
+            continue
+        ts = _parse_ts(r.get("run_date"))
+        if ts is not None and (earliest is None or ts < earliest):
+            earliest = ts
+    return earliest
+
+
+def load_ht_rows(
+    now: datetime,
+) -> tuple[list[dict], list[dict], list[str], datetime | None]:
+    """Read just enough history to analyse every active submission in full.
+
+    Returns (health rows, QC rows, submissions, the ``since`` that was read;
+    None means everything).
+
+    Start from HT_LOOKBACK_DAYS. If any submission's earliest run, less
+    HT_MARGIN_DAYS, falls behind that, widen once -- by at least another
+    lookback, so a plate that has been running for weeks settles in one step
+    -- and if the window STILL has to move, read everything: the answer the
+    watcher gave before this bound existed, and the one the dashboard's HT
+    tab gives. Submissions themselves only depend on the last RECENT_DAYS,
+    which every window covers, so they cannot change as it widens.
+
+    One deliberate difference from an unbounded read: a name match separated
+    from the rest of its submission by more than HT_MARGIN_DAYS of silence,
+    beyond the window, is never seen. That is another batch reusing the code
+    (a short sample code like `SK` recurs for months), and chasing it would
+    put the whole table back on the wire every tick.
+    """
+    since: datetime | None = now - timedelta(days=HT_LOOKBACK_DAYS)
+    for _ in range(HT_MAX_WIDEN + 1):
+        health, qc = _fetch_ht_rows(since)
+        submissions = _discover(_recent(health, now))
+        earliest = _earliest_match(submissions, health + qc)
+        if earliest is None:
+            return health, qc, submissions, since
+        need = earliest - timedelta(days=HT_MARGIN_DAYS)
+        if need >= since:
+            return health, qc, submissions, since
+        logger.info(
+            "ht-watch: earliest watched run %s is within %d days of the %s "
+            "window; widening", earliest.date(), HT_MARGIN_DAYS, since.date())
+        since = min(need, since - timedelta(days=HT_LOOKBACK_DAYS))
+
+    logger.info("ht-watch: window did not settle; reading full history")
+    health, qc = _fetch_ht_rows(None)
+    return health, qc, _discover(_recent(health, now)), None
+
+
+def _discover(rows: list[dict]) -> list[str]:
+    from stan.metrics.ht_outliers import discover_submissions
+    return discover_submissions(rows)
+
+
 def run_watch(
     dry_run: bool = False,
     state_dir: Path | None = None,
@@ -244,20 +394,13 @@ def run_watch(
     add to a watchlist, so the useful default is that everything active is
     watched and the alerts are quiet enough to live with.
     """
-    from stan.db import get_runs, get_sample_health
-    from stan.metrics.ht_outliers import analyse_submission, discover_submissions
+    from stan.metrics.ht_outliers import analyse_submission
 
     now = now or datetime.now(timezone.utc)
-    health = get_sample_health(limit=20000) or []
-    qc = get_runs(limit=20000) or []
-
-    # Only recent work: an alert about a plate from March helps nobody, and
-    # the conditions are all about what is happening now.
-    cutoff = (now - timedelta(days=14)).isoformat()[:10]
-    recent = [r for r in health
-              if str(r.get("run_date") or "")[:10] >= cutoff]
-
-    submissions = discover_submissions(recent)
+    # Only recent work is watched -- an alert about a plate from March helps
+    # nobody -- but the analysis may need older rows; load_ht_rows reads
+    # exactly enough of both.
+    health, qc, submissions, since = load_ht_rows(now)
     state = _load_state(state_dir)
     seen_keys = set(state.get("sent", {}))
     fresh: list[dict] = []
@@ -303,4 +446,8 @@ def run_watch(
         "sent_to": sent_to,
         "dry_run": dry_run,
         "recipient_configured": bool(recipient()),
+        # Which history this tick read (None = all of it). Lands in the cron
+        # log, so a tick that fell back to a full read is visible there.
+        "window_since": since.isoformat(timespec="seconds") if since else None,
+        "rows_read": {"sample_health": len(health), "runs": len(qc)},
     }

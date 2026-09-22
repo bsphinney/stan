@@ -1,8 +1,9 @@
 #!/bin/bash
 # STAN Hive cron: publish new QC runs to the community benchmark.
 #
-#   40 */6 * * * flock -n /tmp/stan_community_sync.lock \
+#   25 */6 * * * flock -n /tmp/stan_community_sync.lock \
 #       /quobyte/proteomics-grp/STAN/cron_community_sync.sh
+# (as installed in brettsp's crontab, checked 2026-09-22)
 #
 # Why this can run on Hive at all: the compute nodes' egress to
 # *.hf.space is unreliable, which is why submissions used to be pushed
@@ -13,7 +14,7 @@
 # login node" rule while removing the manual step.
 #
 # Idempotent: rows are flagged submitted_to_benchmark=1 on success, so a
-# tick with nothing new costs one PG query.
+# pushed row is never pushed twice. What a tick READS: see below.
 set -uo pipefail
 
 # cron sets neither LOGNAME nor USER, and /etc/profile.d/modules.sh
@@ -35,12 +36,19 @@ if [ -r /quobyte/proteomics-grp/brett/.pgfarm_token ]; then
     export PGPASSWORD=$(cat /quobyte/proteomics-grp/brett/.pgfarm_token)
 fi
 
-# No date scoping: `submit-all --backend pg` already selects only
-#   WHERE submitted_to_benchmark = 0 OR submitted_to_benchmark IS NULL
-# and, on success, does its own UPDATE ... SET submitted_to_benchmark = 1
-# straight against PG. So each tick pushes exactly what is new and a tick
-# with nothing new costs one query. (The Hive checkout predates the
-# --since flag; it would be a no-op scoping hint here anyway.)
+# Deliberately NOT date-scoped. `submit-all --backend pg` selects
+#   SELECT * FROM runs WHERE submitted_to_benchmark = 0 OR ... IS NULL
+# and sets submitted_to_benchmark = 1 only on a SUCCESSFUL push, so rows it
+# skips (non-QC names, blanks, zero IDs) are re-read every tick: 1,097 rows,
+# 2.65 MB, four times a day -- ~11 MB/day of PG Farm egress (measured
+# 2026-09-22), which is billed. A `--since` 30-day window cut that to 93 KB
+# and was tried in v1.1.8 review, then dropped: run_date is the ACQUISITION
+# date, so a run that becomes submittable late -- a searched backlog of old
+# raws, metrics backfilled onto an old run, a recovery like the timsTOF
+# dash-dash blackout -- would silently never be pushed, with nothing to say
+# so. A few cents a month is the cheaper side of that trade. The right fix is
+# a narrower candidate query in submit-all (names and ids first, full rows only
+# for the eligible), not a window here.
 {
   echo "===== community sync $(date '+%F %T') ====="
   "$VENV/bin/stan" submit-all --backend pg 2>&1 | tail -6

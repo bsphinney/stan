@@ -2666,23 +2666,61 @@ def cold_start_effect(runs: list[dict], gap_h: float = 8.0) -> dict:
     }
 
 
-def load_sample_index(instrument: str | None) -> list[dict]:
+def _sample_index_floor(since: str | None) -> str | None:
+    """Lower bound on `sample_health.run_date` for a `--since` extract.
+
+    One day before `since`. `since` is a date on the Evosep's clock (naive
+    local, from its folder names), and attribution reaches ATTRIB_TOL_MIN
+    either side of a procedure's start, so the window's first procedure can
+    pair with an acquisition logged late the previous evening. A floor of
+    exactly `since` would drop that row. A day is far more than the 25 min
+    needed and costs a few dozen rows. (A row stored in UTC is not a reason:
+    its date runs AHEAD of local time, which a `>=` floor never drops.)
+
+    None, meaning "read everything", when there is no window or it does not
+    parse: a wasted read is a cost, a silently empty index is a wrong answer.
+    """
+    if not since:
+        return None
+    try:
+        day = datetime.strptime(since, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return (day - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def load_sample_index(instrument: str | None,
+                      since: str | None = None) -> list[dict]:
     """Per-injection acquisitions from STAN, for attributing a pressure step.
 
     `sample_health` rather than `runs`: `runs` holds only searched QC, while
     `sample_health` has a row per injection — 467 rows against 317 Evosep
     procedures over the same fortnight, which is what makes a 91 % join
     possible. Optional, like every other reach outside the log mirror.
+
+    `since` scopes the read to the extract's window (see _sample_index_floor).
+    PG Farm bills every byte it serves, and until 2026-09-22 the 30-minute
+    3-day tick read every timsTOF row regardless -- 2,064 rows, 143 KB, ~7 MB a
+    day -- to attribute three days of procedures. Scoped, it was 19 rows,
+    1.2 KB. The comparison is on TEXT, which is correct here: every
+    `sample_health.run_date` is ISO-8601 with a 'T' (all 3,854 rows, checked
+    live 2026-09-22), so string order is time order and '2026-09-18T..' sorts
+    after '2026-09-18'. The full extract passes no `since` and still reads
+    everything, because it attributes steps across the whole column history.
     """
     if not instrument:
         return []
+    sql = "SELECT run_name, run_date FROM sample_health WHERE instrument = %s"
+    params: list = [instrument]
+    floor = _sample_index_floor(since)
+    if floor:
+        sql += " AND run_date >= %s"
+        params.append(floor)
+    sql += " ORDER BY run_date DESC LIMIT 20000"
     try:
         from stan.db_pg import _connect  # type: ignore
         with _connect() as pg, pg.cursor() as cur:
-            cur.execute(
-                "SELECT run_name, run_date FROM sample_health"
-                " WHERE instrument = %s ORDER BY run_date DESC LIMIT 20000",
-                (instrument,))
+            cur.execute(sql, tuple(params))
             rows = cur.fetchall()
     except Exception:
         return []
@@ -3290,7 +3328,9 @@ def main(argv=None) -> int:
     lifetimes = column_lifetimes(runs, methods, col_events, detected_changes,
                                  (wash or {}).get("series"))
     fresh_meta = attach_pct_over_fresh(runs, lifetimes)
-    sample_index = load_sample_index(args.instrument)
+    # Windowed like the runs it will be joined to: every procedure in `runs`
+    # started on or after --since, so older injections can never match one.
+    sample_index = load_sample_index(args.instrument, since=args.since)
     impact = sample_pressure_impact(runs, methods, columns, col_events, sample_index)
     col_block = column_age(runs, methods, col_events)
     # Counted over the whole record, so `summary` describes the instrument's

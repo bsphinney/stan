@@ -95,6 +95,36 @@ az rest --method get --uri "https://management.azure.com/subscriptions/$SUB/reso
 az webapp log deployment show -g rg-fran -n stan-ucd-proteomics   # why it failed
 ```
 
+## App settings that cost money
+
+The app is AlwaysOn and runs the PG→SQLite mirror loop
+(`stan/sync/pg_to_sqlite.py`) every `STAN_PG_REFRESH_SECONDS`, into
+`STAN_DB_PATH=/tmp/stan-mirror.db`. PG Farm bills egress, so check what that
+loop costs:
+
+- **v1.1.4 and older** copied every mirrored table in full on every tick:
+  73 MB per tick, ~19 GB/day.
+- **v1.1.8 and newer** fingerprint each table. A quiet tick is ~3 KB
+  (measured against live PG, 2026-09-22). A tick in which something changed
+  ships that table's key list: ~360 KB for `runs`, and ~1 MB when a new QC
+  run touches several tables at once.
+- `STAN_PG_CLOUD_FULL_REFRESH` must stay **unset**. Before v1.1.8 it
+  re-downloaded 50 clouds every tick, about 2 GB/day. It is ignored now,
+  with a warning.
+
+On 2026-09-22 the setting was raised from 300 to 3600 to stop the bleeding
+before the fix was deployed. With v1.1.8 or newer running, 300 is fine again:
+
+```bash
+az webapp config appsettings set -g rg-fran -n stan-ucd-proteomics \
+  --settings STAN_PG_REFRESH_SECONDS=300
+```
+
+`/tmp` is wiped on every restart, and each restart re-pulls the whole mirror
+once. That is ~73 MB, plus ~88 MB of ion clouds drained 50 per tick. A deploy
+therefore costs a few hundred MB of egress, which is fine. A restart loop
+would not be.
+
 ## Expected public surface after a deploy
 
 | Route | Anonymous | Why |

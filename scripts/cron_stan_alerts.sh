@@ -45,6 +45,15 @@ mkdir -p "$LOGDIR" 2>/dev/null
 export STAN_DB_BACKEND=pg
 export STAN_PGFARM_TOKEN_FILE=/quobyte/proteomics-grp/brett/.pgfarm_token
 
+# Cache the published documents between ticks. Every tick is a new process,
+# so without this each one downloaded the whole Evosep (864 KB) and Bruker
+# (77 KB) documents from PG Farm, which bills egress byte for byte, to find
+# them unchanged -- they change about once a day. The cache is keyed on the
+# row's xmin and checked against PG every read, so this still sees exactly
+# what PG holds: an unchanged document costs ~255 bytes, a new one is
+# downloaded as before. A missing or corrupt cache file is just a download.
+export STAN_PG_DOC_CACHE_DIR=/quobyte/proteomics-grp/STAN/cache
+
 {
   echo "===== alerts tick $(date '+%F %T') on $(hostname) ====="
   if [ ! -x "$VENV/bin/stan" ]; then

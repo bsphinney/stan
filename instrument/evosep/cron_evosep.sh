@@ -64,6 +64,13 @@ LOG=/quobyte/proteomics-grp/STAN/logs/cron_evosep_$(date +%Y%m%d).log
 
 export STAN_DB_BACKEND=pg
 export PATH="$VENV/bin:$PATH"
+# instrument-watch below reads published documents from PG every tick: the
+# Bruker one always, and the full 864 KB Evosep one whenever the 3-day extract
+# cannot see the column install. Cache them between ticks, keyed on the row's
+# xmin and re-checked against PG on every read, so an unchanged document
+# costs ~255 bytes of PG Farm egress instead of the whole thing. Same
+# directory as cron_stan_alerts.sh.
+export STAN_PG_DOC_CACHE_DIR=/quobyte/proteomics-grp/STAN/cache
 
 {
 echo "===== tick $(date '+%Y-%m-%d %H:%M:%S') ====="

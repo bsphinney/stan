@@ -317,6 +317,42 @@ as needed.
 
 ---
 
+## Egress is billed — read only what changed
+
+PG Farm runs on Google Cloud. Writing to it is free; **every byte read out
+of it is billed** to the Library. In September 2026 our readers came to
+~$150/month: the Azure dashboard's full-copy mirror at ~19 GB/day, and the
+weekly `delimp` pg_dump at ~500 GB a Saturday. Both are fixed (v1.1.8
+incremental mirror; monthly dump). The full account, the rule that
+follows from it, and how to measure a reader are in `CLAUDE.md` →
+"PG Farm bills every byte you read out of it".
+
+In practice, for anything new that reads PG on a schedule:
+
+- **Fingerprint before fetching.** One aggregate query tells you whether
+  anything changed:
+  ```sql
+  SELECT count(*), md5(coalesce(string_agg(xmin::text, ',' ORDER BY xmin::text::bigint), ''))
+  FROM <table>;
+  ```
+  Any INSERT, UPDATE or DELETE changes it. Group the same expression by a
+  key to find which keys changed. This is the mechanism in
+  `stan/sync/pg_to_sqlite.py`.
+- **Send keys to PG, not PG's keys to you.**
+  `SELECT c FROM unnest(%s::text[]) c WHERE NOT EXISTS (...)` returns only
+  the unknown keys. The upload is ingress, which is free.
+- **Size a query before shipping it:**
+  `SELECT count(*), sum(octet_length(t::text)) FROM (<query>) t`.
+- **pg_dump compresses on the client.** The file on disk understates what
+  crossed the wire by 3–10×.
+- **Published documents are cached by row version.**
+  `get_evosep_column_health_pg` / `get_bruker_maintenance_pg` read
+  `xmin` first (~100 B) and only fetch the ~900 KB document when it moved.
+  The cache lives in memory (the dashboard), and also on disk when
+  `STAN_PG_DOC_CACHE_DIR` is set (the cron jobs:
+  `/quobyte/proteomics-grp/STAN/cache`, files mode 0600 because the Evosep
+  doc carries sample names).
+
 ## Gotchas
 
 **psycopg2 not in the system Python.** Always invoke through the stan venv

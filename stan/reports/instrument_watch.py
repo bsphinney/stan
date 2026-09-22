@@ -1003,6 +1003,12 @@ def load_documents(evosep_path=None, bruker_path=None,
         if use_pg is None:
             use_pg = os.environ.get("STAN_DB_BACKEND", "").lower() == "pg"
         if use_pg:
+            # These readers cache on the row's xmin (and, with
+            # $STAN_PG_DOC_CACHE_DIR, across cron processes), re-checked
+            # against PG on every call. Still exactly the document PG
+            # serves -- a cache of it, never a copy that can drift -- which
+            # is what a watchdog needs; it just stops re-downloading 864 KB
+            # every tick to find it unchanged.
             try:
                 from stan.db_pg import (
                     get_bruker_maintenance_pg,

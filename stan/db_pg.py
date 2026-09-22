@@ -701,12 +701,48 @@ def spd_usage_by_instrument_pg(cutoff: str) -> dict[str, dict[int, int]]:
     return out
 
 
+def _text_date_floor(since) -> str:
+    """``'YYYY-MM-DD'`` one day before ``since``, for a TEXT ``run_date``.
+
+    ``sample_health.run_date`` is TEXT holding the acquisition's LOCAL time
+    with its offset -- ``'2026-09-21T20:13:45.944-07:00'`` -- and 51 legacy
+    rows carry no offset at all (measured 2026-09-22). A string compare
+    against a UTC instant is therefore off by up to a day at the boundary,
+    and a ``::timestamptz`` cast would fail the whole query on the first
+    malformed row. Comparing the calendar-date prefix one day early is
+    immune to both, and can only over-include: for a lower bound, a day too
+    many is harmless and a day too few is not.
+    """
+    import datetime as _dt
+
+    if isinstance(since, _dt.datetime):
+        day = (since.astimezone(_dt.timezone.utc) if since.tzinfo else since).date()
+    elif isinstance(since, _dt.date):
+        day = since
+    else:
+        day = _dt.date.fromisoformat(str(since)[:10])
+    return (day - _dt.timedelta(days=1)).isoformat()
+
+
 def get_sample_health_pg(
     instrument: str | None = None,
     verdict: str | None = None,
     limit: int = 200,
+    since=None,
 ) -> list[dict]:
-    """Fetch recent Sample Health rows from PG, newest first."""
+    """Fetch recent Sample Health rows from PG, newest first.
+
+    Args:
+        instrument: Only this instrument, when given.
+        verdict: Only this verdict, when given.
+        limit: Maximum rows.
+        since: Lower bound on ``run_date`` (datetime, date or ISO string),
+            applied in SQL so the rows before it never cross the wire. None
+            (the default) is unbounded, as it always was. Compared on the
+            date prefix with a day of slack -- see ``_text_date_floor`` --
+            and rows with no ``run_date`` are kept, because an undated row
+            cannot be shown to fall before the bound.
+    """
     clauses, args = [], []
     if instrument:
         clauses.append("instrument = %s")
@@ -714,6 +750,12 @@ def get_sample_health_pg(
     if verdict:
         clauses.append("verdict = %s")
         args.append(verdict)
+    if since is not None:
+        # TEXT column: compare text to text. Never pass a datetime here --
+        # PG would coerce the column side, and "PG and SQLite do not share
+        # column types" (CLAUDE.md) is exactly how that goes wrong.
+        clauses.append("(run_date >= %s OR run_date IS NULL OR run_date = '')")
+        args.append(_text_date_floor(since))
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     args.append(limit)
     with _connect() as pg, pg.cursor() as cur:
@@ -1240,6 +1282,7 @@ def get_runs_pg(
     offset: int = 0,
     qc_only: bool = False,
     include_hidden: bool = False,
+    since=None,
 ) -> list[dict]:
     """Recent ``runs`` rows from PG, newest first.
 
@@ -1247,6 +1290,12 @@ def get_runs_pg(
     ``ORDER BY run_date DESC``, same 3x over-fetch when the caller will
     post-filter to QC rows. The QC filtering itself stays in ``stan.db``
     so both backends share one copy of it.
+
+    ``since`` (datetime or ISO string) bounds ``run_date`` in SQL; None, the
+    default, is unbounded as before. Unlike ``sample_health``,
+    ``runs.run_date`` is ``timestamp with time zone``, so this is an exact
+    instant comparison rather than a date-prefix one. Rows with no
+    ``run_date`` are kept, for the same reason as there.
     """
     fetch = limit * 3 if qc_only else limit
     where, args = [], []
@@ -1255,6 +1304,9 @@ def get_runs_pg(
         args.append(instrument)
     if not include_hidden:
         where.append("(hidden IS NULL OR hidden = 0)")
+    if since is not None:
+        where.append("(run_date >= %s OR run_date IS NULL)")
+        args.append(since)
     clause = f" WHERE {' AND '.join(where)}" if where else ""
     args.extend([fetch, offset])
     with _connect() as pg, pg.cursor() as cur:
@@ -1591,21 +1643,204 @@ def upsert_bruker_maintenance_pg(doc: dict) -> None:
         pg.commit()
 
 
+# ── published-document cache ────────────────────────────────────────────
+# `evosep_column_health` (864 KB as text) and `bruker_maintenance` (77 KB) are
+# single-row documents that change about once a day. They were read in full
+# every 20 min by the watchdog (cron_stan_alerts.sh), every 30 min by
+# cron_evosep.sh, and on every page view of the hosted dashboard -- ~72 MB/day
+# from the crons alone, measured 2026-09-22 -- and PG Farm runs on Google Cloud,
+# which bills every byte a client reads out of it.
+#
+# So each read first asks for the row's `xmin`: the id of the transaction that
+# wrote this row version. Measured on the wire 2026-09-22, a read of an
+# unchanged document now costs 255 B (probe plus the connection's liveness
+# check) instead of 865,909 B (Evosep) or 77,605 B (Bruker). Any UPDATE or INSERT, by any writer,
+# makes a new row version with a new xmin, so an unchanged xmin means the SAME
+# document PG holds -- not "probably the same". That is why it is keyed on
+# xmin rather than `updated_at`, which only the writers that remember to set it
+# will move. It matters because one of these readers is the watchdog: it has to
+# see exactly what PG serves, never a stale or partial copy (CLAUDE.md, "A
+# watchdog must not live inside what it watches").
+#
+# Two layers. In-process memory, which is what helps the long-lived dashboard.
+# And an opt-in file per table under $STAN_PG_DOC_CACHE_DIR, which is what
+# helps the crons -- each tick is a new process and starts with empty memory.
+# A file that is missing, truncated, from another database or fails its
+# checksum is a miss, never an error and never a wrong answer. Freezing or
+# restoring can only CHANGE a row's visible xmin, which is a harmless miss.
+
+#: Env var naming the directory for the optional per-table file cache.
+DOC_CACHE_DIR_ENV = "STAN_PG_DOC_CACHE_DIR"
+
+_DOC_TABLES = frozenset({"bruker_maintenance", "evosep_column_health"})
+_DOC_CACHE_MAGIC = "stan-pg-doc-cache/1"
+
+#: table -> (xmin, document as the JSON text PG returned). Text rather than
+#: the parsed dict, so every caller gets its own fresh object: the dashboard
+#: and the alerter share this process-wide, and a caller that mutates what it
+#: was handed must not change what the next caller sees.
+_DOC_CACHE: dict[str, tuple[str, str]] = {}
+
+
+def _doc_cache_source() -> str:
+    """Which database a cached document came from. xmin is per-cluster."""
+    return f"{PG_DEFAULTS['host']}/{PG_DEFAULTS['database']}"
+
+
+def _doc_cache_path(table: str) -> Path | None:
+    d = os.environ.get(DOC_CACHE_DIR_ENV, "").strip()
+    return Path(d) / f"{table}.pgdoc" if d else None
+
+
+def _read_doc_cache_file(table: str) -> tuple[str, str] | None:
+    """(xmin, doc_text) from the file cache, or None for any kind of miss.
+
+    Format: one JSON header line (magic, source, table, xmin, sha256 of the
+    body), then the document text exactly as PG returned it. The checksum is
+    what makes "corrupt means miss" true rather than hopeful -- a file cut
+    short on a network filesystem can still parse.
+    """
+    import hashlib
+
+    path = _doc_cache_path(table)
+    if path is None:
+        return None
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        head, sep, body = raw.partition(b"\n")
+        if not sep:
+            return None
+        meta = json.loads(head.decode("utf-8"))
+        if (meta.get("magic") != _DOC_CACHE_MAGIC
+                or meta.get("source") != _doc_cache_source()
+                or meta.get("table") != table
+                or not isinstance(meta.get("xmin"), str)
+                or hashlib.sha256(body).hexdigest() != meta.get("sha256")):
+            return None
+        return meta["xmin"], body.decode("utf-8")
+    except (ValueError, AttributeError, TypeError):
+        logger.debug("unusable PG document cache %s; treating as a miss", path)
+        return None
+
+
+def _write_doc_cache_file(table: str, xmin: str, text: str) -> None:
+    """Atomically replace the file cache for ``table``. Never raises.
+
+    Temp file in the same directory, fsync, then ``os.replace``: a reader sees
+    the old file or the new one, never half of either. ``mkstemp`` creates it
+    0600, which is deliberate -- the Evosep document carries customer sample
+    names (see ``_EVOSEP_IDENTIFYING_FIELDS`` in the dashboard) and the cache
+    sits on a shared volume.
+    """
+    import hashlib
+    import tempfile
+
+    path = _doc_cache_path(table)
+    if path is None:
+        return
+    body = text.encode("utf-8")
+    header = json.dumps({
+        "magic": _DOC_CACHE_MAGIC, "source": _doc_cache_source(),
+        "table": table, "xmin": xmin,
+        "sha256": hashlib.sha256(body).hexdigest(),
+    }).encode("utf-8")
+    tmp: str | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent),
+                                   prefix=f".{path.name}.", suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(header + b"\n" + body)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        tmp = None
+    except OSError as e:
+        # A cache that cannot be written costs bytes, not correctness: the
+        # next tick simply downloads the document again. Loud enough to be
+        # found in the cron log, not loud enough to fail the tick.
+        logger.warning("could not write PG document cache %s: %s", path, e)
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _get_published_doc_pg(table: str) -> dict | None:
+    """The single ``id = 1`` document in ``table``, downloaded only if changed.
+
+    Returns None when the table or the row does not exist -- read-only and
+    DDL-free, the same contract the readers always had. The file cache is
+    only touched while no transaction is open: a slow network filesystem
+    must never hold a PG transaction open (the 2026-09-02
+    idle-in-transaction incident).
+    """
+    if table not in _DOC_TABLES:
+        raise ValueError(f"not a published-document table: {table!r}")
+
+    with _connect() as pg, pg.cursor() as cur:
+        try:
+            cur.execute(f"SELECT xmin::text FROM {table} WHERE id = 1")  # noqa: S608 - whitelisted
+        except Exception:  # noqa: BLE001 - undefined_table etc. -> not stored yet
+            pg.rollback()
+            return None
+        row = cur.fetchone()
+    if row is None:
+        return None
+    live_xmin = row[0]
+
+    cached = _DOC_CACHE.get(table)
+    if cached is None or cached[0] != live_xmin:
+        # Memory missed or is stale; another process may have refreshed the
+        # file since (every cron tick is a fresh process).
+        cached = _read_doc_cache_file(table)
+    if cached is not None and cached[0] == live_xmin:
+        try:
+            doc = json.loads(cached[1])
+        except ValueError:
+            # Cannot happen for text that came from PG or passed the
+            # checksum; if it somehow does, download rather than trust it.
+            pass
+        else:
+            _DOC_CACHE[table] = cached
+            return doc
+
+    # Changed (or never seen). Re-read xmin WITH the document, so the pair
+    # that gets cached is one row version even if a writer landed between
+    # the probe and this read.
+    with _connect() as pg, pg.cursor() as cur:
+        try:
+            cur.execute(f"SELECT xmin::text, doc::text FROM {table} WHERE id = 1")  # noqa: S608
+        except Exception:  # noqa: BLE001 - dropped between the two reads
+            pg.rollback()
+            return None
+        row = cur.fetchone()
+    if row is None:
+        return None
+    xmin, text = row
+    doc = json.loads(text)
+    _DOC_CACHE[table] = (xmin, text)
+    _write_doc_cache_file(table, xmin, text)
+    return doc
+
+
 def get_bruker_maintenance_pg() -> dict | None:
     """The latest Bruker maintenance document, or None when none has been stored.
 
     Read-only and DDL-free: the hosted service account has no CREATE privilege,
     so a missing table is treated as "nothing stored yet" (the endpoint then
     falls back to the file cache) rather than an error.
+
+    Costs ~255 bytes when the document has not changed since this process (or,
+    with ``$STAN_PG_DOC_CACHE_DIR``, any process) last read it -- see
+    ``_get_published_doc_pg``.
     """
-    with _connect() as pg, pg.cursor() as cur:
-        try:
-            cur.execute("SELECT doc FROM bruker_maintenance WHERE id = 1")
-        except Exception:  # noqa: BLE001 - undefined_table etc. -> not stored yet
-            pg.rollback()
-            return None
-        row = cur.fetchone()
-    return row[0] if row else None
+    return _get_published_doc_pg("bruker_maintenance")
 
 
 def get_evosep_column_health_pg() -> dict | None:
@@ -1615,15 +1850,11 @@ def get_evosep_column_health_pg() -> dict | None:
     table is created by migration as its owner; the hosted service account has
     DML only, so a missing table means "the publisher has not run yet" and the
     endpoint falls back to the file cache rather than erroring.
+
+    Cached on the row's xmin like get_bruker_maintenance_pg, which matters more
+    here: the document is ~864 KB as text.
     """
-    with _connect() as pg, pg.cursor() as cur:
-        try:
-            cur.execute("SELECT doc FROM evosep_column_health WHERE id = 1")
-        except Exception:  # noqa: BLE001 - undefined_table etc. -> not stored yet
-            pg.rollback()
-            return None
-        row = cur.fetchone()
-    return row[0] if row else None
+    return _get_published_doc_pg("evosep_column_health")
 
 
 # ── dispatch attempts ───────────────────────────────────────────────────
@@ -1666,21 +1897,76 @@ def record_dispatch_attempt_pg(
         pg.commit()
 
 
-def capped_raws_pg(max_attempts: int) -> set[str]:
+def capped_raws_pg(
+    max_attempts: int, raw_paths: list[str] | None = None,
+) -> set[str]:
     """Raws that have failed at least ``max_attempts`` times.
 
     The dispatcher's dedup predicate, identical to the SQLite version it
     replaces. A missing table means nothing recorded yet -> empty set, so a
     fresh deployment does not fail closed and skip every file.
+
+    ``raw_paths`` scopes the answer to those paths (``raw_path = ANY``), so
+    the dispatcher is told only about the raws it is deciding on rather than
+    every capped raw ever recorded. None keeps the unscoped query; an empty
+    list is answered without a round trip.
     """
+    sql = ("SELECT raw_path FROM dispatch_attempts"
+           " WHERE status = 'failed' AND attempt_count >= %s")
+    args: tuple = (max_attempts,)
+    if raw_paths is not None:
+        paths = list(dict.fromkeys(str(p) for p in raw_paths))
+        if not paths:
+            return set()
+        sql += " AND raw_path = ANY(%s)"
+        args = (max_attempts, paths)
     with _connect() as pg, pg.cursor() as cur:
         try:
-            cur.execute(
-                "SELECT raw_path FROM dispatch_attempts"
-                " WHERE status = 'failed' AND attempt_count >= %s",
-                (max_attempts,),
-            )
+            cur.execute(sql, args)
         except Exception:  # noqa: BLE001 - undefined_table etc.
             pg.rollback()
             return set()
         return {r[0] for r in cur.fetchall()}
+
+
+#: Tables ``unknown_raw_paths_pg`` may be asked about. The name is formatted
+#: into the SQL, so it is checked against this rather than trusted.
+_RAW_PATH_TABLES = frozenset({"runs", "sample_health"})
+
+
+def unknown_raw_paths_pg(table: str, raw_paths: list[str]) -> set[str]:
+    """The subset of ``raw_paths`` that ``table`` has no row for.
+
+    The dispatcher's dedup used to download every ``raw_path`` in ``runs``
+    and ``sample_health`` -- 8,496 rows, 914,749 B on the wire, every 5
+    minutes -- to learn that none of the ~4,138 walked raws was new (~263
+    MB/day of billed PG Farm egress). Sending the candidates up instead costs
+    ingress, which is free, and what comes back is only the raws PG has never
+    seen: 47 paths on 2026-09-22, the whole preload 9,911 B on the wire.
+
+    Raises on any failure. The caller must treat an exception as "don't
+    know", NOT as "none of them are known" -- the latter would resubmit every
+    walked raw to SLURM.
+
+    Args:
+        table: ``runs`` or ``sample_health``.
+        raw_paths: Candidate paths, in exactly the form stored in
+            ``raw_path`` (the dispatcher resolves symlinks to the real
+            ``/nfs/...`` path first, which is what ingest recorded).
+    """
+    if table not in _RAW_PATH_TABLES:
+        raise ValueError(f"not a raw_path table: {table!r}")
+    paths = list(dict.fromkeys(str(p) for p in raw_paths))
+    if not paths:
+        return set()
+    with _connect() as pg, pg.cursor() as cur:
+        # A hash anti-join: one pass over the table server-side (0.25 s for
+        # 1,658 candidates against 4,642 runs, measured), no index needed.
+        cur.execute(
+            f"SELECT c FROM unnest(%s::text[]) AS c "  # noqa: S608 - whitelisted
+            f"WHERE NOT EXISTS (SELECT 1 FROM {table} t WHERE t.raw_path = c)",
+            (paths,),
+        )
+        rows = cur.fetchall()
+    asked = set(paths)
+    return {r[0] for r in rows if r[0] in asked}

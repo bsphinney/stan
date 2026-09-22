@@ -128,16 +128,18 @@ _RUN_ROWS = [
 
 
 def _responder(sql, params=None):
-    """Answer the queries pull_from_pg actually issues."""
+    """Answer the queries pull_from_pg actually issues (see ``_PgSource``)."""
     s = " ".join(str(sql).split())
-    if "information_schema.columns" in s and "table_name='runs'" in s:
-        return [(c,) for c in _PG_RUNS_COLS]
     if "information_schema.columns" in s:
         # Every detail table reports "not migrated yet" -> skipped.
-        return []
+        return [(c,) for c in _PG_RUNS_COLS] if params == ("runs",) else []
+    if s.startswith("SELECT count(*)") and s.endswith("FROM runs"):
+        return [(len(_RUN_ROWS), "fp-table")]
+    if "GROUP BY" in s and "FROM runs" in s:
+        return [(r[0], f"fp-{r[0]}") for r in _RUN_ROWS]
     if s.startswith("SELECT id, tic_rt_bins"):
         return []
-    if "FROM runs" in s:
+    if "FROM runs" in s and " IN " in s:
         return list(_RUN_ROWS)
     return []
 
@@ -189,7 +191,7 @@ def test_pull_from_pg_leaves_connection_idle_on_failure(monkeypatch, mirror_db):
 
     def boom(sql, params=None):
         s = " ".join(str(sql).split())
-        if "information_schema.columns" in s and "table_name='runs'" in s:
+        if "information_schema.columns" in s and params == ("runs",):
             return [(c,) for c in _PG_RUNS_COLS]
         raise RuntimeError("connection reset by peer")
 

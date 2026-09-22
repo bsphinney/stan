@@ -186,6 +186,7 @@ What ships today vs. what's still planned.
 | Column health | Done | TIC AUC + peak RT trend analysis. |
 | SQLite database | Done | All metrics, gate results, sample-health verdicts, maintenance events, PEG/drift breakdowns, 4DFF features-by-charge (`feature_clouds`). |
 | PostgreSQL / PG Farm backend | Done | Optional central source-of-truth for Hive bulk + fleet dashboards. `STAN_DB_BACKEND=pg`; single-lab installs stay on SQLite. See `docs/PG_FARM.md`. |
+| Egress-aware PG readers (v1.1.8) | Done | PG Farm bills every byte read out of it. The dashboard mirror is xmin-fingerprinted, so a quiet refresh costs ~3 KB instead of 73 MB. The Hive crons ask PG only about what is new. Together they cut ~20 GB/day to well under 1 GB/day. See `docs/PG_FARM.md` → "Egress is billed". |
 | Parallel ingest sharding | Done | `stan ingest-orphans --shard N/M` for SLURM-array recovery of orphaned parquets. |
 | FastAPI dashboard backend | Done | All routes wired (runs, trends, instruments, thresholds, fleet, community, PEG, drift, 4DFF, sample-health, hide). Swagger at `/docs`. |
 | Single-file React dashboard | Done | `stan/dashboard/public/index.html`, React + Babel via CDN. 9 tabs. |

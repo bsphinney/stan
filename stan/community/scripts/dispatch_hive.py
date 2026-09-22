@@ -219,7 +219,9 @@ def _classify_raw(raw_name: str, qc_pattern: str = DEFAULT_QC_PATTERN) -> str:
     return "monitor"
 
 
-def _capped_from_sqlite(db_path: Path, max_attempts: int) -> set[str]:
+def _capped_from_sqlite(
+    db_path: Path, max_attempts: int, raw_paths: list[str] | None = None,
+) -> set[str]:
     """Raws that have failed too often, read from SQLite in one query.
 
     Mirrors ``_failed_too_many``'s predicate exactly. Reads PG Farm when the
@@ -228,13 +230,19 @@ def _capped_from_sqlite(db_path: Path, max_attempts: int) -> set[str]:
     file kept corrupting this table's indexes. Falls back to SQLite otherwise,
     and if PG is unreachable, so a local install is unaffected.
 
+    ``raw_paths`` scopes the PG answer to those paths, so only the capped raws
+    the caller is actually deciding on come back over the wire. The SQLite
+    answer is local and stays unscoped; membership tests read it the same way.
+
     A missing table means nothing has been recorded yet, which is an empty
     set rather than an error -- failing closed here would skip every file.
     """
     try:
         from stan.db_pg import capped_raws_pg, use_pg
         if use_pg():
-            return capped_raws_pg(max_attempts)
+            if raw_paths is None:
+                return capped_raws_pg(max_attempts)
+            return capped_raws_pg(max_attempts, raw_paths=raw_paths)
     except Exception:  # noqa: BLE001 - fall through to SQLite
         pass
     try:
@@ -249,8 +257,13 @@ def _capped_from_sqlite(db_path: Path, max_attempts: int) -> set[str]:
         return set()
 
 
-def _preload_dedup_sets(db_path: Path, max_attempts: int) -> dict | None:
-    """Load every dedup key up front, so the walk costs 3 queries not 3xN.
+def _preload_dedup_sets(
+    db_path: Path,
+    max_attempts: int,
+    qc_candidates: list[str] | None = None,
+    monitor_candidates: list[str] | None = None,
+) -> dict | None:
+    """Answer every dedup question up front, so the walk costs 3 queries not 3xN.
 
     The scan used to call ``_already_processed`` / ``_already_health_processed``
     / ``_failed_too_many`` once per raw. In PG mode each of those is its own
@@ -259,17 +272,69 @@ def _preload_dedup_sets(db_path: Path, max_attempts: int) -> dict | None:
     while the whole tick took 10-25 min, and every one of those queries also
     lands on the instance FRAN shares.
 
-    These tables are small (thousands of rows), so pulling the key columns
-    once and testing membership in memory is both far faster and much
-    gentler on PG.
+    The first fix pulled every ``raw_path`` in ``runs`` and ``sample_health``
+    and tested membership in memory. Fast, but it downloaded 914,749 B every 5
+    minutes to learn that 0 of ~4,138 walked raws were new -- ~263 MB/day of
+    PG Farm egress, which Google Cloud bills byte for byte. So with
+    candidates, the question goes the other way: the walked paths go UP
+    (ingress is free) and PG answers with only the ones it has never seen --
+    9,911 B for the same tick (both measured on the wire 2026-09-22, with
+    identical verdicts for every walked raw and identical dry-run totals to
+    the real cron tick). ``processed = candidates - unknown`` keeps the exact
+    membership semantics the dispatch loop tests against, so nothing
+    downstream changes. Each class is asked only of its own table -- a
+    monitor raw is never in ``runs``, so asking would send every one of them
+    back as "unknown".
 
-    Returns None if the bulk load fails for any reason — the caller then
-    falls back to the original per-file queries, which are slow but correct.
-    A dispatch tick must never be lost to an optimisation.
+    Args:
+        db_path: The SQLite DB (dispatch_attempts fallback; everything in
+            SQLite mode).
+        max_attempts: Retry cap for the ``capped`` set.
+        qc_candidates / monitor_candidates: The walked raws, as the exact
+            strings the loop will look up, split by ``_classify_raw``. When
+            both are None (older callers), PG mode falls back to the
+            full-table download.
+
+    Returns None if the load fails for any reason, and the caller falls back
+    to the original per-file queries. That is the property that must survive
+    every optimisation here: a failure reads as "don't know", NEVER as
+    "nothing is processed", which would resubmit up to
+    max_submissions_per_run raws to SLURM for a re-search.
+
+    The per-file path is not fully safe either when PG itself is down (found
+    in v1.1.8 review, older than this function). ``_already_health_processed``
+    answers False on a PG error, so monitor raws are resubmitted, and
+    ``_failed_too_many`` only reads the SQLite ``dispatch_attempts``, so
+    PG-side caps are not seen. Failing the whole tick closed in PG mode would
+    be safer. That is a behaviour change, so it has been left for its own
+    decision.
     """
+    with_candidates = qc_candidates is not None or monitor_candidates is not None
     try:
         from stan.db_pg import use_pg
+        if use_pg() and with_candidates:
+            from stan.db_pg import unknown_raw_paths_pg
+            qc = [str(p) for p in (qc_candidates or [])]
+            mon = [str(p) for p in (monitor_candidates or [])]
+            # Any exception here -- connection, SSL, statement -- leaves this
+            # try block and returns None below. Nothing may catch it sooner.
+            unknown_qc = unknown_raw_paths_pg("runs", qc)
+            unknown_mon = unknown_raw_paths_pg("sample_health", mon)
+            processed = set(qc) - unknown_qc
+            health = set(mon) - unknown_mon
+            # The cap is consulted only for a raw that is not already
+            # processed (see the loop), so only those are worth asking about.
+            capped = _capped_from_sqlite(
+                db_path, max_attempts, raw_paths=sorted(unknown_qc | unknown_mon))
+            logger.info(
+                "dedup preload: %d qc + %d monitor walked; unknown to PG: "
+                "%d qc, %d monitor; %d capped",
+                len(qc), len(mon), len(unknown_qc), len(unknown_mon), len(capped),
+            )
+            return {"processed": processed, "health": health, "capped": capped}
         if use_pg():
+            # Full-table download: kept only for callers that have no
+            # candidate list. dispatch_all always passes one.
             from stan.db_pg import _connect as _pg_connect
             with _pg_connect() as pg, pg.cursor() as cur:
                 cur.execute("SELECT raw_path FROM runs WHERE raw_path IS NOT NULL")
@@ -278,13 +343,8 @@ def _preload_dedup_sets(db_path: Path, max_attempts: int) -> dict | None:
                     "SELECT raw_path FROM sample_health WHERE raw_path IS NOT NULL"
                 )
                 health = {r[0] for r in cur.fetchall()}
-            # dispatch_attempts is SQLite-only — it was never migrated to PG,
-            # which is why _failed_too_many() reads SQLite unconditionally
-            # while the other two predicates switch on the backend. Querying
-            # it in PG raises 'relation "dispatch_attempts" does not exist',
-            # and because the whole preload shares one try block that took the
-            # fallback path with it, leaving the per-file queries in place and
-            # the optimisation silently doing nothing.
+            # dispatch_attempts lives in PG since v1.0.54; _capped_from_sqlite
+            # reads it there and falls back to SQLite if PG is unreachable.
             capped = _capped_from_sqlite(db_path, max_attempts)
         else:
             with sqlite3.connect(str(db_path)) as con:
@@ -705,14 +765,48 @@ def dispatch_all(
     }
     submitted_total = 0
 
-    # One bulk load instead of three queries per raw. `None` means the
-    # preload failed and the per-file path below is used instead.
-    dedup = _preload_dedup_sets(db_path, max_attempts)
-
+    # Walk FIRST, then ask PG about exactly what was walked. The preload used
+    # to run before the walk because it downloaded everything and needed no
+    # input; now PG is sent the candidates and returns only the unknown ones,
+    # so the candidates must exist first. Classification happens once, here,
+    # and the loop below reuses it -- the preload and the loop must agree on
+    # which table answers for each raw, and computing it twice is how they
+    # would come to disagree. The strings are str(resolved path), exactly the
+    # keys the loop looks up and the form PG stores (see _walk_raws).
+    walked: list[tuple[dict, list[tuple[Path, str]]]] = []
+    qc_candidates: list[str] = []
+    monitor_candidates: list[str] = []
     for inst in cfg["instruments"]:
         if instrument_filter and instrument_filter.lower() not in inst["name"].lower():
             continue
+        # One instrument per try: every walk now happens before any dispatch,
+        # so an unreadable share (ESTALE, a permissions change) that escaped
+        # here would abort the tick for every instrument, not just its own.
+        try:
+            classified = [(raw, _classify_raw(raw.name, qc_pattern))
+                          for raw in _walk_raws(Path(inst["watch_dir"]))]
+        except (OSError, RuntimeError) as e:
+            log.warning("walk failed for %s (%s): %s -- skipped this tick",
+                        inst["name"], inst["watch_dir"], e)
+            summary["by_instrument"][inst["name"]] = {
+                "name": inst["name"], "family": inst["family"],
+                "watch_dir": str(inst["watch_dir"]), "error": f"walk failed: {e}",
+                "scanned": 0, "submitted": 0, "submissions": [],
+            }
+            continue
+        walked.append((inst, classified))
+        for raw, raw_class in classified:
+            (monitor_candidates if raw_class == "monitor"
+             else qc_candidates).append(str(raw))
 
+    # One round of set questions instead of three queries per raw. `None`
+    # means the preload failed and the per-file path below is used instead.
+    dedup = _preload_dedup_sets(
+        db_path, max_attempts,
+        qc_candidates=qc_candidates, monitor_candidates=monitor_candidates,
+    )
+
+    for inst, classified in walked:
         watch_dir = Path(inst["watch_dir"])
         per_inst = {
             "name": inst["name"],
@@ -724,20 +818,18 @@ def dispatch_all(
             "submissions": [],
         }
 
-        raws = _walk_raws(watch_dir)
-        per_inst["scanned"] = len(raws)
-        summary["totals"]["scanned"] += len(raws)
+        per_inst["scanned"] = len(classified)
+        summary["totals"]["scanned"] += len(classified)
 
-        for raw in raws:
+        for raw, raw_class in classified:
             if submitted_total >= max_subs:
                 summary["totals"]["capped"] += 1
                 break
 
-            # Classify as 'qc' or 'monitor'. QC files run the
-            # search+extract pipeline; monitor files run the lightweight
-            # sample-health pipeline. The old walk mode skipped anything
-            # not matching qc_pattern — now we dispatch both classes.
-            raw_class = _classify_raw(raw.name, qc_pattern)
+            # raw_class is 'qc' or 'monitor', from the walk above. QC files
+            # run the search+extract pipeline; monitor files run the
+            # lightweight sample-health pipeline. The old walk mode skipped
+            # anything not matching qc_pattern — now we dispatch both classes.
 
             # Check the right table for idempotency. Membership in the
             # preloaded sets when available; the per-file queries are the
