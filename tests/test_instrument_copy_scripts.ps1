@@ -273,6 +273,44 @@ foreach ($line in (Get-Content -LiteralPath (Join-Path $repoRoot "instrument/scr
 }
 Check "extraction returns the real version" $verLine $pkgVersion
 
+# ------------------------------------- 9. no local variable is a parameter
+# PowerShell variable names are case-insensitive, so `$all = @(...)` in
+# copy_bruker_backup.ps1 WAS the declared `[switch] $All`. Assigning an
+# array to a switch throws, and under ErrorActionPreference=Stop that ended
+# every scheduled run right after "mirror:" was logged, before a single file
+# was copied and without logging an error. The Hive mirror sat at
+# 2026-09-07 for two weeks (found on TIMS-10878, 2026-09-22). Pinned two ways:
+# no assignment to a [switch] at all, and no assignment that spells a
+# parameter's name in a different case -- the tell that the author thought
+# it was a different variable.
+Write-Host ""
+Write-Host "9. no local variable reuses a parameter's name"
+foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+    $name = $pair[0]; $ast = $pair[1]
+    $params = @{}
+    $switches = @{}
+    foreach ($p in $ast.ParamBlock.Parameters) {
+        $pn = $p.Name.VariablePath.UserPath
+        $params[$pn.ToLowerInvariant()] = $pn
+        if ($p.StaticType -eq [System.Management.Automation.SwitchParameter]) {
+            $switches[$pn.ToLowerInvariant()] = $pn
+        }
+    }
+    $bad = New-Object 'System.Collections.Generic.List[string]'
+    $assigns = $ast.FindAll({
+        $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)
+    foreach ($a in $assigns) {
+        if (-not ($a.Left -is [System.Management.Automation.Language.VariableExpressionAst])) { continue }
+        $vn = $a.Left.VariablePath.UserPath
+        $key = $vn.ToLowerInvariant()
+        if (-not $params.ContainsKey($key)) { continue }
+        if ($switches.ContainsKey($key) -or ($vn -cne $params[$key])) {
+            $bad.Add("line $($a.Extent.StartLineNumber): `$$vn")
+        }
+    }
+    Check "$name assigns to no parameter under another name" ($bad -join "; ") ""
+}
+
 Write-Host ""
 if ($Failures -gt 0) { Write-Host "$Failures failure(s)"; exit 1 }
 Write-Host "all checks passed"

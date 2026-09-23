@@ -11,6 +11,29 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.1.9] — 2026-09-23
+
+### Fixed
+- **The Bruker backup mirror had copied nothing since 2026-09-08.** In
+  `copy_bruker_backup.ps1`, `$all = @(Get-ChildItem ...)` assigned to the
+  declared `[switch] $All` parameter: PowerShell variable names are
+  case-insensitive. The assignment threw, and under
+  `ErrorActionPreference=Stop` every scheduled run ended right after logging
+  `mirror:`, exit 1, with no error in the log. The Hive mirror stayed at
+  2026-09-07, so the Maintenance panel and `bruker_alert.py` had no new data
+  for two weeks.
+  - Found by a Claude session on TIMS-10878, which ran a hand-patched copy
+    and copied 3 backups (7.1 GB) in 45 s.
+  - The variable is renamed to `$sourceFiles`.
+  - `tests/test_instrument_copy_scripts.ps1` now rejects any assignment that
+    reuses a parameter's name. A scan of all 15 `.ps1` files in the repo
+    found no other case.
+  - Both `$ScriptVersion` banners go to 1.1.9. The installers refresh a PC's
+    copy only when the version differs, and the test had been failing since
+    v1.1.6 on that drift.
+
+---
+
 ## [1.1.8] — 2026-09-22
 
 ### Fixed

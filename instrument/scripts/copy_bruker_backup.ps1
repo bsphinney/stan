@@ -65,7 +65,7 @@ $ErrorActionPreference = 'Stop'
 # These scripts get copied to instrument PCs and then live there on
 # their own, so "is the copy in front of me current?" has to be
 # answerable without a git checkout.
-$ScriptVersion = '1.1.5'
+$ScriptVersion = '1.1.9'
 
 $TaskName = 'STAN Bruker backup mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
@@ -246,9 +246,14 @@ Say "mirror: $root"
 # Explicit foreach rather than a Where-Object pipeline (PS 5.1 pipeline
 # behaviour has bitten this repo before).
 $cut = (Get-Date).AddSeconds(-60)
-$all = @(Get-ChildItem $Source -Recurse -File -EA SilentlyContinue)
+# NOT $all: variable names are case-insensitive, so that IS the [switch] $All
+# parameter, and assigning an array to it throws -- under
+# ErrorActionPreference=Stop that ended every run right here, before a file
+# was copied and without an error in the log (2026-09-08 to 09-22; pinned by
+# tests/test_instrument_copy_scripts.ps1, section 9).
+$sourceFiles = @(Get-ChildItem $Source -Recurse -File -EA SilentlyContinue)
 $picked = New-Object 'System.Collections.Generic.List[object]'
-foreach ($f in $all) {
+foreach ($f in $sourceFiles) {
     if ($f.LastWriteTime -lt $cut) { $picked.Add($f) }
 }
 if ($picked.Count -eq 0) {

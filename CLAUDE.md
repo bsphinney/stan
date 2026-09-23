@@ -161,7 +161,7 @@ about a column that had already been replaced, and the raw copy
 (`flinders_copy.ps1`) kept working throughout — because it was the only
 one that ever got a scheduled task.
 
-Two things that must not regress, both covered by
+Three things that must not regress, all covered by
 `tests/test_instrument_copy_scripts.ps1`:
 
 - **The Bruker destination is `Y:\STAN\BrukerDBBackup`**, preserving
@@ -171,6 +171,13 @@ Two things that must not regress, both covered by
   `bruker_db/backup_<HOST>_<stamp>/`, which nothing reads — scheduling
   that version would have copied faithfully into a void while every part
   looked healthy.
+- **No local variable may reuse a parameter's name.** PowerShell names are
+  case-insensitive, so `$all = @(Get-ChildItem ...)` in
+  `copy_bruker_backup.ps1` *was* the `[switch] $All` parameter. The
+  assignment threw, and under `ErrorActionPreference=Stop` every scheduled
+  run died right after logging `mirror:`, copying nothing and logging no
+  error. The Hive mirror sat at 2026-09-07 until 2026-09-22 (fixed in
+  v1.1.9; section 9 of the test pins it).
 - **The `ReadKey` must stay inside `Pause-IfInteractive`**, which returns
   early under `-Scheduled`. A scheduled run has no console; an ungated
   ReadKey holds the task open until the execution time limit kills it,
@@ -1055,6 +1062,9 @@ Instrument PCs run Windows with PowerShell 5.1. When editing `.ps1` files:
 - **No inline ternary `if`** — use separate `if`/`else` blocks
 - **No `Where-Object { }` pipelines** — use explicit `foreach` loops
 - **Use `Join-Path`** instead of string concatenation for paths
+- **Never name a local variable like a parameter, in any case.** Variable
+  names are case-insensitive, so `$all` IS `[switch] $All`; assigning an
+  array to it throws. It killed every Bruker backup run for two weeks.
 - **`return ,$collection` when returning a set/list from a function** —
   PowerShell unrolls collections on return, so a plain `return $set`
   hands back a bare `String` when it holds one item and `$null` when it
