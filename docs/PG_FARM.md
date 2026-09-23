@@ -355,6 +355,12 @@ In practice, for anything new that reads PG on a schedule:
 
 ## Gotchas
 
+**A migration that adds a column must also extend the writer's column
+list.** `insert_event_pg` keeps a whitelist, `_EVENT_COLUMNS`, because the
+names are interpolated into SQL. For a month it lagged the 2026-08-28
+migration and silently dropped six fields from every maintenance event (fixed
+in v1.1.10). Grep for the table name in `stan/db_pg.py` whenever you migrate.
+
 **psycopg2 not in the system Python.** Always invoke through the stan venv
 (`/quobyte/proteomics-grp/brett/stan_venv/bin/python` on Hive,
 `/opt/anaconda3/bin/python3` on the Mac) — never the bare `python3` that

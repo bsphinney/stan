@@ -58,6 +58,19 @@ columns:
     particle_um: 1.5
     notes: "Installed 2026-09-02 (LOT 0000507372) and 2026-07-31."
 
+  - id: michrom-c18-10cm-150um-1p5um
+    vendor: Michrom
+    model: C18 10cm x 150um, 1.5um
+    length_cm: 10
+    bore_um: 150
+    particle_um: 1.5
+    # Same geometry as the PepSep Max above, from a different vendor. Its
+    # fresh resistance measured lower: 179 bar/(uL/min) on its first run
+    # (2026-09-16, injection 24444), bedding in to ~182.5, against 186-188 for
+    # a new PepSep. So a Michrom column reading a few percent under the PepSep
+    # fresh figure is the packing, not a leak. Part number not recorded.
+    notes: "Installed 2026-09-16 (first run 24444); not logged at the time, dated from the Evosep pressure log."
+
 # ── CaptiveSpray emitters ───────────────────────────────────────────────
 # The emitter is a clog suspect in its own right: on 2026-09-02 the column was
 # replaced for over-pressure and the restriction did not fully clear until the

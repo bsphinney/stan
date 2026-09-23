@@ -11,6 +11,34 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.1.10] — 2026-09-23
+
+### Fixed
+- **Maintenance events logged in PG mode lost six of their fields.**
+  `insert_event_pg` inserted only a hardcoded list of nine columns that
+  predated `migrations/2026-08-28_maintenance_downtime.sql`. `log_event` put
+  `first_run`, `part_spec`, `end_date`, `created_by`, `created_at` and
+  `share_community` into the row, and the insert then dropped them. Every event
+  from the hosted dashboard's form lost them too, so:
+  - column changes never anchored to their first run (hence the panel's
+    persistent "No `first_run` is recorded");
+  - emitter changes lost their bore;
+  - downtime spans lost their end;
+  - entries lost the signed-in identity that logged them.
+  The one row that ever had a `first_run` got it from a hand-written UPDATE.
+  Values already lost can't be recovered. The existing tests all mocked the
+  insert out, and new tests run the real one.
+
+### Added
+- A Michrom C18 10cm x 150um, 1.5um column in `config/columns.yml`, the same
+  geometry as the PepSep Max. It went into the timsTOF HT on 2026-09-16 at
+  12:09 PDT (first run 24444). This was logged on 2026-09-23 and dated from
+  the Evosep HP pressure log: resistance stepped from 190.6 to 179.0
+  bar/(uL/min) across the Preparation run, and there was no other step
+  between Sep 2 and Sep 22.
+
+---
+
 ## [1.1.9] — 2026-09-23
 
 ### Fixed

@@ -161,3 +161,75 @@ def test_span_end_left_alone_when_shapes_already_match(monkeypatch):
     log_event(instrument="timsTOF HT", event_type="downtime",
               event_date="2026-08-10", end_date="2026-08-12")
     assert captured["end_date"] == "2026-08-12"
+
+
+# ── The PG insert itself ─────────────────────────────────────────────────
+#
+# Every test above replaces insert_event_pg with a fake, so none of them
+# could see that the real one filtered the row down to the nine columns
+# the table had in 2026-08 -- silently dropping first_run, part_spec,
+# end_date, created_by, created_at and share_community on every event
+# logged in PG mode (the dashboard form included). Found 2026-09-23 when a
+# column change logged with first_run came back without it.
+
+class _RecCur:
+    def __init__(self, log):
+        self.log = log
+
+    def execute(self, sql, params=None):
+        self.log.append((" ".join(sql.split()), params))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _RecConn:
+    def __init__(self):
+        self.log: list = []
+
+    def cursor(self):
+        return _RecCur(self.log)
+
+    def commit(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_insert_event_pg_writes_every_migrated_column(monkeypatch):
+    import stan.db_pg as db_pg
+
+    conn = _RecConn()
+    monkeypatch.setattr(db_pg, "_connect", lambda: conn)
+    row = {
+        "id": "abc", "instrument": "timsTOF HT", "event_type": "column_change",
+        "event_date": "2026-09-16T19:09:26Z", "notes": "", "operator": "",
+        "column_vendor": "Michrom", "column_model": "C18", "column_serial": None,
+        "first_run": "24444", "part_spec": "20um", "end_date": "2026-09-17",
+        "created_by": "op@ucdavis.edu", "created_at": "2026-09-23T17:00:00+00:00",
+        "share_community": False,
+    }
+    db_pg.insert_event_pg(row)
+    [(sql, params)] = conn.log
+    cols = sql.split("(", 1)[1].split(")", 1)[0].replace(" ", "").split(",")
+    assert set(cols) == set(row), f"columns dropped on insert: {set(row) - set(cols)}"
+    assert dict(zip(cols, params)) == row
+
+
+def test_insert_event_pg_refuses_unknown_columns(monkeypatch):
+    """Column names are interpolated into the SQL: only known names may pass."""
+    import stan.db_pg as db_pg
+
+    conn = _RecConn()
+    monkeypatch.setattr(db_pg, "_connect", lambda: conn)
+    db_pg.insert_event_pg({"id": "x", "instrument": "i", "event_type": "other",
+                           "event_date": "2026-09-23", "notes); DROP TABLE runs;--": 1})
+    [(sql, _)] = conn.log
+    assert "DROP" not in sql

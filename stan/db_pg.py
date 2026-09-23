@@ -934,9 +934,21 @@ def get_feature_cloud_pg(run_id: str, source: str = "runs") -> dict | None:
 # host, so an origin column would fragment the history we're unifying.
 # ---------------------------------------------------------------------------
 
+# Every column the table can have. Names are interpolated into the INSERT, so
+# this list is also what keeps a caller's dict keys out of the SQL.
+#
+# It MUST grow with every migration. Until 2026-09-23 it stopped at
+# column_serial, a month after migrations/2026-08-28_maintenance_downtime.sql
+# added the rest: log_event checked each optional column existed and put it
+# in the row, and this list then quietly dropped it. Every event logged in PG
+# mode -- the hosted dashboard form included -- lost its first_run,
+# part_spec, end_date, created_by, created_at and share_community. The one
+# row that ever had a first_run got it from a hand-written UPDATE.
 _EVENT_COLUMNS = (
     "id", "instrument", "event_type", "event_date", "notes", "operator",
     "column_vendor", "column_model", "column_serial",
+    "first_run", "part_spec", "end_date",
+    "created_by", "created_at", "share_community",
 )
 
 
