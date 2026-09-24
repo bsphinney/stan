@@ -11,6 +11,15 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.1.11] — 2026-09-24
+
+### Fixed
+- README no longer states a version (it said 1.0.0 against a 1.1.10 package); it points
+  here instead, so it cannot drift again.
+- Removed `.claude/worktrees/agent-a0ce599b`, a local agent worktree committed as a
+  submodule entry in `fad533a` (2026-04-10), before `.gitignore` excluded `.claude/`;
+  the later ignore rule never untracked it. No code change.
+
 ## [1.1.10] — 2026-09-23
 
 ### Fixed
