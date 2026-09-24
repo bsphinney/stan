@@ -10,7 +10,7 @@
 [![Dataset: CC BY 4.0](https://img.shields.io/badge/Data_License-CC_BY_4.0-green.svg)](https://creativecommons.org/licenses/by/4.0/)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-**Version**: 1.0.0 (2026-05-30, first public release)  
+**Version**: see [CHANGELOG.md](CHANGELOG.md) for the current release (first public release: 1.0.0, 2026-05-30)  
 **Author**: Brett Stanley Phinney, UC Davis Proteomics Core  
 **License**: STAN Academic License (free for academic/non-profit use; see [LICENSE](LICENSE))
 
