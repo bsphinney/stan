@@ -11,6 +11,19 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.1.12] — 2026-09-24
+
+### Fixed
+- **CI had not run a test since 2026-08-31** (540 passed, the last green run). From
+  09-02 a ruff error failed the job before pytest; from 09-05, once that was fixed,
+  pytest aborted at collection: three PG test modules import `psycopg2.extensions`,
+  and `psycopg2` is deliberately not a package dependency, so `pip install -e ".[dev]"`
+  never installed it. The CI job now installs `psycopg2-binary` explicitly, as Azure's
+  requirements and the Hive venv already do. CI configuration only; no runtime change.
+- The `No url found for submodule path '.claude/worktrees/agent-a0ce599b'` line in
+  CI logs was the gitlink removed in 1.1.11 -- a post-job warning that appears in
+  green runs too, never the cause of a failure.
+
 ## [1.1.11] — 2026-09-24
 
 ### Fixed

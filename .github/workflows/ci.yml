@@ -9,6 +9,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -e ".[dev]"
+      # psycopg2 is deliberately not a package dependency (SQLite-only installs
+      # stay turnkey), but the PG tests import it. Without it pytest aborts at
+      # collection and CI runs nothing -- which it did from 2026-09-05 to 09-24.
+      - run: pip install -e ".[dev]" "psycopg2-binary>=2.9"
       - run: ruff check stan/
       - run: pytest tests/ -v -k "not integration"

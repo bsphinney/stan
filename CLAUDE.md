@@ -43,6 +43,7 @@ the change is not done yet.
 
 ```bash
 pip install -e ".[dev]"              # install in dev mode
+pip install "psycopg2-binary>=2.9"   # tests only: PG tests import it; not a package dep
 stan init                             # creates ~/.stan/instruments.yml
 stan watch                            # start watcher daemon
 stan dashboard                        # serve dashboard at http://localhost:8421
