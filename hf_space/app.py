@@ -11,18 +11,25 @@ Hosted at: https://huggingface.co/spaces/brettsp/stan
 
 from __future__ import annotations
 
+import hmac
 import io
 import io
 import json
 import logging
+import math
 import os
+import re
 import shutil
 import tempfile
 import threading
 import time
+import unicodedata
 import uuid
-from datetime import datetime, timezone
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Callable
 
 import polars as pl
 import pyarrow as pa
@@ -40,7 +47,7 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.1.0"
+SPACE_VERSION = "1.2.0"
 
 app = FastAPI(title="STAN Community Benchmark", version=SPACE_VERSION)
 
@@ -175,15 +182,38 @@ def _invalidate_submissions_cache() -> None:
 # items are lost. STAN clients are idempotent so they re-attempt next
 # submit-all. Queue size is bounded by FLUSH_INTERVAL and FLUSH_MAX_BATCH
 # so memory pressure stays in check.
+#
+# Each queued item carries its own path_in_repo (v1.2.0): the PEG channel
+# writes peg/peg_latest.parquet and peg/submissions/*.parquet through the
+# same worker, so they share the commit budget with benchmark submissions
+# instead of competing with it.
 
 import queue
 from huggingface_hub.hf_api import CommitOperationAdd
 
-_SUBMIT_QUEUE: queue.Queue[tuple[str, bytes]] = queue.Queue()
+
+@dataclass(frozen=True)
+class _QueuedFile:
+    """One file waiting for the next batched commit."""
+
+    path_in_repo: str
+    data: bytes
+    # Set only for a file that is overwritten in place (peg/peg_latest.parquet).
+    # A failed commit re-queues its items at the BACK of the queue, behind
+    # any newer copy of the same file queued meanwhile, so plain FIFO would
+    # let the stale copy land last. The version lets the drain drop it.
+    version: int | None = None
+
+
+_SUBMIT_QUEUE: queue.Queue[_QueuedFile] = queue.Queue()
 FLUSH_INTERVAL_SEC = 60          # seconds between batch flushes
 FLUSH_MAX_BATCH = 100            # max files per HF commit
 _FLUSH_WORKER_STARTED = False
 _FLUSH_LOCK = threading.Lock()
+# Newest version queued per overwrite-in-place path. Only versioned paths
+# are recorded, so the one-file-per-submission paths never accumulate here.
+_LATEST_QUEUED_VERSION: dict[str, int] = {}
+_QUEUE_VERSION_LOCK = threading.Lock()
 
 
 def _queue_submission(submission_id: str, parquet_bytes: bytes) -> None:
@@ -192,8 +222,65 @@ def _queue_submission(submission_id: str, parquet_bytes: bytes) -> None:
     Called from /api/submit. Returns immediately — the actual HF Dataset
     write happens in the worker thread below.
     """
-    _SUBMIT_QUEUE.put((submission_id, parquet_bytes))
+    _queue_file(f"submissions/{submission_id}.parquet", parquet_bytes)
+
+
+def _queue_file(path_in_repo: str, data: bytes, version: int | None = None) -> None:
+    """Queue any dataset file for the next batched commit.
+
+    Args:
+        path_in_repo: Destination path in the dataset repo.
+        data: File contents.
+        version: Pass a monotonically increasing number for a file that is
+            rewritten in place; older queued copies of the same path are then
+            dropped instead of committed. Leave None for write-once paths.
+    """
+    if version is not None:
+        with _QUEUE_VERSION_LOCK:
+            prev = _LATEST_QUEUED_VERSION.get(path_in_repo)
+            if prev is None or version > prev:
+                _LATEST_QUEUED_VERSION[path_in_repo] = version
+    _SUBMIT_QUEUE.put(_QueuedFile(path_in_repo, data, version))
     _ensure_flush_worker_started()
+
+
+def _is_superseded(item: _QueuedFile) -> bool:
+    """True when a newer copy of this overwrite-in-place file was queued."""
+    if item.version is None:
+        return False
+    with _QUEUE_VERSION_LOCK:
+        latest = _LATEST_QUEUED_VERSION.get(item.path_in_repo, item.version)
+    return item.version < latest
+
+
+def _drain_batch(max_items: int = FLUSH_MAX_BATCH) -> list[_QueuedFile]:
+    """Take up to ``max_items`` live items off the queue, skipping stale copies."""
+    items: list[_QueuedFile] = []
+    while len(items) < max_items:
+        try:
+            item = _SUBMIT_QUEUE.get_nowait()
+        except queue.Empty:
+            break
+        if _is_superseded(item):
+            continue
+        items.append(item)
+    return items
+
+
+def _batch_commit_message(items: list[_QueuedFile]) -> str:
+    """Commit title for one batch.
+
+    A batch of benchmark submissions only keeps the exact pre-1.2.0 title,
+    "Batch submit N runs", so the dataset history reads the same as before.
+    """
+    n_runs = sum(1 for it in items if it.path_in_repo.startswith("submissions/"))
+    n_other = len(items) - n_runs
+    if n_other == 0:
+        return f"Batch submit {n_runs} runs"
+    peg = f"PEG share update ({n_other} file{'' if n_other == 1 else 's'})"
+    if n_runs == 0:
+        return peg
+    return f"Batch submit {n_runs} runs + {peg}"
 
 
 def _ensure_flush_worker_started() -> None:
@@ -227,47 +314,52 @@ def _flush_worker() -> None:
     while True:
         # Wait for either the interval to expire or the queue to fill up.
         time.sleep(backoff)
+        backoff = _flush_once(api, backoff)
 
-        # Drain up to FLUSH_MAX_BATCH items from the queue.
-        items: list[tuple[str, bytes]] = []
-        while len(items) < FLUSH_MAX_BATCH:
-            try:
-                items.append(_SUBMIT_QUEUE.get_nowait())
-            except queue.Empty:
-                break
-        if not items:
-            backoff = FLUSH_INTERVAL_SEC
-            continue
 
-        operations = [
-            CommitOperationAdd(
-                path_in_repo=f"submissions/{sid}.parquet",
-                path_or_fileobj=io.BytesIO(buf),
-            )
-            for sid, buf in items
-        ]
-        try:
-            api.create_commit(
-                repo_id=HF_DATASET_REPO,
-                repo_type="dataset",
-                operations=operations,
-                commit_message=f"Batch submit {len(items)} runs",
-            )
-            logger.info("HF batch commit OK: %d files", len(items))
+def _flush_once(api: Any, backoff: int) -> int:
+    """Commit one batch from the queue and return the next sleep in seconds.
+
+    Split out of the worker loop so the commit path can be exercised
+    without a thread or a sleep.
+    """
+    # Drain up to FLUSH_MAX_BATCH items from the queue.
+    items = _drain_batch()
+    if not items:
+        return FLUSH_INTERVAL_SEC
+
+    operations = [
+        CommitOperationAdd(
+            path_in_repo=it.path_in_repo,
+            path_or_fileobj=io.BytesIO(it.data),
+        )
+        for it in items
+    ]
+    try:
+        api.create_commit(
+            repo_id=HF_DATASET_REPO,
+            repo_type="dataset",
+            operations=operations,
+            commit_message=_batch_commit_message(items),
+        )
+        logger.info("HF batch commit OK: %d files", len(items))
+        # A PEG-only commit does not touch the benchmark rows, so it has
+        # no reason to throw away the submissions cache.
+        if any(it.path_in_repo.startswith("submissions/") for it in items):
             _invalidate_submissions_cache()
-            backoff = FLUSH_INTERVAL_SEC   # reset backoff on success
-        except Exception as e:
-            # Re-enqueue the items so they get retried next cycle. Use
-            # exponential backoff on rate-limit responses so we don't
-            # hammer HF when it's already pushing back.
-            for sid, buf in items:
-                _SUBMIT_QUEUE.put((sid, buf))
-            if "429" in str(e) or "Too Many Requests" in str(e):
-                backoff = min(backoff * 2, 900)   # cap at 15 min
-                logger.warning("HF batch commit rate-limited; backing off %ds", backoff)
-            else:
-                logger.exception("HF batch commit failed; will retry next cycle")
-                backoff = FLUSH_INTERVAL_SEC
+        return FLUSH_INTERVAL_SEC   # reset backoff on success
+    except Exception as e:
+        # Re-enqueue the items so they get retried next cycle. Use
+        # exponential backoff on rate-limit responses so we don't
+        # hammer HF when it's already pushing back.
+        for it in items:
+            _SUBMIT_QUEUE.put(it)
+        if "429" in str(e) or "Too Many Requests" in str(e):
+            backoff = min(backoff * 2, 900)   # cap at 15 min
+            logger.warning("HF batch commit rate-limited; backing off %ds", backoff)
+            return backoff
+        logger.exception("HF batch commit failed; will retry next cycle")
+        return FLUSH_INTERVAL_SEC
 
 
 # ── Identity verification (email-based name claiming) ────────────
@@ -284,19 +376,160 @@ import time
 IDENTITY_FILE = "identity/claims.json"
 _pending_codes: dict[str, dict] = {}  # in-memory: pseudonym → {code, email_hash, expires}
 
+# ── Claims privacy: peppered email hashes (v1.2.0, spec D3) ──
+# claims.json sits in the PUBLIC dataset, and its email_hash was a bare,
+# unsalted sha256(email)[:32]. Anyone holding a list of candidate emails
+# (core-facility directors, say) could hash them and link a pseudonym on a
+# public PEG ranking to a person. With the Space secret CLAIMS_PEPPER set,
+# stored hashes become hmac_sha256(pepper, sha256(email)[:32])[:32] and are
+# marked "v": 2. The HMAC input is the OLD hash, so existing entries are
+# migrated from what is stored without anyone re-entering an email.
+#
+# The "v": 2 marker is what stops a second migration pass from HMAC-ing an
+# already-peppered hash, which would lock the owner out of re-claiming.
+# Never remove or rotate CLAIMS_PEPPER once set: v2 entries cannot be
+# matched without it (the claim flow answers 503 rather than a false
+# "different email"). Old unpeppered values remain in the dataset's git
+# history; squashing that is a separate decision.
+CLAIMS_HASH_VERSION = 2
+# Serialises claims.json read-modify-write inside this process. Reentrant
+# because verify-claim holds it across _load_claims, which may itself save
+# a migration.
+_CLAIMS_SAVE_LOCK = threading.RLock()
+
+
+class ClaimsMisconfigured(RuntimeError):
+    """A peppered (v2) claim exists but CLAIMS_PEPPER is not set."""
+
 
 def _hash(s: str) -> str:
     return hashlib.sha256(s.strip().lower().encode()).hexdigest()[:32]
 
 
-def _load_claims() -> dict:
-    """Load claimed names from HF Dataset."""
+def _claims_pepper() -> str:
+    """Server-side pepper for claim email hashes; '' when the secret is unset."""
+    return os.environ.get("CLAIMS_PEPPER", "")
+
+
+def _pepper_email_hash(legacy_hash: str, pepper: str) -> str:
+    """v2 email hash: HMAC-SHA256 keyed by the pepper over the legacy hash."""
+    return hmac.new(pepper.encode(), legacy_hash.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _stored_email_hash(email: str) -> tuple[str, int | None]:
+    """Email hash to persist for a new claim, plus its "v" marker (None = legacy)."""
+    legacy = _hash(email)
+    pepper = _claims_pepper()
+    if pepper:
+        return _pepper_email_hash(legacy, pepper), CLAIMS_HASH_VERSION
+    return legacy, None
+
+
+def _claim_email_matches(entry: dict, email: str) -> bool:
+    """Does ``email`` match the email a claim was registered with?
+
+    Compares in whichever form the entry is stored: v2 entries against the
+    peppered hash, legacy entries against the bare hash.
+
+    Raises:
+        ClaimsMisconfigured: the entry is v2 but CLAIMS_PEPPER is unset.
+    """
+    stored = str(entry.get("email_hash") or "")
+    candidate = _hash(email)
+    if entry.get("v") == CLAIMS_HASH_VERSION:
+        pepper = _claims_pepper()
+        if not pepper:
+            raise ClaimsMisconfigured("claim is peppered (v2) but CLAIMS_PEPPER is not set")
+        candidate = _pepper_email_hash(candidate, pepper)
+    return hmac.compare_digest(candidate.encode(), stored.encode())
+
+
+def _hf_missing_file(exc: BaseException) -> bool:
+    """True when an hf_hub_download error means "that file is not in the repo".
+
+    Only that case may be treated as an empty store. LocalEntryNotFoundError
+    subclasses EntryNotFoundError but means the Hub could not be REACHED;
+    reading it as "no file" would let the next write replace the real file
+    with a near-empty one.
+    """
     try:
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import errors as hf_errors
+    except ImportError:  # pragma: no cover - very old huggingface_hub
+        return False
+    local = getattr(hf_errors, "LocalEntryNotFoundError", None)
+    if local is not None and isinstance(exc, local):
+        return False
+    missing = tuple(
+        c for c in (
+            getattr(hf_errors, "RemoteEntryNotFoundError", None),
+            getattr(hf_errors, "EntryNotFoundError", None),
+        ) if c is not None
+    )
+    return bool(missing) and isinstance(exc, missing)
+
+
+def _fetch_claims() -> dict:
+    """Download claims.json. A missing file is {}; any other failure raises."""
+    from huggingface_hub import hf_hub_download
+    try:
         p = hf_hub_download(HF_DATASET_REPO, IDENTITY_FILE, repo_type="dataset", token=HF_TOKEN)
-        return json.loads(open(p).read())
+    except Exception as e:
+        if _hf_missing_file(e):
+            return {}
+        raise
+    claims = json.loads(Path(p).read_text())
+    if not isinstance(claims, dict):
+        raise ValueError(f"{IDENTITY_FILE} is not a JSON object")
+    return claims
+
+
+def _migrate_claims(claims: dict) -> dict:
+    """Pepper any legacy email hashes and persist the result (no-op without the secret)."""
+    pepper = _claims_pepper()
+    if not pepper:
+        return claims
+    legacy = [
+        name for name, entry in claims.items()
+        if isinstance(entry, dict) and entry.get("v") != CLAIMS_HASH_VERSION
+    ]
+    if not legacy:
+        return claims
+    migrated = dict(claims)
+    for name in legacy:
+        entry = dict(claims[name])
+        old = str(entry.get("email_hash") or "")
+        entry["email_hash"] = _pepper_email_hash(old, pepper) if old else ""
+        entry["v"] = CLAIMS_HASH_VERSION
+        migrated[name] = entry
+    with _CLAIMS_SAVE_LOCK:
+        try:
+            _save_claims(migrated)
+            logger.info("Peppered %d claim email hash(es) in %s", len(legacy), IDENTITY_FILE)
+        except Exception:
+            # Callers still get the migrated view, and _claim_email_matches
+            # reads either form, so a failed save only delays the rewrite.
+            logger.exception("Could not save peppered claims; will retry on next load")
+    return migrated
+
+
+def _load_claims(strict: bool = False) -> dict:
+    """Load claimed names from HF Dataset.
+
+    Args:
+        strict: Raise when claims.json cannot be fetched, instead of
+            returning {}. Anything that WRITES claims, or decides whether a
+            name is claimed, must be strict: an outage read as "no claims"
+            either wipes every claim on the next save or waves a spoofer
+            through as the owner.
+    """
+    try:
+        claims = _fetch_claims()
     except Exception:
+        if strict:
+            raise
+        logger.warning("%s unavailable; treating as empty", IDENTITY_FILE, exc_info=True)
         return {}
+    return _migrate_claims(claims)
 
 
 def _save_claims(claims: dict) -> None:
@@ -712,11 +945,25 @@ async def claim_name(req: ClaimRequest) -> dict:
     if not pseudonym or not email:
         raise HTTPException(status_code=400, detail="Pseudonym and email are required")
 
-    # Check if already claimed by someone else
-    claims = _load_claims()
+    # Check if already claimed by someone else. Strict: if claims.json
+    # cannot be read, a claimed name must not look free.
+    try:
+        claims = _load_claims(strict=True)
+    except Exception:
+        logger.exception("claim-name: %s unavailable", IDENTITY_FILE)
+        raise HTTPException(status_code=503, detail="Lab-name registry unavailable. Try again shortly.")
     if pseudonym in claims:
-        existing_hash = claims[pseudonym].get("email_hash", "")
-        if existing_hash and existing_hash != _hash(email):
+        entry = claims[pseudonym] if isinstance(claims[pseudonym], dict) else {}
+        existing_hash = entry.get("email_hash", "")
+        try:
+            same_email = _claim_email_matches(entry, email)
+        except ClaimsMisconfigured:
+            logger.error("claim-name: '%s' is peppered but CLAIMS_PEPPER is unset", pseudonym)
+            raise HTTPException(
+                status_code=503,
+                detail="Lab-name registry is misconfigured on the server. Try again later.",
+            )
+        if existing_hash and not same_email:
             raise HTTPException(
                 status_code=409,
                 detail=f"'{pseudonym}' is already claimed by a different email. "
@@ -727,12 +974,15 @@ async def claim_name(req: ClaimRequest) -> dict:
     code = f"{secrets.randbelow(900000) + 100000}"
 
     # Store in memory (expires in 15 min)
+    email_hash, hash_version = _stored_email_hash(email)
     _pending_codes[pseudonym] = {
         "code": code,
-        "email_hash": _hash(email),
+        "email_hash": email_hash,
         "email_raw": email,  # only held in memory for sending, never persisted
         "expires": time.time() + 900,
     }
+    if hash_version is not None:
+        _pending_codes[pseudonym]["v"] = hash_version
 
     # Send the code
     ok = _send_verification_email(email, code, pseudonym)
@@ -772,14 +1022,24 @@ async def verify_claim(req: VerifyRequest) -> dict:
     # Generate a permanent auth token for this pseudonym
     token = secrets.token_urlsafe(32)
 
-    # Store the claim (email hash + token hash only — never the raw email)
-    claims = _load_claims()
-    claims[pseudonym] = {
+    # Store the claim (email hash + token hash only — never the raw email).
+    # Strict load: a read failure taken as {} would save a claims file
+    # holding only this one name, erasing every other lab's claim.
+    record = {
         "email_hash": pending["email_hash"],
         "token_hash": _hash(token),
         "claimed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
-    _save_claims(claims)
+    if pending.get("v") is not None:
+        record["v"] = pending["v"]
+    with _CLAIMS_SAVE_LOCK:
+        try:
+            claims = _load_claims(strict=True)
+        except Exception:
+            logger.exception("verify-claim: %s unavailable", IDENTITY_FILE)
+            raise HTTPException(status_code=503, detail="Lab-name registry unavailable. Try again shortly.")
+        claims[pseudonym] = record
+        _save_claims(claims)
 
     # Clean up
     del _pending_codes[pseudonym]
@@ -1480,6 +1740,906 @@ async def cohort_tic(cohort_id: str, refresh: int = 0) -> dict:
         return {"cohort_id": cohort_id, "median_tic": None, "traces": [], "n_traces": 0, "error": "Failed"}
 
 
+# ── PEG Watch: community PEG share channel (v1.2.0) ─────────────────
+#
+# Contract: docs/superpowers/specs/2026-09-28-peg-watch-design.md in the
+# STAN repo (§4.4, §4.5; decisions D1-D4).
+#
+# PEG is read from raw MS1 and needs no search, so it has its own channel
+# rather than columns on the benchmark submission (D1): any Evosep lab can
+# join without the frozen DIA-NN 2.3 search, a lab's whole history lands in
+# one commit instead of one /api/update commit per row against HF's
+# 256 commits/h, and the frozen benchmark schema is untouched.
+#
+# Storage, in dataset brettsp/stan-benchmark:
+#   peg/peg_latest.parquet             whole table, one row per
+#                                      (display_name, run_key), newest wins
+#   peg/submissions/<ts>_<id8>.parquet the rows each accepted batch changed
+# Both go through the batched commit worker above. The table lives in
+# memory; if the Space restarts before a flush, the next 6-hourly client
+# sync resends everything, so nothing is lost for good.
+#
+# Stdlib + pyarrow only. This image does not install numpy (Dockerfile),
+# and /api/cohorts/{id}/tic answers "Failed" live, most likely on its
+# `import numpy`. Medians and percentiles here are plain Python: at a few
+# thousand rows per lab that is milliseconds, and results are cached.
+
+PEG_LATEST_PATH = "peg/peg_latest.parquet"
+PEG_SUBMISSIONS_DIR = "peg/submissions"
+PEG_CLASSES = ("clean", "trace", "moderate", "heavy")
+PEG_LC_SYSTEMS = ("evosep", "other")
+# Evosep methods an operator can actually select. Keep in sync with
+# stan/metrics/scoring.py:KNOWN_METHOD_SPD. On Bruker + Evosep an SPD is a
+# method identity, so a derived 36 or 128 is not a cohort anyone ran.
+EVOSEP_METHOD_SPD = frozenset({500, 300, 200, 100, 60, 40, 30, 15})
+PEG_WINDOWS = (30, 90, 365)
+PEG_DEFAULT_FAMILY = "timsTOF"
+PEG_MIN_RUNS = 5               # to be ranked, and for a previous window to yield change_pct
+PEG_MOST_IMPROVED_MAX = -15    # change_pct must be at least this negative for the badge
+PEG_LEADERBOARD_WEEKS = 12
+PEG_LC_COMPARE_WEEKS = 26
+PEG_TREND_MAX_WEEKS = 260
+PEG_MAX_RECORDS = 2000
+PEG_RATE_LIMIT = 30            # POST /api/peg/submit per client per hour
+PEG_RATE_WINDOW_SEC = 3600
+PEG_CACHE_TTL_SEC = 300
+PEG_LOAD_RETRY_SEC = 30
+PEG_NAME_MAX = 60
+_PEG_RUN_KEY_RE = re.compile(r"^[0-9a-f]{24}$")
+_PEG_DATE_FLOOR = datetime(2000, 1, 1, tzinfo=timezone.utc)
+
+# Fields a client sends per run, in stored-column order. Anything else in a
+# record is ignored and never stored, so a client that mistakenly sends a
+# run name cannot publish it.
+_PEG_RECORD_FIELDS = (
+    "run_key", "run_date", "instrument_family", "instrument_model",
+    "lc_system", "lc_model", "spd", "acquisition_mode", "sample_type",
+    "amount_ng", "peg_intensity_pct", "peg_score", "peg_n_ions_detected",
+    "peg_class", "peg_method",
+)
+# Explicit schema: float64 so a value read back compares equal to the one a
+# client resends (float32 would make every resync look like a change).
+_PEG_SCHEMA = pa.schema([
+    pa.field("display_name", pa.string()),
+    pa.field("run_key", pa.string()),                       # 24 hex, sha256 prefix; no run name
+    pa.field("run_date", pa.timestamp("us", tz="UTC")),     # acquisition time
+    pa.field("instrument_family", pa.string()),
+    pa.field("instrument_model", pa.string()),
+    pa.field("lc_system", pa.string()),                     # "evosep" | "other"
+    pa.field("lc_model", pa.string()),
+    pa.field("spd", pa.int32()),
+    pa.field("acquisition_mode", pa.string()),
+    pa.field("sample_type", pa.string()),
+    pa.field("amount_ng", pa.float64()),
+    pa.field("peg_intensity_pct", pa.float64()),            # PEG share of MS1, percent
+    pa.field("peg_score", pa.float64()),                    # 0-100
+    pa.field("peg_n_ions_detected", pa.int32()),
+    pa.field("peg_class", pa.string()),                     # clean | trace | moderate | heavy
+    pa.field("peg_method", pa.string()),                    # e.g. "stan-peg-1"
+    pa.field("verified", pa.bool_()),                       # name was claimed and the token matched
+    pa.field("submitted_at", pa.timestamp("us", tz="UTC")),  # last time this row changed
+    pa.field("first_seen_at", pa.timestamp("us", tz="UTC")),
+])
+_PEG_COLUMNS = tuple(f.name for f in _PEG_SCHEMA)
+_PEG_TIMESTAMP_COLUMNS = ("run_date", "submitted_at", "first_seen_at")
+
+
+class PegStoreUnavailable(RuntimeError):
+    """peg_latest.parquet could not be read, so nothing may be written over it."""
+
+
+# rows: {(display_name, run_key): row}. Rows are replaced, never mutated,
+# so a snapshot list of them can be read outside the lock.
+_PEG_STORE: dict[str, Any] = {"loaded": False, "rows": {}, "version": 0, "failed_at": None}
+_PEG_LOCK = threading.RLock()
+_PEG_CACHE: dict[tuple, tuple[float, dict]] = {}
+_PEG_CACHE_LOCK = threading.Lock()
+_PEG_RATE: dict[str, list[float]] = {}
+_PEG_RATE_LOCK = threading.Lock()
+
+
+def _peg_now() -> datetime:
+    """Current UTC time: the date every PEG window is anchored at."""
+    return datetime.now(timezone.utc)
+
+
+def _peg_clock() -> float:
+    """Monotonic seconds for cache ages, the rate window and load retries."""
+    return time.monotonic()
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Aware UTC datetime; a naive value is taken to be UTC already."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _day_start(d: date) -> datetime:
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+
+
+def _iso_z(dt: datetime) -> str:
+    return _as_utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _clean_text(value: Any) -> str:
+    """Drop control and format characters, collapse whitespace, strip.
+
+    Format characters (Unicode category Cf) include zero-width spaces and
+    bidi overrides. They render as nothing, so left in they would let a
+    name that looks exactly like a claimed one pass as a different,
+    unclaimed name.
+    """
+    if not isinstance(value, str):
+        return ""
+    s = unicodedata.normalize("NFC", value)
+    s = "".join(
+        " " if ch.isspace() else ch
+        for ch in s
+        if ch.isspace() or not unicodedata.category(ch).startswith("C")
+    )
+    return " ".join(s.split())
+
+
+# ── PEG store: load, serialise ──
+
+def _peg_rows_from_parquet(path: Path) -> dict[tuple[str, str], dict]:
+    """Read peg_latest.parquet into the in-memory {(name, run_key): row} map."""
+    table = pq.read_table(path)
+    rows: dict[tuple[str, str], dict] = {}
+    skipped = 0
+    for rec in table.to_pylist():
+        row = {c: rec.get(c) for c in _PEG_COLUMNS}
+        if not row["display_name"] or not row["run_key"] or row["run_date"] is None:
+            skipped += 1
+            continue
+        for c in _PEG_TIMESTAMP_COLUMNS:
+            if row[c] is not None:
+                row[c] = _as_utc(row[c])
+        row["verified"] = bool(row["verified"])
+        rows[(row["display_name"], row["run_key"])] = row
+    if skipped:
+        logger.warning("%s: skipped %d rows without name/run_key/run_date", PEG_LATEST_PATH, skipped)
+    return rows
+
+
+def _peg_rows_to_parquet(rows: list[dict]) -> bytes:
+    """Serialise rows with the explicit PEG schema, sorted for stable output."""
+    ordered = sorted(rows, key=lambda r: (r["display_name"], r["run_date"], r["run_key"]))
+    table = pa.Table.from_pylist(
+        [{c: r.get(c) for c in _PEG_COLUMNS} for r in ordered], schema=_PEG_SCHEMA,
+    )
+    buf = io.BytesIO()
+    pq.write_table(table, buf)
+    return buf.getvalue()
+
+
+def _peg_ensure_loaded() -> None:
+    """Load peg_latest.parquet into memory once. Caller holds _PEG_LOCK.
+
+    A file that is not in the dataset yet is an empty store. Any other
+    failure raises and leaves the store unloaded: a table rebuilt from one
+    batch after a failed read would overwrite every other lab's history on
+    the next commit.
+
+    Raises:
+        PegStoreUnavailable: the file could not be read (retried after
+            PEG_LOAD_RETRY_SEC, so an outage does not stall every request
+            on a fresh download attempt).
+    """
+    if _PEG_STORE["loaded"]:
+        return
+    failed_at = _PEG_STORE["failed_at"]
+    if failed_at is not None and _peg_clock() - failed_at < PEG_LOAD_RETRY_SEC:
+        raise PegStoreUnavailable(f"{PEG_LATEST_PATH} failed to load moments ago")
+    from huggingface_hub import hf_hub_download
+    try:
+        try:
+            path = hf_hub_download(
+                HF_DATASET_REPO, PEG_LATEST_PATH, repo_type="dataset", token=HF_TOKEN,
+            )
+        except Exception as e:
+            if not _hf_missing_file(e):
+                raise
+            rows: dict[tuple[str, str], dict] = {}
+            logger.info("%s not in the dataset yet; starting an empty PEG store", PEG_LATEST_PATH)
+        else:
+            rows = _peg_rows_from_parquet(Path(path))
+    except Exception as e:
+        _PEG_STORE["failed_at"] = _peg_clock()
+        logger.exception("Could not load %s", PEG_LATEST_PATH)
+        raise PegStoreUnavailable(str(e)) from e
+    _PEG_STORE.update(loaded=True, rows=rows, failed_at=None)
+    logger.info("PEG store loaded: %d rows", len(rows))
+
+
+# ── PEG submit: identity, rate limit, validation ──
+
+def _peg_client_key(request: Request) -> tuple[str, int]:
+    """Rate-limit key for the caller, and how many X-Forwarded-For entries came in.
+
+    Behind the Space's proxy request.client.host is the proxy itself, which
+    would make a per-IP limit global. Proxies append the address they saw
+    to X-Forwarded-For, so the right-most entry is the one a client cannot
+    forge (the left-most is whatever the client chose to send). Which hop
+    the HF proxy chain leaves there is not verified yet; the submit log
+    records the entry count so that can be checked after deploy.
+    """
+    parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    if parts:
+        return parts[-1], len(parts)
+    return (request.client.host if request.client else "unknown"), 0
+
+
+def _peg_rate_ok(key: str) -> bool:
+    """Count one request against ``key``; False once it has PEG_RATE_LIMIT this hour."""
+    now = _peg_clock()
+    cutoff = now - PEG_RATE_WINDOW_SEC
+    with _PEG_RATE_LOCK:
+        hits = [t for t in _PEG_RATE.get(key, ()) if t > cutoff]
+        allowed = len(hits) < PEG_RATE_LIMIT
+        if allowed:
+            hits.append(now)
+        _PEG_RATE[key] = hits
+        if len(_PEG_RATE) > 1000:
+            for k in [k for k, v in _PEG_RATE.items() if not v or v[-1] <= cutoff]:
+                del _PEG_RATE[k]
+    return allowed
+
+
+def _peg_identity(name: str, token: str) -> bool:
+    """Decide ``verified`` for a submitting lab name (spec §4.5, D3).
+
+    A claimed name must present the token issued by /api/verify-claim;
+    claims store only its hash, compared as _hash(token). An unclaimed name
+    is accepted but unverified.
+
+    Raises:
+        HTTPException: 403 for a claimed name without its token; 503 when
+            claims.json cannot be read (an unreadable registry must not
+            make a claimed name look free).
+    """
+    try:
+        claims = _load_claims(strict=True)
+    except Exception:
+        logger.exception("PEG submit: %s unavailable", IDENTITY_FILE)
+        raise HTTPException(status_code=503, detail="Lab-name registry unavailable. Try again shortly.")
+    entry = claims.get(name)
+    if entry is None:
+        return False
+    token_hash = str(entry.get("token_hash") or "") if isinstance(entry, dict) else ""
+    token = (token or "").strip()
+    if not token or not token_hash or not hmac.compare_digest(
+        _hash(token).encode(), token_hash.encode()
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="This lab name is claimed. Run `stan community-claim` to get a token.",
+        )
+    return True
+
+
+def _peg_number(value: Any) -> float | None:
+    """A finite JSON number as float; None for anything else (bools included)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    f = float(value)
+    return f if math.isfinite(f) else None
+
+
+def _peg_int(value: Any) -> int | None:
+    """A JSON number with no fractional part as int; else None."""
+    f = _peg_number(value)
+    if f is None or f != int(f):
+        return None
+    return int(f)
+
+
+def _peg_parse_run_date(value: Any) -> datetime | None:
+    """ISO-8601 string to aware UTC datetime; a missing offset means UTC."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    s = value.strip()
+    if s[-1] in "Zz":
+        s = s[:-1] + "+00:00"
+    try:
+        return _as_utc(datetime.fromisoformat(s))
+    except ValueError:
+        return None
+
+
+def _peg_optional_text(rec: dict, key: str, max_len: int, lower: bool = False) -> tuple[str | None, str | None]:
+    """(value, error) for an optional free-text field; empty becomes None."""
+    raw = rec.get(key)
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str):
+        return None, f"{key} must be a string"
+    text = _clean_text(raw)
+    if len(text) > max_len:
+        return None, f"{key} is longer than {max_len} characters"
+    if not text:
+        return None, None
+    return (text.lower() if lower else text), None
+
+
+def _peg_validate_record(rec: Any, now: datetime) -> tuple[dict | None, str | None]:
+    """Validate and normalise one share record (spec §4.5).
+
+    Only measured PEG is accepted: peg_class must be one of the four real
+    classes and the numbers must be present. 'unknown' is the reader's
+    failure sentinel (score 0.0), and a null sent as 0 would rank a lab
+    that never measured anything as the cleanest on the board.
+
+    Returns:
+        (record, None) when valid, else (None, reason).
+    """
+    if not isinstance(rec, dict):
+        return None, "record must be a JSON object"
+    run_key = rec.get("run_key")
+    run_key = run_key.strip().lower() if isinstance(run_key, str) else ""
+    if not _PEG_RUN_KEY_RE.match(run_key):
+        return None, "run_key must be 24 hex characters"
+    run_date = _peg_parse_run_date(rec.get("run_date"))
+    if run_date is None:
+        return None, "run_date must be an ISO-8601 timestamp"
+    if run_date > now + timedelta(days=1):
+        return None, "run_date is in the future"
+    if run_date < _PEG_DATE_FLOOR:
+        return None, "run_date is before 2000"
+    lc = rec.get("lc_system")
+    lc = lc.strip().lower() if isinstance(lc, str) else ""
+    if lc not in PEG_LC_SYSTEMS:
+        return None, "lc_system must be 'evosep' or 'other'"
+    cls = rec.get("peg_class")
+    cls = cls.strip().lower() if isinstance(cls, str) else ""
+    if cls not in PEG_CLASSES:
+        return None, "peg_class must be clean, trace, moderate or heavy"
+    pct = _peg_number(rec.get("peg_intensity_pct"))
+    if pct is None or not 0 <= pct <= 100:
+        return None, "peg_intensity_pct must be a number from 0 to 100"
+    score = _peg_number(rec.get("peg_score"))
+    if score is None or not 0 <= score <= 100:
+        return None, "peg_score must be a number from 0 to 100"
+    n_ions = None
+    if rec.get("peg_n_ions_detected") is not None:
+        n_ions = _peg_int(rec.get("peg_n_ions_detected"))
+        if n_ions is None or not 0 <= n_ions <= 500:
+            return None, "peg_n_ions_detected must be an integer from 0 to 500"
+    spd = _peg_int(rec.get("spd"))
+    if spd is None or not 1 <= spd <= 2000:
+        return None, "spd must be an integer from 1 to 2000"
+    family = _clean_text(rec.get("instrument_family"))
+    if not family or len(family) > 60:
+        return None, "instrument_family is required (at most 60 characters)"
+    model = _clean_text(rec.get("instrument_model"))
+    if not model or len(model) > 80:
+        return None, "instrument_model is required (at most 80 characters)"
+    amount = None
+    if rec.get("amount_ng") is not None:
+        amount = _peg_number(rec.get("amount_ng"))
+        if amount is None or not 0 <= amount <= 1_000_000:
+            return None, "amount_ng must be a number from 0 to 1e6"
+    texts: dict[str, str | None] = {}
+    for key, max_len, lower in (
+        ("lc_model", 80, False), ("acquisition_mode", 40, True),
+        ("sample_type", 40, True), ("peg_method", 40, False),
+    ):
+        texts[key], err = _peg_optional_text(rec, key, max_len, lower)
+        if err:
+            return None, err
+    return {
+        "run_key": run_key,
+        "run_date": run_date,
+        "instrument_family": family,
+        "instrument_model": model,
+        "lc_system": lc,
+        "lc_model": texts["lc_model"],
+        "spd": spd,
+        "acquisition_mode": texts["acquisition_mode"],
+        "sample_type": texts["sample_type"],
+        "amount_ng": amount,
+        "peg_intensity_pct": pct,
+        "peg_score": score,
+        "peg_n_ions_detected": n_ions,
+        "peg_class": cls,
+        "peg_method": texts["peg_method"],
+    }, None
+
+
+def _peg_same(old: dict, rec: dict, verified: bool) -> bool:
+    """True when a stored row already says exactly what ``rec`` says."""
+    if bool(old.get("verified")) != verified:
+        return False
+    return all(old.get(f) == rec.get(f) for f in _PEG_RECORD_FIELDS)
+
+
+class PegSubmission(BaseModel):
+    """POST /api/peg/submit body (spec §4.4).
+
+    ``records`` is untyped on purpose: each record is validated on its own
+    so one bad row is reported in ``rejected`` instead of failing the batch.
+    """
+
+    display_name: str = ""
+    stan_version: str = ""
+    records: list[Any] = []
+
+
+@app.post("/api/peg/submit")
+def peg_submit(body: PegSubmission, request: Request) -> dict:
+    """Accept a batch of per-run PEG records from a STAN client.
+
+    The client is stateless and resends every shareable run on each sync,
+    so records identical to what is stored count as ``unchanged`` and a
+    batch that changes nothing makes no commit at all.
+    """
+    client_key, xff_entries = _peg_client_key(request)
+    if not _peg_rate_ok(client_key):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit: {PEG_RATE_LIMIT} PEG submissions per hour from one address.",
+        )
+    name = _clean_text(body.display_name)
+    if not name or len(name) > PEG_NAME_MAX:
+        raise HTTPException(status_code=400, detail="display_name is required (1-60 characters).")
+    if name.lower() == "anonymous lab":
+        raise HTTPException(
+            status_code=400,
+            detail="'Anonymous Lab' cannot share PEG. Set display_name in ~/.stan/community.yml.",
+        )
+    if len(body.records) > PEG_MAX_RECORDS:
+        raise HTTPException(
+            status_code=413, detail=f"At most {PEG_MAX_RECORDS} records per request; send batches.",
+        )
+    verified = _peg_identity(name, request.headers.get("X-STAN-Auth", ""))
+
+    now = _peg_now()
+    rejected: list[dict] = []
+    valid: list[tuple[int, dict]] = []
+    for i, raw in enumerate(body.records):
+        rec, reason = _peg_validate_record(raw, now)
+        if rec is None:
+            rejected.append({"index": i, "reason": reason})
+        else:
+            valid.append((i, rec))
+    # The same run twice in one batch: the later record wins. Keeping only
+    # one matters beyond tidiness -- merging both would rewrite the row
+    # twice, so a client with a duplicated run would commit on every sync
+    # even though nothing ever changes.
+    last_index = {rec["run_key"]: i for i, rec in valid}
+    batch: list[dict] = []
+    for i, rec in valid:
+        if last_index[rec["run_key"]] == i:
+            batch.append(rec)
+        else:
+            rejected.append({
+                "index": i,
+                "reason": f"duplicate run_key; record {last_index[rec['run_key']]} of this batch was used",
+            })
+    rejected.sort(key=lambda r: r["index"])
+
+    changed: list[dict] = []
+    unchanged = 0
+    with _PEG_LOCK:
+        try:
+            _peg_ensure_loaded()
+        except PegStoreUnavailable:
+            raise HTTPException(
+                status_code=503, detail="PEG store unavailable; nothing was written. Retry later.",
+            )
+        store = _PEG_STORE["rows"]
+        for rec in batch:
+            old = store.get((name, rec["run_key"]))
+            if old is not None and _peg_same(old, rec, verified):
+                unchanged += 1
+                continue
+            changed.append({
+                **rec,
+                "display_name": name,
+                "verified": verified,
+                "submitted_at": now,
+                "first_seen_at": (old or {}).get("first_seen_at") or now,
+            })
+        if changed:
+            # Serialise the changed rows BEFORE touching the store, so a row
+            # that cannot be written never gets into the table.
+            audit_bytes = _peg_rows_to_parquet(changed)
+            for row in changed:
+                store[(name, row["run_key"])] = row
+            _PEG_STORE["version"] += 1
+            version = _PEG_STORE["version"]
+            snapshot = list(store.values())
+
+    if changed:
+        latest_bytes = _peg_rows_to_parquet(snapshot)
+        stamp = _as_utc(now).strftime("%Y%m%dT%H%M%SZ")
+        _queue_file(f"{PEG_SUBMISSIONS_DIR}/{stamp}_{uuid.uuid4().hex[:8]}.parquet", audit_bytes)
+        _queue_file(PEG_LATEST_PATH, latest_bytes, version=version)
+
+    logger.info(
+        "PEG submit '%s' (verified=%s, stan %s): %d accepted, %d unchanged, %d rejected "
+        "[client %s, %d X-Forwarded-For entries]",
+        name, verified, body.stan_version or "?", len(changed), unchanged, len(rejected),
+        hashlib.sha256(client_key.encode()).hexdigest()[:12], xff_entries,
+    )
+    return {
+        "status": "ok",
+        "display_name": name,
+        "verified": verified,
+        "accepted": len(changed),
+        "unchanged": unchanged,
+        "rejected": rejected,
+    }
+
+
+# ── PEG aggregates (pure functions of the stored rows + "now") ──
+
+def _peg_quantile(sorted_vals: list[float], q: float) -> float | None:
+    """Linear-interpolation quantile (PG percentile_cont); None when empty."""
+    n = len(sorted_vals)
+    if n == 0:
+        return None
+    pos = q * (n - 1)
+    lo = math.floor(pos)
+    hi = min(lo + 1, n - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo)
+
+
+def _r3(x: float | None) -> float | None:
+    return None if x is None else round(x, 3)
+
+
+def _peg_share(rows: list[dict], cls: str) -> int | None:
+    """Percent of rows in class ``cls``, rounded; None when there are no rows."""
+    if not rows:
+        return None
+    return round(100 * sum(1 for r in rows if r["peg_class"] == cls) / len(rows))
+
+
+def _peg_countable(rows: list[dict]) -> tuple[list[dict], set[str]]:
+    """Rows that count toward public aggregates, and the verified lab names.
+
+    Once a name has any verified row, its unverified rows are left out. A
+    lab that claims its name resends everything with its token and so
+    re-marks all of its own runs verified; what stays unverified under that
+    name is either a run the lab no longer shares or a row someone else sent
+    under the name before it was claimed. Neither speaks for the lab.
+    """
+    verified_names = {r["display_name"] for r in rows if r.get("verified")}
+    keep = [r for r in rows if r.get("verified") or r["display_name"] not in verified_names]
+    return keep, verified_names
+
+
+def _peg_family_names(rows: list[dict]) -> dict[str, str]:
+    """Lower-cased instrument family -> its most common spelling."""
+    counts: dict[str, Counter] = defaultdict(Counter)
+    for r in rows:
+        counts[r["instrument_family"].lower()][r["instrument_family"]] += 1
+    return {
+        key: sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        for key, c in counts.items()
+    }
+
+
+def _peg_week_edges(end: datetime, n_weeks: int) -> list[datetime]:
+    """Edges of ``n_weeks`` trailing 7-day buckets ending at ``end``, oldest first.
+
+    Buckets trail the window end (the end of the as-of day) rather than
+    following calendar weeks, so the newest point is always a full week and
+    lines up with the 30/90/365-day windows, as in the approved mockup.
+    """
+    return [end - timedelta(days=7 * (n_weeks - i)) for i in range(n_weeks + 1)]
+
+
+def _peg_weekly_buckets(rows: list[dict], edges: list[datetime]) -> list[list[dict]]:
+    buckets: list[list[dict]] = [[] for _ in range(len(edges) - 1)]
+    for r in rows:
+        t = r["run_date"]
+        if edges[0] <= t < edges[-1]:
+            buckets[int((t - edges[0]) // timedelta(days=7))].append(r)
+    return buckets
+
+
+def _peg_weekly_medians(rows: list[dict], edges: list[datetime]) -> list[float | None]:
+    return [
+        _r3(_peg_quantile(sorted(r["peg_intensity_pct"] for r in b), 0.5))
+        for b in _peg_weekly_buckets(rows, edges)
+    ]
+
+
+def _peg_window_bounds(now: datetime, window: int) -> tuple[date, datetime, datetime]:
+    """(as_of, window start, window end): the ``window`` UTC days ending today."""
+    as_of = _as_utc(now).date()
+    end = _day_start(as_of) + timedelta(days=1)
+    return as_of, end - timedelta(days=window), end
+
+
+def _peg_change_pct(current: float, prev_rows: list[dict]) -> int | None:
+    """Percent change of the median vs the previous window; None if it had <5 runs."""
+    if len(prev_rows) < PEG_MIN_RUNS:
+        return None
+    prev = _peg_quantile(sorted(r["peg_intensity_pct"] for r in prev_rows), 0.5)
+    if prev > 0:
+        return round(100 * (current - prev) / prev)
+    # From a median of exactly 0 any rise is unbounded; report only "no change".
+    return 0 if current == 0 else None
+
+
+def _peg_leaderboard(rows: list[dict], family: str, spd: int, window: int, now: datetime) -> dict:
+    """GET /api/peg/leaderboard payload (spec §4.5). Ranks Evosep runs only."""
+    as_of, start, end = _peg_window_bounds(now, window)
+    prev_start = start - timedelta(days=window)
+    year_start = end - timedelta(days=365)
+    edges = _peg_week_edges(end, PEG_LEADERBOARD_WEEKS)
+
+    countable, verified_names = _peg_countable(rows)
+    names = _peg_family_names(countable)
+    evosep = [
+        r for r in countable
+        if r["lc_system"] == "evosep" and r["spd"] in EVOSEP_METHOD_SPD
+    ]
+
+    by_cohort: dict[tuple[str, int], list[dict]] = defaultdict(list)
+    for r in evosep:
+        if year_start <= r["run_date"] < end:
+            by_cohort[(r["instrument_family"].lower(), r["spd"])].append(r)
+    cohorts = [
+        {
+            "family": names[fam],
+            "spd": s,
+            "n_labs": len({r["display_name"] for r in rs}),
+            "n_runs_365d": len(rs),
+        }
+        for (fam, s), rs in sorted(by_cohort.items(), key=lambda kv: (names[kv[0][0]].lower(), -kv[0][1]))
+    ]
+
+    fam_key = family.lower()
+    cur: dict[str, list[dict]] = defaultdict(list)
+    prev: dict[str, list[dict]] = defaultdict(list)
+    recent: dict[str, list[dict]] = defaultdict(list)
+    for r in evosep:
+        if r["spd"] != spd or r["instrument_family"].lower() != fam_key:
+            continue
+        t, lab = r["run_date"], r["display_name"]
+        if start <= t < end:
+            cur[lab].append(r)
+        elif prev_start <= t < start:
+            prev[lab].append(r)
+        if edges[0] <= t < end:
+            recent[lab].append(r)
+
+    labs = []
+    for lab, rs in cur.items():
+        n = len(rs)
+        labs.append({
+            "name": lab,
+            "rows": rs,
+            "n": n,
+            "median": _peg_quantile(sorted(r["peg_intensity_pct"] for r in rs), 0.5),
+            "clean": sum(1 for r in rs if r["peg_class"] == "clean") / n,
+        })
+    ranked_labs = sorted(
+        (lab for lab in labs if lab["n"] >= PEG_MIN_RUNS),
+        key=lambda lab: (lab["median"], -lab["clean"], -lab["n"], lab["name"].lower(), lab["name"]),
+    )
+    ranked = [
+        {
+            "rank": i,
+            "display_name": lab["name"],
+            "verified": lab["name"] in verified_names,
+            "instrument_models": sorted({r["instrument_model"] for r in lab["rows"]}),
+            "n_runs": lab["n"],
+            "median_pct": _r3(lab["median"]),
+            "clean_pct": _peg_share(lab["rows"], "clean"),
+            "heavy_pct": _peg_share(lab["rows"], "heavy"),
+            "change_pct": _peg_change_pct(lab["median"], prev.get(lab["name"], [])),
+            "weekly": _peg_weekly_medians(recent.get(lab["name"], []), edges),
+            "badges": [],
+        }
+        for i, lab in enumerate(ranked_labs, start=1)
+    ]
+    if len(ranked) >= 2:
+        ranked[0]["badges"].append("cleanest")
+    improvers = [
+        r for r in ranked
+        if r["change_pct"] is not None and r["change_pct"] <= PEG_MOST_IMPROVED_MAX
+    ]
+    if improvers:
+        min(improvers, key=lambda r: (r["change_pct"], r["rank"]))["badges"].append("most_improved")
+    unranked = [
+        {"display_name": lab["name"], "verified": lab["name"] in verified_names, "n_runs": lab["n"]}
+        for lab in sorted(labs, key=lambda lab: (-lab["n"], lab["name"].lower(), lab["name"]))
+        if lab["n"] < PEG_MIN_RUNS
+    ]
+    pooled = sorted(r["peg_intensity_pct"] for rs in cur.values() for r in rs)
+    return {
+        "generated_at": _iso_z(now),
+        "as_of": as_of.isoformat(),
+        "window_days": window,
+        "family": names.get(fam_key, family),
+        "spd": spd,
+        "cohorts": cohorts,
+        "ranked": ranked,
+        "unranked": unranked,
+        "community": {
+            "n_labs": len(cur),
+            "n_runs": len(pooled),
+            "p25_pct": _r3(_peg_quantile(pooled, 0.25)),
+            "median_pct": _r3(_peg_quantile(pooled, 0.5)),
+            "p75_pct": _r3(_peg_quantile(pooled, 0.75)),
+        },
+    }
+
+
+def _peg_trend(rows: list[dict], family: str, spd: int, weeks: int, now: datetime) -> dict:
+    """GET /api/peg/trend payload: weekly community PEG band for one Evosep cohort."""
+    _, _, end = _peg_window_bounds(now, 1)
+    edges = _peg_week_edges(end, weeks)
+    countable, _ = _peg_countable(rows)
+    fam_key = family.lower()
+    selected = [
+        r for r in countable
+        if r["lc_system"] == "evosep" and spd in EVOSEP_METHOD_SPD
+        and r["spd"] == spd and r["instrument_family"].lower() == fam_key
+    ]
+    out = []
+    for i, bucket in enumerate(_peg_weekly_buckets(selected, edges)):
+        pcts = sorted(r["peg_intensity_pct"] for r in bucket)
+        out.append({
+            "week_start": edges[i].date().isoformat(),
+            "n_labs": len({r["display_name"] for r in bucket}),
+            "n_runs": len(bucket),
+            "p25": _r3(_peg_quantile(pcts, 0.25)),
+            "p50": _r3(_peg_quantile(pcts, 0.5)),
+            "p75": _r3(_peg_quantile(pcts, 0.75)),
+        })
+    return {"weeks": out}
+
+
+def _peg_lc_compare(rows: list[dict], family: str, window: int, now: datetime) -> dict:
+    """GET /api/peg/lc-compare payload: Evosep vs other LC within one family (D4).
+
+    Never ranks anything. PEG share depends on the detector (absolute 1e4
+    floor), so only a within-family comparison is like-for-like.
+    """
+    as_of, start, end = _peg_window_bounds(now, window)
+    edges = _peg_week_edges(end, PEG_LC_COMPARE_WEEKS)
+    countable, _ = _peg_countable(rows)
+    names = _peg_family_names(countable)
+    fam_key = family.lower()
+
+    groups = []
+    for lc in PEG_LC_SYSTEMS:
+        all_rows = [
+            r for r in countable
+            if r["lc_system"] == lc and r["instrument_family"].lower() == fam_key
+        ]
+        win = [r for r in all_rows if start <= r["run_date"] < end]
+        pcts = sorted(r["peg_intensity_pct"] for r in win)
+        groups.append({
+            "lc": lc,
+            "n_labs": len({r["display_name"] for r in win}),
+            "n_runs": len(win),
+            "p25_pct": _r3(_peg_quantile(pcts, 0.25)),
+            "median_pct": _r3(_peg_quantile(pcts, 0.5)),
+            "p75_pct": _r3(_peg_quantile(pcts, 0.75)),
+            "clean_pct": _peg_share(win, "clean"),
+            "heavy_pct": _peg_share(win, "heavy"),
+            "weekly": _peg_weekly_medians(all_rows, edges),
+        })
+
+    per_family: dict[str, dict[str, list]] = defaultdict(
+        lambda: {lc: [0, set()] for lc in PEG_LC_SYSTEMS}
+    )
+    for r in countable:
+        if start <= r["run_date"] < end:
+            slot = per_family[r["instrument_family"].lower()][r["lc_system"]]
+            slot[0] += 1
+            slot[1].add(r["display_name"])
+    families = [
+        {
+            "family": names[fam],
+            "evosep_runs": c["evosep"][0],
+            "other_runs": c["other"][0],
+            "evosep_labs": len(c["evosep"][1]),
+            "other_labs": len(c["other"][1]),
+        }
+        for fam, c in sorted(
+            per_family.items(),
+            key=lambda kv: (-(kv[1]["evosep"][0] + kv[1]["other"][0]), names[kv[0]].lower()),
+        )
+    ]
+    return {
+        "family": names.get(fam_key, family),
+        "window_days": window,
+        "as_of": as_of.isoformat(),
+        "groups": groups,
+        "families": families,
+    }
+
+
+def _peg_cached(key: tuple, build: Callable[[list[dict], datetime], dict]) -> dict:
+    """Serve an aggregate from the 5-minute cache, computing it on a miss.
+
+    The key also carries the UTC date (windows are anchored there) and the
+    store version, so an accepted change is visible on the next read
+    instead of up to five minutes later.
+
+    Raises:
+        HTTPException: 503 when the store cannot be loaded.
+    """
+    now = _as_utc(_peg_now())
+    with _PEG_LOCK:
+        try:
+            _peg_ensure_loaded()
+        except PegStoreUnavailable:
+            raise HTTPException(status_code=503, detail="PEG store unavailable. Try again shortly.")
+        full_key = key + (now.date().isoformat(), _PEG_STORE["version"])
+        with _PEG_CACHE_LOCK:
+            hit = _PEG_CACHE.get(full_key)
+        if hit is not None and _peg_clock() - hit[0] < PEG_CACHE_TTL_SEC:
+            return hit[1]
+        rows = list(_PEG_STORE["rows"].values())
+    payload = build(rows, now)
+    stamp = _peg_clock()
+    with _PEG_CACHE_LOCK:
+        for k in [k for k, (t, _) in _PEG_CACHE.items() if stamp - t >= PEG_CACHE_TTL_SEC]:
+            del _PEG_CACHE[k]
+        if len(_PEG_CACHE) >= 256:
+            _PEG_CACHE.clear()
+        _PEG_CACHE[full_key] = (stamp, payload)
+    return payload
+
+
+def _peg_window_param(window: int) -> int:
+    if window not in PEG_WINDOWS:
+        raise HTTPException(status_code=400, detail="window must be 30, 90 or 365 (days)")
+    return window
+
+
+def _peg_family_param(family: str) -> str:
+    return _clean_text(family) or PEG_DEFAULT_FAMILY
+
+
+@app.get("/api/peg/leaderboard")
+def peg_leaderboard(family: str = PEG_DEFAULT_FAMILY, spd: int = 100, window: int = 30) -> dict:
+    """Evosep PEG leaderboard for one cohort (instrument family x Evosep SPD method).
+
+    Labs rank by median PEG share of MS1 over the last ``window`` days,
+    lower is better; fewer than 5 runs in the window leaves a lab unranked.
+    """
+    window = _peg_window_param(window)
+    fam = _peg_family_param(family)
+    return _peg_cached(
+        ("leaderboard", fam, spd, window),
+        lambda rows, now: _peg_leaderboard(rows, fam, spd, window, now),
+    )
+
+
+@app.get("/api/peg/trend")
+def peg_trend(family: str = PEG_DEFAULT_FAMILY, spd: int = 100, weeks: int = 52) -> dict:
+    """Weekly community PEG band (p25/p50/p75 of runs) for one Evosep cohort, oldest first."""
+    weeks = max(1, min(weeks, PEG_TREND_MAX_WEEKS))
+    fam = _peg_family_param(family)
+    return _peg_cached(
+        ("trend", fam, spd, weeks),
+        lambda rows, now: _peg_trend(rows, fam, spd, weeks, now),
+    )
+
+
+@app.get("/api/peg/lc-compare")
+def peg_lc_compare(family: str = PEG_DEFAULT_FAMILY, window: int = 90) -> dict:
+    """Evosep vs other LC PEG within one instrument family. Shown, never ranked."""
+    window = _peg_window_param(window)
+    fam = _peg_family_param(family)
+    return _peg_cached(
+        ("lc-compare", fam, window),
+        lambda rows, now: _peg_lc_compare(rows, fam, window, now),
+    )
+
+
 # ── Dashboard HTML ──────────────────────────────────────────────────
 # NOTE: Community-focused dashboard with reference ranges and percentiles.
 
@@ -1631,6 +2791,90 @@ INDEX_HTML = r"""<!DOCTYPE html>
         .chart-card.fs > *:not([id^="chart-"]):not(.fs-btn) { display: none !important; }
         .chart-card.fs > div[id^="chart-"], .chart-card.fs .js-plotly-plot { height: 92vh !important; }
         body.fs-open { overflow: hidden; }
+
+        /* ── Evosep PEG Watch (v1.2.0) ──
+           Everything is scoped to #peg with peg- prefixes: the page already has
+           global .tab, .badge and table rules, and showTab() strips .active from
+           every .tab on the page, so the PEG toggles must not reuse them.
+           Class colours follow the STAN dashboard: clean green, trace yellow,
+           moderate orange, heavy red. */
+        #peg { scroll-margin-top: 1rem; --peg-clean: #34d399; --peg-heavy: #f87171; --peg-other: #60a5fa; }
+        #peg a { color: var(--ucd-gold); }
+        #peg button:focus-visible, #peg a:focus-visible { outline: 2px solid var(--ucd-gold); outline-offset: 2px; }
+        #peg code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.88em; color: var(--text-primary); background: rgba(1,26,58,0.7); padding: 0.05rem 0.35rem; border-radius: 4px; white-space: nowrap; }
+        #peg .peg-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1rem 1.1rem; margin-bottom: 1.5rem; min-width: 0; }
+        #peg .peg-card h3 { font-size: 0.95rem; color: var(--ucd-gold-dark); margin-bottom: 0.25rem; }
+        #peg .peg-sub { font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; max-width: 72ch; }
+        #peg .peg-muted { color: var(--text-muted); }
+        #peg .peg-fine { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; margin-top: 0.6rem; }
+        #peg .peg-bar { display: flex; justify-content: space-between; align-items: flex-end; gap: 0.75rem 1.25rem; flex-wrap: wrap; margin-bottom: 0.85rem; }
+        #peg .peg-ctrls { display: flex; flex-direction: column; gap: 0.5rem; align-items: flex-end; }
+        #peg .peg-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: flex-end; }
+        #peg .peg-chip { font: inherit; font-size: 0.78rem; padding: 0.3rem 0.8rem; border-radius: 999px; border: 1px solid var(--card-border); background: rgba(1,26,58,0.6); color: var(--text-secondary); cursor: pointer; white-space: nowrap; }
+        #peg .peg-chip:hover { border-color: var(--ucd-gold-border); color: var(--text-primary); }
+        #peg .peg-chip[aria-pressed="true"] { background: var(--ucd-gold); border-color: var(--ucd-gold); color: var(--ucd-blue-dark); font-weight: 600; }
+        #peg .peg-seg { display: inline-flex; border: 1px solid var(--card-border); border-radius: 8px; overflow: hidden; background: rgba(1,26,58,0.6); }
+        #peg .peg-seg button { font: inherit; font-size: 0.78rem; color: var(--text-secondary); background: none; border: 0; border-right: 1px solid var(--card-border); padding: 0.3rem 0.8rem; cursor: pointer; }
+        #peg .peg-seg button:last-child { border-right: 0; }
+        #peg .peg-seg button:hover:not([aria-pressed="true"]) { color: var(--text-primary); }
+        #peg .peg-seg button[aria-pressed="true"] { background: var(--ucd-gold); color: var(--ucd-blue-dark); font-weight: 600; }
+        #peg .peg-empty { border: 1px dashed var(--ucd-gold-border); border-radius: 10px; padding: 1.1rem 1.25rem; color: var(--text-secondary); font-size: 0.88rem; line-height: 1.6; }
+        #peg .peg-empty b { color: var(--text-primary); }
+        #peg .peg-scrollx { overflow-x: auto; }
+        #peg table.peg-board { min-width: 840px; font-size: 0.88rem; }
+        #peg .peg-board th { white-space: nowrap; padding: 0.6rem 0.7rem; font-size: 0.72rem; }
+        #peg .peg-board td { padding: 0.6rem 0.7rem; vertical-align: middle; }
+        #peg .peg-board .r { text-align: right; font-variant-numeric: tabular-nums; }
+        #peg .peg-rank { font-weight: 800; font-size: 1.05rem; width: 2.5rem; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+        #peg .peg-rank.r1 { color: var(--ucd-gold); }
+        #peg .peg-lab { font-weight: 650; color: var(--text-primary); }
+        #peg .peg-ok { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: rgba(52,211,153,0.18); color: var(--peg-clean); font-size: 0.66rem; font-weight: 800; margin-left: 0.35rem; vertical-align: 1px; cursor: help; }
+        #peg .peg-unv { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; border: 1px dashed var(--text-muted); color: var(--text-muted); margin-left: 0.4rem; vertical-align: 1px; cursor: help; white-space: nowrap; }
+        #peg .peg-badge { display: inline-block; font-size: 0.66rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; border: 1px solid; margin-left: 0.4rem; vertical-align: 1px; white-space: nowrap; }
+        #peg .peg-b-clean { color: var(--peg-clean); border-color: rgba(52,211,153,0.5); }
+        #peg .peg-b-impr { color: #7dd3fc; border-color: rgba(125,211,252,0.5); }
+        #peg .peg-meter { display: flex; align-items: center; gap: 0.5rem; min-width: 180px; }
+        #peg .peg-track { flex: 1; height: 8px; border-radius: 4px; background: rgba(160,180,204,0.12); position: relative; overflow: hidden; }
+        #peg .peg-fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: linear-gradient(90deg, #DAAA00, #FFBF00); }
+        #peg .peg-val { width: 3.4rem; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+        #peg .peg-down { color: var(--peg-clean); font-weight: 650; }
+        #peg .peg-up { color: var(--peg-heavy); font-weight: 650; }
+        #peg svg.peg-spark { display: block; overflow: visible; }
+        #peg .peg-spark path { fill: none; stroke: #a0b4cc; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+        #peg .peg-spark circle { fill: var(--text-primary); }
+        #peg .peg-unranked { color: var(--text-muted); font-size: 0.82rem; margin-top: 0.75rem; line-height: 1.6; }
+        #peg .peg-unranked .peg-lab { font-weight: 600; color: var(--text-secondary); }
+        #peg .peg-foot { display: flex; justify-content: space-between; gap: 0.4rem 1rem; flex-wrap: wrap; color: var(--text-muted); font-size: 0.8rem; margin-top: 0.75rem; }
+        #peg .peg-foot b { color: var(--text-primary); }
+        #peg .peg-h4 { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); font-weight: 650; margin-bottom: 0.6rem; }
+        #peg .peg-lcgroups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 0.75rem; }
+        #peg .peg-lcg { border: 1px solid var(--card-border); border-radius: 10px; padding: 0.8rem 0.9rem; background: rgba(1,26,58,0.45); display: grid; gap: 0.45rem; min-width: 0; }
+        #peg .peg-lcg-top { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; font-size: 0.78rem; flex-wrap: wrap; }
+        #peg .peg-lcchip { font-size: 0.66rem; font-weight: 750; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+        #peg .peg-lc-evosep { background: rgba(255,191,0,0.16); color: var(--ucd-gold); }
+        #peg .peg-lc-other { background: rgba(96,165,250,0.16); color: var(--peg-other); }
+        #peg .peg-big { font-size: 1.5rem; font-weight: 750; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+        #peg .peg-big small { font-size: 0.75rem; font-weight: 500; color: var(--text-muted); margin-left: 0.35rem; }
+        #peg .peg-iqr { position: relative; height: 10px; border-radius: 5px; background: rgba(160,180,204,0.1); }
+        #peg .peg-iqr .b { position: absolute; top: 0; bottom: 0; border-radius: 5px; opacity: 0.55; }
+        #peg .peg-iqr .m { position: absolute; top: -3px; bottom: -3px; width: 3px; border-radius: 2px; background: var(--text-primary); }
+        #peg .peg-iqr-axis { display: flex; justify-content: space-between; color: var(--text-muted); font-size: 0.66rem; margin-top: -0.2rem; }
+        #peg .peg-lcg-meta { display: flex; justify-content: space-between; gap: 0.5rem; color: var(--text-muted); font-size: 0.78rem; }
+        #peg .peg-lcg-meta b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+        #peg .peg-lcg-wk { display: grid; gap: 0.2rem; font-size: 0.7rem; color: var(--text-muted); }
+        #peg .peg-lcg-wk svg.peg-spark { width: 100%; height: auto; }
+        #peg .peg-note { margin-top: 0.85rem; font-size: 0.8rem; color: var(--yellow); display: flex; gap: 0.5rem; align-items: flex-start; line-height: 1.5; }
+        #peg .peg-note::before { content: '!'; flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: 0.66rem; font-weight: 800; margin-top: 1px; }
+        #peg .peg-trend-badge { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: var(--ucd-gold-glow); color: var(--ucd-gold); margin-left: 0.5rem; font-weight: 600; }
+        #peg ol.peg-steps { list-style: none; counter-reset: pegstep; display: grid; gap: 0.6rem; margin: 0.7rem 0 0.2rem; }
+        #peg ol.peg-steps li { display: grid; grid-template-columns: 26px minmax(0,1fr); gap: 0.6rem; counter-increment: pegstep; color: var(--text-secondary); font-size: 0.88rem; line-height: 1.55; }
+        #peg ol.peg-steps li::before { content: counter(pegstep); width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--ucd-gold-dark); color: var(--ucd-gold); display: grid; place-items: center; font-weight: 750; font-size: 0.8rem; }
+        #peg ol.peg-steps b, #peg .peg-method b { color: var(--text-primary); }
+        #peg .peg-method p + p { margin-top: 0.65rem; }
+        @media (max-width: 768px) {
+            #peg .peg-ctrls { align-items: flex-start; }
+            #peg .peg-chips { justify-content: flex-start; }
+        }
     </style>
 </head>
 <body>
@@ -1648,6 +2892,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="links">
         <a href="/museum">&#127963; Museum</a>
         <a href="/arcade">&#127918; Arcade</a>
+        <a href="#peg">PEG Watch</a>
         <a href="https://github.com/bsphinney/stan">GitHub</a>
         <a href="https://huggingface.co/datasets/brettsp/stan-benchmark">Dataset</a>
         <a href="/docs">API</a>
@@ -1891,6 +3136,87 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
 </div>
 
+<!-- Evosep PEG Watch (v1.2.0). A separate relay channel from the benchmark
+     above: labs share per-run PEG read from raw MS1 through /api/peg/submit,
+     with no community search. Everything in this section comes from the
+     pre-aggregated GET /api/peg/* endpoints, never from the benchmark rows,
+     so the QC Standard and failed-run filters above do not apply to it.
+     Spec: docs/superpowers/specs/2026-09-28-peg-watch-design.md (4.5, D4). -->
+<div class="section" id="peg">
+    <h2>Evosep PEG Watch</h2>
+    <p class="description">
+        Polyethylene glycol (PEG) from tips, solvents and plastics shows up in MS1 as a ladder of ions
+        44.026&nbsp;Da apart, and it can cost identifications. STAN measures it in QC runs. Evosep
+        labs that opt in share their per-run PEG here, so you can see whether your level is normal and
+        whether a fix worked. PEG needs no database search, so this board is separate from the benchmark
+        above and the filters at the top of the page do not apply to it.
+    </p>
+
+    <div class="peg-card">
+        <div class="peg-bar">
+            <div>
+                <h3>Community PEG leaderboard</h3>
+                <p class="peg-sub">Evosep labs ranked by median PEG share of MS1 across their QC runs. Lower is cleaner. Labs are compared only within one instrument family and Evosep method.</p>
+            </div>
+            <div class="peg-ctrls">
+                <div class="peg-chips" id="peg-coh" role="group" aria-label="Cohort: instrument family and Evosep method"></div>
+                <div class="peg-seg" id="peg-win" role="group" aria-label="Window">
+                    <button type="button" data-win="30" aria-pressed="true">30 days</button>
+                    <button type="button" data-win="90" aria-pressed="false">90 days</button>
+                    <button type="button" data-win="365" aria-pressed="false">1 year</button>
+                </div>
+            </div>
+        </div>
+        <div id="peg-board-wrap"><div class="peg-empty">Loading the PEG leaderboard...</div></div>
+        <div class="peg-unranked" id="peg-unranked"></div>
+        <div class="peg-foot"><span id="peg-community"></span><span>A lab needs 5 QC runs in the window to be ranked.</span></div>
+    </div>
+
+    <div class="chart-row">
+        <div class="chart-card chart-full">
+            <h3>Community PEG, week by week <span class="peg-trend-badge" id="peg-trend-badge"></span></h3>
+            <div class="chart-desc">Every shared QC run in the selected cohort, pooled across labs into 7-day buckets over the last year. Gold line = median; shaded band = the middle half of runs (25th to 75th percentile). Gaps are weeks with no runs.</div>
+            <div id="chart-peg-trend"><div class="empty-state" style="padding:2rem">Loading...</div></div>
+            <div class="chart-desc" id="peg-trend-note" style="margin:0.4rem 0 0"></div>
+        </div>
+    </div>
+
+    <!-- The one addition to the approved PEG Watch design (D4): Evosep vs other
+         LC, compared only within an instrument family. Shown, never ranked. -->
+    <div class="peg-card">
+        <div class="peg-bar">
+            <div>
+                <h3>Evosep vs other LC</h3>
+                <p class="peg-sub">Does the LC front end change how much PEG reaches the MS? Shared QC runs from Evosep and non-Evosep labs on the same instrument family over the last 90 days, all gradients pooled. Shown for comparison, never ranked.</p>
+            </div>
+            <div class="peg-ctrls"><div class="peg-chips" id="peg-lcfam" role="group" aria-label="Instrument family"></div></div>
+        </div>
+        <div id="peg-lc-body"><div class="peg-empty">Loading...</div></div>
+        <p class="peg-note"><span>Compare LC systems within one instrument family only. PEG share depends on the detector (STAN counts MS1 peaks above an absolute 10<sup>4</sup> intensity floor), so comparisons across instrument families, such as an Evosep timsTOF against a nanoLC Orbitrap, are not like-for-like.</span></p>
+    </div>
+
+    <div class="info-grid">
+        <div class="info-card" id="peg-join">
+            <h3>Put your lab on the board</h3>
+            <p>Any lab running STAN 1.2 or later can join. PEG is read straight from raw MS1, so it needs no community search.</p>
+            <ol class="peg-steps">
+                <li><div><b>Opt in.</b> Add <code>peg_share: true</code> to <code>~/.stan/community.yml</code>. Sharing stays off until you do.</div></li>
+                <li><div><b>Sync.</b> Run <code>stan peg-sync</code>. It sends every QC run that has a PEG measurement, and the relay keeps only what changed, so it is safe to run again at any time.</div></li>
+                <li><div><b>Get the check mark.</b> Run <code>stan community-claim</code> to prove your lab name with an emailed code, then sync again. Unclaimed names show as <span class="peg-unv" title="This name is not claimed, so anyone could submit under it">unverified</span>.</div></li>
+            </ol>
+            <p class="peg-fine">Lab names are pseudonyms. Shared per QC run: date, instrument model, LC system, Evosep method (SPD), acquisition mode, sample type and amount, and the PEG share, score, ion count and class. File and sample names, raw data, spectra and serial numbers never leave your lab.</p>
+            <p class="peg-fine">Found PEG? <a href="https://github.com/bsphinney/stan/blob/main/docs/PEG_EVOSEP_DIAGNOSTIC.md">Isolate the source in one night</a> with STAN's Evosep PEG diagnostic.</p>
+        </div>
+        <div class="info-card peg-method">
+            <h3>How the ranking works</h3>
+            <p><b>PEG share of MS1.</b> STAN reads 80 MS1 scans spread across the gradient and matches peaks within 5&nbsp;ppm to the PEG ladder: PEG1&ndash;20 as [M+H]<sup>+</sup>, [M+NH<sub>4</sub>]<sup>+</sup> and [M+Na]<sup>+</sup>, spaced 44.026&nbsp;Da (C<sub>2</sub>H<sub>4</sub>O). The share is the matched intensity over all MS1 peaks above 10<sup>4</sup> counts. Unlike the 0&ndash;100 PEG score, it keeps rising with contamination, so it still separates labs that all score 100.</p>
+            <p><b>Cohorts.</b> Labs are ranked only against the same instrument family and Evosep method, because detector response and gradient length change the number. Only Evosep runs are ranked.</p>
+            <p><b>Rank.</b> Median over the window's QC runs, lowest first, with at least 5 runs; ties go to more clean runs, then more runs. <b>Clean</b> means a PEG score below 20. Runs with no PEG measurement are left out; they never count as clean.</p>
+            <p><b>Badges.</b> <span class="peg-badge peg-b-clean" style="margin-left:0">Cleanest</span> is rank 1 once two or more labs are ranked. <span class="peg-badge peg-b-impr" style="margin-left:0">Most improved</span> is the biggest fall in median against the previous window, if it fell by 15% or more. <b>Change</b> stays blank when the previous window had fewer than 5 runs.</p>
+        </div>
+    </div>
+</div>
+
 <!-- Understanding the metrics -->
 <div class="section">
     <h2>Understanding the Metrics</h2>
@@ -2002,6 +3328,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <p style="margin-top: 0.25rem;">Data: <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a> &middot; Code: <a href="https://opensource.org/licenses/MIT">MIT</a> &middot; Raw files are never uploaded &middot; Anonymous by default &middot; Emails are NEVER stored (only one-way hashes for verification)</p>
 </div>
 
+<script id="stan-esc">
+// HTML-escape a string for innerHTML and attribute values. Lab names,
+// instrument models and families all come from submitters, and a pseudonym
+// is only authenticated on the PEG channel, so every one of them passes
+// through here. Its own block so tests/test_relay_peg.py can load it with
+// the PEG Watch script and nothing else.
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+</script>
 <script>
 const PL = {
     paper_bgcolor: 'rgba(0,0,0,0)',
@@ -2680,7 +4016,8 @@ function renderLabVsCommunity() {
 
     if (labSel && labSel.options.length === 0) {
         const labs = [...new Set(allData.map(s => s.display_name).filter(Boolean))].sort();
-        labSel.innerHTML = labs.map(l => `<option value="${l}">${l}</option>`).join('');
+        // Pseudonyms are submitter-chosen and unauthenticated on /api/submit: escape them.
+        labSel.innerHTML = labs.map(l => `<option value="${esc(l)}">${esc(l)}</option>`).join('');
         // Default to UCD if present
         const ucd = labs.find(l => l.includes('UC Davis'));
         if (ucd) labSel.value = ucd;
@@ -2699,7 +4036,7 @@ function renderLabVsCommunity() {
     if (instSel) {
         const models = [...new Set(labRuns.map(s => s.instrument_model).filter(Boolean))].sort();
         const prev = instSel.value;
-        instSel.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
+        instSel.innerHTML = models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
         if (models.includes(prev)) instSel.value = prev;
     }
 
@@ -2718,7 +4055,7 @@ function renderLabVsCommunity() {
     const communityVals = communityRuns.map(s => s[metricKey]).filter(v => v != null && v !== 0);
 
     if (communityVals.length < 3) {
-        el.innerHTML = `<div class="empty-state" style="padding:2rem">Not enough community data for ${family || 'this instrument'} on this metric.</div>`;
+        el.innerHTML = `<div class="empty-state" style="padding:2rem">Not enough community data for ${esc(family || 'this instrument')} on this metric.</div>`;
         return;
     }
 
@@ -2728,7 +4065,7 @@ function renderLabVsCommunity() {
     // Lab's data sorted by date (parse from filename)
     const labWithMetric = labFiltered.filter(s => s[metricKey] != null && s[metricKey] !== 0);
     if (labWithMetric.length === 0) {
-        el.innerHTML = `<div class="empty-state" style="padding:2rem">${selectedLab} has no data for this metric on ${selectedInst || 'this instrument'}.</div>`;
+        el.innerHTML = `<div class="empty-state" style="padding:2rem">${esc(selectedLab)} has no data for this metric on ${esc(selectedInst || 'this instrument')}.</div>`;
         return;
     }
 
@@ -4274,7 +5611,469 @@ function exportCSV() {
     URL.revokeObjectURL(url);
 }
 
-loadData();
+// Kept on window so the PEG Watch script below can re-align a #peg deep
+// link once these charts have pushed its section down the page.
+window.stanMainLoad = loadData();
+</script>
+<script id="peg-watch-js">
+// ── Evosep PEG Watch (community site v1.2.0) ────────────────────────
+// Draws only the relay's pre-aggregated GET /api/peg/{leaderboard,trend,
+// lc-compare} payloads (spec 2026-09-28-peg-watch-design.md, 4.5). It
+// loads on its own: a PEG relay error never blanks the benchmark above,
+// and a slow benchmark load never holds this section up.
+//
+// Lab names, instrument models and families are all submitter-supplied,
+// and an unclaimed name is unauthenticated, so every one of them goes
+// through esc() before it reaches innerHTML. The *Html / *Parts / *Traces
+// builders are plain functions of a payload so tests/test_relay_peg.py can
+// run them in node against hostile strings.
+
+const PEG_LC_WINDOW = 90;             // the LC panel's fixed window, as in the approved mockup
+const PEG_TREND_WEEKS = 52;
+const PEG_CACHE_MS = 5 * 60 * 1000;   // the relay caches aggregates for 5 minutes too
+const PEG_BAR_HI = 30;                // % at the right end of the leaderboard share bars
+const PEG_IQR_HI = 20;                // % at the right end of the LC range bars
+const pegState = {
+    family: 'timsTOF', spd: 100, window: 30, lcFamily: null,
+    cohorts: [], families: [], picked: false,
+    boardSeq: 0, trendSeq: 0, lcSeq: 0,
+};
+const _pegCache = new Map();
+
+function pegNum(v) { return (typeof v === 'number' && isFinite(v)) ? v : null; }
+
+function pegPct(p) {
+    p = pegNum(p);
+    if (p == null) return '—';
+    if (p === 0) return '0%';
+    if (p < 0.1) return p.toFixed(2) + '%';
+    if (p < 10) return p.toFixed(1) + '%';
+    return Math.round(p) + '%';
+}
+
+function pegCount(n) { n = pegNum(n); return n == null ? '—' : n.toLocaleString('en-US'); }
+
+function pegPlural(n, word) { return `${pegCount(n)} ${word}${pegNum(n) === 1 ? '' : 's'}`; }
+
+function pegSameFamily(a, b) { return String(a == null ? '' : a).toLowerCase() === String(b == null ? '' : b).toLowerCase(); }
+
+// Position of a PEG share on a log10(p + 0.05) axis from 0 to `hi` %, as a
+// percentage of the track. PEG share runs from 0 to 30 % and more; on a
+// linear axis every clean lab would sit on top of zero.
+function pegLogPos(p, hi) {
+    const lg = v => Math.log10(Math.max(0, v) + 0.05);
+    return Math.max(0, Math.min(100, (lg(p) - lg(0)) / (lg(hi) - lg(0)) * 100));
+}
+
+// Sparkline of weekly medians on the same log scale, oldest first. By
+// default each line fills its own box, which shows shape rather than
+// level; pass lo/hi to put several on one scale (the LC panel does).
+function pegSpark(vals, opt) {
+    opt = opt || {};
+    const w = opt.w || 96, h = opt.h || 26;
+    const v = (Array.isArray(vals) ? vals : []).map(pegNum);
+    const have = v.filter(x => x != null);
+    if (have.length < 2) return '<span class="peg-muted">—</span>';
+    const lg = x => Math.log10(Math.max(0, x) + 0.05);
+    const mn = opt.lo != null ? lg(opt.lo) : Math.min(...have.map(lg));
+    const mx = opt.hi != null ? lg(opt.hi) : Math.max(...have.map(lg));
+    const span = (mx - mn) || 1;
+    const n = v.length;
+    const X = i => 2 + (n > 1 ? i / (n - 1) : 0) * (w - 4);
+    const Y = x => h - 3 - (lg(x) - mn) / span * (h - 6);
+    let d = '', dots = '', last = -1;
+    v.forEach((x, i) => {
+        if (x == null) return;
+        const joined = i > 0 && v[i - 1] != null;
+        d += (joined ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(x).toFixed(1);
+        // A week with no neighbour on either side draws no segment; mark it.
+        if (!joined && (i === n - 1 || v[i + 1] == null)) {
+            dots += `<circle cx="${X(i).toFixed(1)}" cy="${Y(x).toFixed(1)}" r="1.5"/>`;
+        }
+        last = i;
+    });
+    const label = esc('Weekly median PEG share, oldest first: ' + v.map(pegPct).join(', '));
+    const size = opt.fluid ? '' : ` width="${w}" height="${h}"`;
+    return `<svg class="peg-spark"${size} viewBox="0 0 ${w} ${h}" role="img" aria-label="${label}"><title>${label}</title>`
+        + `<path d="${d}"/>${dots}<circle cx="${X(last).toFixed(1)}" cy="${Y(v[last]).toFixed(1)}" r="2.4"/></svg>`;
+}
+
+function pegIdentityHtml(verified) {
+    return verified === true
+        ? '<span class="peg-ok" title="Verified: sent with the token for this claimed lab name" aria-label="verified">&#10003;</span>'
+        : '<span class="peg-unv" title="This name is not claimed, so anyone could submit under it">unverified</span>';
+}
+
+function pegCohortChipsHtml(cohorts, family, spd) {
+    return (Array.isArray(cohorts) ? cohorts : []).map((c, i) => {
+        const on = pegSameFamily(c.family, family) && pegNum(c.spd) === spd;
+        const tip = `${pegPlural(c.n_labs, 'lab')} · ${pegPlural(c.n_runs_365d, 'QC run')} in the last year`;
+        return `<button type="button" class="peg-chip" data-i="${i}" aria-pressed="${on}" title="${esc(tip)}">`
+            + `${esc(c.family)} · ${esc(pegCount(c.spd))} SPD</button>`;
+    }).join('');
+}
+
+// The leaderboard payload as three HTML fragments: the table (or an empty
+// state), the unranked list, and the one-line community summary.
+function pegBoardParts(board) {
+    board = board || {};
+    const ranked = Array.isArray(board.ranked) ? board.ranked : [];
+    const unranked = Array.isArray(board.unranked) ? board.unranked : [];
+    const cohorts = Array.isArray(board.cohorts) ? board.cohorts : [];
+    const days = pegCount(board.window_days);
+    const cohort = `${esc(board.family)} · ${esc(pegCount(board.spd))} SPD`;
+    const out = { main: '', unranked: '', community: '' };
+    if (!cohorts.length) {
+        out.main = '<div class="peg-empty"><b>No Evosep lab is sharing PEG yet.</b> Be the first: add '
+            + '<code>peg_share: true</code> to <code>~/.stan/community.yml</code> and run <code>stan peg-sync</code>. '
+            + '<a href="#peg-join">How to join</a></div>';
+        return out;
+    }
+    if (!ranked.length) {
+        out.main = `<div class="peg-empty">No lab in ${cohort} has 5 or more QC runs in the last ${days} days`
+            + `${unranked.length ? ' (labs with fewer are listed below)' : ''}. Try a longer window or another cohort.</div>`;
+    } else {
+        let h = '<div class="peg-scrollx"><table class="peg-board"><thead><tr>'
+            + '<th>#</th><th>Lab</th><th>Instrument</th><th class="r">QC runs</th>'
+            + '<th>PEG share of MS1 · median</th><th class="r">Clean</th><th>Last 12 weeks</th>'
+            + '<th class="r">Change</th></tr></thead><tbody>';
+        ranked.forEach(r => {
+            const rank = pegNum(r.rank);
+            const badges = Array.isArray(r.badges) ? r.badges : [];
+            const models = Array.isArray(r.instrument_models) ? r.instrument_models : [];
+            const med = pegNum(r.median_pct), clean = pegNum(r.clean_pct), heavy = pegNum(r.heavy_pct);
+            const chg = pegNum(r.change_pct);
+            const bar = med == null ? 0 : Math.max(2, pegLogPos(med, PEG_BAR_HI));
+            const chgHtml = chg == null ? '<span class="peg-muted">—</span>'
+                : chg < 0 ? `<span class="peg-down">▼ ${Math.abs(chg)}%</span>`
+                : chg > 0 ? `<span class="peg-up">▲ ${chg}%</span>` : '0%';
+            h += '<tr>'
+                + `<td class="peg-rank${rank === 1 ? ' r1' : ''}">${pegCount(rank)}</td>`
+                + `<td><span class="peg-lab">${esc(r.display_name)}</span>${pegIdentityHtml(r.verified)}`
+                + (badges.includes('cleanest') ? '<span class="peg-badge peg-b-clean">Cleanest</span>' : '')
+                + (badges.includes('most_improved') ? '<span class="peg-badge peg-b-impr">Most improved</span>' : '')
+                + '</td>'
+                + `<td>${esc(models.join(', ')) || '—'}</td>`
+                + `<td class="r">${pegCount(r.n_runs)}</td>`
+                + `<td><div class="peg-meter"><div class="peg-track"><div class="peg-fill" style="width:${bar.toFixed(1)}%"></div></div>`
+                + `<span class="peg-val">${pegPct(med)}</span></div></td>`
+                + `<td class="r" title="Heavy PEG in ${heavy == null ? '—' : heavy + '%'} of runs">${clean == null ? '—' : clean + '%'}</td>`
+                + `<td>${pegSpark(r.weekly)}</td>`
+                + `<td class="r" title="Median vs the previous ${days} days">${chgHtml}</td>`
+                + '</tr>';
+        });
+        out.main = h + '</tbody></table></div>';
+    }
+    if (unranked.length) {
+        out.unranked = 'Not ranked yet, fewer than 5 QC runs in this window: ' + unranked.map(u =>
+            `<span class="peg-lab">${esc(u.display_name)}</span>${pegIdentityHtml(u.verified)} · ${pegPlural(u.n_runs, 'run')}`
+        ).join(', ');
+    }
+    const c = board.community || {};
+    if (pegNum(c.n_runs)) {
+        out.community = `${cohort}, last ${days} days: ${pegPlural(c.n_labs, 'lab')} · ${pegPlural(c.n_runs, 'QC run')}`
+            + ` · community median <b>${pegPct(c.median_pct)}</b> (middle half ${pegPct(c.p25_pct)} to ${pegPct(c.p75_pct)})`;
+    }
+    return out;
+}
+
+function pegLcFamilyChipsHtml(families, current) {
+    return (Array.isArray(families) ? families : []).map((f, i) => {
+        const tip = `Last ${PEG_LC_WINDOW} days: Evosep ${pegPlural(f.evosep_runs, 'run')} from ${pegPlural(f.evosep_labs, 'lab')}, `
+            + `other LC ${pegPlural(f.other_runs, 'run')} from ${pegPlural(f.other_labs, 'lab')}`;
+        return `<button type="button" class="peg-chip" data-i="${i}" aria-pressed="${pegSameFamily(f.family, current)}" `
+            + `title="${esc(tip)}">${esc(f.family)}</button>`;
+    }).join('');
+}
+
+// One family's Evosep vs other-LC comparison. Nothing is drawn until both
+// sides have runs: one group alone is not a comparison, just a number.
+function pegLcHtml(d) {
+    d = d || {};
+    const groups = Array.isArray(d.groups) ? d.groups : [];
+    const group = lc => groups.find(g => g && g.lc === lc) || { lc: lc, n_runs: 0, n_labs: 0, weekly: [] };
+    const evo = group('evosep'), oth = group('other');
+    const fam = esc(d.family), days = pegCount(d.window_days);
+    const nE = pegNum(evo.n_runs) || 0, nO = pegNum(oth.n_runs) || 0;
+    const head = `<h4 class="peg-h4">Community · ${fam} labs · last ${days} days</h4>`;
+    if (!nE && !nO) {
+        return head + `<div class="peg-empty">No ${fam} lab has shared PEG in the last ${days} days.</div>`;
+    }
+    if (!nE || !nO) {
+        const have = nE ? evo : oth;
+        const side = nE ? 'Evosep' : 'non-Evosep', missing = nE ? 'non-Evosep' : 'Evosep';
+        return head + `<div class="peg-empty">So far ${fam} has ${pegPlural(have.n_runs, 'QC run')} from `
+            + `${pegPlural(have.n_labs, side + ' lab')} and no ${missing} lab sharing. The comparison appears once `
+            + `${fam} has both Evosep and non-Evosep labs sharing.</div>`;
+    }
+    // Both weekly lines on one scale, so their heights can be compared.
+    const all = [].concat(evo.weekly || [], oth.weekly || []).map(pegNum).filter(x => x != null);
+    const lo = all.length ? Math.min(...all) : 0, hi = all.length ? Math.max(...all) : 1;
+    const card = (g, label, cls, colour) => {
+        const p25 = pegNum(g.p25_pct), med = pegNum(g.median_pct), p75 = pegNum(g.p75_pct);
+        const a = pegLogPos(p25 == null ? 0 : p25, PEG_IQR_HI), b = pegLogPos(p75 == null ? 0 : p75, PEG_IQR_HI);
+        const m = pegLogPos(med == null ? 0 : med, PEG_IQR_HI);
+        const clean = pegNum(g.clean_pct), heavy = pegNum(g.heavy_pct);
+        return '<div class="peg-lcg">'
+            + `<div class="peg-lcg-top"><span class="peg-lcchip ${cls}">${label}</span>`
+            + `<span class="peg-muted">${pegPlural(g.n_labs, 'lab')} · ${pegPlural(g.n_runs, 'run')}</span></div>`
+            + `<div class="peg-big">${pegPct(med)}<small>median PEG share</small></div>`
+            + `<div class="peg-iqr" title="25th percentile ${pegPct(p25)} · median ${pegPct(med)} · 75th percentile ${pegPct(p75)}">`
+            + `<span class="b" style="left:${a.toFixed(1)}%;width:${Math.max(1, b - a).toFixed(1)}%;background:${colour}"></span>`
+            + `<span class="m" style="left:calc(${m.toFixed(1)}% - 1px)"></span></div>`
+            + `<div class="peg-iqr-axis"><span>0</span><span>1%</span><span>${PEG_IQR_HI}%</span></div>`
+            + `<div class="peg-lcg-meta"><span>clean <b>${clean == null ? '—' : clean + '%'}</b></span>`
+            + `<span>heavy <b>${heavy == null ? '—' : heavy + '%'}</b></span></div>`
+            + `<div class="peg-lcg-wk"><span>weekly median, last 26 weeks</span>${pegSpark(g.weekly, { w: 480, h: 44, lo: lo, hi: hi, fluid: true })}</div>`
+            + '</div>';
+    };
+    return head + '<div class="peg-lcgroups">'
+        + card(evo, 'Evosep', 'peg-lc-evosep', '#FFBF00') + card(oth, 'Other LC', 'peg-lc-other', '#60a5fa')
+        + '</div><p class="peg-fine">Bar: the middle half of runs (25th to 75th percentile) on a log scale, tick = median. '
+        + 'The two weekly lines share one scale.</p>';
+}
+
+// Plotly traces for the weekly community band. The band is one closed
+// polygon per run of consecutive weeks with data: fill:'tonexty' would
+// bridge empty weeks with a band that no run supports.
+function pegTrendTraces(weeks) {
+    weeks = Array.isArray(weeks) ? weeks : [];
+    const x = [], p25 = [], p50 = [], p75 = [], cd = [];
+    weeks.forEach(w => {
+        x.push(String(w.week_start));
+        p25.push(pegNum(w.p25)); p50.push(pegNum(w.p50)); p75.push(pegNum(w.p75));
+        cd.push([pegNum(w.n_labs) || 0, pegNum(w.n_runs) || 0, pegNum(w.p25), pegNum(w.p75)]);
+    });
+    const traces = [];
+    let seg = [];
+    const flush = () => {
+        if (seg.length >= 2) {
+            const back = seg.slice().reverse();
+            traces.push({
+                type: 'scatter', mode: 'lines', fill: 'toself', fillcolor: 'rgba(255,191,0,0.16)',
+                line: { width: 0 }, hoverinfo: 'skip', legendgroup: 'band', showlegend: traces.length === 0,
+                name: 'middle half of runs (25th–75th pct)',
+                x: seg.map(i => x[i]).concat(back.map(i => x[i])),
+                y: seg.map(i => p75[i]).concat(back.map(i => p25[i])),
+            });
+        }
+        seg = [];
+    };
+    for (let i = 0; i < weeks.length; i++) {
+        if (p25[i] != null && p75[i] != null) seg.push(i); else flush();
+    }
+    flush();
+    traces.push({
+        type: 'scatter', mode: 'lines+markers', name: 'median', x: x, y: p50, customdata: cd, connectgaps: false,
+        line: { color: '#FFBF00', width: 2.4 }, marker: { color: '#FFBF00', size: 5 },
+        hovertemplate: '7 days from %{x|%b %d, %Y}<br>median %{y:.2f}%'
+            + '<br>middle half %{customdata[2]:.2f} to %{customdata[3]:.2f}%'
+            + '<br>%{customdata[1]} runs from %{customdata[0]} lab(s)<extra></extra>',
+    });
+    const withRuns = cd.filter(c => c[1] > 0);
+    return { traces: traces, nWeeks: withRuns.length, maxLabs: withRuns.reduce((m, c) => Math.max(m, c[0]), 0) };
+}
+
+// ── wiring ──
+
+async function pegFetch(path, params) {
+    const url = path + '?' + new URLSearchParams(params).toString();
+    const hit = _pegCache.get(url);
+    if (hit && Date.now() - hit[0] < PEG_CACHE_MS) return hit[1];
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    _pegCache.set(url, [Date.now(), d]);
+    return d;
+}
+
+function _pegSet(id, html) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+}
+
+async function loadPegBoard() {
+    const seq = ++pegState.boardSeq;
+    let board;
+    try {
+        board = await pegFetch('/api/peg/leaderboard',
+            { family: pegState.family, spd: pegState.spd, window: pegState.window });
+    } catch (e) {
+        if (seq !== pegState.boardSeq) return;
+        console.error('[peg leaderboard]', e);
+        _pegSet('peg-board-wrap', `<div class="peg-empty">The PEG leaderboard is unavailable right now (${esc(e.message)}). `
+            + 'The rest of this page is unaffected; try again in a minute.</div>');
+        _pegSet('peg-unranked', ''); _pegSet('peg-community', '');
+        return;
+    }
+    if (seq !== pegState.boardSeq) return;   // a newer toggle already asked for something else
+    const cohorts = Array.isArray(board.cohorts) ? board.cohorts : [];
+    // The default cohort (timsTOF, 100 SPD) may have no runs while others
+    // do. Open on the busiest cohort rather than on an empty board next to
+    // chips that have data. Only on first load: after that the reader picks.
+    if (!pegState.picked) {
+        pegState.picked = true;
+        const here = cohorts.some(c => pegSameFamily(c.family, pegState.family) && pegNum(c.spd) === pegState.spd);
+        if (cohorts.length && !here) {
+            const best = cohorts.reduce((a, c) => ((pegNum(c.n_runs_365d) || 0) > (pegNum(a.n_runs_365d) || 0) ? c : a));
+            pegState.family = String(best.family);
+            pegState.spd = pegNum(best.spd) || 100;
+            return loadPegBoard();
+        }
+    }
+    pegState.cohorts = cohorts;
+    try { _pegSet('peg-coh', pegCohortChipsHtml(cohorts, pegState.family, pegState.spd)); }
+    catch (e) { console.error('[peg cohorts]', e); }
+    try {
+        const parts = pegBoardParts(board);
+        _pegSet('peg-board-wrap', parts.main);
+        _pegSet('peg-unranked', parts.unranked);
+        _pegSet('peg-community', parts.community);
+    } catch (e) {
+        console.error('[peg board]', e);
+        _pegSet('peg-board-wrap', '<div class="peg-empty">Could not draw the PEG leaderboard.</div>');
+    }
+}
+
+async function loadPegTrend() {
+    const seq = ++pegState.trendSeq;
+    const el = document.getElementById('chart-peg-trend');
+    const note = document.getElementById('peg-trend-note');
+    const badge = document.getElementById('peg-trend-badge');
+    if (!el) return;
+    if (badge) badge.textContent = `${pegState.family} · ${pegState.spd} SPD`;
+    const empty = msg => {
+        if (window.Plotly) { try { Plotly.purge(el); } catch (e) {} }
+        el.innerHTML = `<div class="empty-state" style="padding:2rem">${msg}</div>`;
+        if (note) note.textContent = '';
+    };
+    let t;
+    try {
+        t = await pegFetch('/api/peg/trend', { family: pegState.family, spd: pegState.spd, weeks: PEG_TREND_WEEKS });
+    } catch (e) {
+        if (seq !== pegState.trendSeq) return;
+        console.error('[peg trend]', e);
+        empty(`The weekly band is unavailable right now (${esc(e.message)}).`);
+        return;
+    }
+    if (seq !== pegState.trendSeq) return;
+    try {
+        const tr = pegTrendTraces(t && t.weeks);
+        if (!tr.nWeeks) { empty(`No shared QC runs in this cohort over the last ${PEG_TREND_WEEKS} weeks.`); return; }
+        if (!window.Plotly) { empty('The chart library did not load. Reload the page to see this chart.'); return; }
+        Plotly.purge(el);
+        el.innerHTML = '';
+        Plotly.newPlot(el, tr.traces, {
+            ...PL,
+            height: 320,
+            margin: { t: 16, r: 24, b: 40, l: 60 },
+            xaxis: { ...PL.xaxis, type: 'date', tickformat: '%b %Y' },
+            yaxis: { ...PL.yaxis, title: 'PEG share of MS1 (%)', rangemode: 'tozero' },
+            showlegend: true,
+            legend: { orientation: 'h', x: 0, y: 1.12, font: { color: '#a0b4cc' } },
+            hovermode: 'closest',
+        }, PC);
+        if (note) {
+            note.textContent = tr.maxLabs <= 1
+                ? 'One lab shares in this cohort so far, so the band is that lab’s own week-to-week spread. It becomes a community range as more labs join.'
+                : '';
+        }
+    } catch (e) {
+        console.error('[peg trend render]', e);
+        empty('Could not draw the weekly band.');
+    }
+}
+
+async function loadPegLc() {
+    const seq = ++pegState.lcSeq;
+    let d;
+    try {
+        d = await pegFetch('/api/peg/lc-compare',
+            { family: pegState.lcFamily || pegState.family, window: PEG_LC_WINDOW });
+    } catch (e) {
+        if (seq !== pegState.lcSeq) return;
+        console.error('[peg lc-compare]', e);
+        _pegSet('peg-lc-body', `<div class="peg-empty">The LC comparison is unavailable right now (${esc(e.message)}).</div>`);
+        return;
+    }
+    if (seq !== pegState.lcSeq) return;
+    const fams = Array.isArray(d.families) ? d.families : [];
+    if (pegState.lcFamily == null) {
+        // Open on a family that has both LC groups; failing that, the busiest.
+        const pick = fams.find(f => (pegNum(f.evosep_runs) || 0) > 0 && (pegNum(f.other_runs) || 0) > 0) || fams[0];
+        pegState.lcFamily = pick ? String(pick.family) : String(d.family || pegState.family);
+        if (pick && !pegSameFamily(pick.family, d.family)) return loadPegLc();
+    }
+    pegState.families = fams;
+    try { _pegSet('peg-lcfam', pegLcFamilyChipsHtml(fams, pegState.lcFamily)); }
+    catch (e) { console.error('[peg lc families]', e); }
+    try {
+        _pegSet('peg-lc-body', fams.length ? pegLcHtml(d)
+            : `<div class="peg-empty">No lab has shared PEG in the last ${PEG_LC_WINDOW} days yet.</div>`);
+    } catch (e) {
+        console.error('[peg lc]', e);
+        _pegSet('peg-lc-body', '<div class="peg-empty">Could not draw the LC comparison.</div>');
+    }
+}
+
+function _pegPress(group, button) {
+    for (const b of group.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b === button));
+}
+
+// Deep link #peg: the benchmark charts above render after their own fetch
+// and push this section a few thousand pixels down. Browsers with scroll
+// anchoring keep the reader in place; the rest would land mid-page. So
+// re-align once each loader settles, unless the reader has moved already.
+let _pegReaderMoved = false;
+if (typeof window !== 'undefined' && window.addEventListener) {
+    ['wheel', 'touchmove', 'keydown', 'mousedown'].forEach(ev =>
+        window.addEventListener(ev, () => { _pegReaderMoved = true; }, { passive: true, once: true }));
+}
+function _pegHonourHash() {
+    if (_pegReaderMoved || location.hash !== '#peg') return;
+    const el = document.getElementById('peg');
+    if (el) el.scrollIntoView({ block: 'start' });
+}
+
+function loadPegWatch() {
+    const coh = document.getElementById('peg-coh');
+    const win = document.getElementById('peg-win');
+    const lcf = document.getElementById('peg-lcfam');
+    if (coh) coh.addEventListener('click', e => {
+        const b = e.target.closest('button[data-i]');
+        const c = b && pegState.cohorts[+b.dataset.i];
+        if (!c) return;
+        pegState.family = String(c.family);
+        pegState.spd = pegNum(c.spd) || 100;
+        _pegPress(coh, b);
+        loadPegBoard().catch(err => console.error('[peg]', err));
+        loadPegTrend().catch(err => console.error('[peg]', err));
+    });
+    if (win) win.addEventListener('click', e => {
+        const b = e.target.closest('button[data-win]');
+        if (!b) return;
+        pegState.window = +b.dataset.win;
+        _pegPress(win, b);
+        loadPegBoard().catch(err => console.error('[peg]', err));
+    });
+    if (lcf) lcf.addEventListener('click', e => {
+        const b = e.target.closest('button[data-i]');
+        const f = b && pegState.families[+b.dataset.i];
+        if (!f) return;
+        pegState.lcFamily = String(f.family);
+        _pegPress(lcf, b);
+        loadPegLc().catch(err => console.error('[peg]', err));
+    });
+    // The trend follows whichever cohort the board settles on.
+    const board = loadPegBoard().then(loadPegTrend).catch(err => console.error('[peg]', err));
+    const lc = loadPegLc().catch(err => console.error('[peg]', err));
+    Promise.all([board, lc]).then(_pegHonourHash);
+    if (window.stanMainLoad) window.stanMainLoad.then(_pegHonourHash, _pegHonourHash);
+}
+
+if (typeof document !== 'undefined' && document.getElementById && document.getElementById('peg')) {
+    try { loadPegWatch(); } catch (e) { console.error('[peg]', e); }
+}
 </script>
 </body>
 </html>

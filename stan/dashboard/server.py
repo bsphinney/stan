@@ -1036,6 +1036,160 @@ async def api_run_peg(run_id: str, source: str = "runs") -> dict:
     return {"run_id": run_id, "source": source, "summary": summary, "hits": hits}
 
 
+# ── PEG Watch (v1.2.0) ───────────────────────────────────────────────
+# The PEG tab's own-lab document. On the hosted site this is a public GET
+# (readonly.py gates writes, /api/ht reads and introspection -- not this),
+# so it carries no run or sample name: the readers strip them, and nothing
+# here adds one back.
+#
+# Cached per (instrument, UTC date) for PEG_OVERVIEW_TTL_S. PG Farm bills
+# every byte read out of it; one build moves ~1.7k runs x 7 scalars plus a
+# few aggregates, which is nothing once and a steady drain if every tab
+# switch by every visitor re-read it. Only the DB half is cached -- the
+# sharing status is re-read per request, so flipping `peg_share` shows up
+# at once.
+
+import threading as _threading  # noqa: E402
+
+PEG_OVERVIEW_TTL_S = 600.0
+_PEG_CACHE: dict[tuple, tuple[float, object]] = {}
+# One lock, held across the build: two viewers opening the tab together
+# cost one PG read, not two.
+_PEG_CACHE_LOCK = _threading.Lock()
+
+
+def _peg_cached(key: tuple, build):
+    """Return ``build()``'s value for ``key``, reusing it for the TTL.
+
+    ``build`` returns ``(value, cacheable)``; a partial (degraded) document
+    is served but not kept, so the next request retries the part that
+    failed instead of pinning the gap for ten minutes. Expired entries are
+    purged on every call, which also bounds the cache to what was asked for
+    in the last TTL.
+    """
+    import time
+
+    with _PEG_CACHE_LOCK:
+        now = time.monotonic()
+        for k in [k for k, (exp, _) in _PEG_CACHE.items() if exp <= now]:
+            _PEG_CACHE.pop(k, None)
+        hit = _PEG_CACHE.get(key)
+        if hit is not None:
+            return hit[1]
+        value, cacheable = build()
+        if cacheable:
+            _PEG_CACHE[key] = (now + PEG_OVERVIEW_TTL_S, value)
+        return value
+
+
+def _peg_today():
+    """The overview's as-of date: today in UTC. A function so tests can pin it."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).date()
+
+
+def _truthy(value) -> bool:
+    return value is True or str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _peg_sharing_status() -> dict:
+    """Whether this lab shares per-run PEG with the community board.
+
+    Read-only: the tab only reports it. Opt-in is ``peg_share: true`` in
+    community.yml or ``STAN_PEG_SHARE=1``, exactly what ``stan peg-sync``
+    obeys. The name comes from ``_load_community_cfg`` -- community.yml,
+    else ``STAN_DISPLAY_NAME`` on the hosted container -- so it matches the
+    name the lab's rows carry on the relay; None when the lab has none yet.
+    """
+    from stan.community.submit import RELAY_URL
+
+    cfg = _load_community_cfg()
+    enabled = _truthy(cfg.get("peg_share")) or _truthy(_os.environ.get("STAN_PEG_SHARE"))
+    name = str(cfg.get("display_name") or "").strip()
+    return {"enabled": enabled, "display_name": name or None, "relay_url": RELAY_URL}
+
+
+def _build_peg_overview(instrument: str, as_of, instruments: list[dict]):
+    """The DB-derived overview for one instrument: ``(document, complete)``.
+
+    The runs are the document; a failure reading them propagates (and the
+    endpoint answers 503) rather than rendering "no PEG measured" over a PG
+    outage. The ladder, the column log and the LC comparison are side
+    panels: if one fails it is logged, left empty, and named in
+    ``degraded`` so the tab can say so, and the document is not cached.
+    """
+    import stan.db as stan_db
+    from stan.metrics.peg_trends import build_overview
+
+    runs = stan_db.get_peg_runs(instrument)
+    degraded: list[str] = []
+
+    def side(name: str, fn, *args):
+        try:
+            return fn(*args)
+        except Exception as exc:  # noqa: BLE001 - a side panel must not sink the tab
+            logger.warning("PEG overview: %s unavailable: %s", name, exc)
+            degraded.append(name)
+            return []
+
+    doc = build_overview(
+        as_of=as_of,
+        instrument=instrument,
+        instruments=instruments,
+        runs=runs,
+        ladder_rows=side("ladder", stan_db.get_peg_ladder_month_counts, instrument),
+        column_events=side("column_periods", stan_db.get_column_change_events, instrument),
+        lab_lc=side("lab_lc", stan_db.get_peg_lab_lc_summary, as_of),
+    )
+    if degraded:
+        doc["degraded"] = degraded
+    return doc, not degraded
+
+
+@app.get("/api/peg/overview")
+def api_peg_overview(instrument: str | None = None) -> dict:
+    """PEG history for one instrument: the dashboard PEG tab's data.
+
+    Timeline runs, a trailing 14-day median, detected episodes, the best
+    90-day baseline, a 30-day summary, the oligomer-ladder fingerprint, PEG
+    per LC-column period, precursor cost by class, every instrument's PEG
+    with its LC, and this lab's sharing status (spec section 4.2). Only
+    real PEG measurements on QC runs count; see ``stan.metrics.peg_trends``.
+
+    Args:
+        instrument: Instrument name; defaults to the one with the most real
+            PEG runs. An instrument with no PEG gets the empty document
+            (``runs: []``), not an error, so the tab shows its empty state.
+
+    Raises:
+        HTTPException: 503 when the store cannot be read.
+    """
+    import stan.db as stan_db
+    from stan.metrics.peg_trends import empty_overview, pick_default_instrument
+
+    as_of = _peg_today()
+    requested = (instrument or "").strip() or None
+    try:
+        instruments = _peg_cached(("instruments", as_of.isoformat()),
+                                  lambda: (stan_db.get_peg_instruments(), True))
+        chosen = requested or pick_default_instrument(instruments)
+        known = {d["instrument"] for d in instruments}
+        if chosen and chosen in known:
+            doc = _peg_cached(("overview", chosen, as_of.isoformat()),
+                              lambda: _build_peg_overview(chosen, as_of, instruments))
+        else:
+            # Unknown names are answered without touching the store again,
+            # and not cached: a public endpoint must not let arbitrary query
+            # strings become PG reads or cache entries.
+            doc = empty_overview(as_of, chosen, instruments)
+    except Exception as exc:  # noqa: BLE001 - report, don't 500
+        logger.warning("PEG overview failed: %s", exc)
+        raise HTTPException(status_code=503, detail="PEG data is unavailable right now")
+    out = dict(doc)
+    out["sharing"] = _peg_sharing_status()
+    return out
+
+
 @app.get("/api/runs/{run_id}/drift")
 async def api_run_drift(run_id: str, source: str = "runs") -> dict:
     """Return the per-window DIA drift breakdown for a run.

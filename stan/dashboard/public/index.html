@@ -25,6 +25,14 @@
       --bg: #011a3a; --surface: #022851; --border: #1e3a5f;
       --text: #e2e8f0; --muted: #a0b4cc; --accent: #DAAA00;
       --pass: #22c55e; --warn: #eab308; --fail: #ef4444;
+      /* PEG Watch (v1.2.0). PEG classes reuse --pass/--warn/--fail for
+         clean/trace/heavy; moderate is the one class the base palette has
+         no colour for. The rest come from the approved PEG mockup. */
+      --accent-hi: #FFBF00; --moderate: #f97316;
+      --ad-h: #60a5fa; --ad-na: #f59e0b; --ad-nh4: #c084fc;
+      --peg-grid: rgba(160, 180, 204, 0.13);
+      --peg-episode: rgba(239, 68, 68, 0.10); --peg-episode-edge: rgba(239, 68, 68, 0.45);
+      --peg-you: rgba(218, 170, 0, 0.10); --peg-other: #7d95b3;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
@@ -59,6 +67,179 @@
     button { padding: 0.5rem 1rem; background: var(--accent); color: var(--bg); border: none; border-radius: 0.5rem; font-weight: 600; cursor: pointer; }
     button:hover { opacity: 0.9; }
     .status-msg { margin-top: 0.5rem; font-size: 0.85rem; }
+
+    /* ---- PEG Watch tab (v1.2.0) ----------------------------------------
+       Ported from the approved mockup. Everything is peg- prefixed because
+       this sheet already owns bare .badge, .card, table, th, td and button
+       rules, and the global `* { margin: 0; padding: 0 }` reset means every
+       margin below is set on purpose. */
+    .peg-root { font-size: 14px; line-height: 1.45; }
+    .peg-stack { display: grid; gap: 16px; }
+    .peg-root .card { margin-bottom: 0; min-width: 0; padding: 18px 18px 16px; border-radius: 12px; }
+    .peg-root .card h3 { margin: 0 0 2px; font-size: 1rem; font-weight: 650; text-wrap: balance; }
+    .peg-root code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: .92em; color: var(--text); }
+    .peg-root a { color: var(--accent-hi); }
+    .peg-root a:focus-visible, .peg-root button:focus-visible { outline: 2px solid var(--accent-hi); outline-offset: 2px; }
+    .peg-sub { color: var(--muted); font-size: .84rem; margin: 0 0 12px; max-width: 70ch; }
+    .peg-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 16px; }
+    .peg-eyebrow { font-size: .72rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 650; }
+    .peg-num { font-variant-numeric: tabular-nums; }
+    .peg-fine { color: var(--muted); font-size: .8rem; }
+    .peg-hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 22px; align-items: stretch; }
+    @media (max-width: 860px) { .peg-hero { grid-template-columns: 1fr; } }
+    .peg-hero h2 { margin: 6px 0 8px; font-size: clamp(1.45rem, 2.6vw, 2rem); line-height: 1.15; font-weight: 750; letter-spacing: -.01em; text-wrap: balance; }
+    .peg-lab { color: var(--accent-hi); }
+    .peg-lede { font-size: 1rem; color: var(--text); max-width: 58ch; margin: 0 0 14px; }
+    .peg-lede b { font-weight: 700; }
+    .peg-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+    .peg-chip { font-size: .74rem; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); background: rgba(1,26,58,.5); }
+    .peg-chip b { color: var(--text); font-weight: 650; }
+    .peg-chip select { background: transparent; color: var(--text); border: 0; font: inherit; font-weight: 650; cursor: pointer; }
+    .peg-chip select option { background: var(--surface); }
+    .peg-spectrum { background: linear-gradient(180deg, rgba(1,26,58,.55), rgba(1,26,58,.2)); border: 1px solid var(--border); border-radius: 12px; padding: 14px 14px 8px; min-width: 0; }
+    .peg-spectrum .peg-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+    .peg-spectrum .peg-top span { color: var(--muted); font-size: .78rem; }
+    .peg-spectrum svg { display: block; width: 100%; height: auto; margin-top: 6px; }
+    .peg-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-top: 2px; }
+    .peg-tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; min-width: 0; display: grid; gap: 3px; align-content: start; }
+    .peg-tile-k { font-size: .74rem; color: var(--muted); letter-spacing: .02em; }
+    .peg-tile-v { font-size: 1.7rem; font-weight: 750; line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .peg-tile-d { font-size: .78rem; color: var(--muted); }
+    .peg-down { color: var(--pass); font-weight: 650; }
+    .peg-up { color: var(--fail); font-weight: 650; }
+    .peg-pill { display: inline-flex; align-items: center; gap: 5px; font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; letter-spacing: .02em; }
+    .peg-pill::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .peg-p0 { color: var(--pass); background: rgba(34,197,94,.13); }
+    .peg-p1 { color: var(--warn); background: rgba(234,179,8,.13); }
+    .peg-p2 { color: var(--moderate); background: rgba(249,115,22,.14); }
+    .peg-p3 { color: var(--fail); background: rgba(239,68,68,.14); }
+    .peg-bar { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+    .peg-ctrls { display: flex; gap: 8px; flex-wrap: wrap; }
+    .peg-seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg); }
+    .peg-seg button { font: inherit; font-size: .8rem; font-weight: 400; color: var(--muted); background: none; border: 0; border-radius: 0; padding: 5px 11px; cursor: pointer; border-right: 1px solid var(--border); }
+    .peg-seg button:last-child { border-right: 0; }
+    .peg-seg button[aria-pressed="true"] { background: var(--accent); color: var(--bg); font-weight: 650; }
+    .peg-seg button:hover:not([aria-pressed="true"]) { color: var(--text); opacity: 1; }
+    .peg-chartbox { position: relative; }
+    .peg-chartbox svg { display: block; width: 100%; touch-action: pan-y; }
+    .peg-tt { position: absolute; pointer-events: none; background: #04203f; border: 1px solid var(--accent); border-radius: 8px; padding: 8px 10px; font-size: .78rem; min-width: 190px; box-shadow: 0 6px 24px rgba(0,0,0,.45); z-index: 3; }
+    .peg-tt-h { font-weight: 700; margin-bottom: 4px; }
+    .peg-tt-r { display: flex; justify-content: space-between; gap: 14px; color: var(--muted); }
+    .peg-tt-r > span:last-child { color: var(--text); font-variant-numeric: tabular-nums; }
+    .peg-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--muted); font-size: .78rem; margin-top: 8px; }
+    .peg-legend i { display: inline-block; vertical-align: middle; margin-right: 6px; }
+    .peg-dot { width: 9px; height: 9px; border-radius: 50%; }
+    .peg-ln { width: 18px; height: 3px; border-radius: 2px; background: var(--accent-hi); }
+    .peg-bx { width: 14px; height: 10px; background: var(--peg-episode); border: 1px solid var(--peg-episode-edge); }
+    .peg-dsh { width: 18px; height: 0; border-top: 2px dashed var(--muted); }
+    .peg-col { width: 0; height: 12px; border-left: 2px dotted var(--muted); }
+    .peg-bnd { width: 16px; height: 10px; background: rgba(160,180,204,.2); }
+    /* SVG fills come from CSS so the tokens apply. */
+    .peg-g-grid { stroke: var(--peg-grid); }
+    .peg-g-ax { fill: var(--muted); font-size: 11px; }
+    .peg-g-ax-strong { fill: var(--text); font-size: 11px; font-weight: 650; }
+    .peg-c0 { fill: var(--pass); } .peg-c1 { fill: var(--warn); } .peg-c2 { fill: var(--moderate); } .peg-c3 { fill: var(--fail); }
+    .peg-pt { fill-opacity: .78; }
+    .peg-roll-under { fill: none; stroke: var(--bg); stroke-width: 5; stroke-linejoin: round; }
+    .peg-roll { fill: none; stroke: var(--accent-hi); stroke-width: 2.4; stroke-linejoin: round; }
+    .peg-base { stroke: var(--muted); stroke-dasharray: 5 4; stroke-width: 1.3; }
+    .peg-ep { fill: var(--peg-episode); stroke: var(--peg-episode-edge); stroke-width: 1; }
+    .peg-ep-t { fill: #fca5a5; font-size: 11px; font-weight: 650; }
+    .peg-cband { fill: rgba(160,180,204,.16); stroke: rgba(160,180,204,.35); stroke-width: 1; }
+    .peg-colmk { stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 1.5 3.5; opacity: .75; }
+    .peg-colmk-d { fill: var(--muted); }
+    .peg-hov { fill: none; stroke: var(--text); stroke-width: 2; }
+    .peg-calE { fill: rgba(160,180,204,.07); }
+    .peg-stick { stroke-width: 5; stroke-linecap: round; }
+    .peg-stick-bg { stroke: rgba(160,180,204,.12); stroke-width: 5; stroke-linecap: round; }
+    .peg-stick-on { stroke: var(--accent-hi); }
+    .peg-bracket { fill: none; stroke: var(--muted); stroke-width: 1; }
+    .peg-hm-e { fill: rgba(160,180,204,.05); }
+    .peg-hm { fill: var(--accent-hi); }
+    .peg-imp-ax { stroke: var(--border); stroke-width: 2; }
+    .peg-scrollx { overflow-x: auto; }
+    .peg-cal-meta { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: .8rem; margin-top: 8px; }
+    .peg-cal-meta b { color: var(--text); font-variant-numeric: tabular-nums; }
+    .peg-note { border: 1px dashed var(--border); border-radius: 10px; padding: 14px; color: var(--muted); font-size: .85rem; margin-bottom: 10px; }
+    .peg-note b { color: var(--text); }
+    table.peg-board { width: 100%; border-collapse: collapse; font-size: .86rem; min-width: 780px; }
+    .peg-board th { text-align: left; color: var(--muted); font-weight: 600; font-size: .74rem; letter-spacing: .04em; text-transform: uppercase; padding: 8px; border-bottom: 2px solid var(--border); white-space: nowrap; }
+    .peg-board td { padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .peg-board .r { text-align: right; }
+    .peg-board tr.peg-you td { background: var(--peg-you); }
+    .peg-board tr.peg-you td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+    .peg-board tr.peg-oth td { color: #b8c7da; }
+    .peg-board.peg-dim { opacity: .45; }
+    .peg-rank { font-weight: 800; font-size: 1.05rem; width: 44px; font-variant-numeric: tabular-nums; }
+    .peg-rank.r1 { color: var(--accent-hi); }
+    .peg-labn { font-weight: 650; }
+    .peg-youtag { font-size: .64rem; font-weight: 800; letter-spacing: .06em; padding: 1px 6px; border-radius: 4px; background: var(--accent); color: var(--bg); margin-left: 6px; vertical-align: 1px; }
+    .peg-unver { font-size: .64rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 1px 5px; border-radius: 4px; border: 1px dashed var(--peg-other); color: var(--peg-other); margin-left: 6px; vertical-align: 1px; }
+    .peg-badge { display: inline-block; font-size: .66rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; margin-left: 6px; border: 1px solid; vertical-align: 1px; white-space: nowrap; }
+    .peg-b-clean { color: var(--pass); border-color: rgba(34,197,94,.5); }
+    .peg-b-impr { color: #7dd3fc; border-color: rgba(125,211,252,.5); }
+    .peg-meter { display: flex; align-items: center; gap: 8px; min-width: 170px; }
+    .peg-track { flex: 1; height: 8px; border-radius: 4px; background: rgba(160,180,204,.1); position: relative; overflow: hidden; }
+    .peg-fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--peg-other); }
+    tr.peg-you .peg-fill { background: var(--accent-hi); }
+    .peg-val { width: 52px; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+    .peg-spark { display: block; }
+    .peg-spark path { fill: none; stroke: var(--peg-other); stroke-width: 1.6; }
+    tr.peg-you .peg-spark path, .peg-spark.peg-hi path { stroke: var(--accent-hi); }
+    .peg-spark circle { fill: var(--text); }
+    .peg-unranked { color: var(--muted); font-size: .8rem; margin-top: 10px; }
+    .peg-board-note { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: .78rem; margin-top: 10px; }
+    .peg-h4 { margin: 0 0 6px; font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 650; }
+    /* Evosep vs other LC -- the one panel the mockup did not have. */
+    .peg-lc-rows { display: grid; gap: 6px; min-width: 560px; }
+    .peg-lc-row { display: grid; grid-template-columns: minmax(150px, 1.4fr) 84px minmax(120px, 1fr) 58px 104px; gap: 10px; align-items: center; font-size: .84rem; }
+    .peg-lc-row.peg-hd { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
+    .peg-lc-row .peg-m { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .peg-lc-name b { font-weight: 650; }
+    .peg-lc-name span { color: var(--muted); font-size: .76rem; margin-left: 6px; }
+    .peg-lcchip { display: inline-block; font-size: .68rem; font-weight: 750; letter-spacing: .04em; padding: 2px 8px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+    .peg-lcchip.ev { color: var(--accent-hi); border-color: rgba(255,191,0,.5); background: rgba(218,170,0,.08); }
+    .peg-lcchip.ot { color: #7dd3fc; border-color: rgba(125,211,252,.5); background: rgba(125,211,252,.06); }
+    .peg-lc-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
+    .peg-lc-group { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: rgba(1,26,58,.35); display: grid; gap: 8px; min-width: 0; }
+    .peg-lc-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .peg-lc-med { font-size: 1.5rem; font-weight: 750; font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .peg-lc-med span { font-size: .78rem; font-weight: 400; color: var(--muted); margin-left: 6px; }
+    .peg-lc-meta { display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted); font-size: .78rem; }
+    .peg-lc-meta b { color: var(--text); font-variant-numeric: tabular-nums; }
+    .peg-rng { position: relative; height: 10px; border-radius: 5px; background: rgba(160,180,204,.08); }
+    .peg-rng-iqr { position: absolute; top: 0; bottom: 0; border-radius: 5px; background: rgba(160,180,204,.32); }
+    .peg-rng-med { position: absolute; top: -3px; bottom: -3px; width: 3px; margin-left: -1.5px; border-radius: 2px; background: var(--accent-hi); }
+    .peg-lc-sep { border: 0; border-top: 1px solid var(--border); margin: 14px 0 12px; }
+    .peg-periods { display: grid; gap: 6px; }
+    .peg-per { display: grid; grid-template-columns: 138px minmax(0,1fr) 62px 60px; gap: 10px; align-items: center; font-size: .82rem; }
+    .peg-per .peg-when { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .peg-per .peg-when b { color: var(--text); font-weight: 600; }
+    .peg-per .peg-trk { height: 10px; border-radius: 5px; background: rgba(160,180,204,.08); position: relative; }
+    .peg-per .peg-trk span { position: absolute; inset: 0 auto 0 0; border-radius: 5px; }
+    .peg-per .peg-m { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .peg-per .peg-h { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .peg-per.peg-hd { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
+    @media (max-width: 520px) { .peg-per { grid-template-columns: 112px minmax(0,1fr) 52px; } .peg-per .peg-h { display: none; } }
+    .peg-adbar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; margin: 6px 0; }
+    .peg-adkey { display: flex; gap: 14px; flex-wrap: wrap; font-size: .78rem; color: var(--muted); }
+    .peg-adkey b { color: var(--text); font-variant-numeric: tabular-nums; }
+    .peg-sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+    ol.peg-steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; counter-reset: pegstep; }
+    ol.peg-steps li { display: grid; grid-template-columns: 28px minmax(0,1fr); gap: 10px; align-items: start; counter-increment: pegstep; }
+    ol.peg-steps li::before { content: counter(pegstep); width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--accent); color: var(--accent-hi); display: grid; place-items: center; font-weight: 750; font-size: .82rem; }
+    ol.peg-steps b { display: block; }
+    ol.peg-steps span { color: var(--muted); font-size: .84rem; }
+    .peg-share { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+    .peg-share ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; font-size: .86rem; }
+    .peg-share .peg-no li { color: var(--muted); }
+    .peg-toggle { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+    .peg-switch { width: 40px; height: 22px; border-radius: 11px; background: var(--accent); position: relative; flex: none; }
+    .peg-switch::after { content: ''; position: absolute; top: 3px; left: 21px; width: 16px; height: 16px; border-radius: 50%; background: var(--bg); }
+    .peg-switch.off { background: var(--border); }
+    .peg-switch.off::after { left: 3px; background: var(--muted); }
+    .peg-method { font-size: .84rem; color: var(--muted); display: grid; gap: 6px; max-width: 95ch; }
+    .peg-method b { color: var(--text); }
   </style>
 </head>
 <body>
@@ -338,9 +519,32 @@
     // intensity percentage. v0.2.147: click opens the breakdown modal
     // with a lollipop chart of the detected PEG ions. Badges fall back
     // to hover-only (no click) when the run has no peg data.
+    /* A run has a real PEG measurement only with a score, a percentage and
+       one of the four classes. 'unknown' is the reader-failure sentinel and
+       is written with peg_score 0.0 -- a number identical to a genuinely
+       clean run -- so anything that counts, sorts or averages PEG must
+       check the class, not the score (spec 2026-09-28 §4.1). */
+    const PEG_REAL_CLASSES = new Set(['clean', 'trace', 'moderate', 'heavy']);
+    const pegIsReal = r => !!r && r.peg_score != null && r.peg_intensity_pct != null
+      && PEG_REAL_CLASSES.has(r.peg_class);
+
     function PegBadge({ run, source="runs" }) {
       const cls = run?.peg_class;
       if (!cls) return <span style={{color:'var(--muted)', fontSize:'0.7rem'}}>—</span>;
+      /* The failure sentinel used to fall through to the score colouring
+         and render as a green "0.0" -- a failed read shown as a perfectly
+         clean run. It is not a measurement, so say so. */
+      if (cls === 'unknown') {
+        return (
+          <span title="PEG could not be measured on this run (reader failed)"
+                style={{display:'inline-block', padding:'0.05rem 0.3rem',
+                        fontSize:'0.65rem', fontWeight:700, color:'#fff',
+                        background:'#6b7280', borderRadius:'0.2rem',
+                        userSelect:'none'}}>
+            n/a
+          </span>
+        );
+      }
       // v0.2.168: show the numeric score (0-100) instead of the 4-class
       // label. Brett 2026-04-22: score gives more nuance than "trace"
       // vs "moderate" (both could be 45-60) and lets operators see
@@ -3687,6 +3891,11 @@
       )].sort();
       const getSortVal = (r) => {
         if (sortKey === 'primary_ids') return (r.mode === 'DDA' ? r.n_psms : r.n_precursors) || 0;
+        /* PEG sorts by score. It used to sort on peg_class as a string,
+           which ordered clean < heavy < moderate < trace. Unmeasured runs
+           and the 'unknown' sentinel go to -1 so they never sort in among
+           the genuinely clean 0.0 scores. */
+        if (sortKey === 'peg_score') return pegIsReal(r) ? r.peg_score : -1;
         // v0.2.185: file number is derived from run_name, not a column
         if (sortKey === 'file_number') {
           const n = parseInt(fileNumber(r.run_name), 10);
@@ -3808,7 +4017,7 @@
                 <SortHeader col="file_number" label="File #" />
                 <SortHeader col="mode" label="Mode" />
                 <SortHeader col="ips_score" label="IPS" />
-                <SortHeader col="peg_class" label="PEG" />
+                <SortHeader col="peg_score" label="PEG" />
                 {showDriftCol && <SortHeader col="drift_class" label="Drift" />}
                 <SortHeader col="primary_ids" label="Precursors / PSMs" />
                 <SortHeader col="n_peptides" label="Peptides" />
@@ -6845,13 +7054,21 @@ function BFailTable({ rows }) {
       const tMax = Math.max(...dates);
       const tRange = (tMax - tMin) || 1;
 
+      const isPeg = metric === 'peg_score';
       const vals = runs.map(r => {
+        // The 'unknown' failure sentinel carries peg_score 0.0; now that PEG
+        // zeros count (below) it must drop out rather than plot as clean.
+        if (isPeg && !pegIsReal(r)) return null;
         const v = r[metric];
         return (v == null || isNaN(v)) ? null : Number(v);
       });
       // For signed metrics where 0 is a meaningful value (directional drift),
       // keep zeros in the valid set. For other metrics, treat 0 as missing.
-      const validVals = showZeroLine
+      // PEG is the exception on the other side: a 0.0 score is a real clean
+      // run (482 of them on the timsTOF HT). Dropping them computed the
+      // range and median from contaminated runs only, biasing the median
+      // up and plotting every clean run below the chart floor.
+      const validVals = (showZeroLine || isPeg)
         ? vals.filter(v => v != null)
         : vals.filter(v => v != null && v !== 0);
       if (validVals.length === 0) {
@@ -8450,7 +8667,7 @@ function BFailTable({ rows }) {
                     <td style={{ fontFamily: 'monospace', fontSize: '0.8rem' }}>{r.run_name}</td>
                     <td>{(r.run_date || '').substring(0, 19).replace('T', ' ')}</td>
                     <td style={{ color: verdictColor(r.verdict), fontWeight: 'bold' }}>{r.verdict}</td>
-                    <td><PegBadge run={r} /></td>
+                    <td><PegBadge run={r} source="sample_health" /></td>
                     <td><DriftBadge run={r} /></td>
                     <td style={{ textAlign: 'right' }}>{r.ms1_max_intensity ? r.ms1_max_intensity.toExponential(2) : '—'}</td>
                     <td style={{ textAlign: 'right' }}>{r.dropout_rate_per_100_ms1 ?? '—'}</td>
@@ -9491,12 +9708,1270 @@ function BFailTable({ rows }) {
       );
     }
 
+    /* ====================================================================
+       PEG Watch (v1.2.0) -- spec docs/superpowers/specs/2026-09-28-peg-watch-design.md §4.6.
+       A React port of the mockup Brett approved on 2026-09-28, plus the
+       one panel he added afterwards (Evosep vs other LC).
+
+       The lab's own history comes from /api/peg/overview: one request with
+       a 10-minute server cache in front of PG, whose reads are billed. The
+       community board and the LC comparison are read from the HF relay
+       straight from the browser (its CORS is *), so a dead relay costs this
+       tab one panel, never the tab.
+
+       Two rules every component below keeps:
+         - Strings from the relay -- display_name above all, which whoever
+           submits gets to choose -- render as React text, never through
+           dangerouslySetInnerHTML. The relay's own public page put
+           display_name into innerHTML (relay review, 2026-09-28).
+         - All hooks sit above any early return (the v1.0.69 blank
+           Maintenance tab; see the note in EvosepColumnPanel).
+       ==================================================================== */
+    const PEG_DAY_MS = 864e5;
+    const PEG_HALF_DAY_MS = 432e5;
+    const PEG_CLS_NAMES = ['Clean', 'Trace', 'Moderate', 'Heavy'];
+    const PEG_CLS_KEYS = ['clean', 'trace', 'moderate', 'heavy'];
+    const PEG_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const PEG_MONTH = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+                       'August', 'September', 'October', 'November', 'December'];
+    const PEG_RELAY_DEFAULT = 'https://brettsp-stan.hf.space';
+    /* Evosep's standard ladder. Chips for these always show on an Evosep
+       lab's board; any other SPD shows only once the relay reports labs. */
+    const PEG_EVOSEP_SPDS = ['100', '60', '30'];
+    const PEG_WINDOWS = [['30', '30 days'], ['90', '90 days'], ['365', '12 months']];
+    const PEG_DIAG_URL = 'https://github.com/bsphinney/stan/blob/main/docs/PEG_EVOSEP_DIAGNOSTIC.md';
+    const PEG_RUN_COLS = ['t', 'spd', 'pct', 'score', 'ions', 'cls', 'prec'];
+    /* The server names a side panel it could not read in `degraded` rather
+       than failing the tab. Say that, instead of an empty state that would
+       read as "nothing was ever recorded". */
+    const PEG_UNREAD = 'This could not be read from the database just now. It will be back on the next load.';
+
+    const pegMedian = (a) => {
+      if (!a.length) return null;
+      const s = [...a].sort((x, y) => x - y), m = s.length >> 1;
+      return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    };
+    const pegFmtPct = (p) => (p == null || !isFinite(p)) ? '—'
+      : p === 0 ? '0%' : p < 0.1 ? p.toFixed(2) + '%' : p < 10 ? p.toFixed(1) + '%' : Math.round(p) + '%';
+    const pegFmtN = (n) => (n == null || !isFinite(n)) ? '—' : Number(n).toLocaleString('en-US');
+    /* All PEG dates are UTC (the overview's run times are UTC, and the
+       server buckets months and days in UTC), so format them in UTC too. */
+    const pegFmtD = (t, withYear = true) => {
+      const d = new Date(t);
+      return `${PEG_MON[d.getUTCMonth()]} ${d.getUTCDate()}${withYear ? ', ' + d.getUTCFullYear() : ''}`;
+    };
+    const pegDayT = (s) => Date.parse(String(s).slice(0, 10) + 'T00:00:00Z');
+    const pegFmtRange = (a, b) => {
+      const ta = pegDayT(a) + PEG_HALF_DAY_MS, tb = pegDayT(b) + PEG_HALF_DAY_MS;
+      const sameYear = new Date(ta).getUTCFullYear() === new Date(tb).getUTCFullYear();
+      return `${pegFmtD(ta, !sameYear)} – ${pegFmtD(tb)}`;
+    };
+    const pegFmtMonth = (ym) => { const [y, m] = String(ym).split('-'); return `${PEG_MON[+m - 1]} ${y}`; };
+    /* PEG share spans 0 to ~50 %, and most of the story is under 1 %, so
+       every PEG axis is log(p + 0.05): zero stays drawable. */
+    const pegLg = (p) => Math.log10(Math.max(0, p) + 0.05);
+    const pegStore = {
+      get(k, d) { try { const v = window.localStorage.getItem('stan.peg.' + k); return v == null ? d : v; } catch (e) { return d; } },
+      set(k, v) { try { window.localStorage.setItem('stan.peg.' + k, v); } catch (e) { /* private window */ } },
+    };
+    const pegHost = (base) => { try { return new URL(base).host; } catch (e) { return String(base); } };
+    /* relay_url comes from server config and goes straight into fetch();
+       accept a plain http(s) URL and nothing else. */
+    const pegRelayBase = (ov) => {
+      const u = ov && ov.sharing && ov.sharing.relay_url;
+      return (typeof u === 'string' && /^https?:\/\/[^\s"'<>]+$/.test(u.trim()))
+        ? u.trim().replace(/\/+$/, '') : PEG_RELAY_DEFAULT;
+    };
+    const pegBoardUrl = (base, family, spd, win) =>
+      `${base}/api/peg/leaderboard?family=${encodeURIComponent(family)}&spd=${encodeURIComponent(spd)}&window=${encodeURIComponent(win)}`;
+    const pegLcUrl = (base, family) =>
+      `${base}/api/peg/lc-compare?family=${encodeURIComponent(family)}&window=90`;
+    const pegTrendUrl = (base, family, spd) =>
+      `${base}/api/peg/trend?family=${encodeURIComponent(family)}&spd=${encodeURIComponent(spd)}&weeks=52`;
+
+    /* GET-JSON with a 5-minute page-level cache. The tab remounts on every
+       visit (ErrorBoundary key={tab}), and the relay and the PG-backed
+       overview should not be re-read each time someone flips tabs. The
+       cache is read synchronously on first render, which is also how
+       scripts/render_check.js feeds fixtures in without a network. */
+    const PEG_CACHE = new Map();     // url -> { t, data }
+    const PEG_INFLIGHT = new Map();  // url -> Promise, so two panels asking at once share one request
+    const PEG_CACHE_MS = 5 * 60 * 1000;
+    function pegCached(url) {
+      const hit = url ? PEG_CACHE.get(url) : null;
+      return hit && Date.now() - hit.t < PEG_CACHE_MS ? hit.data : undefined;
+    }
+    function pegGet(url) {
+      if (PEG_INFLIGHT.has(url)) return PEG_INFLIGHT.get(url);
+      const p = fetch(url.startsWith('/') ? API + url : url)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(d => { PEG_CACHE.set(url, { t: Date.now(), data: d }); return d; })
+        .finally(() => { PEG_INFLIGHT.delete(url); });
+      PEG_INFLIGHT.set(url, p);
+      return p;
+    }
+    function usePegJson(url) {
+      const [st, setSt] = useState(() => {
+        const hit = pegCached(url);
+        return { url, data: hit === undefined ? null : hit, error: null };
+      });
+      useEffect(() => {
+        if (!url) return undefined;
+        const hit = pegCached(url);
+        if (hit !== undefined) { setSt({ url, data: hit, error: null }); return undefined; }
+        let live = true;
+        pegGet(url).then(
+          d => { if (live) setSt({ url, data: d, error: null }); },
+          e => { if (live) setSt({ url, data: null, error: (e && e.message) || String(e) }); });
+        return () => { live = false; };
+      }, [url]);
+      if (!url) return { data: null, error: null, loading: false, stale: null };
+      if (st.url === url) return { data: st.data, error: st.error, loading: st.data == null && st.error == null, stale: null };
+      /* The URL just changed and the effect has not caught up: answer from
+         the cache if we can, and hand back the previous answer as `stale`
+         so a toggle does not blank the panel while the new one loads. */
+      const hit = pegCached(url);
+      return hit !== undefined
+        ? { data: hit, error: null, loading: false, stale: null }
+        : { data: null, error: null, loading: true, stale: st.data };
+    }
+
+    /* Overview runs arrive as positional rows (runs_cols names them) to keep
+       ~1.7k runs small on the wire. */
+    function pegParseRuns(ov) {
+      const cols = (ov && Array.isArray(ov.runs_cols) && ov.runs_cols.length) ? ov.runs_cols : PEG_RUN_COLS;
+      const I = {};
+      PEG_RUN_COLS.forEach(c => { const i = cols.indexOf(c); I[c] = i < 0 ? PEG_RUN_COLS.indexOf(c) : i; });
+      const out = [];
+      ((ov && ov.runs) || []).forEach(r => {
+        if (!Array.isArray(r)) return;
+        const ts = String(r[I.t] || '');
+        const t = Date.parse(ts.length === 16 ? ts + ':00Z' : ts);
+        const cls = Number(r[I.cls]);
+        /* The server applies the real-PEG filter (spec §4.1). This is the
+           belt to its braces: anything unmeasured is dropped, never drawn
+           as a zero. */
+        if (!isFinite(t) || r[I.pct] == null || r[I.score] == null || !Number.isInteger(cls) || cls < 0 || cls > 3) return;
+        out.push({
+          t, ts: ts.slice(0, 16), cls,
+          spd: r[I.spd] == null ? null : Number(r[I.spd]),
+          pct: Number(r[I.pct]), score: Number(r[I.score]),
+          ions: r[I.ions], prec: r[I.prec],
+        });
+      });
+      out.sort((a, b) => a.t - b.t);
+      out.forEach((r, i) => { r.i = i; });
+      return out;
+    }
+
+    /* The cohort the hero rank tile reports. 100 SPD is the relay's default
+       and the approved mockup's; keep it whenever this lab could be ranked
+       there (5 runs in 30 days), otherwise use the method it ran most. */
+    function pegDefaultSpd(runs, asOfT) {
+      const counts = new Map();
+      runs.forEach(r => {
+        if (r.spd != null && r.t > asOfT - 30 * PEG_DAY_MS) counts.set(r.spd, (counts.get(r.spd) || 0) + 1);
+      });
+      if ((counts.get(100) || 0) >= 5) return '100';
+      let best = null;
+      counts.forEach((n, s) => { if (!best || n > best[1] || (n === best[1] && s > best[0])) best = [s, n]; });
+      return best ? String(best[0]) : '100';
+    }
+
+    /* Keep a horizontal scroller on its newest (rightmost) column. Pinning
+       once on mount is not enough: the page's own scrollbar appears after
+       the data lands and narrows the box, which left the newest week of the
+       calendar half hidden at phone width. */
+    function usePegPinRight(ref, dep) {
+      useEffect(() => {
+        const sc = ref.current;
+        if (!sc) return undefined;
+        const pin = () => { sc.scrollLeft = sc.scrollWidth; };
+        pin();
+        if (typeof window.ResizeObserver !== 'function') return undefined;
+        const ro = new window.ResizeObserver(pin);
+        ro.observe(sc);
+        return () => ro.disconnect();
+      }, [dep]);
+    }
+
+    function PegSeg({ label, opts, value, onPick }) {
+      return (
+        <div className="peg-seg" role="group" aria-label={label}>
+          {opts.map(([k, l]) => (
+            <button key={k} type="button" aria-pressed={value === k} onClick={() => onPick(k)}>{l}</button>
+          ))}
+        </div>
+      );
+    }
+
+    function PegSpark({ vals, w = 96, h = 26, hi = false }) {
+      const list = Array.isArray(vals) ? vals : [];
+      const v = list.filter(x => x != null && isFinite(x));
+      if (v.length < 2) return <span className="peg-fine">—</span>;
+      const lv = v.map(pegLg), mn = Math.min(...lv), mx = Math.max(...lv), sp = (mx - mn) || 1;
+      const n = list.length;
+      let d = '', pen = false, lx = 0, ly = 0;
+      list.forEach((x, i) => {
+        if (x == null || !isFinite(x)) { pen = false; return; }
+        lx = 2 + i / (n - 1) * (w - 4);
+        ly = h - 3 - (pegLg(x) - mn) / sp * (h - 6);
+        d += (pen ? 'L' : 'M') + lx.toFixed(1) + ' ' + ly.toFixed(1);
+        pen = true;
+      });
+      return (
+        <svg className={`peg-spark${hi ? ' peg-hi' : ''}`} width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden="true">
+          <path d={d} /><circle cx={lx} cy={ly} r="2.4" />
+        </svg>
+      );
+    }
+
+    function PegInstrumentPicker({ ov, onInstrument }) {
+      const list = (ov && ov.instruments) || [];
+      if (list.length < 2) return null;
+      return (
+        <label className="peg-chip">
+          Instrument{' '}
+          <select value={ov.instrument || ''} onChange={e => onInstrument(e.target.value)}>
+            {list.map(i => (
+              <option key={i.instrument} value={i.instrument}>
+                {i.instrument}{i.evosep ? ' · Evosep' : ''} ({pegFmtN(i.n_runs)})
+              </option>
+            ))}
+          </select>
+        </label>
+      );
+    }
+
+    function PegTab() {
+      /* In-memory only: a remembered instrument that later loses its PEG
+         runs would strand the tab on an empty view with no way back. */
+      const [instrument, setInstrument] = useState('');
+      const url = '/api/peg/overview' + (instrument ? `?instrument=${encodeURIComponent(instrument)}` : '');
+      const { data: ov, error } = usePegJson(url);
+      if (error) {
+        return (
+          <div className="peg-root">
+            <div className="card">
+              <h3>PEG Watch</h3>
+              <p className="peg-sub">Could not load <code>/api/peg/overview</code> ({error}).
+                {error === 'HTTP 404' ? ' This dashboard server predates PEG Watch (STAN 1.2.0).' : ' Try again in a minute.'}</p>
+            </div>
+          </div>
+        );
+      }
+      if (!ov) return <div className="peg-root"><div className="card"><div className="empty">Loading PEG history…</div></div></div>;
+      return <PegWatch ov={ov} onInstrument={setInstrument} />;
+    }
+
+    function PegEmpty({ ov, onInstrument }) {
+      return (
+        <div className="peg-root peg-stack">
+          <section className="card">
+            <div className="peg-eyebrow">PEG Watch</div>
+            <h3 style={{margin: '6px 0 8px'}}>No PEG measurements yet on {ov.instrument || 'this instrument'}</h3>
+            <p className="peg-sub">
+              STAN scores PEG from raw MS1 on every QC run once it can read the vendor format.
+              On a timsTOF, <code>stan install-peg-deps</code> installs alphatims for <code>.d</code>.
+              On an Orbitrap, STAN reads <code>.raw</code> through <code>fisher_py</code>
+              (on Hive, through the ThermoRawFileParser container). Then <code>stan backfill-peg</code> scores
+              the runs you already have.
+            </p>
+            <p className="peg-sub">Runs whose PEG read failed are left out, never counted as clean.</p>
+            <div className="peg-chips"><PegInstrumentPicker ov={ov} onInstrument={onInstrument} /></div>
+          </section>
+        </div>
+      );
+    }
+
+    function PegWatch({ ov, onInstrument }) {
+      const runs = useMemo(() => pegParseRuns(ov), [ov]);
+      const asOfT = useMemo(() => {
+        const t = pegDayT(ov.as_of || new Date().toISOString());
+        return t + PEG_DAY_MS - 60000;  // 23:59 UTC on as_of
+      }, [ov]);
+      const defaultSpd = useMemo(() => pegDefaultSpd(runs, asOfT), [runs, asOfT]);
+      /* Clean rate inside the best-90-day window, for the lede and tile. */
+      const baseClean = useMemo(() => {
+        const B = ov.baseline;
+        if (!B || !B.start || !B.end) return null;
+        const a = pegDayT(B.start), b = pegDayT(B.end) + PEG_DAY_MS;
+        const w = runs.filter(r => r.t >= a && r.t < b);
+        return w.length ? Math.round(w.filter(r => r.cls === 0).length / w.length * 100) : null;
+      }, [ov, runs]);
+      const isEvosep = ov.lc_system === 'evosep';
+      const family = ov.instrument_family || '';
+      const relayBase = pegRelayBase(ov);
+      const myName = (ov.sharing && typeof ov.sharing.display_name === 'string') ? ov.sharing.display_name : '';
+      /* The rank tile always reports the default cohort over 30 days, like
+         the mockup; the board below may be showing a different one. */
+      const rankLb = usePegJson(isEvosep && family ? pegBoardUrl(relayBase, family, defaultSpd, '30') : null);
+
+      if (!runs.length) return <PegEmpty ov={ov} onInstrument={onInstrument} />;
+
+      const cohorts = (rankLb.data && rankLb.data.cohorts) || [];
+      const degraded = new Set(Array.isArray(ov.degraded) ? ov.degraded : []);
+      return (
+        <div className="peg-root peg-stack">
+          <PegHero ov={ov} runs={runs} isEvosep={isEvosep} myName={myName} baseClean={baseClean}
+                   onInstrument={onInstrument} unread={degraded.has('ladder')} />
+          <PegTiles ov={ov} runs={runs} asOfT={asOfT} isEvosep={isEvosep} family={family}
+                    spd={defaultSpd} myName={myName} rankLb={rankLb} baseClean={baseClean} />
+          <PegTimeline ov={ov} runs={runs} asOfT={asOfT} isEvosep={isEvosep} family={family}
+                       relayBase={relayBase} cohorts={cohorts} />
+          <PegCalendar runs={runs} asOfT={asOfT} />
+          <PegBoard ov={ov} isEvosep={isEvosep} family={family} relayBase={relayBase}
+                    defaultSpd={defaultSpd} myName={myName} rankLb={rankLb} />
+          <PegLcPanel ov={ov} relayBase={relayBase} unread={degraded.has('lab_lc')} />
+          <div className="peg-two">
+            <PegImpact impact={ov.impact} firstT={runs[0].t} />
+            <PegLadder ladder={ov.ladder} episodes={ov.episodes} unread={degraded.has('ladder')} />
+          </div>
+          <div className="peg-two">
+            <PegPeriods periods={ov.column_periods} isEvosep={isEvosep} instrument={ov.instrument}
+                        unread={degraded.has('column_periods')} />
+            <PegSteps />
+          </div>
+          <div className="peg-two">
+            <PegShare sharing={ov.sharing} />
+            <PegMethod />
+          </div>
+        </div>
+      );
+    }
+
+    function PegHero({ ov, runs, isEvosep, myName, baseClean, onInstrument, unread }) {
+      const s = ov.summary || {};
+      const B = ov.baseline && ov.baseline.median_pct != null ? ov.baseline : null;
+      const ch = s.change_pct;
+      const m30 = s.median_30d, mPrev = s.median_prev_30d;
+      const headline = !s.n_30d ? 'No PEG-scored QC in 30 days'
+        : ch != null && ch < -15 ? 'PEG is easing'
+        : ch != null && ch > 15 ? 'PEG is rising' : 'PEG is holding steady';
+      const bestWin = B ? `your best 90 days (${pegFmtRange(B.start, B.end)})` : '';
+      let lede;
+      if (!s.n_30d) {
+        lede = <>None of this instrument's QC runs in the last 30 days has a PEG measurement.
+          {B ? <> In {bestWin} its QCs carried a median <b>{pegFmtPct(B.median_pct)}</b> of MS1 as PEG.</> : null}</>;
+      } else {
+        const vsPrev = mPrev == null ? '.'
+          : <>, {m30 < mPrev ? 'down from' : m30 > mPrev ? 'up from' : 'level with'} <b>{pegFmtPct(mPrev)}</b> the 30 days before.</>;
+        let vsBase = null;
+        if (B) {
+          const b = B.median_pct;
+          const rel = (m30 > 3 * b && m30 - b >= 0.5) ? 'That is still well above'
+            : m30 < b ? 'That is below' : 'That is close to';
+          vsBase = <> {rel} {bestWin} of <b>{pegFmtPct(b)}</b>{baseClean != null ? `, when ${baseClean}% of QCs came back clean` : ''}.</>;
+        }
+        lede = <>Your QC runs carried a median <b>{pegFmtPct(m30)}</b> of their MS1 signal as PEG over the last 30 days{vsPrev}{vsBase}</>;
+      }
+      const spdCounts = new Map();
+      runs.forEach(r => { if (r.spd != null) spdCounts.set(r.spd, (spdCounts.get(r.spd) || 0) + 1); });
+      let spds = [...spdCounts.keys()].filter(k => spdCounts.get(k) >= 5);
+      if (!spds.length) spds = [...spdCounts.keys()];
+      spds.sort((a, b) => b - a);
+      return (
+        <section className="peg-hero" aria-label="Summary">
+          <div>
+            <div className="peg-eyebrow">{isEvosep ? 'Evosep PEG Watch' : 'PEG Watch'} · last 30 days</div>
+            <h2>{headline} on the <span className="peg-lab">{ov.instrument}</span></h2>
+            <p className="peg-lede">{lede}</p>
+            <div className="peg-chips">
+              {myName && <span className="peg-chip">Lab <b>{myName}</b></span>}
+              <span className="peg-chip">LC <b>{isEvosep ? 'Evosep' : (ov.lc_system || 'not recorded')}</b></span>
+              {spds.length > 0 && <span className="peg-chip">Methods <b>{spds.join(' · ')} SPD</b></span>}
+              <span className="peg-chip">Source <b>QC runs</b></span>
+              <PegInstrumentPicker ov={ov} onInstrument={onInstrument} />
+            </div>
+          </div>
+          <PegSpectrum ladder={ov.ladder} asOf={ov.as_of} unread={unread} />
+        </section>
+      );
+    }
+
+    function PegSpectrum({ ladder, asOf, unread }) {
+      const L = ladder || {};
+      const months = L.months || [], ns = L.n || [];
+      const mi = months.length - 1;
+      if (mi < 0 || !ns.length) {
+        return (
+          <div className="peg-spectrum">
+            <div className="peg-top"><b style={{fontSize: '.9rem'}}>Your PEG ladder</b></div>
+            <p className="peg-fine" style={{marginTop: 10}}>{unread ? PEG_UNREAD : 'No PEG oligomers matched yet. The ladder appears once STAN finds PEG ions in a QC run.'}</p>
+          </div>
+        );
+      }
+      const thisMonth = months[mi] === String(asOf || '').slice(0, 7);
+      const W = 520, x0 = 34, x1 = W - 12, yb = 150, yt = 22;
+      const mz = (n) => n * 44.0262147 + 18.0105646 + 18.033823;  // [M+NH4]+
+      const X = (v) => x0 + (v - 80) / (950 - 80) * (x1 - x0);
+      const Y = (s) => yb - s * (yb - yt);
+      const els = [];
+      [0, 0.25, 0.5, 0.75, 1].forEach(s => {
+        els.push(<line key={`g${s}`} className="peg-g-grid" x1={x0} x2={x1} y1={Y(s)} y2={Y(s)} />,
+                 <text key={`gt${s}`} className="peg-g-ax" x={x0 - 6} y={Y(s) + 4} textAnchor="end">{Math.round(s * 100)}%</text>);
+      });
+      ns.forEach((n, j) => {
+        const s = Math.min(1, Math.max(0, ((L.share || [])[j] || [])[mi] || 0)), x = X(mz(n));
+        els.push(<line key={`b${n}`} className="peg-stick-bg" x1={x} x2={x} y1={yb} y2={yt} />);
+        if (s > 0) {
+          els.push(<line key={`s${n}`} className="peg-stick peg-stick-on" x1={x} x2={x} y1={yb} y2={Math.min(yb - 2, Y(s))}>
+            <title>{`PEG${n} [M+NH4]+ m/z ${mz(n).toFixed(3)} · seen in ${Math.round(s * 100)}% of runs`}</title>
+          </line>);
+        }
+        if (n % 3 === 2) els.push(<text key={`n${n}`} className="peg-g-ax" x={x} y={yb + 14} textAnchor="middle">{n}</text>);
+      });
+      const a = X(mz(8)), b = X(mz(9));
+      els.push(<path key="br" className="peg-bracket" d={`M${a} ${yt - 4} v-6 H${b} v6`} />,
+               <text key="brt" className="peg-g-ax-strong" x={(a + b) / 2} y={yt - 13} textAnchor="middle">+44.026</text>);
+      const nmin = Math.min(...ns), nmax = Math.max(...ns);
+      els.push(<text key="xl" className="peg-g-ax" x={(x0 + x1) / 2} y={yb + 32} textAnchor="middle">
+        {`PEG oligomer (n) · sticks at [M+NH₄]⁺ m/z ${Math.round(mz(nmin))}–${Math.round(mz(nmax))}`}</text>);
+      return (
+        <div className="peg-spectrum">
+          <div className="peg-top">
+            <b style={{fontSize: '.9rem'}}>{thisMonth ? 'Your PEG ladder this month' : 'Your latest PEG ladder'}</b>
+            <span>share of {pegFmtMonth(months[mi])} QCs where each oligomer was seen · n = {pegFmtN((L.nruns || [])[mi])}</span>
+          </div>
+          <svg viewBox="0 0 520 190" role="img" aria-label="Stick plot of the PEG oligomers detected in the latest month">{els}</svg>
+        </div>
+      );
+    }
+
+    function PegTiles({ ov, runs, asOfT, isEvosep, family, spd, myName, rankLb, baseClean }) {
+      const s = ov.summary || {};
+      const eps = ov.episodes || [];
+      const last = eps.length ? eps[eps.length - 1] : null;
+      const ch = s.change_pct;
+      let since = null;
+      if (last && !last.ongoing) {
+        const e = pegDayT(last.end) + PEG_DAY_MS;
+        since = pegMedian(runs.filter(r => r.t >= e && r.t <= asOfT).map(r => r.pct));
+      }
+      let rankV = '—', rankD;
+      if (!isEvosep) rankD = 'the board ranks Evosep runs only';
+      else if (rankLb.error) rankD = 'community board unavailable';
+      else if (!rankLb.data) rankD = 'loading…';
+      else {
+        const ranked = rankLb.data.ranked || [];
+        const k = myName ? ranked.findIndex(r => r.display_name === myName) : -1;
+        if (k >= 0) {
+          rankV = '#' + (ranked[k].rank || k + 1);
+          rankD = `of ${ranked.length} lab${ranked.length === 1 ? '' : 's'} · last 30 days`;
+        } else {
+          rankD = !(ov.sharing && ov.sharing.enabled) ? 'sharing is off' : 'not ranked yet · 5 QCs in 30 days needed';
+        }
+      }
+      const epStart = last ? pegDayT(last.start) + PEG_HALF_DAY_MS : null;
+      const tiles = [
+        ['PEG share of MS1 · 30-day median', pegFmtPct(s.median_30d),
+         ch == null ? '' : <><span className={ch < 0 ? 'peg-down' : 'peg-up'}>{ch < 0 ? '▼' : '▲'} {Math.abs(Math.round(ch))}%</span> vs previous 30 days</>],
+        ['Clean QCs · 30 days', s.clean_rate_30d == null ? '—' : `${s.clean_rate_30d}%`,
+         `${s.clean_30d || 0} of ${s.n_30d || 0} runs${baseClean != null ? ` · best 90 days ${baseClean}%` : ''}`],
+        ['Heavy PEG QCs · 30 days', String(s.heavy_30d || 0),
+         s.n_30d ? `${Math.round((s.heavy_30d || 0) / s.n_30d * 100)}% of runs · score 70 or more` : 'no PEG-scored QC in 30 days'],
+        ['Latest episode', last ? `${last.days} days` : 'None',
+         !last ? 'the 14-day median has not held above 3%'
+           : last.ongoing ? `${pegFmtD(epStart, false)} – now · ongoing · median ${pegFmtPct(last.median_pct)}`
+           : `${pegFmtD(epStart, false)} – ${pegFmtD(pegDayT(last.end) + PEG_HALF_DAY_MS, false)} · ${pegFmtPct(since)} since it ended`],
+        [`Community rank · ${family} ${spd} SPD`, rankV, rankD],
+      ];
+      return (
+        <div className="peg-tiles">
+          {tiles.map(([k, v, d]) => (
+            <div className="peg-tile" key={k}>
+              <div className="peg-tile-k">{k}</div>
+              <div className="peg-tile-v">{v}</div>
+              <div className="peg-tile-d">{d}</div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    /* Everything on the timeline that does not move with the pointer, built
+       once per (data, filter, width). ~5,000 circles re-rendered on every
+       pointermove would stutter; built here and memoised, React reuses the
+       same element tree and only the hover ring and tooltip change. */
+    function pegTimelineLayer({ ov, runs, asOfT, spd, rng, W, trend, isEvosep }) {
+      const H = W < 560 ? 300 : 360;
+      const m = { l: 46, r: 12, t: 30, b: 42 };
+      const t1 = asOfT;
+      const firstT = runs.length ? runs[0].t : t1 - 365 * PEG_DAY_MS;
+      const d0 = new Date(firstT);
+      const prevYear = new Date(t1).getUTCFullYear() - 1;
+      const t0 = ({
+        '6m': t1 - 182 * PEG_DAY_MS, '1y': t1 - 365 * PEG_DAY_MS,
+        prev: Date.UTC(prevYear, 0, 1), all: Date.UTC(d0.getUTCFullYear(), d0.getUTCMonth(), 1),
+      })[rng];
+      const pw = W - m.l - m.r, ph = H - m.t - m.b;
+      const X = (t) => m.l + (t - t0) / (t1 - t0) * pw;
+      const L0 = pegLg(0), L1 = pegLg(100);
+      const Y = (p) => m.t + (1 - (pegLg(Math.min(100, p)) - L0) / (L1 - L0)) * ph;
+      const els = [];
+
+      (ov.episodes || []).forEach((e, k) => {
+        const a = Math.max(t0, pegDayT(e.start));
+        const b = Math.min(t1, e.ongoing ? t1 : pegDayT(e.end) + PEG_DAY_MS - 60000);
+        if (!(b > a)) return;
+        const xa = X(a), w = X(b) - xa;
+        const endTxt = e.ongoing ? 'now' : pegFmtD(pegDayT(e.end) + PEG_HALF_DAY_MS, false);
+        const lab = w > 250 ? `Episode · ${pegFmtD(pegDayT(e.start) + PEG_HALF_DAY_MS, false)} – ${endTxt} · median ${pegFmtPct(e.median_pct)}`
+          : w > 110 ? `${e.days} days · ${pegFmtPct(e.median_pct)}` : w > 50 ? `${e.days} d` : '';
+        els.push(<rect key={`ep${k}`} className="peg-ep" x={xa} y={m.t - 18} width={w} height={ph + 18} rx="3" />);
+        if (lab) els.push(<text key={`ept${k}`} className="peg-ep-t" x={xa + 6} y={m.t - 5}>{lab}</text>);
+      });
+
+      [0, 0.1, 1, 10, 100].forEach(p => {
+        const y = Y(p);
+        els.push(<line key={`gy${p}`} className="peg-g-grid" x1={m.l} x2={W - m.r} y1={y} y2={y} />,
+                 <text key={`gyt${p}`} className="peg-g-ax" x={m.l - 7} y={y + 4} textAnchor="end">{p === 0 ? '0' : p + '%'}</text>);
+      });
+      els.push(<text key="ylab" className="peg-g-ax" transform={`translate(11 ${m.t + ph / 2}) rotate(-90)`} textAnchor="middle">PEG share of MS1</text>);
+
+      const months = (t1 - t0) / (30.44 * PEG_DAY_MS);
+      const step = [1, 2, 3, 6, 12].find(s => pw / (months / s) >= 64) || 12;
+      const ds = new Date(t0);
+      let cur = Date.UTC(ds.getUTCFullYear(), ds.getUTCMonth() + 1, 1);
+      while (cur <= t1) {
+        const d = new Date(cur), mo = d.getUTCMonth();
+        if (mo % step === 0) {
+          const x = X(cur);
+          els.push(<line key={`gx${cur}`} className="peg-g-grid" x1={x} x2={x} y1={H - m.b} y2={H - m.b + 5} />,
+                   <text key={`gxt${cur}`} className={mo === 0 ? 'peg-g-ax-strong' : 'peg-g-ax'} x={x} y={H - m.b + 18} textAnchor="middle">
+                     {mo === 0 ? d.getUTCFullYear() : PEG_MON[mo]}</text>);
+        }
+        cur = Date.UTC(d.getUTCFullYear(), mo + 1, 1);
+      }
+
+      /* Community p25-p75 band, only for weeks with >= 3 labs: with fewer,
+         the "community" is one or two other labs and the band would show
+         their private history (spec §4.6). */
+      let band = false, seg = [];
+      const flush = () => {
+        if (seg.length >= 2) {
+          const up = seg.map(q => `${q[0].toFixed(1)},${q[2].toFixed(1)}`);
+          const dn = seg.slice().reverse().map(q => `${q[0].toFixed(1)},${q[1].toFixed(1)}`);
+          els.push(<polygon key={`cb${els.length}`} className="peg-cband" points={up.concat(dn).join(' ')} />);
+          band = true;
+        }
+        seg = [];
+      };
+      ((trend && Array.isArray(trend.weeks)) ? trend.weeks : []).forEach(wk => {
+        const t = pegDayT(wk.week_start) + 3.5 * PEG_DAY_MS;
+        if ((wk.n_labs || 0) >= 3 && wk.p25 != null && wk.p75 != null && t >= t0 && t <= t1) seg.push([X(t), Y(wk.p25), Y(wk.p75)]);
+        else flush();
+      });
+      flush();
+
+      /* Best 90 days (spec: replaces the mockup's hard-coded 2025 baseline).
+         Drawn at every range: it is a reference level, and the window it
+         came from may be years before the range in view. */
+      const B = ov.baseline;
+      let base = null;
+      if (B && B.median_pct != null) {
+        if (spd === 'all') base = B.median_pct;
+        else {
+          const a = pegDayT(B.start), b = pegDayT(B.end) + PEG_DAY_MS;
+          const v = runs.filter(r => r.t >= a && r.t < b && r.spd === +spd).map(r => r.pct);
+          base = v.length >= 5 ? pegMedian(v) : null;
+        }
+      }
+      if (base != null) {
+        const y = Y(base);
+        els.push(<line key="base" className="peg-base" x1={m.l} x2={W - m.r} y1={y} y2={y} />,
+                 <text key="baset" className="peg-g-ax" x={W - m.r - 4} y={y - 5} textAnchor="end">
+                   {W < 560 ? `best 90 days ${pegFmtPct(base)}` : `your best 90 days (${pegFmtRange(B.start, B.end)}) ${pegFmtPct(base)}`}</text>);
+      }
+
+      (ov.column_periods || []).forEach((c, k) => {
+        if (!c || !c.installed) return;
+        const t = pegDayT(c.installed) + PEG_HALF_DAY_MS;
+        if (!(t >= t0 && t <= t1) || t <= firstT) return;
+        const x = X(t);
+        els.push(<line key={`cm${k}`} className="peg-colmk" x1={x} x2={x} y1={m.t} y2={H - m.b} />,
+                 <path key={`cmd${k}`} className="peg-colmk-d" d={`M${x - 4} ${H - m.b + 30} l4 -6 l4 6 z`}>
+                   <title>{`${isEvosep ? 'Evosep column' : 'Column'} installed ${pegFmtD(t)}`}</title></path>);
+      });
+
+      const xs = [], ys = [], rr = [], dots = [];
+      const rad = W < 560 ? 2.1 : 2.7;
+      for (const r of runs) {
+        if (r.t < t0 || r.t > t1 || (spd !== 'all' && r.spd !== +spd)) continue;
+        /* Clean zero-share runs all sit on one line; a deterministic jitter
+           lets their count show without implying any spread in value. */
+        const x = X(r.t), y = Y(r.pct) + (r.pct === 0 ? ((r.i * 37) % 9) - 4 : 0);
+        xs.push(x); ys.push(y); rr.push(r);
+        dots.push(<circle key={r.i} className={`peg-pt peg-c${r.cls}`} cx={x.toFixed(1)} cy={y.toFixed(1)} r={rad} />);
+      }
+      els.push(<g key="dots">{dots}</g>);
+
+      const series = (ov.rolling || {})[spd] || [];
+      const rs = pegDayT(ov.rolling_start) + PEG_HALF_DAY_MS;
+      let d = '', pen = false;
+      if (isFinite(rs)) {
+        series.forEach((v, k) => {
+          const t = rs + k * PEG_DAY_MS;
+          if (t < t0 || t > t1 || v == null) { pen = false; return; }
+          d += (pen ? 'L' : 'M') + X(t).toFixed(1) + ' ' + Y(v).toFixed(1);
+          pen = true;
+        });
+      }
+      if (d) els.push(<path key="ru" className="peg-roll-under" d={d} />, <path key="r" className="peg-roll" d={d} />);
+      return { H, t0, t1, xs, ys, rr, band, layer: els };
+    }
+
+    function PegTimeline({ ov, runs, asOfT, isEvosep, family, relayBase, cohorts }) {
+      const spdKeys = useMemo(() => Object.keys(ov.rolling || {})
+        .filter(k => k !== 'all' && /^\d+$/.test(k)).sort((a, b) => +b - +a), [ov]);
+      const [spdPick, setSpdPick] = useState(() => pegStore.get('spd', 'all'));
+      const [rngPick, setRngPick] = useState(() => pegStore.get('rng', 'prev'));
+      const spd = (spdPick === 'all' || spdKeys.includes(spdPick)) ? spdPick : 'all';
+      const rng = ['6m', '1y', 'prev', 'all'].includes(rngPick) ? rngPick : 'prev';
+      const boxRef = useRef(null);
+      const [W, setW] = useState(900);
+      const [hov, setHov] = useState(-1);
+      const hovRef = useRef(-1);
+      useEffect(() => {
+        const el = boxRef.current;
+        if (!el) return undefined;
+        /* 1 viewBox unit = 1 CSS px down to 260, so labels stay 11 px and
+           the tooltip lands where it is computed; below that it scales. */
+        const measure = () => setW(Math.max(260, Math.round(el.clientWidth || 900)));
+        measure();
+        if (typeof window.ResizeObserver !== 'function') {
+          window.addEventListener('resize', measure);
+          return () => window.removeEventListener('resize', measure);
+        }
+        let raf = 0;
+        const ro = new window.ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(measure); });
+        ro.observe(el);
+        return () => { ro.disconnect(); cancelAnimationFrame(raf); };
+      }, []);
+      const nLabs = spd === 'all' ? 0
+        : Number(((cohorts || []).find(c => c.family === family && String(c.spd) === spd) || {}).n_labs) || 0;
+      const trendUrl = (isEvosep && family && spd !== 'all' && nLabs >= 3) ? pegTrendUrl(relayBase, family, spd) : null;
+      const { data: trend } = usePegJson(trendUrl);
+      const geo = useMemo(() => pegTimelineLayer({ ov, runs, asOfT, spd, rng, W, trend, isEvosep }),
+                          [ov, runs, asOfT, spd, rng, W, trend, isEvosep]);
+      useEffect(() => { hovRef.current = -1; setHov(-1); }, [geo]);
+
+      const onMove = (ev) => {
+        const rect = ev.currentTarget.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const sx = (ev.clientX - rect.left) * (W / rect.width);
+        const sy = (ev.clientY - rect.top) * (geo.H / rect.height);
+        const { xs, ys } = geo, R = 26;
+        /* xs ascend with time, so binary-search the strip within R of the
+           pointer and only measure distances inside it. */
+        let lo = 0, hi = xs.length;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (xs[mid] < sx - R) lo = mid + 1; else hi = mid; }
+        let best = -1, bd = R * R;
+        for (let k = lo; k < xs.length && xs[k] <= sx + R; k++) {
+          const dx = xs[k] - sx, dy = ys[k] - sy, dd = dx * dx + dy * dy;
+          if (dd < bd) { bd = dd; best = k; }
+        }
+        if (best !== hovRef.current) { hovRef.current = best; setHov(best); }
+      };
+      const onLeave = () => { if (hovRef.current !== -1) { hovRef.current = -1; setHov(-1); } };
+
+      const prevYear = new Date(asOfT).getUTCFullYear() - 1;
+      const SPDS = [['all', 'All'], ...spdKeys.map(k => [k, `${k} SPD`])];
+      const RNGS = [['6m', '6 mo'], ['1y', '1 yr'], ['prev', `Since ${prevYear}`], ['all', 'All']];
+      const r = hov >= 0 && hov < geo.rr.length ? geo.rr[hov] : null;
+      const hx = r ? geo.xs[hov] : 0, hy = r ? geo.ys[hov] : 0;
+      return (
+        <section className="card" aria-labelledby="peg-t-h">
+          <div className="peg-bar">
+            <div>
+              <h3 id="peg-t-h">PEG over time</h3>
+              <p className="peg-sub" style={{marginBottom: 0}}>Every QC run, as a share of its MS1 signal. The gold line is the 14-day median. Red bands mark episodes where that median stayed above 3%.</p>
+            </div>
+            <div className="peg-ctrls">
+              <PegSeg label={isEvosep ? 'Evosep method' : 'Method'} opts={SPDS} value={spd}
+                      onPick={k => { pegStore.set('spd', k); setSpdPick(k); }} />
+              <PegSeg label="Time range" opts={RNGS} value={rng}
+                      onPick={k => { pegStore.set('rng', k); setRngPick(k); }} />
+            </div>
+          </div>
+          <div className="peg-chartbox" ref={boxRef}>
+            <svg viewBox={`0 0 ${W} ${geo.H}`} height={geo.H} role="img"
+                 aria-label={`PEG share of MS1 for ${geo.rr.length} QC runs from ${pegFmtD(geo.t0)} to ${pegFmtD(geo.t1)}`}
+                 onPointerMove={onMove} onPointerLeave={onLeave}>
+              {geo.layer}
+              {r && <circle className="peg-hov" r="6" cx={hx} cy={hy} />}
+            </svg>
+            {r && (
+              <div className="peg-tt" style={{ left: Math.min(W - 224, Math.max(4, hx + 14)), top: hy >= 150 ? hy - 150 : hy + 14 }}>
+                <div className="peg-tt-h">{pegFmtD(r.t)} · {r.ts.slice(11, 16)} UTC</div>
+                <div className="peg-tt-r"><span>Method</span><span>{r.spd == null ? '—' : `${isEvosep ? 'Evosep ' : ''}${r.spd} SPD`}</span></div>
+                <div className="peg-tt-r"><span>PEG share of MS1</span><span>{pegFmtPct(r.pct)}</span></div>
+                <div className="peg-tt-r"><span>PEG score</span><span><span className={`peg-pill peg-p${r.cls}`}>{PEG_CLS_NAMES[r.cls]} {r.score < 10 ? r.score.toFixed(1) : Math.round(r.score)}</span></span></div>
+                <div className="peg-tt-r"><span>PEG ions detected</span><span>{r.ions == null ? '—' : `${r.ions} of 60`}</span></div>
+                <div className="peg-tt-r"><span>Precursors</span><span>{pegFmtN(r.prec)}</span></div>
+              </div>
+            )}
+          </div>
+          <div className="peg-legend">
+            {PEG_CLS_NAMES.map((n, i) => (
+              <span key={n}><i className="peg-dot" style={{background: ['var(--pass)', 'var(--warn)', 'var(--moderate)', 'var(--fail)'][i]}} />{n}</span>
+            ))}
+            <span><i className="peg-ln" />14-day median</span>
+            <span><i className="peg-bx" />PEG episode</span>
+            {ov.baseline && ov.baseline.median_pct != null && <span><i className="peg-dsh" />Your best 90 days</span>}
+            <span><i className="peg-col" />{isEvosep ? 'Evosep column change' : 'Column change'}</span>
+            {geo.band && <span><i className="peg-bnd" />Community p25–p75 · {family} {spd} SPD · {nLabs} labs</span>}
+          </div>
+        </section>
+      );
+    }
+
+    function PegCalendar({ runs, asOfT }) {
+      const scRef = useRef(null);
+      const prevYear = new Date(asOfT).getUTCFullYear() - 1;
+      const cal = useMemo(() => {
+        const jan1 = Date.UTC(prevYear, 0, 1);
+        const start = jan1 - ((new Date(jan1).getUTCDay() + 6) % 7) * PEG_DAY_MS;  // the Monday on or before Jan 1
+        const byDay = new Map();
+        runs.forEach(r => {
+          if (r.t < start || r.t > asOfT) return;
+          const k = Math.floor((r.t - start) / PEG_DAY_MS);
+          if (!byDay.has(k)) byDay.set(k, []);
+          byDay.get(k).push(r);
+        });
+        const nDays = Math.floor((asOfT - start) / PEG_DAY_MS) + 1, weeks = Math.ceil(nDays / 7);
+        const c = 10, gp = 2, x0 = 26, y0 = 18, W = x0 + weeks * (c + gp) + 4, H = y0 + 7 * (c + gp) + 4;
+        const els = [];
+        ['M', '', 'W', '', 'F', '', ''].forEach((l, i) => {
+          if (l) els.push(<text key={`dw${i}`} className="peg-g-ax" x="0" y={y0 + i * (c + gp) + 9}>{l}</text>);
+        });
+        let lastMo = -1, qcDays = 0;
+        const counts = [0, 0, 0, 0];
+        for (let k = 0; k < nDays; k++) {
+          const t = start + k * PEG_DAY_MS, d = new Date(t), w = Math.floor(k / 7), dow = k % 7;
+          const x = x0 + w * (c + gp), y = y0 + dow * (c + gp);
+          if (d.getUTCDate() <= 7 && dow === 0 && d.getUTCMonth() !== lastMo) {
+            lastMo = d.getUTCMonth();
+            els.push(<text key={`mo${k}`} className={lastMo === 0 ? 'peg-g-ax-strong' : 'peg-g-ax'} x={x} y="11">{lastMo === 0 ? d.getUTCFullYear() : PEG_MON[lastMo]}</text>);
+          }
+          const rs = byDay.get(k);
+          if (!rs) {
+            els.push(<rect key={k} className="peg-calE" x={x} y={y} width={c} height={c} rx="2"><title>{`${pegFmtD(t)} · no QC`}</title></rect>);
+            continue;
+          }
+          /* The day's colour is its middle run by score, so one bad
+             injection does not paint a whole day heavy. */
+          const s = [...rs].sort((a, b) => a.score - b.score), mid = s[(s.length - 1) >> 1];
+          counts[mid.cls]++; qcDays++;
+          els.push(<rect key={k} className={`peg-c${mid.cls}`} x={x} y={y} width={c} height={c} rx="2">
+            <title>{`${pegFmtD(t)} · ${rs.length} QC${rs.length > 1 ? 's' : ''} · median ${PEG_CLS_NAMES[mid.cls].toLowerCase()} (${pegFmtPct(pegMedian(rs.map(q => q.pct)))} of MS1)`}</title>
+          </rect>);
+        }
+        return { W, H, els, counts, qcDays };
+      }, [runs, asOfT, prevYear]);
+      /* Scrolled to the newest week, which is what anyone opens this for. */
+      usePegPinRight(scRef, cal);
+      return (
+        <section className="card" aria-labelledby="peg-cal-h">
+          <h3 id="peg-cal-h">Every QC day since {prevYear}</h3>
+          <p className="peg-sub">Each square is a day, coloured by that day's median QC. Grey means no QC was run.</p>
+          <div className="peg-scrollx" ref={scRef}>
+            <svg viewBox={`0 0 ${cal.W} ${cal.H}`} width={cal.W} height={cal.H} role="img" aria-label="Calendar of daily PEG class">{cal.els}</svg>
+          </div>
+          <div className="peg-cal-meta">
+            <span><b>{cal.qcDays}</b> QC days</span>
+            {PEG_CLS_NAMES.map((l, i) => (
+              <span key={l}><span className="peg-sw" style={{background: ['var(--pass)', 'var(--warn)', 'var(--moderate)', 'var(--fail)'][i]}} />{l} <b>{cal.counts[i]}</b></span>
+            ))}
+          </div>
+        </section>
+      );
+    }
+
+    function PegBoard({ ov, isEvosep, family, relayBase, defaultSpd, myName, rankLb }) {
+      const [cohPick, setCohPick] = useState(() => pegStore.get('coh', ''));
+      const [winPick, setWinPick] = useState(() => pegStore.get('win', '30'));
+      const coh = /^\d+$/.test(cohPick) ? cohPick : defaultSpd;
+      const win = PEG_WINDOWS.some(([k]) => k === winPick) ? winPick : '30';
+      const lb = usePegJson(family ? pegBoardUrl(relayBase, family, coh, win) : null);
+      /* Cohort chips: the Evosep ladder for this family, plus any other
+         SPD the relay knows, minus every cohort it reports with no labs --
+         except the one on screen, so the selection never vanishes. */
+      const known = lb.data || lb.stale || rankLb.data;
+      const famCoh = ((known && known.cohorts) || []).filter(c => c.family === family);
+      const labs = new Map(famCoh.map(c => [String(c.spd), Number(c.n_labs) || 0]));
+      const cand = isEvosep ? [...PEG_EVOSEP_SPDS] : [];
+      famCoh.forEach(c => { const k = String(c.spd); if (!cand.includes(k)) cand.push(k); });
+      if (!cand.includes(coh)) cand.push(coh);
+      const chips = cand.filter(k => k === coh || !known || (labs.get(k) || 0) > 0).sort((a, b) => +b - +a);
+      return (
+        <PegBoardView ov={ov} family={family} isEvosep={isEvosep} chips={chips} coh={coh} win={win}
+                      onCoh={k => { pegStore.set('coh', k); setCohPick(k); }}
+                      onWin={k => { pegStore.set('win', k); setWinPick(k); }}
+                      data={lb.data || lb.stale} stale={!lb.data && !!lb.stale}
+                      error={lb.error} myName={myName} relayBase={relayBase} />
+      );
+    }
+
+    function PegBoardView({ ov, family, isEvosep, chips, coh, win, onCoh, onWin, data, stale, error, myName, relayBase }) {
+      const ranked = (data && Array.isArray(data.ranked)) ? data.ranked : [];
+      const unranked = (data && Array.isArray(data.unranked)) ? data.unranked : [];
+      const winLabel = ((PEG_WINDOWS.find(([k]) => k === win) || [win, `${win} days`])[1]).toLowerCase();
+      const isYou = (r) => !!myName && r.display_name === myName;
+      const everyone = ranked.concat(unranked);
+      const hasOthers = everyone.some(r => !isYou(r));
+      const youThere = everyone.some(isYou);
+      const minL = pegLg(0), maxL = pegLg(30);
+      const barW = (p) => p == null ? 0 : Math.min(100, Math.max(2, (pegLg(p) - minL) / (maxL - minL) * 100));
+      const sharingOn = !!(ov && ov.sharing && ov.sharing.enabled);
+      let body;
+      if (!family) {
+        body = <div className="peg-note">STAN does not recognise this instrument's family, so it has no community cohort to compare against.</div>;
+      } else if (error && !data) {
+        body = <div className="peg-note">Community board unavailable: the relay at <b>{pegHost(relayBase)}</b> did not answer ({error}). Your own PEG history on this tab is unaffected.</div>;
+      } else if (!data) {
+        body = <div className="peg-note">Loading the community board…</div>;
+      } else {
+        body = (
+          <>
+            {!hasOthers && (
+              <div className="peg-note">
+                No other labs yet — nobody else has shared {family} · {coh} SPD QC runs in the last {winLabel}.
+                {' '}Labs join by setting <code>peg_share: true</code> in <code>~/.stan/community.yml</code> and running <code>stan peg-sync</code>.
+                {isEvosep && sharingOn && !youThere ? ' Your runs appear here after your next sync.' : ''}
+              </div>
+            )}
+            {ranked.length > 0 && (
+              <div className="peg-scrollx">
+                <table className={`peg-board${stale ? ' peg-dim' : ''}`}>
+                  <thead><tr>
+                    <th>#</th><th>Lab</th><th>Instrument</th><th className="r">QC runs</th>
+                    <th>PEG share of MS1 · median</th><th className="r">Clean</th><th>Last 12 weeks</th><th className="r">Change</th>
+                  </tr></thead>
+                  <tbody>
+                    {ranked.map((r, i) => {
+                      const you = isYou(r), rank = r.rank || i + 1, badges = Array.isArray(r.badges) ? r.badges : [];
+                      return (
+                        <tr key={`${rank}|${r.display_name}`} className={you ? 'peg-you' : 'peg-oth'}>
+                          <td className={`peg-rank${rank === 1 ? ' r1' : ''}`}>{rank}</td>
+                          <td>
+                            <span className="peg-labn">{r.display_name}</span>
+                            {you && <span className="peg-youtag">YOU</span>}
+                            {r.verified === false && <span className="peg-unver" title="This lab name is not claimed, so anyone could be submitting under it">unverified</span>}
+                            {badges.includes('cleanest') && <span className="peg-badge peg-b-clean">Cleanest</span>}
+                            {badges.includes('most_improved') && <span className="peg-badge peg-b-impr">Most improved</span>}
+                          </td>
+                          <td>{(Array.isArray(r.instrument_models) ? r.instrument_models : []).join(', ')}</td>
+                          <td className="peg-num r">{pegFmtN(r.n_runs)}</td>
+                          <td>
+                            <div className="peg-meter">
+                              <div className="peg-track"><div className="peg-fill" style={{width: `${barW(r.median_pct)}%`}} /></div>
+                              <span className="peg-val">{pegFmtPct(r.median_pct)}</span>
+                            </div>
+                          </td>
+                          <td className="peg-num r">{r.clean_pct == null ? '—' : `${r.clean_pct}%`}</td>
+                          <td><PegSpark vals={r.weekly} /></td>
+                          <td className="peg-num r">
+                            {r.change_pct == null ? '—'
+                              : <span className={r.change_pct < 0 ? 'peg-down' : 'peg-up'}>{r.change_pct < 0 ? '▼' : '▲'} {Math.abs(Math.round(r.change_pct))}%</span>}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {unranked.length > 0 && (
+              <div className="peg-unranked">
+                Not ranked yet, fewer than 5 QC runs in this window:{' '}
+                {unranked.map(r => `${r.display_name}${isYou(r) ? ' (you)' : ''} · ${r.n_runs} run${r.n_runs === 1 ? '' : 's'}`).join(', ')}
+              </div>
+            )}
+          </>
+        );
+      }
+      return (
+        <section className="card" aria-labelledby="peg-lb-h">
+          <div className="peg-bar">
+            <div>
+              <h3 id="peg-lb-h">Community PEG leaderboard</h3>
+              <p className="peg-sub" style={{marginBottom: 0}}>Evosep labs ranked by median PEG share of MS1 across their QC runs. Lower is cleaner. Labs are compared only within the same instrument family and Evosep method.</p>
+            </div>
+            <div className="peg-ctrls">
+              <PegSeg label="Cohort" opts={chips.map(k => [k, `${family} · ${k} SPD`])} value={coh} onPick={onCoh} />
+              <PegSeg label="Window" opts={PEG_WINDOWS} value={win} onPick={onWin} />
+            </div>
+          </div>
+          {!isEvosep && (
+            <div className="peg-note">Your {ov && ov.instrument} runs on {ov && ov.lc_system === 'custom' ? 'custom LC' : 'a non-Evosep LC'}, not Evosep, so your lab is not on this board. It fills in as {family} + Evosep labs share.</div>
+          )}
+          {body}
+          <div className="peg-board-note">
+            <span>The same board appears on community.stan-proteomics.org and updates as labs sync.</span>
+            <span>A lab needs 5 QC runs in the window to be ranked.</span>
+          </div>
+        </section>
+      );
+    }
+
+    /* Evosep vs other LC -- the one panel added to the approved mockup
+       (Brett, 2026-09-28). PEG share depends on the detector as well as the
+       LC (the 1e4 intensity floor is absolute), so the community half only
+       compares LCs inside one instrument family, and the lab half says so
+       when its Evosep and non-Evosep instruments are different families. */
+    function PegLcPanel({ ov, relayBase, unread }) {
+      const [famPick, setFamPick] = useState('');
+      const labLc = Array.isArray(ov.lab_lc) ? ov.lab_lc : [];
+      const fam = famPick || ov.instrument_family || (labLc[0] && labLc[0].family) || 'timsTOF';
+      const r = usePegJson(pegLcUrl(relayBase, fam));
+      return <PegLcView labLc={labLc} fam={fam} onFam={setFamPick} data={r.data} error={r.error} relayBase={relayBase} unread={unread} />;
+    }
+
+    function PegLcGroup({ g, evosep }) {
+      const minL = pegLg(0), maxL = pegLg(30);
+      const pos = (p) => Math.min(100, Math.max(0, (pegLg(p) - minL) / (maxL - minL) * 100));
+      const lo = g.p25_pct == null ? null : pos(g.p25_pct), hi = g.p75_pct == null ? null : pos(g.p75_pct);
+      return (
+        <div className="peg-lc-group">
+          <div className="peg-lc-head">
+            <span className={`peg-lcchip ${evosep ? 'ev' : 'ot'}`}>{evosep ? 'Evosep' : 'Other LC'}</span>
+            <span className="peg-fine">{pegFmtN(g.n_labs)} lab{g.n_labs === 1 ? '' : 's'} · {pegFmtN(g.n_runs)} runs</span>
+          </div>
+          <div className="peg-lc-med">{pegFmtPct(g.median_pct)}<span>median PEG share</span></div>
+          <div className="peg-rng" role="img" aria-label={`Middle half of runs between ${pegFmtPct(g.p25_pct)} and ${pegFmtPct(g.p75_pct)} of MS1`}>
+            {lo != null && hi != null && <div className="peg-rng-iqr" style={{left: `${lo}%`, width: `${Math.max(1, hi - lo)}%`}} />}
+            {g.median_pct != null && <div className="peg-rng-med" style={{left: `${pos(g.median_pct)}%`}} />}
+          </div>
+          <div className="peg-lc-meta">
+            <span>p25–p75 <b>{pegFmtPct(g.p25_pct)} – {pegFmtPct(g.p75_pct)}</b></span>
+            <span>Clean <b>{g.clean_pct == null ? '—' : `${g.clean_pct}%`}</b></span>
+          </div>
+          <PegSpark vals={g.weekly} w={220} h={34} hi={evosep} />
+        </div>
+      );
+    }
+
+    function PegLcView({ labLc, fam, onFam, data, error, relayBase, unread }) {
+      const rows = labLc || [];
+      const isEv = (x) => x.lc_system === 'evosep';
+      const evFam = [...new Set(rows.filter(isEv).map(x => x.family))];
+      const otFam = [...new Set(rows.filter(x => !isEv(x)).map(x => x.family))];
+      const crossFamily = evFam.length > 0 && otFam.length > 0 && !evFam.some(f => otFam.includes(f));
+      const fams = new Set([fam]);
+      rows.forEach(x => { if (x.family) fams.add(x.family); });
+      ((data && data.families) || []).forEach(f => {
+        if (f && f.family && ((f.evosep_runs || 0) + (f.other_runs || 0)) > 0) fams.add(f.family);
+      });
+      const famOpts = [...fams].filter(Boolean).sort().map(f => [f, f]);
+      const groups = (data && Array.isArray(data.groups)) ? data.groups : [];
+      const ev = groups.find(g => g.lc === 'evosep'), ot = groups.find(g => g.lc === 'other');
+      const evN = (ev && ev.n_runs) || 0, otN = (ot && ot.n_runs) || 0;
+      const minL = pegLg(0), maxL = pegLg(30);
+      const barW = (p) => p == null ? 0 : Math.min(100, Math.max(2, (pegLg(p) - minL) / (maxL - minL) * 100));
+      let community;
+      if (error && !data) {
+        community = <div className="peg-note" style={{marginBottom: 0}}>Community comparison unavailable: the relay at <b>{pegHost(relayBase)}</b> did not answer ({error}).</div>;
+      } else if (!data) {
+        community = <div className="peg-note" style={{marginBottom: 0}}>Loading the community comparison…</div>;
+      } else if (!evN || !otN) {
+        const why = !evN && !otN ? `no lab has shared ${fam} PEG in the last 90 days`
+          : !otN ? `${pegFmtN(ev.n_labs)} Evosep lab${ev.n_labs === 1 ? '' : 's'} and no other-LC lab so far`
+          : `${pegFmtN(ot.n_labs)} other-LC lab${ot.n_labs === 1 ? '' : 's'} and no Evosep lab so far`;
+        community = (
+          <div className="peg-note" style={{marginBottom: 0}}>
+            Nothing to compare on {fam} yet: {why}. This fills in once {fam} labs on Evosep and on another LC
+            both share (<code>peg_share: true</code>, then <code>stan peg-sync</code>).
+          </div>
+        );
+      } else {
+        community = <div className="peg-lc-groups"><PegLcGroup g={ev} evosep /><PegLcGroup g={ot} evosep={false} /></div>;
+      }
+      return (
+        <section className="card" aria-labelledby="peg-lc-h">
+          <h3 id="peg-lc-h">Evosep vs other LC</h3>
+          <p className="peg-sub">Does PEG follow the LC? The same PEG share of MS1, split by LC. The number also depends on the detector, so a fair comparison stays within one instrument family.</p>
+          <div className="peg-h4">Your instruments · last 90 days</div>
+          {rows.length === 0 ? <p className="peg-fine">{unread ? PEG_UNREAD : 'No instrument here has PEG measurements yet.'}</p> : (
+            <div className="peg-scrollx">
+              <div className="peg-lc-rows">
+                <div className="peg-lc-row peg-hd"><span>Instrument</span><span>LC</span><span>median PEG share</span><span style={{textAlign: 'right'}}>clean</span><span>26 weeks</span></div>
+                {rows.map(x => (
+                  <div className="peg-lc-row" key={`${x.instrument}|${x.lc_system}`}
+                       title={`${pegFmtN(x.n_90d)} QC runs in 90 days · ${pegFmtN(x.n_365d)} in 12 months · 12-month median ${pegFmtPct(x.median_365d)}`}>
+                    <div className="peg-lc-name"><b>{x.instrument}</b><span>{x.family}</span></div>
+                    <div><span className={`peg-lcchip ${isEv(x) ? 'ev' : 'ot'}`}>{isEv(x) ? 'Evosep' : 'Other LC'}</span></div>
+                    <div className="peg-meter" style={{minWidth: 0}}>
+                      <div className="peg-track"><div className="peg-fill" style={{width: `${barW(x.median_90d)}%`, background: isEv(x) ? 'var(--accent-hi)' : '#7dd3fc'}} /></div>
+                      <span className="peg-val">{pegFmtPct(x.median_90d)}</span>
+                    </div>
+                    <div className="peg-m">{x.clean_rate_90d == null ? '—' : `${x.clean_rate_90d}%`}</div>
+                    <PegSpark vals={x.weekly} w={100} h={26} hi={isEv(x)} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {crossFamily && (
+            <div className="peg-note" style={{marginTop: 10, marginBottom: 0}}>
+              <b>Different instrument families — not a like-for-like LC comparison.</b>{' '}
+              Your Evosep runs are on {evFam.join(', ')} and your other LC on {otFam.join(', ')}; PEG share depends on the detector as well as the LC.
+            </div>
+          )}
+          <hr className="peg-lc-sep" />
+          <div className="peg-bar">
+            <div className="peg-h4" style={{margin: 0}}>Community, same instrument family · last 90 days</div>
+            <PegSeg label="Instrument family" opts={famOpts} value={fam} onPick={onFam} />
+          </div>
+          {community}
+        </section>
+      );
+    }
+
+    function PegImpact({ impact, firstT }) {
+      const I = impact || {};
+      const keys = Object.keys(I).filter(k => I[k] && Array.isArray(I[k].clean) && Array.isArray(I[k].heavy)
+        && I[k].clean[1] && I[k].heavy[1] != null).sort((a, b) => +a - +b);
+      if (!keys.length) {
+        return (
+          <section className="card" aria-labelledby="peg-imp-h">
+            <h3 id="peg-imp-h">What PEG costs you</h3>
+            <p className="peg-sub">Not enough runs to say yet. This needs at least 10 clean and 10 heavy-PEG DIA QC runs on one method.</p>
+          </section>
+        );
+      }
+      const W = 520, x0 = 78, x1 = W - 20, gap = 76, H = 52 + keys.length * gap;
+      const vals = [];
+      keys.forEach(k => PEG_CLS_KEYS.forEach(c => { const e = I[k][c]; if (e && e[1] != null) vals.push(e[1]); }));
+      /* A padded data range with ticks inside it (the mockup drew 30k-43k
+         with ticks every 4k); rounding the ends out to a tick wasted a
+         quarter of the width. */
+      const vmin = Math.min(...vals), vmax = Math.max(...vals), pad = Math.max(400, (vmax - vmin) * 0.08);
+      const lo = vmin - pad, hi = vmax + pad;
+      const step = [250, 500, 1000, 2000, 2500, 4000, 5000, 10000, 20000].find(s => (hi - lo) / s <= 4.5) || 50000;
+      const X = (v) => x0 + (v - lo) / (hi - lo) * (x1 - x0);
+      const els = [];
+      for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) {
+        els.push(<line key={`g${v}`} className="peg-g-grid" x1={X(v)} x2={X(v)} y1={22} y2={H - 34} />,
+                 <text key={`gt${v}`} className="peg-g-ax" x={X(v)} y={H - 18} textAnchor="middle">{v >= 1000 ? `${+(v / 1000).toFixed(1)}k` : v}</text>);
+      }
+      const drops = [];
+      keys.forEach((k, i) => {
+        const y = 60 + i * gap, cl = I[k].clean[1], hv = I[k].heavy[1];
+        const drop = Math.round((hv - cl) / cl * 1000) / 10;
+        drops.push([k, drop]);
+        els.push(<text key={`l${k}`} className="peg-g-ax-strong" x="0" y={y + 4}>{k} SPD</text>,
+                 <line key={`a${k}`} className="peg-imp-ax" x1={X(hv)} x2={X(cl)} y1={y} y2={y} />);
+        PEG_CLS_KEYS.forEach((c, ci) => {
+          const e = I[k][c];
+          if (!e || e[1] == null) return;
+          els.push(<circle key={`c${k}${c}`} className={`peg-c${ci}`} cx={X(e[1])} cy={y} r="7">
+            <title>{`${k} SPD · ${c} · median ${pegFmtN(e[1])} precursors · n=${e[0]}`}</title></circle>);
+        });
+        els.push(<text key={`vc${k}`} className="peg-g-ax" x={X(cl)} y={y - 13} textAnchor="middle">{pegFmtN(cl)}</text>,
+                 <text key={`vh${k}`} className="peg-g-ax" x={X(hv)} y={y - 13} textAnchor="middle">{pegFmtN(hv)}</text>,
+                 <text key={`d${k}`} className="peg-ep-t" x={(X(cl) + X(hv)) / 2} y={y + 22} textAnchor="middle">{`${drop > 0 ? '+' : ''}${drop}%`}</text>);
+      });
+      els.push(<text key="xt" className="peg-g-ax" x={(x0 + x1) / 2} y={H - 1} textAnchor="middle">median precursors at 1% FDR</text>);
+      const strong = {color: 'var(--text)'};
+      const d0 = new Date(firstT);
+      return (
+        <section className="card" aria-labelledby="peg-imp-h">
+          <h3 id="peg-imp-h">What PEG costs you</h3>
+          <p className="peg-sub">
+            Heavy-PEG QCs identify{' '}
+            {drops.map(([k, d], i) => (
+              <React.Fragment key={k}>
+                {i === 0 ? '' : i === drops.length - 1 ? ' and ' : ', '}
+                <b style={strong}>{Math.abs(d)}% {d <= 0 ? 'fewer' : 'more'}{i === 0 ? ' precursors' : ''}</b> at {k} SPD
+              </React.Fragment>
+            ))}{' '}than clean ones.
+          </p>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{width: '100%', height: 'auto'}} role="img" aria-label="Median precursors by PEG class">{els}</svg>
+          <p className="peg-fine" style={{margin: '6px 0 0'}}>Medians of DIA QC runs since {PEG_MON[d0.getUTCMonth()]} {d0.getUTCFullYear()}. Episodes overlap other changes such as column swaps, so treat this as an association.</p>
+        </section>
+      );
+    }
+
+    function PegLadder({ ladder, episodes, unread }) {
+      const scRef = useRef(null);
+      usePegPinRight(scRef, ladder);
+      const L = ladder || {};
+      const months = L.months || [], ns = L.n || [];
+      if (!months.length || !ns.length) {
+        return (
+          <section className="card" aria-labelledby="peg-lad-h">
+            <h3 id="peg-lad-h">PEG ladder fingerprint</h3>
+            <p className="peg-sub">{unread ? PEG_UNREAD : 'No PEG oligomers matched yet on this instrument.'}</p>
+          </section>
+        );
+      }
+      const nm = months.length, nn = ns.length, share = L.share || [];
+      const cw = 22, chh = 11, x0 = 34, y0 = 8, W = x0 + nm * cw + 4, H = y0 + nn * chh + 34;
+      const els = [];
+      ns.forEach((n, j) => {
+        const y = y0 + (nn - 1 - j) * chh;
+        if (n % 2 === 0) els.push(<text key={`n${n}`} className="peg-g-ax" x={x0 - 6} y={y + 9} textAnchor="end">{n}</text>);
+        months.forEach((mo, i) => {
+          const s = (share[j] || [])[i] || 0;
+          els.push(s > 0
+            ? <rect key={`${n}-${i}`} className="peg-hm" x={x0 + i * cw} y={y} width={cw - 2} height={chh - 2} rx="1.5" fillOpacity={(0.12 + 0.88 * Math.min(1, s)).toFixed(2)}>
+                <title>{`PEG${n} · ${mo} · seen in ${Math.round(s * 100)}% of ${(L.nruns || [])[i]} QCs`}</title></rect>
+            : <rect key={`${n}-${i}`} className="peg-hm-e" x={x0 + i * cw} y={y} width={cw - 2} height={chh - 2} rx="1.5" />);
+        });
+      });
+      months.forEach((mo, i) => {
+        const [yy, mm] = mo.split('-');
+        if (+mm === 1 || i === 0) els.push(<text key={`m${i}`} className="peg-g-ax-strong" x={x0 + i * cw} y={H - 8}>{yy}</text>);
+        else if ((+mm - 1) % 3 === 0) els.push(<text key={`m${i}`} className="peg-g-ax" x={x0 + i * cw} y={H - 8}>{PEG_MON[+mm - 1]}</text>);
+      });
+      els.push(<text key="yl" className="peg-g-ax" transform={`translate(9 ${y0 + nn * chh / 2}) rotate(-90)`} textAnchor="middle">PEG n</text>);
+      /* Which oligomers lead since the latest episode began (the mockup's
+         "since December 2025"), or over the last three months without one. */
+      const eps = episodes || [];
+      const fromMonth = eps.length ? String(eps[eps.length - 1].start).slice(0, 7) : months[Math.max(0, nm - 3)];
+      let idx = months.map((mo, i) => [mo, i]).filter(([mo]) => mo >= fromMonth).map(([, i]) => i);
+      if (!idx.length) idx = [nm - 1];
+      const avg = (j) => idx.reduce((a, i) => a + ((share[j] || [])[i] || 0), 0) / idx.length;
+      const top = ns.map((n, j) => [n, avg(j)]).filter(([, a]) => a > 0).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([n]) => n).sort((a, b) => a - b);
+      const [fy, fm] = fromMonth.split('-');
+      const ad = L.adducts || {};
+      const known = [['+NH4', 'NH₄⁺', 'var(--ad-nh4)'], ['+H', 'H⁺', 'var(--ad-h)'], ['+Na', 'Na⁺', 'var(--ad-na)']];
+      const parts = known.filter(([k]) => ad[k] > 0);
+      Object.keys(ad).forEach(k => { if (ad[k] > 0 && !known.some(([q]) => q === k)) parts.push([k, k.replace(/^\+/, '') + '⁺', '#94a3b8']); });
+      const tot = parts.reduce((a, [k]) => a + ad[k], 0);
+      const pegList = top.map(n => `PEG${n}`);
+      return (
+        <section className="card" aria-labelledby="peg-lad-h">
+          <h3 id="peg-lad-h">PEG ladder fingerprint</h3>
+          <p className="peg-sub">
+            How often each oligomer showed up, by month.
+            {pegList.length > 0 && <> Since {PEG_MONTH[+fm - 1]} {fy} the ladder is led by <b style={{color: 'var(--text)'}}>{pegList.length > 1 ? `${pegList.slice(0, -1).join(', ')} and ${pegList[pegList.length - 1]}` : pegList[0]}</b>.</>}
+          </p>
+          <div className="peg-scrollx" ref={scRef}>
+            <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img" aria-label="Heatmap of PEG oligomers by month">{els}</svg>
+          </div>
+          {tot > 0 && (
+            <div style={{marginTop: 10}}>
+              <div className="peg-fine">Adduct mix, all detected PEG ions</div>
+              <div className="peg-adbar">{parts.map(([k, , c]) => <span key={k} style={{width: `${ad[k] / tot * 100}%`, background: c}} />)}</div>
+              <div className="peg-adkey">
+                {parts.map(([k, l, c]) => <span key={k}><span className="peg-sw" style={{background: c}} />[M+{l}] <b>{Math.round(ad[k] / tot * 100)}%</b></span>)}
+              </div>
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    function PegPeriods({ periods, isEvosep, instrument, unread }) {
+      const rows = [...(periods || [])].filter(c => c && c.installed).reverse();  // newest first
+      const mn = pegLg(0), mx = pegLg(12);
+      const col = (p) => p < 0.5 ? 'var(--pass)' : p < 2 ? 'var(--warn)' : p < 5 ? 'var(--moderate)' : 'var(--fail)';
+      return (
+        <section className="card" aria-labelledby="peg-per-h">
+          <h3 id="peg-per-h">{isEvosep ? 'PEG by Evosep column period' : 'PEG by column period'}</h3>
+          <p className="peg-sub">Median PEG share for the QCs run on each column. Column swaps mark time well; PEG usually comes from {isEvosep ? 'Evotips' : 'tips'}, solvents or sample plastics rather than the column itself.</p>
+          {rows.length === 0 ? (
+            <p className="peg-fine">{unread ? PEG_UNREAD
+              : `No column changes logged for ${instrument}. Log one on the Maintenance tab and QCs are grouped by column here.`}</p>
+          ) : (
+            <div className="peg-periods">
+              <div className="peg-per peg-hd"><span>Column installed</span><span>median PEG share</span><span style={{textAlign: 'right'}}>median</span><span className="peg-h">heavy</span></div>
+              {rows.map((c, k) => {
+                const has = c.median_pct != null;
+                const w = has ? Math.min(100, Math.max(2, (pegLg(c.median_pct) - mn) / (mx - mn) * 100)) : 0;
+                return (
+                  <div className="peg-per" key={`${c.installed}|${k}`}
+                       title={`${c.column_model ? c.column_model + ' · ' : ''}${pegFmtN(c.n_qc)} QC runs on this column`}>
+                    <span className="peg-when"><b>{pegFmtD(pegDayT(c.installed) + PEG_HALF_DAY_MS)}</b>{k === 0 && !c.retired ? ' · now' : ''}</span>
+                    <span className="peg-trk"><span style={{width: `${w}%`, background: has ? col(c.median_pct) : 'transparent'}} /></span>
+                    <span className="peg-m">{pegFmtPct(c.median_pct)}</span>
+                    <span className="peg-h">{c.heavy_pct == null ? '—' : `${c.heavy_pct}%`}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      );
+    }
+
+    function PegSteps() {
+      return (
+        <section className="card" aria-labelledby="peg-fix-h">
+          <h3 id="peg-fix-h">Found PEG? Isolate the source in one night</h3>
+          <p className="peg-sub">From STAN's Evosep PEG diagnostic: eight injections, one variable changed at a time, scored by STAN overnight.</p>
+          <ol className="peg-steps">
+            <li><div><b>Swap the Evotip lot</b><span>Water blank and HeLa on your current lot, then on a second lot. A drop means the tips are shedding PEG.</span></div></li>
+            <li><div><b>Swap to glass-bottled solvents</b><span>Same pair of injections with LC-MS grade buffers from glass. A drop points at solvents or their bottles.</span></div></li>
+            <li><div><b>Add two methanol tip washes</b><span>If an extra conditioning step lowers PEG, add it to the loading SOP.</span></div></li>
+            <li><div><b>Prep one sample through glass</b><span>HeLa moved by glass pipette into a glass vial. A drop points at pipette tips or tubes in sample prep.</span></div></li>
+          </ol>
+          <p className="peg-fine" style={{margin: '12px 0 0'}}>A change of more than 15 PEG-score points means that variable matters. <a href={PEG_DIAG_URL} target="_blank" rel="noopener noreferrer">Open the full protocol</a></p>
+        </section>
+      );
+    }
+
+    function PegShare({ sharing }) {
+      const on = !!(sharing && sharing.enabled);
+      const name = sharing && typeof sharing.display_name === 'string' ? sharing.display_name : '';
+      return (
+        <section className="card" aria-labelledby="peg-sh-h">
+          <h3 id="peg-sh-h">What your lab shares</h3>
+          <p className="peg-sub">Sharing is opt-in and uses your pseudonym. It goes through the same relay as the community benchmark.</p>
+          <div className="peg-share">
+            <div><div className="peg-h4">Per QC run</div><ul>
+              <li>Run date and method (SPD)</li>
+              <li>Instrument model and LC (Evosep or other)</li>
+              <li>PEG share of MS1, score, ions detected, class</li>
+              <li>Acquisition mode, sample type, load, STAN version</li>
+            </ul></div>
+            <div className="peg-no"><div className="peg-h4">Never shared</div><ul>
+              <li>File or sample names</li>
+              <li>Raw data or spectra</li>
+              <li>Instrument serial numbers</li>
+              <li>Customer or project details</li>
+            </ul></div>
+          </div>
+          {/* Read-only on purpose: the setting lives in community.yml on the
+              machine that runs `stan peg-sync`, not in this browser. */}
+          <div className="peg-toggle">
+            <span className={`peg-switch${on ? '' : ' off'}`} role="img" aria-label={on ? 'PEG sharing is on' : 'PEG sharing is off'} />
+            <div>
+              <b>{on ? `Sharing PEG with the community${name ? ` as ${name}` : ''}` : 'PEG stays in your lab'}</b>
+              <div className="peg-fine">
+                {on
+                  ? <>Each <code>stan peg-sync</code> sends your QC runs. To stop sending, set <code>peg_share: false</code> in <code>~/.stan/community.yml</code>.</>
+                  : <>To join the board, set <code>peg_share: true</code> in <code>~/.stan/community.yml</code>, then run <code>stan peg-sync</code>. Your own PEG tab works either way.</>}
+              </div>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
+    function PegMethod() {
+      return (
+        <section className="card" aria-labelledby="peg-m-h">
+          <h3 id="peg-m-h">How the ranking works</h3>
+          <div className="peg-method">
+            <div><b>PEG share of MS1.</b> STAN reads 80 MS1 scans spread across the gradient and matches peaks within 5 ppm to the PEG ladder: PEG1–20 as [M+H]⁺, [M+NH₄]⁺ and [M+Na]⁺, spaced 44.026 Da (C₂H₄O). The share is the matched intensity over all MS1 peaks above 10⁴ counts. It keeps rising with contamination, so it separates labs that all score 100 on the 0–100 PEG score.</div>
+            <div><b>Cohorts.</b> Labs are ranked only against the same instrument family and Evosep method, because detector response and gradient length change the number. Orbitrap and timsTOF labs never share a board. Only Evosep runs are ranked; runs on other LCs appear only in the Evosep vs other LC comparison.</div>
+            <div><b>Rank.</b> Median across the window's QC runs, lowest first, with at least 5 runs. Runs with no PEG measurement are left out; they never count as clean.</div>
+          </div>
+        </section>
+      );
+    }
+
     function App() {
       /* An HT share link (/?tab=ht&q=…&token=…) must land on the HT tab, or
          its holder sees this week's QCs and no way to know where to go. */
       const [tab, setTab] = useState(() => {
         const l = htLinkParams();
-        return (l.tab === 'ht' || l.token) ? 'ht' : 'live';
+        if (l.tab === 'ht' || l.token) return 'ht';
+        /* /?tab=peg deep-links to PEG Watch the same way ?tab=ht does. */
+        return l.tab === 'peg' ? 'peg' : 'live';
       });
       const { data: ver } = useFetch('/api/version');
 
@@ -9509,6 +10984,7 @@ function BFailTable({ rows }) {
       const showConfig = caps ? caps.show_config !== false : true;
       const TABS = [
         ['live', "This Week's QCs"], ['history', 'QC History'], ['trends', 'Trends'],
+        ['peg', 'PEG'],
         ['health', 'Samples'], ['ht', 'HT'],
         ['fleet', 'Fleet'], ['maintenance', 'Maintenance'],
         ['config', 'Config'],
@@ -9530,6 +11006,7 @@ function BFailTable({ rows }) {
             {tab === 'live' && <LiveRuns />}
             {tab === 'history' && <RunHistory />}
             {tab === 'trends' && <TrendCharts />}
+            {tab === 'peg' && <PegTab />}
             {tab === 'health' && <SamplesTab />}
             {tab === 'ht' && <HTTab />}
             {tab === 'fleet' && <FleetPanel />}

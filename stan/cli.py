@@ -453,6 +453,54 @@ def verify() -> None:
     console.print()
 
 
+@app.command("community-claim")
+def community_claim() -> None:
+    """Re-verify this lab's community name by email and store a fresh token.
+
+    Needed when the relay refuses a PEG sync with HTTP 403: the name is
+    claimed, and this install holds no token (or a superseded one) for it.
+    Sends a 6-digit code to the email the name was claimed with, then writes
+    the new ``auth_token`` into ~/.stan/community.yml, keeping every other
+    key. The relay keeps one token per name, so the old token stops working
+    everywhere -- copy the new one to every machine that shares as this lab.
+    """
+    from rich.markup import escape
+
+    from stan.community.peg_submit import (
+        load_community_cfg, resolve_display_name, write_community_keys,
+    )
+    from stan.setup import _verify_name_ownership
+
+    name = resolve_display_name(load_community_cfg())
+    if not name or name.lower() == "anonymous lab":
+        console.print(
+            "[red]This install has no community lab name to claim.[/red] "
+            "Set display_name in ~/.stan/community.yml, or run [cyan]stan setup[/cyan]."
+        )
+        raise typer.Exit(1)
+
+    console.print()
+    console.print(f"Re-verifying [bold cyan]{escape(name)}[/bold cyan] with the community relay.")
+    console.print(
+        "[yellow]The relay keeps one token per name: once this succeeds, the "
+        "token on every other machine sharing as this lab stops working "
+        "until you copy the new one there.[/yellow]"
+    )
+    # Same email-code flow `stan setup` uses (/api/claim-name, then
+    # /api/verify-claim), so there is one implementation of it to keep right.
+    token = _verify_name_ownership(name, reclaim=True)
+    if not token:
+        console.print("[red]Not verified -- community.yml was not changed.[/red]")
+        raise typer.Exit(1)
+
+    path = write_community_keys({"auth_token": token}, set_if_missing={"display_name": name})
+    console.print(f"[green]Stored the new auth_token in {escape(str(path))}[/green]")
+    console.print(
+        "[dim]Copy its auth_token line into community.yml on every other machine "
+        "that shares as this lab (e.g. Hive).[/dim]"
+    )
+
+
 @app.command()
 def init(
     reconfigure_fleet: bool = typer.Option(
@@ -5307,6 +5355,92 @@ def submit_all(
     except Exception:
         pass
     console.print(f"[dim]Log: {log_path}[/dim]")
+
+
+@app.command("peg-sync")
+def peg_sync(
+    backend: Optional[str] = typer.Option(
+        None, "--backend",
+        help="Read source: 'pg' (PG Farm) or 'sqlite' (local stan.db). "
+             "Default: whatever STAN_DB_BACKEND says.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Build and count the records, send nothing. Works with sharing "
+             "off, to preview what would be shared.",
+    ),
+    relay: str = typer.Option(
+        "", "--relay",
+        help="Relay base URL (default: the public STAN Space).",
+    ),
+) -> None:
+    """Share this lab's per-run PEG measurements with the community PEG board.
+
+    Opt-in: set ``peg_share: true`` in ~/.stan/community.yml (or
+    STAN_PEG_SHARE=1). Every sync resends every shareable QC run; the relay
+    keeps what changed and ignores the rest, so it is safe to run on a
+    schedule. Run names never leave the lab -- each run is sent under an
+    anonymous hash. Writes ~/.stan/logs/peg_sync_<UTC ts>.jsonl.
+
+    Exits 0 on success or when sharing is off, 1 when nothing could be sent.
+    """
+    from rich.markup import escape
+
+    from stan.community.peg_submit import sync_peg
+
+    if backend is not None and backend.strip().lower() not in ("pg", "sqlite"):
+        console.print(f"[red]--backend must be pg or sqlite, got {backend!r}[/red]")
+        raise typer.Exit(2)
+
+    result = sync_peg(backend=backend, dry_run=dry_run, relay_url=relay or None)
+    status = result["status"]
+
+    # The Hive cron keeps only `tail -6` of this output, so everything that
+    # matters is in the last few lines, and soft_wrap stops rich from
+    # hard-wrapping a long line into several at cron's 80 columns.
+    def _say(text: str) -> None:
+        console.print(text, soft_wrap=True)
+
+    if status == "sharing_off":
+        _say(f"[yellow]PEG sync: {escape(result['reason'])}[/yellow]")
+        return
+
+    name = escape(result["display_name"] or "(no name)")
+    if result["verified"] is True:
+        ident = "verified"
+    elif result["verified"] is False:
+        ident = "unverified -- run `stan community-claim` to verify"
+    else:
+        ident = ""
+    colour = {"ok": "green", "dry_run": "cyan", "nothing_to_share": "cyan",
+              "partial": "yellow"}.get(status, "red")
+    head = (f"[{colour}]PEG sync {status}[/{colour}]: {result['n_records']:,} records "
+            f"in {result['batches']} batch(es) as '{name}'")
+    _say(head + (f" ({ident})" if ident else ""))
+    if status in ("ok", "partial", "failed") and result["batches_ok"]:
+        _say(f"  accepted {result['accepted']:,}, unchanged {result['unchanged']:,}, "
+             f"rejected {result['rejected']:,}"
+             + (f"  {escape(str(result['rejected_reasons']))}"
+                if result["rejected_reasons"] else ""))
+    if result["rows_read"]:
+        skipped = result["skipped"]
+        detail = ", ".join(f"{k} {v:,}" for k, v in sorted(skipped.items(), key=lambda kv: -kv[1]))
+        _say(f"  read {result['rows_read']:,} rows; skipped {sum(skipped.values()):,}"
+             + (f": {detail}" if detail else ""))
+    if result["reason"] and status != "ok":
+        style = "red" if result["exit_code"] else "dim"
+        _say(f"  [{style}]{escape(result['reason'])}[/{style}]")
+    if result["errors"] and result["errors"][0] != result["reason"]:
+        more = len(result["errors"]) - 1
+        _say(f"  [red]{escape(result['errors'][0])}[/red]" + (f" (+{more} more)" if more else ""))
+    if result["log_path"]:
+        _say(f"  [dim]Log: {escape(result['log_path'])}[/dim]")
+
+    # No sync_to_hive_mirror() here, unlike submit-all: the per-host mirror is
+    # dead at UC Davis (CLAUDE.md), and on a Mac with the share mounted it
+    # would copy the local stan.db cache into it, reviving a stale mirror.
+    if result["exit_code"]:
+        raise typer.Exit(result["exit_code"])
 
 
 @app.command("watch-status")

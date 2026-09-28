@@ -1729,6 +1729,250 @@ def get_peg_ion_hits(
             return []
 
 
+# ── PEG Watch readers (v1.2.0) ──────────────────────────────────────────
+# The PEG tab (/api/peg/overview) and the PEG share client (`stan peg-sync`)
+# read through these. Every one applies the same filter (spec 4.1):
+#
+#   * a REAL measurement -- peg_score and peg_intensity_pct non-NULL and
+#     peg_class one of clean/trace/moderate/heavy. 'unknown' is the pipeline's
+#     failure sentinel, stored with score 0.0, i.e. exactly a clean run's
+#     score; a reader that forgets the class check counts failed reads clean.
+#   * QC only -- hidden = 0, run_date after 2015 (PG holds a 1980-01-02 row),
+#     and no blank/wash names (the submit-all regex, via
+#     stan.metrics.peg_trends.is_blank_or_wash).
+#
+# SQLite stores run_date as TEXT with whatever offset the acquisition PC wrote,
+# so the date floor and every date bucket are computed after parsing to UTC in
+# Python; PG does the same in SQL with AT TIME ZONE 'UTC'. Run names are read
+# only to filter blanks and are stripped before a row leaves this module,
+# except from get_peg_share_rows, whose client needs them to hash a run key.
+
+def _peg_real_qc_sqlite(alias: str = "") -> str:
+    """The SQL half of the PEG filter for SQLite (dates are checked in Python)."""
+    p = f"{alias}." if alias else ""
+    return (
+        f"COALESCE({p}hidden, 0) = 0 "
+        f"AND {p}peg_score IS NOT NULL AND {p}peg_intensity_pct IS NOT NULL "
+        f"AND COALESCE({p}peg_class, '') IN ('clean', 'trace', 'moderate', 'heavy')"
+    )
+
+
+def _sqlite_peg_rows(sql: str, params, db_path: Path | None, who: str) -> list[dict]:
+    """Run one read-only PEG query on SQLite; [] if the DB or table is absent."""
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return []
+    try:
+        with connect(db_path) as con:
+            con.row_factory = sqlite3.Row
+            return [dict(r) for r in con.execute(sql, params).fetchall()]
+    except sqlite3.OperationalError as e:
+        logger.warning("%s: %s (db=%s)", who, e, db_path)
+        return []
+
+
+def _finish_peg_rows(rows, keep_name: bool = False) -> list[dict]:
+    """The Python half of the PEG filter, shared by both backends.
+
+    Drops blanks/washes, anything not a real measurement, and anything
+    undated or dated before 2015; stamps ``run_date_utc`` in the
+    shared-record format. Strips ``run_name`` unless ``keep_name``, in which
+    case ``run_date`` is also set to that UTC string for the share client.
+    Returns rows oldest first.
+    """
+    from stan.metrics.peg_trends import (
+        MIN_RUN_DATE, is_blank_or_wash, is_real_peg, parse_utc, utc_iso,
+    )
+
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        if is_blank_or_wash(d.get("run_name")):
+            continue
+        if not is_real_peg(d.get("peg_score"), d.get("peg_intensity_pct"),
+                           d.get("peg_class")):
+            continue
+        t = parse_utc(d.pop("run_date_utc", None) or d.get("run_date"))
+        if t is None or t <= MIN_RUN_DATE:
+            continue
+        d["run_date_utc"] = utc_iso(t)
+        if keep_name:
+            d["run_date"] = d["run_date_utc"]
+        else:
+            d.pop("run_name", None)
+            d.pop("run_date", None)
+        out.append(d)
+    out.sort(key=lambda x: x["run_date_utc"])
+    return out
+
+
+def get_peg_runs(instrument: str | None = None, db_path: Path | None = None) -> list[dict]:
+    """Real-PEG QC runs for the PEG tab, oldest first. Never returns names.
+
+    Args:
+        instrument: Only this instrument; None for all.
+        db_path: Optional override for the SQLite path.
+
+    Returns:
+        Dicts with ``run_date_utc`` (``YYYY-MM-DDTHH:MM:SSZ``), ``spd``,
+        ``peg_score``, ``peg_intensity_pct``, ``peg_n_ions_detected``,
+        ``peg_class``, ``n_precursors``, ``mode``, ``lc_system``,
+        ``instrument``.
+    """
+    from stan.db_pg import get_peg_runs_pg, use_pg
+    if use_pg():
+        return _finish_peg_rows(get_peg_runs_pg(instrument))
+
+    sql = (
+        "SELECT run_date, run_name, instrument, spd, peg_score, peg_intensity_pct, "
+        "peg_n_ions_detected, peg_class, n_precursors, mode, lc_system "
+        f"FROM runs WHERE {_peg_real_qc_sqlite()}"
+    )
+    params: list = []
+    if instrument:
+        sql += " AND instrument = ?"
+        params.append(instrument)
+    return _finish_peg_rows(_sqlite_peg_rows(sql, params, db_path, "get_peg_runs"))
+
+
+def get_peg_instruments(db_path: Path | None = None) -> list[dict]:
+    """Instruments with real-PEG QC runs: ``[{instrument, n_runs, evosep}]``.
+
+    Most runs first -- the PEG tab's default instrument is the first entry.
+    ``evosep`` is True when Evosep is the most common LC on those runs.
+    """
+    from collections import Counter
+
+    from stan.db_pg import get_peg_instrument_counts_pg, use_pg
+    from stan.metrics.peg_trends import PG_BLANK_WASH_REGEX, instruments_from_counts
+    if use_pg():
+        return instruments_from_counts(get_peg_instrument_counts_pg(PG_BLANK_WASH_REGEX))
+
+    rows = _sqlite_peg_rows(
+        "SELECT instrument, lc_system, run_date, run_name, peg_score, "
+        "peg_intensity_pct, peg_class FROM runs "
+        f"WHERE {_peg_real_qc_sqlite()}", (), db_path, "get_peg_instruments",
+    )
+    counts = Counter((r["instrument"], r.get("lc_system") or "")
+                     for r in _finish_peg_rows(rows))
+    return instruments_from_counts((i, lc, n) for (i, lc), n in counts.items())
+
+
+def get_peg_ladder_month_counts(
+    instrument: str, db_path: Path | None = None,
+) -> list[tuple[str, int, str, int]]:
+    """Runs per (UTC month, oligomer n, adduct) in which that PEG ion fired.
+
+    Joins ``peg_ion_hits`` (``source='runs'``) to its QC run, under the same
+    real-PEG + QC filter as ``get_peg_runs``, so the ladder's numerator and
+    the monthly run count it is divided by describe the same runs. Counts
+    distinct runs, not hits. Sorted by month, n, adduct.
+    """
+    from stan.db_pg import get_peg_ladder_month_counts_pg, use_pg
+    from stan.metrics.peg_trends import PG_BLANK_WASH_REGEX
+    if use_pg():
+        return get_peg_ladder_month_counts_pg(instrument, PG_BLANK_WASH_REGEX)
+
+    rows = _sqlite_peg_rows(
+        "SELECT h.run_id, h.repeat_n, h.adduct, r.run_date, r.run_name, "
+        "r.peg_score, r.peg_intensity_pct, r.peg_class "
+        "FROM peg_ion_hits h JOIN runs r ON r.id = h.run_id "
+        f"WHERE h.source = 'runs' AND r.instrument = ? AND {_peg_real_qc_sqlite('r')}",
+        (instrument,), db_path, "get_peg_ladder_month_counts",
+    )
+    runs_by_key: dict[tuple[str, int, str], set] = {}
+    for r in _finish_peg_rows(rows):
+        month = r["run_date_utc"][:7]
+        runs_by_key.setdefault((month, int(r["repeat_n"]), r["adduct"]), set()).add(
+            r["run_id"])
+    return sorted((m, n, a, len(ids)) for (m, n, a), ids in runs_by_key.items())
+
+
+def get_column_change_events(
+    instrument: str, db_path: Path | None = None,
+) -> list[tuple[str, str | None]]:
+    """``(event_date, column_model)`` for an instrument's logged column changes.
+
+    Oldest first. Only the date and the column model: notes and operator are
+    free text that can name people and customers, and the PEG tab is public.
+    """
+    from stan.db_pg import get_column_change_events_pg, use_pg
+    if use_pg():
+        return get_column_change_events_pg(instrument)
+    rows = _sqlite_peg_rows(
+        "SELECT event_date, column_model FROM maintenance_events "
+        "WHERE instrument = ? AND event_type = 'column_change' "
+        "ORDER BY event_date ASC",
+        (instrument,), db_path, "get_column_change_events",
+    )
+    return [(r["event_date"], r.get("column_model")) for r in rows]
+
+
+def get_peg_share_rows(db_path: Path | None = None) -> list[dict]:
+    """Every real-PEG QC run, any LC, for the PEG share client.
+
+    The one PEG reader that returns ``run_name``: the client hashes it into
+    ``run_key`` and must never send it. Rows with an empty ``lc_system`` are
+    returned as they are; mapping and dropping LCs is the client's call.
+
+    Returns:
+        Dicts with ``run_name``, ``instrument``, ``run_date`` and
+        ``run_date_utc`` (both ``YYYY-MM-DDTHH:MM:SSZ``, identical on either
+        backend), ``spd``, ``mode``, ``amount_ng``, ``lc_system``, the four
+        PEG fields, and ``sample_type`` when the ``runs`` table has it.
+    """
+    from stan.db_pg import get_peg_share_rows_pg, use_pg
+    if use_pg():
+        return _finish_peg_rows(get_peg_share_rows_pg(), keep_name=True)
+
+    if db_path is None:
+        db_path = get_db_path()
+    extra = ""
+    if db_path.exists():
+        try:
+            with connect(db_path) as con:
+                cols = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
+            extra = ", sample_type" if "sample_type" in cols else ""
+        except sqlite3.OperationalError:
+            extra = ""
+    rows = _sqlite_peg_rows(
+        "SELECT run_name, instrument, run_date, spd, mode, amount_ng, lc_system, "
+        f"peg_score, peg_intensity_pct, peg_n_ions_detected, peg_class{extra} "
+        f"FROM runs WHERE {_peg_real_qc_sqlite()}",
+        (), db_path, "get_peg_share_rows",
+    )
+    return _finish_peg_rows(rows, keep_name=True)
+
+
+def get_peg_lab_lc_summary(as_of=None, db_path: Path | None = None) -> list[dict]:
+    """PEG share per instrument, with its LC, for the "Evosep vs other LC" panel.
+
+    One row per instrument with any real PEG: ``instrument, lc_system,
+    n_90d, median_90d, clean_rate_90d, n_365d, median_365d, weekly`` (26
+    Monday-start weekly medians, oldest first, the last being the week of
+    ``as_of``). Aggregated in SQL on PG (``percentile_cont``) so the payload
+    is a few numbers per instrument.
+
+    Args:
+        as_of: UTC ``date`` the windows end on; today (UTC) when None.
+        db_path: Optional override for the SQLite path.
+    """
+    from stan.db_pg import get_peg_lab_lc_summary_pg, use_pg
+    from stan.metrics.peg_trends import PG_BLANK_WASH_REGEX, lab_lc_summary
+
+    if as_of is None:
+        as_of = datetime.now(timezone.utc).date()
+    if use_pg():
+        return get_peg_lab_lc_summary_pg(as_of, PG_BLANK_WASH_REGEX)
+    rows = _sqlite_peg_rows(
+        "SELECT instrument, lc_system, run_date, run_name, peg_score, "
+        "peg_intensity_pct, peg_class FROM runs "
+        f"WHERE {_peg_real_qc_sqlite()}", (), db_path, "get_peg_lab_lc_summary",
+    )
+    return lab_lc_summary(_finish_peg_rows(rows), as_of)
+
+
 def insert_drift_window_centroids(
     run_id: str,
     per_window: "list",

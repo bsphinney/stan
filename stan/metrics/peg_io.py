@@ -7,33 +7,43 @@ expects. Both readers are OPTIONAL dependencies:
     stan[peg]    — adds alphatims for Bruker .d
     stan[thermo] — adds fisher_py for Thermo .raw
 
-A caller that doesn't install the relevant extra gets a clear error and
-the pipeline falls back to "no PEG score" (not a crash).
+Thermo has a second route: when fisher_py is missing or cannot open the
+file, the .raw is converted to an MS1-only mzML by a ThermoRawFileParser
+apptainer image (stan.metrics.peg_trfp). That is how Hive, whose venv has
+no fisher_py, scores Orbitrap QC runs.
+
+A caller with no working reader gets PegReaderUnavailable with the reason,
+and the pipeline falls back to "no PEG score" (not a crash).
 
 Subsampling: a full timsTOF run has 5k–20k MS1 frames, way more than we
-need. The default of 80 random MS1 scans per file hits PEG contamination
-with very high confidence if it's there, and keeps per-file runtime to
-~30–60 seconds. Fixed random seed for reproducibility.
+need. The default of 80 MS1 scans per file, taken at an even stride in
+acquisition order (every k-th scan, not a random draw — the ladder-coherence
+check in detect_peg_in_spectra uses scan index as its RT proxy), hits PEG
+contamination with very high confidence if it's there, and keeps per-file
+runtime to ~30–60 seconds. The stride is deterministic, so a re-run
+samples the same scans.
 """
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
 N_SCANS_DEFAULT = 80
-RANDOM_SEED = 42
 
 
 class PegReaderUnavailable(RuntimeError):
-    """Raised when the vendor's MS1 reader library isn't installed.
+    """Raised when no MS1 reader can read the file.
 
     Caller should catch and treat as 'PEG score unavailable' — not a
     pipeline failure. Install the appropriate extra:
       stan[peg]    — alphatims (Bruker)
-      stan[thermo] — fisher_py (Thermo)
+      stan[thermo] — fisher_py (Thermo), or provide the ThermoRawFileParser
+                     image + apptainer (stan.metrics.peg_trfp)
     """
 
 
@@ -43,8 +53,9 @@ def read_ms1_bruker(
     d_path: Path,
     n_scans: int = N_SCANS_DEFAULT,
 ) -> Iterator[list[tuple[float, float]]]:
-    """Yield (m/z, intensity) lists for up to n_scans random MS1 frames.
+    """Yield (m/z, intensity) lists for up to n_scans MS1 frames.
 
+    Frames are evenly strided in acquisition order (see module docstring).
     Raises PegReaderUnavailable if alphatims isn't installed.
     """
     try:
@@ -86,18 +97,43 @@ def read_ms1_bruker(
         yield [(float(m), int(i)) for m, i in zip(mzs, ints)]
 
 
-# ── Thermo (.raw via fisher_py) ────────────────────────────────────
+# ── Thermo (.raw via fisher_py, else a ThermoRawFileParser container) ──
 
 def read_ms1_thermo(
     raw_path: Path,
     n_scans: int = N_SCANS_DEFAULT,
 ) -> Iterator[list[tuple[float, float]]]:
-    """Yield (m/z, intensity) lists for up to n_scans random MS1 scans.
+    """Yield (m/z, intensity) lists for up to n_scans MS1 scans.
 
-    Raises PegReaderUnavailable if fisher_py isn't installed OR if the
-    fisher_py SelectInstrument(MS, 1) bug hits this file (TODO #11 — some
-    Lumos .raw files fail at RawFile.__init__ time).
+    Scans are evenly strided in acquisition order. Two readers, in order:
+
+      1. fisher_py, in-process (stan[thermo], needs .NET). Behaviour is
+         unchanged whenever it imports and opens the file.
+      2. ThermoRawFileParser in an apptainer image (stan.metrics.peg_trfp),
+         when fisher_py is not installed OR cannot open the file (the
+         SelectInstrument(MS, 1) bug, TODO #11, hits some Lumos .raw files
+         at RawFile.__init__ time). The .raw becomes an MS1-only mzML in a
+         temporary directory under $TMPDIR that is removed afterwards, and
+         the same stride is sampled from it. Both readers return the FTMS
+         centroid stream, so the scores are comparable.
+
+    Raises PegReaderUnavailable when neither reader works, with both
+    reasons in the message.
     """
+    try:
+        raw = _open_fisher_raw(raw_path)
+    except PegReaderUnavailable as e:
+        fisher_reason = str(e)
+    else:
+        yield from _iter_fisher_ms1(raw, n_scans)
+        return
+    # Outside the except block, so the fallback's own errors are not
+    # reported as "during handling of" the fisher_py one.
+    yield from _read_ms1_thermo_trfp(raw_path, n_scans, fisher_reason)
+
+
+def _open_fisher_raw(raw_path: Path) -> Any:
+    """Open ``raw_path`` with fisher_py, or raise PegReaderUnavailable."""
     try:
         from fisher_py import RawFile
     except ImportError as e:
@@ -106,7 +142,7 @@ def read_ms1_thermo(
         ) from e
 
     try:
-        raw = RawFile(str(raw_path))
+        return RawFile(str(raw_path))
     except Exception as e:
         # SelectInstrument failure, .NET not present, etc. — treat as
         # unavailable rather than propagating; PEG is best-effort.
@@ -114,6 +150,9 @@ def read_ms1_thermo(
             f"fisher_py could not open {raw_path.name}: {type(e).__name__}: {e}"
         ) from e
 
+
+def _iter_fisher_ms1(raw: Any, n_scans: int) -> Iterator[list[tuple[float, float]]]:
+    """Stride-sample MS1 scans from an open fisher_py RawFile, then close it."""
     try:
         # v0.2.175: fisher_py RawFile pre-computes MS1 scan numbers at
         # __init__ via _get_ms_scan_numbers_and_retention_times_. Use
@@ -148,6 +187,43 @@ def read_ms1_thermo(
             raw.close()
         except Exception:
             pass
+
+
+def _read_ms1_thermo_trfp(
+    raw_path: Path, n_scans: int, fisher_reason: str,
+) -> Iterator[list[tuple[float, float]]]:
+    """The container fallback of read_ms1_thermo.
+
+    Every failure — no image, no apptainer, a failed conversion, an
+    unreadable mzML — becomes PegReaderUnavailable, so the pipeline leaves
+    PEG NULL (unmeasured) rather than stamping the 'unknown' sentinel its
+    generic error path writes.
+    """
+    from stan.metrics import peg_trfp
+
+    try:
+        container = peg_trfp.find_trfp_container()
+    except peg_trfp.TrfpUnavailable as e:
+        raise PegReaderUnavailable(
+            f"{fisher_reason}; ThermoRawFileParser fallback unavailable: {e}"
+        ) from e
+    logger.info(
+        "PEG: %s — reading %s through ThermoRawFileParser (%s)",
+        fisher_reason, raw_path.name, container.sif,
+    )
+    # $TMPDIR is node-local on Hive compute nodes (/tmp). The MS1 mzML is
+    # a few hundred MB; it must never outlive this call, even when the
+    # consumer stops early or conversion fails.
+    with tempfile.TemporaryDirectory(
+        prefix="stan_peg_trfp_", dir=os.environ.get("TMPDIR") or None,
+    ) as tmp:
+        try:
+            mzml = peg_trfp.convert_ms1_mzml(raw_path, Path(tmp), container=container)
+            yield from peg_trfp.iter_mzml_ms1(mzml, n_scans)
+        except peg_trfp.TrfpError as e:
+            raise PegReaderUnavailable(
+                f"{fisher_reason}; ThermoRawFileParser fallback failed: {e}"
+            ) from e
 
 
 # ── Dispatch ───────────────────────────────────────────────────────

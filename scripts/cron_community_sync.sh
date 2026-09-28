@@ -1,5 +1,6 @@
 #!/bin/bash
-# STAN Hive cron: publish new QC runs to the community benchmark.
+# STAN Hive cron: publish new QC runs to the community benchmark, then
+# share per-run PEG with the community PEG board.
 #
 #   25 */6 * * * flock -n /tmp/stan_community_sync.lock \
 #       /quobyte/proteomics-grp/STAN/cron_community_sync.sh
@@ -49,9 +50,19 @@ fi
 # so. A few cents a month is the cheaper side of that trade. The right fix is
 # a narrower candidate query in submit-all (names and ids first, full rows only
 # for the eligible), not a window here.
+#
+# Then the PEG share (`stan peg-sync`, v1.2.0): it resends every shareable
+# PEG run each tick and the relay keeps only what changed, so it needs no PG
+# state and no owner DDL. Its reader (get_peg_share_rows) selects only the
+# scalar columns the share record needs, never `SELECT *`. It runs second
+# and independently: a PEG failure cannot hold back a benchmark push, and
+# without `peg_share: true` in community.yml it returns before touching PG
+# or the network.
 {
   echo "===== community sync $(date '+%F %T') ====="
   "$VENV/bin/stan" submit-all --backend pg 2>&1 | tail -6
-  echo "----- exit=${PIPESTATUS[0]} done $(date '+%F %T')"
+  echo "----- submit-all exit=${PIPESTATUS[0]} $(date '+%F %T')"
+  "$VENV/bin/stan" peg-sync --backend pg 2>&1 | tail -6
+  echo "----- peg-sync exit=${PIPESTATUS[0]} done $(date '+%F %T')"
   echo
 } >> "$LOG" 2>&1

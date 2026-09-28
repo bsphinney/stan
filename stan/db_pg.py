@@ -1450,6 +1450,229 @@ def get_peg_ion_hits_pg(run_id: str, source: str = "runs") -> list[dict]:
         return []
 
 
+# ── PEG Watch readers (v1.2.0) ──────────────────────────────────────────
+# Back the dashboard's PEG tab and the `stan peg-sync` share client. PG Farm
+# bills every byte read out of it (see stan/sync/pg_to_sqlite.py), so each of
+# these names its columns -- never SELECT *, never the inline TIC arrays --
+# and anything the caller only needs a summary of is aggregated in SQL.
+#
+# Type notes, because SQLite reproduces none of them:
+#   * runs.run_date is timestamptz. It is formatted with to_char(... AT TIME
+#     ZONE 'UTC'), never substr(), which does not exist for timestamptz.
+#   * runs.hidden is an integer, not a boolean: compared to 0.
+#   * peg_score / peg_intensity_pct are float4. Read through ::numeric so
+#     16.1 arrives as 16.1, not 16.100000381469727; the cast keeps FLT_DIG
+#     significant digits, which is all a float4 ever held.
+#
+# These return rows *with* run_name where a filter needs it; stan.db applies
+# the blank/wash exclusion in Python (one regex, shared with submit-all) and
+# strips the name before anything leaves the process. Queries that aggregate
+# here use PG_BLANK_WASH_REGEX, the same alternation.
+
+def _peg_real_qc_where(alias: str = "") -> str:
+    """The real-PEG + QC filter (spec 4.1) as a SQL fragment.
+
+    ``'unknown'`` is excluded by the class list: it is the pipeline's failure
+    sentinel, stored with peg_score 0.0, and must never count as clean. The
+    2015 floor drops the bogus 1980-01-02 Lumos row. NaN is excluded because
+    float4 can hold it, PG sorts it above every number (so it would drag a
+    percentile_cont upward), and it is not a measurement.
+    """
+    p = f"{alias}." if alias else ""
+    return (
+        f"COALESCE({p}hidden, 0) = 0 "
+        f"AND {p}run_date > TIMESTAMPTZ '2015-01-01 00:00:00+00' "
+        f"AND {p}peg_score IS NOT NULL AND {p}peg_intensity_pct IS NOT NULL "
+        f"AND {p}peg_score <> 'NaN' AND {p}peg_intensity_pct <> 'NaN' "
+        f"AND COALESCE({p}peg_class, '') IN ('clean', 'trace', 'moderate', 'heavy')"
+    )
+
+
+# The UTC run timestamp in the shared-record format; identical to
+# stan.metrics.peg_trends.utc_iso, so run keys do not depend on the backend.
+_PEG_RUN_DATE_UTC = (
+    "to_char(run_date AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')"
+)
+
+
+def get_peg_runs_pg(instrument: str | None = None) -> list[dict]:
+    """Real-PEG QC ``runs`` rows for the PEG tab, oldest first.
+
+    Seven scalars a run plus the identifiers the filter needs. ``run_name``
+    is returned only so ``stan.db.get_peg_runs`` can drop blanks with the
+    submit-all regex; it strips the name before returning.
+    """
+    sql = (
+        f"SELECT {_PEG_RUN_DATE_UTC} AS run_date_utc, run_name, instrument, spd, "
+        "peg_score::numeric AS peg_score, "
+        "peg_intensity_pct::numeric AS peg_intensity_pct, "
+        "peg_n_ions_detected, peg_class, n_precursors, mode, lc_system "
+        f"FROM runs WHERE {_peg_real_qc_where()}"
+    )
+    args: list = []
+    if instrument:
+        sql += " AND instrument = %s"
+        args.append(instrument)
+    sql += " ORDER BY run_date ASC"
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(sql, tuple(args))
+        return _rows(cur)
+
+
+def get_peg_instrument_counts_pg(blank_regex: str) -> list[tuple[str, str, int]]:
+    """``(instrument, lc_system, n)`` over real-PEG QC runs, blanks excluded.
+
+    A handful of rows: which instruments have PEG at all, and on which LC.
+    """
+    sql = (
+        "SELECT instrument, COALESCE(lc_system, '') AS lc_system, count(*) "
+        f"FROM runs WHERE {_peg_real_qc_where()} "
+        "AND COALESCE(run_name, '') !~* %s "
+        "GROUP BY 1, 2"
+    )
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(sql, (blank_regex,))
+        return [(r[0], r[1], int(r[2])) for r in cur.fetchall()]
+
+
+def get_peg_ladder_month_counts_pg(
+    instrument: str, blank_regex: str,
+) -> list[tuple[str, int, str, int]]:
+    """Runs per (UTC month, oligomer, adduct) in which that PEG ion was seen.
+
+    Aggregated here so ~8k hit rows cross the wire as a few hundred counts.
+    ``count(DISTINCT run_id)`` because the numerator is runs, not hits.
+    """
+    sql = (
+        "SELECT to_char(r.run_date AT TIME ZONE 'UTC', 'YYYY-MM') AS month, "
+        "h.repeat_n, h.adduct, count(DISTINCT h.run_id) AS n_runs "
+        "FROM peg_ion_hits h JOIN runs r ON r.id = h.run_id "
+        "WHERE h.source = 'runs' AND r.instrument = %s "
+        f"AND {_peg_real_qc_where('r')} "
+        "AND COALESCE(r.run_name, '') !~* %s "
+        "GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
+    )
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(sql, (instrument, blank_regex))
+        return [(r[0], int(r[1]), r[2], int(r[3])) for r in cur.fetchall()]
+
+
+def get_column_change_events_pg(instrument: str) -> list[tuple[str, str | None]]:
+    """``(event_date, column_model)`` for an instrument's column changes.
+
+    Notes and operator are left behind on purpose: they are free text that
+    can name people and customers, and the PEG tab is a public read.
+    ``event_date::text`` keeps this correct whichever type the column is.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "SELECT event_date::text, column_model FROM maintenance_events "
+            "WHERE instrument = %s AND event_type = 'column_change' "
+            "ORDER BY event_date ASC",
+            (instrument,),
+        )
+        return [(r[0], r[1]) for r in cur.fetchall()]
+
+
+def get_peg_share_rows_pg() -> list[dict]:
+    """Every real-PEG QC run, any LC, for the PEG share client.
+
+    ``run_name`` is included because the client hashes it into ``run_key``;
+    it is never sent. ``sample_type`` is selected only when PG has the
+    column (it does not today); the client falls back to the filename.
+    """
+    with _connect() as pg, pg.cursor() as cur:
+        extra = ", sample_type" if "sample_type" in _runs_columns(cur) else ""
+        cur.execute(
+            f"SELECT run_name, instrument, {_PEG_RUN_DATE_UTC} AS run_date_utc, "
+            "spd, mode, amount_ng::numeric AS amount_ng, lc_system, "
+            "peg_score::numeric AS peg_score, "
+            "peg_intensity_pct::numeric AS peg_intensity_pct, "
+            f"peg_n_ions_detected, peg_class{extra} "
+            f"FROM runs WHERE {_peg_real_qc_where()} ORDER BY run_date ASC"
+        )
+        return _rows(cur)
+
+
+def get_peg_lab_lc_summary_pg(as_of, blank_regex: str, weeks: int = 26) -> list[dict]:
+    """Per-instrument PEG share over 90/365 days plus weekly medians.
+
+    Everything is aggregated here with ``percentile_cont`` -- the same
+    median ``statistics.median`` computes on the SQLite path -- so the
+    payload is a few numbers per instrument however many runs there are.
+    The UTC timestamp ``t`` is a plain ``timestamp`` (``AT TIME ZONE 'UTC'``
+    of a timestamptz), compared against naive UTC datetimes; weeks are
+    ``date_trunc('week', t)``, Monday-start.
+    """
+    import datetime as _dt
+
+    from stan.metrics.peg_trends import finalize_lab_lc_row, sort_lab_lc, week_starts
+
+    def _midnight(d):
+        return _dt.datetime(d.year, d.month, d.day)
+
+    params = {
+        "blank": blank_regex,
+        "end": _midnight(as_of + _dt.timedelta(days=1)),
+        "s90": _midnight(as_of - _dt.timedelta(days=89)),
+        "s365": _midnight(as_of - _dt.timedelta(days=364)),
+        "w0": _midnight(week_starts(as_of, weeks)[0]),
+    }
+    cte = (
+        "WITH q AS ("
+        " SELECT instrument, COALESCE(lc_system, '') AS lc_system,"
+        "  peg_intensity_pct::float8 AS pct, peg_class,"
+        "  (run_date AT TIME ZONE 'UTC') AS t"
+        f" FROM runs WHERE {_peg_real_qc_where()}"
+        "  AND COALESCE(run_name, '') !~* %(blank)s"
+        "  AND (run_date AT TIME ZONE 'UTC') < %(end)s"
+        ") "
+    )
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            cte
+            + "SELECT instrument,"
+            " count(*) FILTER (WHERE t >= %(s90)s),"
+            " percentile_cont(0.5) WITHIN GROUP (ORDER BY pct)"
+            "   FILTER (WHERE t >= %(s90)s),"
+            " count(*) FILTER (WHERE t >= %(s90)s AND peg_class = 'clean'),"
+            " count(*) FILTER (WHERE t >= %(s365)s),"
+            " percentile_cont(0.5) WITHIN GROUP (ORDER BY pct)"
+            "   FILTER (WHERE t >= %(s365)s)"
+            " FROM q GROUP BY instrument",
+            params,
+        )
+        stats = cur.fetchall()
+        cur.execute(cte + "SELECT instrument, lc_system, count(*) FROM q GROUP BY 1, 2",
+                    params)
+        lc_rows = cur.fetchall()
+        cur.execute(
+            cte
+            + "SELECT instrument, to_char(date_trunc('week', t), 'YYYY-MM-DD'),"
+            " percentile_cont(0.5) WITHIN GROUP (ORDER BY pct)"
+            " FROM q WHERE t >= %(w0)s GROUP BY 1, 2",
+            params,
+        )
+        week_rows = cur.fetchall()
+
+    lcs: dict[str, dict[str, int]] = {}
+    for inst, lc, n in lc_rows:
+        lcs.setdefault(inst, {})[lc or ""] = int(n)
+    weekly: dict[str, dict] = {}
+    for inst, wk, med in week_rows:
+        weekly.setdefault(inst, {})[_dt.date.fromisoformat(wk)] = (
+            None if med is None else float(med))
+    out = [
+        finalize_lab_lc_row(
+            inst, lcs.get(inst, {}), n90, None if m90 is None else float(m90), c90,
+            n365, None if m365 is None else float(m365), weekly.get(inst, {}),
+            as_of, weeks,
+        )
+        for inst, n90, m90, c90, n365, m365 in stats
+    ]
+    return sort_lab_lc(out)
+
+
 def get_cirt_history_pg(instrument: str, limit: int = 500) -> list[dict]:
     """cIRT anchor observations joined to their runs, oldest-first.
 
