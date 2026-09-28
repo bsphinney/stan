@@ -466,12 +466,21 @@ def community_claim() -> None:
     """
     from rich.markup import escape
 
-    from stan.community.peg_submit import (
-        load_community_cfg, resolve_display_name, write_community_keys,
-    )
+    from stan.community import peg_submit
     from stan.setup import _verify_name_ownership
 
-    name = resolve_display_name(load_community_cfg())
+    # Before the email round trip, not after it: the relay retires the old
+    # token the moment it issues the new one, so a community.yml that cannot
+    # then be written would leave this lab with no working token anywhere.
+    # soft_wrap: these messages carry a path, and a hard-wrapped path cannot
+    # be pasted back into a shell.
+    problem = peg_submit.community_yml_problem()
+    if problem:
+        console.print(f"[red]{escape(problem)}[/red]", soft_wrap=True)
+        console.print("Fix that first; nothing was sent to the relay and the current token still works.")
+        raise typer.Exit(1)
+
+    name = peg_submit.resolve_display_name(peg_submit.load_community_cfg())
     if not name or name.lower() == "anonymous lab":
         console.print(
             "[red]This install has no community lab name to claim.[/red] "
@@ -493,7 +502,20 @@ def community_claim() -> None:
         console.print("[red]Not verified -- community.yml was not changed.[/red]")
         raise typer.Exit(1)
 
-    path = write_community_keys({"auth_token": token}, set_if_missing={"display_name": name})
+    try:
+        path = peg_submit.write_community_keys(
+            {"auth_token": token}, set_if_missing={"display_name": name})
+    except Exception as e:  # a full quota, mostly -- the checks above passed
+        # The old token is already dead on the relay and this is the only
+        # copy of the new one; losing it means re-claiming by email.
+        console.print(f"[red]Verified, but community.yml could not be written: {escape(str(e))}[/red]",
+                      soft_wrap=True)
+        console.print(
+            "[yellow]The old token no longer works. Add this line to community.yml "
+            "by hand, here and on every other machine that shares as this lab:[/yellow]"
+        )
+        console.print(f"auth_token: {token}", markup=False, highlight=False, soft_wrap=True)
+        raise typer.Exit(1)
     console.print(f"[green]Stored the new auth_token in {escape(str(path))}[/green]")
     console.print(
         "[dim]Copy its auth_token line into community.yml on every other machine "

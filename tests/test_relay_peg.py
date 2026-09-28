@@ -17,6 +17,7 @@ import hmac
 import importlib.util
 import io
 import json
+import logging
 import re
 import shutil
 import statistics
@@ -24,9 +25,11 @@ import subprocess
 import sys
 import time
 import types
+import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 import pyarrow.parquet as pq
@@ -273,6 +276,126 @@ def test_invisible_characters_do_not_dodge_a_claim(client, relay, hub, spoof):
     assert submit(client, spoof, [record()]).status_code == 403
 
 
+# Each renders exactly like "Clogged PeakTail". Only Cf characters were
+# dropped before, so every one of these was accepted as a separate,
+# unclaimed lab: Hangul fillers (Lo), the combining grapheme joiner and
+# variation selectors (Mn), a braille blank (So), a fullwidth C (Lu).
+LOOKALIKES = [
+    "Clogged PeakTailㅤ", "Clogged PeakTailᅟ", "Clogged PeakTailﾠ",
+    "Clogged Peak͏Tail", "Clogged PeakTail️", "Clogged PeakTail\U000e0100",
+    "Ｃlogged PeakTail", "Clogged⠀PeakTail", "Clogged Peak­Tail",
+    "Clogged PeakTail\U000e0041", "Clogged PeakTail",
+]
+
+
+@pytest.mark.parametrize("spoof", LOOKALIKES)
+def test_lookalike_names_do_not_dodge_a_claim(client, relay, hub, spoof):
+    set_claims(hub, {"Clogged PeakTail": claim_entry(relay, "b")})
+    r = submit(client, spoof, [record()])
+    assert r.status_code == 403, r.text
+    assert queued(relay) == []
+    assert submit(client, spoof, [record()], token="b").json()["verified"] is True
+
+
+def test_clean_text_is_idempotent_keeps_case_and_recomposes(relay):
+    for s in LOOKALIKES + ["Café Lab", unicodedata.normalize("NFD", "Café Lab")]:
+        once = relay._clean_text(s)
+        assert relay._clean_text(once) == once
+    assert all(relay._clean_text(s) == "Clogged PeakTail" for s in LOOKALIKES)
+    # Live claims hold both spellings; folding case would merge two labs.
+    assert relay._clean_text("Clogged Peaktail") != relay._clean_text("Clogged PeakTail")
+    # Dropping a joiner between a letter and its accent must not leave NFD behind.
+    assert relay._clean_text("Cafe͏́ Lab") == "Café Lab"
+
+
+@pytest.mark.parametrize("stored", [
+    unicodedata.normalize("NFD", "Café Lab"), "Café  Lab", " Café Lab​",
+])
+def test_a_claim_stored_in_non_canonical_form_still_binds_its_name(client, relay, hub, stored):
+    """claims.json keys written by claim-name before canonicalisation were only strip()ped."""
+    set_claims(hub, {stored: claim_entry(relay, "owner-token")})
+    assert submit(client, "Café Lab", [record()]).status_code == 403
+    assert submit(client, "Café Lab", [record()], token="intruder").status_code == 403
+    body = submit(client, "Café Lab", [record()], token="owner-token").json()
+    assert (body["display_name"], body["verified"]) == ("Café Lab", True)
+
+
+def test_two_claims_for_one_canonical_name_both_bind_it(client, relay, hub):
+    set_claims(hub, {"Double  Lab": claim_entry(relay, "first"), "Double Lab": claim_entry(relay, "second")})
+    assert submit(client, "Double Lab", [record()]).status_code == 403
+    assert submit(client, "Double Lab", [record()], token="first").json()["verified"] is True
+    assert submit(client, "Double Lab", [record()], token="second").json()["verified"] is True
+
+
+def _claim(client, relay, name: str, email: str = "owner@lab.org") -> str:
+    """claim-name + verify-claim; returns the token."""
+    r = client.post("/api/claim-name", json={"pseudonym": name, "email": email})
+    assert r.status_code == 200, r.text
+    pending = relay._pending_codes[relay._clean_text(name)]
+    r = client.post("/api/verify-claim", json={"pseudonym": name, "code": pending["code"]})
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
+@pytest.mark.parametrize("typed", ["Double  Space Lab", unicodedata.normalize("NFD", "Proteômica Lab")])
+def test_claim_endpoints_store_the_canonical_name(client, relay, hub, typed):
+    """A name claimed with a doubled space or pasted in NFD must be the name the owner shares under."""
+    token = _claim(client, relay, typed)
+    canonical = relay._clean_text(typed)
+    assert canonical != typed
+    assert list(json.loads(hub.files[CLAIMS])) == [canonical]
+    assert submit(client, canonical, [record()]).status_code == 403
+    assert submit(client, typed, [record()]).status_code == 403
+    body = submit(client, typed, [record()], token=token).json()
+    assert (body["display_name"], body["verified"]) == (canonical, True)
+
+
+def test_reclaiming_replaces_a_non_canonical_key(client, relay, hub):
+    set_claims(hub, {"Double  Space Lab": claim_entry(relay, "old-token", email="owner@lab.org")})
+    assert client.post("/api/claim-name", json={"pseudonym": "Double Space Lab",
+                                                "email": "intruder@else.org"}).status_code == 409
+    token = _claim(client, relay, "Double Space Lab", email="owner@lab.org")
+    assert list(json.loads(hub.files[CLAIMS])) == ["Double Space Lab"]
+    assert submit(client, "Double Space Lab", [record()], token="old-token").status_code == 403
+    assert submit(client, "Double Space Lab", [record()], token=token).json()["verified"] is True
+
+
+@pytest.mark.parametrize("name", ["Anonymous Lab", " anonymous  lab", "x" * 61, "​", "x" * 1000])
+def test_claim_name_refuses_names_the_peg_channel_would_refuse(client, relay, name):
+    r = client.post("/api/claim-name", json={"pseudonym": name, "email": "a@b.org"})
+    assert r.status_code == 400, r.text
+    assert relay._pending_codes == {}
+
+
+def test_verify_claim_gives_up_after_five_wrong_codes(client, relay, hub):
+    set_claims(hub, {"Lab A": claim_entry(relay, "t")})
+    assert client.post("/api/claim-name", json={"pseudonym": "New Lab", "email": "new@lab.org"}).status_code == 200
+    code = relay._pending_codes["New Lab"]["code"]
+    wrong = [client.post("/api/verify-claim", json={"pseudonym": "New Lab", "code": "000000"}).status_code
+             for _ in range(5)]
+    assert wrong == [403, 403, 403, 403, 429]
+    r = client.post("/api/verify-claim", json={"pseudonym": "New Lab", "code": code})
+    assert r.status_code == 400 and "No pending verification" in r.json()["detail"]
+    assert list(json.loads(hub.files[CLAIMS])) == ["Lab A"] and hub.uploads == []
+
+
+def test_claim_name_issues_at_most_three_codes_per_name_per_hour(client, relay, hub, monkeypatch):
+    clock = {"t": 5000.0}
+    monkeypatch.setattr(relay, "_claim_clock", lambda: clock["t"])
+    set_claims(hub, {"Lab A": claim_entry(relay, "t", email="owner@lab.org")})
+
+    def claim(name, email="owner@lab.org"):
+        return client.post("/api/claim-name", json={"pseudonym": name, "email": email}).status_code
+
+    # "Different email" answers count too, so they cannot be used to test emails freely.
+    assert [claim("Lab A", "guess1@x.org"), claim("Lab A", "guess2@x.org"), claim("Lab A")] == [409, 409, 200]
+    assert claim("Lab A") == 429
+    assert claim("Lab  A") == 429, "a respelling of the same name shares its budget"
+    assert claim("Lab B") == 200, "another name has its own"
+    clock["t"] += relay.CLAIM_RATE_WINDOW_SEC + 1
+    assert claim("Lab A") == 200
+
+
 @pytest.mark.parametrize("name", ["Anonymous Lab", "  anonymous   LAB ", "", "​​", "x" * 61])
 def test_anonymous_or_empty_name_is_refused(client, relay, name):
     r = submit(client, name, [record()])
@@ -302,6 +425,82 @@ def test_more_than_2000_records_is_refused(client, relay):
     r = submit(client, "Tiny Lab", [{}] * 2001)
     assert r.status_code == 413
     assert queued(relay) == []
+
+
+# ── size limits: the whole table lives in the Space's memory ─────────
+
+def _rows_for(relay, name: str) -> int:
+    return sum(1 for (n, _) in relay._PEG_STORE["rows"] if n == name)
+
+
+def test_rows_per_name_are_capped_but_updates_still_land(client, relay, monkeypatch):
+    monkeypatch.setattr(relay, "PEG_MAX_ROWS_PER_NAME", 3000)
+    first = [record(rk("cap", i)) for i in range(2000)]
+    second = [record(rk("cap", 2000 + i)) for i in range(2000)]
+    assert submit(client, "Big Lab", first).json()["accepted"] == 2000
+    drain(relay)
+    body = submit(client, "Big Lab", second).json()
+    assert body["accepted"] == 1000
+    assert [x["index"] for x in body["rejected"]] == list(range(1000, 2000))
+    assert all("row limit" in x["reason"] for x in body["rejected"])
+    assert _rows_for(relay, "Big Lab") == 3000
+    drain(relay)
+    assert submit(client, "Big Lab", first).json()["unchanged"] == 2000
+    changed = record(rk("cap", 5), peg_intensity_pct=9.0, peg_class="heavy", peg_score=90.0)
+    body = submit(client, "Big Lab", [changed]).json()
+    assert (body["accepted"], body["rejected"]) == (1, []), "an update to a stored run still lands"
+    assert submit(client, "Other Lab", [record(rk("o", 0))]).json()["accepted"] == 1
+
+
+def test_row_limit_counts_rows_loaded_from_the_dataset(client, relay, hub, monkeypatch):
+    rows = []
+    for i in range(3):
+        row = relay._peg_validate_record(record(rk("s", i)), NOW)[0]
+        row.update(display_name="Big Lab", verified=False, submitted_at=NOW, first_seen_at=NOW)
+        rows.append(row)
+    hub.files[LATEST] = relay._peg_rows_to_parquet(rows)
+    monkeypatch.setattr(relay, "PEG_MAX_ROWS_PER_NAME", 3)
+    body = submit(client, "Big Lab", [record(rk("s", 3))]).json()
+    assert (body["accepted"], len(body["rejected"])) == (0, 1)
+    assert queued(relay) == []
+
+
+def test_new_unclaimed_names_are_capped_and_claimed_names_are_exempt(client, relay, hub, monkeypatch):
+    monkeypatch.setattr(relay, "PEG_MAX_UNVERIFIED_NAMES", 2)
+    set_claims(hub, {"Claimed Lab": claim_entry(relay, "c-token")})
+    assert submit(client, "Lab One", [record(rk("1", 0))]).status_code == 200
+    assert submit(client, "Lab Two", [record(rk("2", 0))]).status_code == 200
+    drain(relay)
+    r = submit(client, "Lab Three", [record(rk("3", 0))])
+    assert r.status_code == 429 and "stan community-claim" in r.json()["detail"]
+    assert queued(relay) == [] and _rows_for(relay, "Lab Three") == 0
+    assert submit(client, "Lab One", [record(rk("1", 1))]).json()["accepted"] == 1, \
+        "a name already on the board keeps syncing"
+    r = submit(client, "Claimed Lab", [record(rk("c", 0))], token="c-token")
+    assert r.status_code == 200 and r.json()["verified"] is True
+
+
+def test_rows_under_unclaimed_names_are_capped_together(client, relay, hub, monkeypatch):
+    monkeypatch.setattr(relay, "PEG_MAX_UNVERIFIED_ROWS", 5)
+    set_claims(hub, {"Claimed Lab": claim_entry(relay, "c-token")})
+    assert submit(client, "Lab One", [record(rk("1", i)) for i in range(3)]).json()["accepted"] == 3
+    body = submit(client, "Lab Two", [record(rk("2", i)) for i in range(3)]).json()
+    assert body["accepted"] == 2 and [x["index"] for x in body["rejected"]] == [2]
+    body = submit(client, "Claimed Lab", [record(rk("c", i)) for i in range(4)], token="c-token").json()
+    assert (body["accepted"], body["rejected"]) == (4, [])
+
+
+def test_stan_version_cannot_forge_a_log_line(client, relay, caplog):
+    caplog.set_level(logging.INFO, logger=relay.logger.name)
+    forged = "1.2.0\nPEG submit 'Clogged PeakTail' (verified=True, stan 1.2.0): forged" + "x" * 100_000
+    r = client.post("/api/peg/submit", json={"display_name": "Tiny Lab", "stan_version": forged,
+                                             "records": [record()]})
+    assert r.status_code == 200, r.text
+    submit(client, "Tiny Lab", [record(rk("t", 1))])
+    lines = [rec.getMessage() for rec in caplog.records if rec.getMessage().startswith("PEG submit")]
+    assert len(lines) == 2
+    assert "\n" not in lines[0] and len(lines[0]) < 500 and "stan ?)" in lines[0]
+    assert "stan 1.2.0)" in lines[1], "a real version still reads as itself"
 
 
 # ── validation ───────────────────────────────────────────────────────
@@ -725,6 +924,71 @@ def test_empty_store_serves_an_empty_board(client):
     assert (board["family"], board["spd"], board["window_days"]) == ("timsTOF", 100, 30)
 
 
+def test_change_from_a_near_zero_median_is_blank(relay):
+    """UC Davis at window=365 showed "+80150 %": previous-year medians of 0.004-0.009 %."""
+    assert relay._peg_change_pct(3.21, 0.004) is None
+    assert relay._peg_change_pct(0.01, 0.02) is None
+    assert relay._peg_change_pct(0.0, 0.0) is None
+    assert relay._peg_change_pct(7.0, 12.0) == -42
+    assert relay._peg_change_pct(0.15, 0.3) == -50
+    assert relay._peg_change_pct(1.0, None) is None
+
+
+def test_most_improved_needs_a_real_fall_not_noise_at_the_floor(client, relay):
+    def lab(name, prev_pct, cur_pct):
+        rows = [record(rk(name, k), run_date=at(k), peg_intensity_pct=cur_pct) for k in range(1, 6)]
+        rows += [record(rk(name, 100 + j), run_date="2026-08-15T12:00:00Z", peg_intensity_pct=prev_pct)
+                 for j in range(5)]
+        assert submit(client, name, rows).json()["accepted"] == 10
+
+    lab("Tiny Noise", 0.02, 0.01)     # -50 %, from below the floor
+    lab("Small Drop", 0.3, 0.15)      # -50 %, but only 0.15 percentage points
+    lab("Big Fix", 12.0, 7.0)         # -42 %, 5 percentage points
+    ranked = {r["display_name"]: r for r in client.get("/api/peg/leaderboard").json()["ranked"]}
+    assert ranked["Tiny Noise"]["change_pct"] is None
+    assert ranked["Small Drop"]["change_pct"] == -50
+    assert ranked["Big Fix"]["change_pct"] == -42
+    assert "most_improved" in ranked["Big Fix"]["badges"]
+    assert "most_improved" not in ranked["Tiny Noise"]["badges"] + ranked["Small Drop"]["badges"]
+
+
+def test_family_spelling_cannot_be_changed_by_one_client(client, relay, hub):
+    """The dashboard matches cohorts by family with ===, so the echoed spelling must be stable."""
+    set_claims(hub, {"Alpha": claim_entry(relay, "alpha-token")})
+    alpha = [record(rk("A", k), run_date=at(k)) for k in range(1, 6)]
+    alpha += [record(rk("A", 10 + k), run_date=at(k), lc_system="other", instrument_family="Q Exactive",
+                     instrument_model="Q Exactive HF") for k in range(1, 6)]
+    assert submit(client, "Alpha", alpha, token="alpha-token").json()["accepted"] == 10
+    caps = [record(rk("C", k), run_date=at(1 + k % 5), instrument_family="TIMSTOF") for k in range(2000)]
+    caps += [record(rk("C", 5000 + k), run_date=at(1), lc_system="other", instrument_family="Q EXACTIVE",
+                    instrument_model="Q Exactive HF") for k in range(50)]
+    body = submit(client, "Caps Lab", caps[:2000]).json()
+    assert body["accepted"] == 2000 and body["verified"] is False
+    assert submit(client, "Caps Lab", caps[2000:]).json()["accepted"] == 50
+
+    assert {r["instrument_family"] for r in relay._PEG_STORE["rows"].values()} == {"timsTOF", "Q Exactive",
+                                                                                  "Q EXACTIVE"}
+    for family in ("timsTOF", "TIMSTOF"):
+        board = client.get("/api/peg/leaderboard", params={"family": family}).json()
+        assert board["family"] == "timsTOF"
+        assert {c["family"] for c in board["cohorts"]} == {"timsTOF"}
+        lc = client.get("/api/peg/lc-compare", params={"family": family}).json()
+        assert lc["family"] == "timsTOF"
+    # A family STAN has no fixed spelling for: the first verified spelling wins, not the majority.
+    lc = client.get("/api/peg/lc-compare", params={"family": "q exactive"}).json()
+    assert lc["family"] == "Q Exactive"
+    assert sorted(f["family"] for f in lc["families"]) == ["Q Exactive", "timsTOF"]
+
+
+def test_relay_family_spellings_are_the_ones_stan_sends(relay):
+    """_PEG_FAMILY_SPELLING mirrors stan.community.submit._instrument_family; keep them together."""
+    from stan.community.submit import _instrument_family
+
+    models = ["timsTOF HT", "timsTOF Pro 2", "Orbitrap Astral", "Orbitrap Exploris 480",
+              "Orbitrap Fusion Lumos", "Orbitrap Eclipse", "Orbitrap Elite"]
+    assert {_instrument_family(m) for m in models} == set(relay._PEG_FAMILY_SPELLING.values())
+
+
 def test_unverified_rows_under_a_verified_name_do_not_count(client, relay, hub):
     _seed_board(client, relay, hub)
     spoof = relay._peg_validate_record(
@@ -883,6 +1147,56 @@ def test_verify_claim_during_an_outage_does_not_wipe_the_claims(client, relay, h
     r = client.post("/api/verify-claim", json={"pseudonym": "New Lab", "code": code})
     assert r.status_code == 503
     assert hub.uploads == []
+
+
+def test_strict_claims_load_never_falls_back_to_a_stale_cached_copy(client, relay, hub, tmp_path, monkeypatch):
+    """The REAL hf_hub_download returns the refs/main copy when its HEAD fails.
+
+    That copy can predate this process's own last save, and verify-claim
+    would then save a new claim over it, erasing every claim made since.
+    """
+    import huggingface_hub
+    from huggingface_hub import constants, file_download
+
+    cache = tmp_path / "hf_cache"
+    storage = cache / ("datasets--" + relay.HF_DATASET_REPO.replace("/", "--"))
+    commit = "a" * 40
+    (storage / "refs").mkdir(parents=True)
+    (storage / "refs" / "main").write_text(commit)
+    stale = storage / "snapshots" / commit / CLAIMS
+    stale.parent.mkdir(parents=True)
+    stale.write_text(json.dumps({"Lab A": claim_entry(relay, "t")}))
+
+    def head_times_out(*a, **k):
+        raise httpx.ConnectTimeout("HEAD timed out (test)")
+
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(cache))
+    monkeypatch.setattr(file_download, "get_hf_file_metadata", head_times_out)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", file_download.hf_hub_download)
+    # Control: this is the fallback being guarded against.
+    cached = file_download.hf_hub_download(relay.HF_DATASET_REPO, CLAIMS, repo_type="dataset")
+    assert Path(cached).read_text() == stale.read_text()
+
+    with pytest.raises(Exception):
+        relay._load_claims(strict=True)
+    relay._pending_codes["New Lab"] = {"code": "123456", "email_hash": relay._hash("n@lab.org"),
+                                       "expires": time.time() + 900}
+    r = client.post("/api/verify-claim", json={"pseudonym": "New Lab", "code": "123456"})
+    assert r.status_code == 503
+    assert hub.uploads == []
+
+
+def test_pepper_migration_cannot_erase_a_claim_saved_meanwhile(client, relay, hub, monkeypatch):
+    """A migration that read claims.json before a verify-claim must not save that old read."""
+    set_claims(hub, {"Lab A": claim_entry(relay, "t", email="owner@lab.org")})
+    stale = relay._fetch_claims()               # read, then the thread is descheduled
+    monkeypatch.setenv("CLAIMS_PEPPER", "pepper-secret")
+    token = _claim(client, relay, "New Lab", email="new@lab.org")
+    view = relay._migrate_claims(stale)         # ...and finishes after New Lab was saved
+    assert set(json.loads(hub.files[CLAIMS])) == {"Lab A", "New Lab"}
+    assert "New Lab" in view
+    assert submit(client, "New Lab", [record()]).status_code == 403
+    assert submit(client, "New Lab", [record()], token=token).json()["verified"] is True
 
 
 # ── no numpy in the Space image ──────────────────────────────────────
@@ -1069,6 +1383,38 @@ def test_deploy_helpers(deploy, tmp_path):
         sys.modules.pop(real.__name__, None)
 
 
+@pytest.fixture
+def real_deploy():
+    mod = _load_module(DEPLOY_PATH, f"deploy_real_{uuid.uuid4().hex[:8]}")
+    yield mod
+    sys.modules.pop(mod.__name__, None)
+
+
+PACIFIC = ZoneInfo("America/Los_Angeles")
+
+
+@pytest.mark.parametrize("day", ["2026-09-28", "2026-11-15", "2027-01-15"])   # PDT, PST, PST
+@pytest.mark.parametrize("hhmm", ["00:27", "06:27", "12:27", "18:27"])
+def test_sync_window_follows_hive_local_time_through_dst(real_deploy, day, hhmm):
+    """Hive's crontab ("25 */6 * * *") runs in America/Los_Angeles, so in UTC the sync moves by an hour in winter."""
+    t = datetime.fromisoformat(f"{day}T{hhmm}").replace(tzinfo=PACIFIC)
+    assert real_deploy.in_sync_window(t)
+    assert real_deploy.in_sync_window(t.astimezone(timezone.utc))
+    assert not real_deploy.in_sync_window(t.replace(hour=3))
+    assert not real_deploy.in_sync_window(t.replace(minute=50))
+
+
+def test_sync_window_without_a_tz_database_guards_both_offsets(real_deploy, monkeypatch):
+    def no_tzdata(key):
+        raise ZoneInfoNotFoundError(key)
+
+    monkeypatch.setattr(real_deploy, "ZoneInfo", no_tzdata)
+    summer = datetime(2026, 9, 28, 7, 27, tzinfo=timezone.utc)    # 00:27 PDT
+    winter = datetime(2026, 11, 15, 8, 27, tzinfo=timezone.utc)   # 00:27 PST
+    assert real_deploy.in_sync_window(summer) and real_deploy.in_sync_window(winter)
+    assert not real_deploy.in_sync_window(datetime(2026, 11, 15, 11, 27, tzinfo=timezone.utc))
+
+
 # ── public page: the "Evosep PEG Watch" section of INDEX_HTML ────────
 # The section's HTML builders are plain functions of the /api/peg/* payloads
 # (the <script id="peg-watch-js"> block) so they can run in node against a
@@ -1239,3 +1585,57 @@ def test_trend_band_breaks_at_empty_weeks(client, tmp_path):
     assert median["y"] == [0.2, 0.3, None, 0.4, 0.5] and median["connectgaps"] is False
     assert (tr["nWeeks"], tr["maxLabs"]) == (4, 1)
     assert (empty["nWeeks"], empty["traces"][-1]["name"]) == (0, "median")
+
+
+def test_join_card_puts_claiming_before_syncing(client):
+    """Syncing under an unclaimed name first lets anyone claim it and take the lab's board entry."""
+    html = _page(client)
+    card = html[html.index('id="peg-join"'):]
+    steps = card[:card.index("</ol>")]
+    assert steps.index("stan community-claim") < steps.index("peg_share: true") < steps.index("stan peg-sync")
+    assert "claimed by anyone" in steps
+
+
+_MAIN_HARNESS = r"""
+const vm = require('vm');
+const fs = require('fs');
+const src = fs.readFileSync(process.argv[2], 'utf8');
+const data = fs.readFileSync(process.argv[3], 'utf8');
+const el = () => ({ style: {}, innerHTML: '', textContent: '', classList: { add() {}, remove() {} },
+                    addEventListener() {}, querySelector: () => null, querySelectorAll: () => [] });
+const plots = [];
+const ctx = vm.createContext({
+    console,
+    document: { getElementById: el, querySelector: () => null, querySelectorAll: () => [],
+                addEventListener() {}, createElement: el, body: el() },
+    window: { addEventListener() {} },
+    fetch: () => new Promise(() => {}),       // the page's own load never settles here
+    setInterval: () => 0, clearInterval() {}, setTimeout: () => 0,
+    Plotly: { newPlot: (id, traces) => plots.push({ id, traces }), Plots: { resize() {} } },
+});
+vm.runInContext(src, ctx);
+vm.runInContext(`allData = ${data}; renderColumnComparison();`, ctx);
+process.stdout.write(JSON.stringify(plots));
+process.exit(0);
+"""
+
+
+@needs_node
+def test_column_comparison_renders_when_two_columns_share_a_cohort(client, tmp_path):
+    """readableCohort lived inside renderRefRanges; this chart threw a ReferenceError instead."""
+    html = _page(client)
+    main = next(b for b in re.findall(r"<script>(.*?)</script>", html, re.S) if "function renderColumnComparison" in b)
+    subs = [{"cohort_id": "timsTOF_100spd_low", "instrument_model": "timsTOF HT", "instrument_family": "timsTOF",
+             "acquisition_mode": "dia", "n_precursors": n, "column_vendor": "PepSep", "column_model": col,
+             "amount_ng": 50, "spd": 100}
+            for n, col in [(40000, "15 cm"), (42000, "15 cm"), (45000, "25 cm"), (47000, "25 cm")]]
+    (tmp_path / "main.js").write_text(main)
+    (tmp_path / "data.json").write_text(json.dumps(subs))
+    (tmp_path / "harness.js").write_text(_MAIN_HARNESS)
+    proc = subprocess.run([NODE, str(tmp_path / "harness.js"), str(tmp_path / "main.js"), str(tmp_path / "data.json")],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    [plot] = json.loads(proc.stdout)
+    assert plot["id"] == "chart-column-compare"
+    assert [t["x"] for t in plot["traces"]] == [["timsTOF HT · 100 SPD · 26-75 ng"]] * 2
+    assert sorted(t["y"][0] for t in plot["traces"]) == [41000, 46000]

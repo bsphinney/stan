@@ -125,7 +125,7 @@ def step_features(raw_path: Path) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# step_pegdrift (Bruker for both, Thermo for PEG only via fisher_py)
+# step_pegdrift (Bruker for both, Thermo for PEG only via fisher_py / TRFP)
 # ---------------------------------------------------------------------------
 def step_pegdrift(raw_path: Path, out_dir: Path) -> dict:
     """Run alphatims-based PEG + DIA window drift extraction.
@@ -157,6 +157,12 @@ def step_pegdrift(raw_path: Path, out_dir: Path) -> dict:
     try:
         spectra = list(read_ms1_any(raw_path))
         peg = detect_peg_in_spectra(spectra)
+        if not spectra or peg.total_intensity <= 0:
+            # Same rule as hive_process._run_peg_and_drift: an empty read
+            # scores a clean 0.0, so write no peg_result.json at all.
+            raise PegReaderUnavailable(
+                f"no MS1 signal read from {raw_path.name} ({len(spectra)} spectra)"
+            )
         peg_json = {
             "peg_score": float(peg.peg_score),
             "n_ions_detected": int(peg.n_ions_detected),
@@ -181,8 +187,10 @@ def step_pegdrift(raw_path: Path, out_dir: Path) -> dict:
         out["peg_path"] = str(peg_path)
         out["peg_class"] = peg.peg_class
         peg_ok = True
-    except PegReaderUnavailable:
-        out["error"] = "alphatims missing"
+    except PegReaderUnavailable as e:
+        # The reader's own reason: a Thermo .raw lands here too (fisher_py /
+        # ThermoRawFileParser), where "alphatims missing" was simply wrong.
+        out["error"] = f"PEG: {e}"
     except Exception as e:
         out["error"] = f"PEG: {type(e).__name__}: {e}"
         logger.exception("step_pegdrift PEG failed")

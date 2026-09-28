@@ -195,9 +195,10 @@ def _read_ms1_thermo_trfp(
     """The container fallback of read_ms1_thermo.
 
     Every failure — no image, no apptainer, a failed conversion, an
-    unreadable mzML — becomes PegReaderUnavailable, so the pipeline leaves
-    PEG NULL (unmeasured) rather than stamping the 'unknown' sentinel its
-    generic error path writes.
+    unreadable mzML, an mzML with no MS1 peaks, a missing scratch directory —
+    becomes PegReaderUnavailable, so the pipeline leaves PEG NULL
+    (unmeasured) rather than stamping the 'unknown' sentinel its generic
+    error path writes, or scoring an empty read as a clean 0.0.
     """
     from stan.metrics import peg_trfp
 
@@ -213,14 +214,33 @@ def _read_ms1_thermo_trfp(
     )
     # $TMPDIR is node-local on Hive compute nodes (/tmp). The MS1 mzML is
     # a few hundred MB; it must never outlive this call, even when the
-    # consumer stops early or conversion fails.
-    with tempfile.TemporaryDirectory(
-        prefix="stan_peg_trfp_", dir=os.environ.get("TMPDIR") or None,
-    ) as tmp:
+    # consumer stops early or conversion fails. A failed delete (EBUSY from
+    # files a timed-out mono still holds) is ignored: by then the spectra
+    # are read, and a leftover in node-local /tmp is not worth losing them.
+    try:
+        scratch = tempfile.TemporaryDirectory(
+            prefix="stan_peg_trfp_", dir=os.environ.get("TMPDIR") or None,
+            ignore_cleanup_errors=True,
+        )
+    except OSError as e:
+        raise PegReaderUnavailable(
+            f"{fisher_reason}; ThermoRawFileParser fallback has no scratch directory: {e}"
+        ) from e
+    with scratch as tmp:
         try:
             mzml = peg_trfp.convert_ms1_mzml(raw_path, Path(tmp), container=container)
-            yield from peg_trfp.iter_mzml_ms1(mzml, n_scans)
-        except peg_trfp.TrfpError as e:
+            n_spectra = n_peaks = 0
+            for spectrum in peg_trfp.iter_mzml_ms1(mzml, n_scans):
+                n_spectra += 1
+                n_peaks += len(spectrum)
+                yield spectrum
+            if not n_peaks:
+                # An MS2-only method, an aborted acquisition, or a TRFP that
+                # changed what -L=1 writes. Scored, this is a clean 0.0.
+                raise peg_trfp.TrfpConversionError(
+                    f"{mzml.name} has no MS1 peaks ({n_spectra} MS1 spectra sampled)"
+                )
+        except (peg_trfp.TrfpError, OSError) as e:
             raise PegReaderUnavailable(
                 f"{fisher_reason}; ThermoRawFileParser fallback failed: {e}"
             ) from e

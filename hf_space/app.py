@@ -25,7 +25,7 @@ import threading
 import time
 import unicodedata
 import uuid
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -402,6 +402,120 @@ class ClaimsMisconfigured(RuntimeError):
     """A peppered (v2) claim exists but CLAIMS_PEPPER is not set."""
 
 
+# ── Lab names: one canonical form for claims and the PEG channel ──
+# A claim is only as good as the lookup that enforces it. claims.json keys
+# and every submitted PEG display_name go through _clean_text, so a name
+# that renders like a claimed one cannot pass as a different, unclaimed
+# name, and a claim typed with a doubled space or pasted in NFD still
+# matches its owner's submissions.
+LAB_NAME_MAX = 60
+CLAIM_CODES_PER_HOUR = 3       # POST /api/claim-name per lab name per hour
+CLAIM_MAX_ATTEMPTS = 5         # wrong codes before a pending code is thrown away
+CLAIM_RATE_WINDOW_SEC = 3600
+
+# Unicode Default_Ignorable_Code_Point (DerivedCoreProperties.txt). These
+# render as nothing, and several are not category C, so dropping C* alone
+# kept them: combining grapheme joiner (Mn), variation selectors (Mn), the
+# Hangul fillers (Lo).
+_DEFAULT_IGNORABLE = (
+    (0x00AD, 0x00AD), (0x034F, 0x034F), (0x061C, 0x061C), (0x115F, 0x1160),
+    (0x17B4, 0x17B5), (0x180B, 0x180F), (0x200B, 0x200F), (0x202A, 0x202E),
+    (0x2060, 0x206F), (0x3164, 0x3164), (0xFE00, 0xFE0F), (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0), (0xFFF0, 0xFFF8), (0x1BCA0, 0x1BCA3), (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+# Visible as blank but not whitespace to str.isspace(): BRAILLE PATTERN BLANK.
+_BLANK_AS_SPACE = frozenset({0x2800})
+
+
+def _default_ignorable(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in _DEFAULT_IGNORABLE)
+
+
+def _clean_text(value: Any) -> str:
+    """Canonical form of a lab name or other submitted label.
+
+    NFKC folds compatibility forms (fullwidth letters, ligatures) onto their
+    plain spelling; control, format and default-ignorable characters are
+    dropped; any blank is a space; whitespace is collapsed and stripped.
+    Zero-width spaces, bidi overrides, variation selectors, the combining
+    grapheme joiner and the Hangul fillers all render as nothing, so left in
+    they would let a name that looks exactly like a claimed one pass as a
+    different, unclaimed name.
+
+    Case is kept (live claims hold both "Clogged PeakTail" and "Clogged
+    Peaktail"). Cross-script confusables, such as a Cyrillic "С" for a Latin
+    "C", are NOT handled: such a name is a different, unverified lab, and the
+    missing check mark is what tells them apart.
+    """
+    if not isinstance(value, str):
+        return ""
+    s = unicodedata.normalize("NFKC", value)
+    kept = []
+    for ch in s:
+        cp = ord(ch)
+        if ch.isspace() or cp in _BLANK_AS_SPACE:
+            kept.append(" ")
+        elif not (_default_ignorable(cp) or unicodedata.category(ch).startswith("C")):
+            kept.append(ch)
+    # Dropping a joiner can leave a base letter and its combining mark
+    # adjacent again ("e" CGJ U+0301); recompose so that equals "é".
+    s = unicodedata.normalize("NFC", "".join(kept))
+    return " ".join(s.split())
+
+
+def _claim_name(raw: str) -> str:
+    """Canonical lab name for claim-name / verify-claim, or 400."""
+    if len(raw) > LAB_NAME_MAX * 4:
+        raise HTTPException(status_code=400, detail=f"Lab name must be 1-{LAB_NAME_MAX} characters.")
+    name = _clean_text(raw)
+    if not name or len(name) > LAB_NAME_MAX:
+        raise HTTPException(status_code=400, detail=f"Lab name must be 1-{LAB_NAME_MAX} characters.")
+    if name.lower() == "anonymous lab":
+        raise HTTPException(status_code=400, detail="'Anonymous Lab' is the default name and cannot be claimed.")
+    return name
+
+
+def _claims_for(claims: dict, name: str) -> list[dict]:
+    """Every claims.json entry whose key is ``name`` in canonical form.
+
+    Keys written before claims were canonicalised may differ from their
+    canonical form ("Double  Space"). Looking them up raw would let such a
+    claimed name read as unclaimed; more than one entry per canonical name
+    means all of them bind it (callers fail closed).
+    """
+    return [
+        entry if isinstance(entry, dict) else {}
+        for key, entry in claims.items()
+        if _clean_text(key) == name
+    ]
+
+
+def _claim_clock() -> float:
+    """Monotonic seconds for the claim-code rate window."""
+    return time.monotonic()
+
+
+def _window_hit(buckets: dict[str, list[float]], lock: threading.Lock, key: str,
+                limit: int, window_sec: float, now: float) -> bool:
+    """Count one hit for ``key`` in a sliding window; False once it already has ``limit``."""
+    cutoff = now - window_sec
+    with lock:
+        hits = [t for t in buckets.get(key, ()) if t > cutoff]
+        allowed = len(hits) < limit
+        if allowed:
+            hits.append(now)
+        buckets[key] = hits
+        if len(buckets) > 1000:
+            for k in [k for k, v in buckets.items() if not v or v[-1] <= cutoff]:
+                del buckets[k]
+    return allowed
+
+
+_CLAIM_RATE: dict[str, list[float]] = {}
+_CLAIM_RATE_LOCK = threading.Lock()
+
+
 def _hash(s: str) -> str:
     return hashlib.sha256(s.strip().lower().encode()).hexdigest()[:32]
 
@@ -469,10 +583,19 @@ def _hf_missing_file(exc: BaseException) -> bool:
 
 
 def _fetch_claims() -> dict:
-    """Download claims.json. A missing file is {}; any other failure raises."""
+    """Download claims.json. A missing file is {}; any other failure raises.
+
+    force_download: without it, a HEAD that fails (timeout, 5xx, 429) makes
+    hf_hub_download quietly return the copy cached at refs/main, which can
+    predate this process's own last save. A strict caller would then save a
+    new claim over that stale copy and erase every claim made since. The
+    file is under 1 KB, so re-downloading it every time costs nothing.
+    """
     from huggingface_hub import hf_hub_download
     try:
-        p = hf_hub_download(HF_DATASET_REPO, IDENTITY_FILE, repo_type="dataset", token=HF_TOKEN)
+        p = hf_hub_download(
+            HF_DATASET_REPO, IDENTITY_FILE, repo_type="dataset", token=HF_TOKEN, force_download=True,
+        )
     except Exception as e:
         if _hf_missing_file(e):
             return {}
@@ -483,17 +606,14 @@ def _fetch_claims() -> dict:
     return claims
 
 
-def _migrate_claims(claims: dict) -> dict:
-    """Pepper any legacy email hashes and persist the result (no-op without the secret)."""
-    pepper = _claims_pepper()
-    if not pepper:
-        return claims
+def _pepper_legacy(claims: dict, pepper: str) -> tuple[dict, int]:
+    """(copy of ``claims`` with legacy email hashes peppered, how many were)."""
     legacy = [
         name for name, entry in claims.items()
         if isinstance(entry, dict) and entry.get("v") != CLAIMS_HASH_VERSION
     ]
     if not legacy:
-        return claims
+        return claims, 0
     migrated = dict(claims)
     for name in legacy:
         entry = dict(claims[name])
@@ -501,15 +621,31 @@ def _migrate_claims(claims: dict) -> dict:
         entry["email_hash"] = _pepper_email_hash(old, pepper) if old else ""
         entry["v"] = CLAIMS_HASH_VERSION
         migrated[name] = entry
+    return migrated, len(legacy)
+
+
+def _migrate_claims(claims: dict) -> dict:
+    """Pepper any legacy email hashes and persist the result (no-op without the secret)."""
+    pepper = _claims_pepper()
+    if not pepper:
+        return claims
+    view, n = _pepper_legacy(claims, pepper)
+    if not n:
+        return claims
+    # ``claims`` was read outside the lock. Saving it as-is could write over
+    # a claim that verify-claim saved in between, freeing that name again,
+    # so re-read and migrate what is there now, all under the lock.
     with _CLAIMS_SAVE_LOCK:
         try:
-            _save_claims(migrated)
-            logger.info("Peppered %d claim email hash(es) in %s", len(legacy), IDENTITY_FILE)
+            view, n = _pepper_legacy(_fetch_claims(), pepper)
+            if n:
+                _save_claims(view)
+                logger.info("Peppered %d claim email hash(es) in %s", n, IDENTITY_FILE)
         except Exception:
             # Callers still get the migrated view, and _claim_email_matches
             # reads either form, so a failed save only delays the rewrite.
             logger.exception("Could not save peppered claims; will retry on next load")
-    return migrated
+    return view
 
 
 def _load_claims(strict: bool = False) -> dict:
@@ -939,11 +1075,22 @@ async def claim_name(req: ClaimRequest) -> dict:
     verify re-claims on new machines. STAN cannot de-anonymize participants.
     The verification code is ephemeral (15 minutes, in-memory only).
     """
-    pseudonym = req.pseudonym.strip()
     email = req.email.strip().lower()
-
-    if not pseudonym or not email:
+    if not req.pseudonym.strip() or not email:
         raise HTTPException(status_code=400, detail="Pseudonym and email are required")
+    # Canonical form: the key stored in claims.json is the exact string the
+    # PEG channel looks a submitted display_name up by.
+    pseudonym = _claim_name(req.pseudonym)
+
+    # Every call counts, refused ones included: this caps both how many
+    # codes one name can have re-rolled against it and how often the
+    # "different email" answer below can be used to test candidate emails.
+    if not _window_hit(_CLAIM_RATE, _CLAIM_RATE_LOCK, pseudonym, CLAIM_CODES_PER_HOUR,
+                       CLAIM_RATE_WINDOW_SEC, _claim_clock()):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many verification requests for '{pseudonym}'. Try again in an hour.",
+        )
 
     # Check if already claimed by someone else. Strict: if claims.json
     # cannot be read, a claimed name must not look free.
@@ -952,8 +1099,7 @@ async def claim_name(req: ClaimRequest) -> dict:
     except Exception:
         logger.exception("claim-name: %s unavailable", IDENTITY_FILE)
         raise HTTPException(status_code=503, detail="Lab-name registry unavailable. Try again shortly.")
-    if pseudonym in claims:
-        entry = claims[pseudonym] if isinstance(claims[pseudonym], dict) else {}
+    for entry in _claims_for(claims, pseudonym):
         existing_hash = entry.get("email_hash", "")
         try:
             same_email = _claim_email_matches(entry, email)
@@ -1005,7 +1151,7 @@ async def verify_claim(req: VerifyRequest) -> dict:
     Privacy guarantee: only the SHA256 hash of the email is stored. The
     email itself and the verification code are discarded after verification.
     """
-    pseudonym = req.pseudonym.strip()
+    pseudonym = _claim_name(req.pseudonym)
     code = req.code.strip()
 
     pending = _pending_codes.get(pseudonym)
@@ -1016,7 +1162,17 @@ async def verify_claim(req: VerifyRequest) -> dict:
         del _pending_codes[pseudonym]
         raise HTTPException(status_code=410, detail="Code expired. Request a new one.")
 
-    if pending["code"] != code:
+    # A 6-digit code is only safe against guessing if guesses are few: after
+    # CLAIM_MAX_ATTEMPTS wrong ones the code is gone, and claim-name only
+    # issues CLAIM_CODES_PER_HOUR new ones.
+    if not hmac.compare_digest(pending["code"].encode(), code.encode()):
+        pending["attempts"] = pending.get("attempts", 0) + 1
+        if pending["attempts"] >= CLAIM_MAX_ATTEMPTS:
+            _pending_codes.pop(pseudonym, None)
+            raise HTTPException(
+                status_code=429,
+                detail="Too many incorrect codes. Request a new one with /api/claim-name.",
+            )
         raise HTTPException(status_code=403, detail="Incorrect code.")
 
     # Generate a permanent auth token for this pseudonym
@@ -1038,11 +1194,16 @@ async def verify_claim(req: VerifyRequest) -> dict:
         except Exception:
             logger.exception("verify-claim: %s unavailable", IDENTITY_FILE)
             raise HTTPException(status_code=503, detail="Lab-name registry unavailable. Try again shortly.")
+        # A key stored before claims were canonicalised ("Double  Space") is
+        # the same name. claim-name already matched this email against it,
+        # so the re-claim replaces it, retiring its token as a re-claim does.
+        for alias in [k for k in claims if k != pseudonym and _clean_text(k) == pseudonym]:
+            del claims[alias]
         claims[pseudonym] = record
         _save_claims(claims)
 
     # Clean up
-    del _pending_codes[pseudonym]
+    _pending_codes.pop(pseudonym, None)
 
     return {
         "status": "verified",
@@ -1776,6 +1937,11 @@ PEG_WINDOWS = (30, 90, 365)
 PEG_DEFAULT_FAMILY = "timsTOF"
 PEG_MIN_RUNS = 5               # to be ranked, and for a previous window to yield change_pct
 PEG_MOST_IMPROVED_MAX = -15    # change_pct must be at least this negative for the badge
+# A percent change needs a previous median worth dividing by. From 0.004 %
+# to 3.2 % reads as "+80150 %", and 0.02 -> 0.01 % would out-improve a lab
+# that went from 12 % to 7 %; both are noise at the detection floor.
+PEG_CHANGE_FLOOR_PCT = 0.1     # previous median below this: change_pct is None
+PEG_MOST_IMPROVED_MIN_DROP = 0.5  # the badge also needs a fall of this many percentage points
 PEG_LEADERBOARD_WEEKS = 12
 PEG_LC_COMPARE_WEEKS = 26
 PEG_TREND_MAX_WEEKS = 260
@@ -1784,9 +1950,23 @@ PEG_RATE_LIMIT = 30            # POST /api/peg/submit per client per hour
 PEG_RATE_WINDOW_SEC = 3600
 PEG_CACHE_TTL_SEC = 300
 PEG_LOAD_RETRY_SEC = 30
-PEG_NAME_MAX = 60
+PEG_NAME_MAX = LAB_NAME_MAX
+# The whole table lives in this process's memory and is re-serialised on
+# every accepted batch, and the relay behind CORS "*" cannot tell a lab from
+# a script. These bound what anyone can make it hold. UC Davis, the largest
+# sharer, has ~4.6k runs after the Thermo backfill.
+PEG_MAX_ROWS_PER_NAME = 20_000     # new runs beyond this are rejected; updates still land
+PEG_MAX_UNVERIFIED_NAMES = 200     # distinct unclaimed names before a new one gets 429
+PEG_MAX_UNVERIFIED_ROWS = 200_000  # all rows under unclaimed names, together
+# Instrument families as STAN clients send them
+# (stan.community.submit._instrument_family). Stored in this spelling
+# whatever case a record used, so no client can respell a family on the
+# board or split it in two.
+_PEG_FAMILY_SPELLING = {f.lower(): f for f in ("timsTOF", "Astral", "Exploris", "Lumos", "Eclipse", "Orbitrap")}
+_STAN_VERSION_RE = re.compile(r"[0-9A-Za-z.+-]{1,32}")
 _PEG_RUN_KEY_RE = re.compile(r"^[0-9a-f]{24}$")
 _PEG_DATE_FLOOR = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_PEG_FAR_FUTURE = datetime(9999, 1, 1, tzinfo=timezone.utc)
 
 # Fields a client sends per run, in stored-column order. Anything else in a
 # record is ignored and never stored, so a client that mistakenly sends a
@@ -1830,7 +2010,9 @@ class PegStoreUnavailable(RuntimeError):
 
 # rows: {(display_name, run_key): row}. Rows are replaced, never mutated,
 # so a snapshot list of them can be read outside the lock.
-_PEG_STORE: dict[str, Any] = {"loaded": False, "rows": {}, "version": 0, "failed_at": None}
+# names: {display_name: [rows, verified rows]}, kept in step with ``rows``
+# so the size limits in peg_submit cost O(names), not O(rows).
+_PEG_STORE: dict[str, Any] = {"loaded": False, "rows": {}, "names": {}, "version": 0, "failed_at": None}
 _PEG_LOCK = threading.RLock()
 _PEG_CACHE: dict[tuple, tuple[float, dict]] = {}
 _PEG_CACHE_LOCK = threading.Lock()
@@ -1861,25 +2043,6 @@ def _day_start(d: date) -> datetime:
 
 def _iso_z(dt: datetime) -> str:
     return _as_utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _clean_text(value: Any) -> str:
-    """Drop control and format characters, collapse whitespace, strip.
-
-    Format characters (Unicode category Cf) include zero-width spaces and
-    bidi overrides. They render as nothing, so left in they would let a
-    name that looks exactly like a claimed one pass as a different,
-    unclaimed name.
-    """
-    if not isinstance(value, str):
-        return ""
-    s = unicodedata.normalize("NFC", value)
-    s = "".join(
-        " " if ch.isspace() else ch
-        for ch in s
-        if ch.isspace() or not unicodedata.category(ch).startswith("C")
-    )
-    return " ".join(s.split())
 
 
 # ── PEG store: load, serialise ──
@@ -1950,8 +2113,21 @@ def _peg_ensure_loaded() -> None:
         _PEG_STORE["failed_at"] = _peg_clock()
         logger.exception("Could not load %s", PEG_LATEST_PATH)
         raise PegStoreUnavailable(str(e)) from e
-    _PEG_STORE.update(loaded=True, rows=rows, failed_at=None)
+    names: dict[str, list[int]] = {}
+    for row in rows.values():
+        _peg_tally(names, None, row)
+    _PEG_STORE.update(loaded=True, rows=rows, names=names, failed_at=None)
     logger.info("PEG store loaded: %d rows", len(rows))
+
+
+def _peg_tally(names: dict[str, list[int]], old: dict | None, new: dict) -> None:
+    """Keep the per-name [rows, verified rows] tally in step with one store write."""
+    tally = names.setdefault(new["display_name"], [0, 0])
+    if old is None:
+        tally[0] += 1
+    else:
+        tally[1] -= bool(old.get("verified"))
+    tally[1] += bool(new.get("verified"))
 
 
 # ── PEG submit: identity, rate limit, validation ──
@@ -1974,18 +2150,7 @@ def _peg_client_key(request: Request) -> tuple[str, int]:
 
 def _peg_rate_ok(key: str) -> bool:
     """Count one request against ``key``; False once it has PEG_RATE_LIMIT this hour."""
-    now = _peg_clock()
-    cutoff = now - PEG_RATE_WINDOW_SEC
-    with _PEG_RATE_LOCK:
-        hits = [t for t in _PEG_RATE.get(key, ()) if t > cutoff]
-        allowed = len(hits) < PEG_RATE_LIMIT
-        if allowed:
-            hits.append(now)
-        _PEG_RATE[key] = hits
-        if len(_PEG_RATE) > 1000:
-            for k in [k for k, v in _PEG_RATE.items() if not v or v[-1] <= cutoff]:
-                del _PEG_RATE[k]
-    return allowed
+    return _window_hit(_PEG_RATE, _PEG_RATE_LOCK, key, PEG_RATE_LIMIT, PEG_RATE_WINDOW_SEC, _peg_clock())
 
 
 def _peg_identity(name: str, token: str) -> bool:
@@ -1993,7 +2158,9 @@ def _peg_identity(name: str, token: str) -> bool:
 
     A claimed name must present the token issued by /api/verify-claim;
     claims store only its hash, compared as _hash(token). An unclaimed name
-    is accepted but unverified.
+    is accepted but unverified. ``name`` is already canonical, and claims
+    are matched by the canonical form of their key, so a claim stored as
+    "Double  Space" still binds "Double Space".
 
     Raises:
         HTTPException: 403 for a claimed name without its token; 503 when
@@ -2005,19 +2172,18 @@ def _peg_identity(name: str, token: str) -> bool:
     except Exception:
         logger.exception("PEG submit: %s unavailable", IDENTITY_FILE)
         raise HTTPException(status_code=503, detail="Lab-name registry unavailable. Try again shortly.")
-    entry = claims.get(name)
-    if entry is None:
+    entries = _claims_for(claims, name)
+    if not entries:
         return False
-    token_hash = str(entry.get("token_hash") or "") if isinstance(entry, dict) else ""
     token = (token or "").strip()
-    if not token or not token_hash or not hmac.compare_digest(
-        _hash(token).encode(), token_hash.encode()
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="This lab name is claimed. Run `stan community-claim` to get a token.",
-        )
-    return True
+    for entry in entries:
+        token_hash = str(entry.get("token_hash") or "")
+        if token and token_hash and hmac.compare_digest(_hash(token).encode(), token_hash.encode()):
+            return True
+    raise HTTPException(
+        status_code=403,
+        detail="This lab name is claimed. Run `stan community-claim` to get a token.",
+    )
 
 
 def _peg_number(value: Any) -> float | None:
@@ -2113,6 +2279,7 @@ def _peg_validate_record(rec: Any, now: datetime) -> tuple[dict | None, str | No
     family = _clean_text(rec.get("instrument_family"))
     if not family or len(family) > 60:
         return None, "instrument_family is required (at most 60 characters)"
+    family = _PEG_FAMILY_SPELLING.get(family.lower(), family)
     model = _clean_text(rec.get("instrument_model"))
     if not model or len(model) > 80:
         return None, "instrument_model is required (at most 80 characters)"
@@ -2181,7 +2348,8 @@ def peg_submit(body: PegSubmission, request: Request) -> dict:
             status_code=429,
             detail=f"Rate limit: {PEG_RATE_LIMIT} PEG submissions per hour from one address.",
         )
-    name = _clean_text(body.display_name)
+    # Bound the raw length before normalising it (NFKC is linear, but not free).
+    name = _clean_text(body.display_name) if len(body.display_name) <= PEG_NAME_MAX * 4 else ""
     if not name or len(name) > PEG_NAME_MAX:
         raise HTTPException(status_code=400, detail="display_name is required (1-60 characters).")
     if name.lower() == "anonymous lab":
@@ -2209,16 +2377,15 @@ def peg_submit(body: PegSubmission, request: Request) -> dict:
     # twice, so a client with a duplicated run would commit on every sync
     # even though nothing ever changes.
     last_index = {rec["run_key"]: i for i, rec in valid}
-    batch: list[dict] = []
+    batch: list[tuple[int, dict]] = []
     for i, rec in valid:
         if last_index[rec["run_key"]] == i:
-            batch.append(rec)
+            batch.append((i, rec))
         else:
             rejected.append({
                 "index": i,
                 "reason": f"duplicate run_key; record {last_index[rec['run_key']]} of this batch was used",
             })
-    rejected.sort(key=lambda r: r["index"])
 
     changed: list[dict] = []
     unchanged = 0
@@ -2230,11 +2397,38 @@ def peg_submit(body: PegSubmission, request: Request) -> dict:
                 status_code=503, detail="PEG store unavailable; nothing was written. Retry later.",
             )
         store = _PEG_STORE["rows"]
-        for rec in batch:
+        names = _PEG_STORE["names"]
+        # Size limits. A claimed name is bounded by its email-verified claim;
+        # an unclaimed one only by these, so unclaimed names are also capped
+        # in number and in rows all together.
+        if not verified and name not in names and (
+            sum(1 for n_rows, n_verified in names.values() if n_verified == 0) >= PEG_MAX_UNVERIFIED_NAMES
+        ):
+            raise HTTPException(
+                status_code=429,
+                detail="The PEG board is not taking new unclaimed lab names. Claim yours with "
+                       "`stan community-claim`, then run `stan peg-sync` again.",
+            )
+        n_rows = names.get(name, (0, 0))[0]
+        unverified_rows = 0 if verified else sum(n - v for n, v in names.values())
+        for i, rec in batch:
             old = store.get((name, rec["run_key"]))
             if old is not None and _peg_same(old, rec, verified):
                 unchanged += 1
                 continue
+            if old is None:
+                # New runs only: an update to a stored run always lands.
+                if n_rows >= PEG_MAX_ROWS_PER_NAME:
+                    rejected.append({"index": i, "reason": (
+                        f"lab row limit reached ({PEG_MAX_ROWS_PER_NAME} runs per lab name)")})
+                    continue
+                if not verified and unverified_rows >= PEG_MAX_UNVERIFIED_ROWS:
+                    rejected.append({"index": i, "reason": (
+                        "row limit for unclaimed lab names reached; claim yours with `stan community-claim`")})
+                    continue
+                n_rows += 1
+                if not verified:
+                    unverified_rows += 1
             changed.append({
                 **rec,
                 "display_name": name,
@@ -2247,21 +2441,28 @@ def peg_submit(body: PegSubmission, request: Request) -> dict:
             # that cannot be written never gets into the table.
             audit_bytes = _peg_rows_to_parquet(changed)
             for row in changed:
-                store[(name, row["run_key"])] = row
+                key = (name, row["run_key"])
+                _peg_tally(names, store.get(key), row)
+                store[key] = row
             _PEG_STORE["version"] += 1
             version = _PEG_STORE["version"]
             snapshot = list(store.values())
 
+    rejected.sort(key=lambda r: r["index"])
     if changed:
         latest_bytes = _peg_rows_to_parquet(snapshot)
         stamp = _as_utc(now).strftime("%Y%m%dT%H%M%SZ")
         _queue_file(f"{PEG_SUBMISSIONS_DIR}/{stamp}_{uuid.uuid4().hex[:8]}.parquet", audit_bytes)
         _queue_file(PEG_LATEST_PATH, latest_bytes, version=version)
 
+    # stan_version is free text from the client and goes into the one log
+    # line that is read to check the proxy chain; a newline in it could
+    # forge a whole second line. Anything but a plain version string is "?".
+    stan_version = body.stan_version if _STAN_VERSION_RE.fullmatch(body.stan_version or "") else "?"
     logger.info(
-        "PEG submit '%s' (verified=%s, stan %s): %d accepted, %d unchanged, %d rejected "
+        "PEG submit %r (verified=%s, stan %s): %d accepted, %d unchanged, %d rejected "
         "[client %s, %d X-Forwarded-For entries]",
-        name, verified, body.stan_version or "?", len(changed), unchanged, len(rejected),
+        name, verified, stan_version, len(changed), unchanged, len(rejected),
         hashlib.sha256(client_key.encode()).hexdigest()[:12], xff_entries,
     )
     return {
@@ -2313,14 +2514,26 @@ def _peg_countable(rows: list[dict]) -> tuple[list[dict], set[str]]:
 
 
 def _peg_family_names(rows: list[dict]) -> dict[str, str]:
-    """Lower-cased instrument family -> its most common spelling."""
-    counts: dict[str, Counter] = defaultdict(Counter)
+    """Lower-cased instrument family -> the spelling to show for it.
+
+    A family STAN knows keeps its fixed spelling. Any other takes the
+    spelling that arrived first, verified rows before unverified ones. A
+    majority vote would let one unverified client respell a family for
+    every reader by sending 2000 rows.
+    """
+    names: dict[str, str] = {}
+    best: dict[str, tuple] = {}
     for r in rows:
-        counts[r["instrument_family"].lower()][r["instrument_family"]] += 1
-    return {
-        key: sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
-        for key, c in counts.items()
-    }
+        fam = r["instrument_family"]
+        key = fam.lower()
+        if key in _PEG_FAMILY_SPELLING:
+            names[key] = _PEG_FAMILY_SPELLING[key]
+            continue
+        rank = (not r.get("verified"), r.get("first_seen_at") or _PEG_FAR_FUTURE, fam)
+        if key not in best or rank < best[key]:
+            best[key] = rank
+            names[key] = fam
+    return names
 
 
 def _peg_week_edges(end: datetime, n_weeks: int) -> list[datetime]:
@@ -2356,15 +2569,23 @@ def _peg_window_bounds(now: datetime, window: int) -> tuple[date, datetime, date
     return as_of, end - timedelta(days=window), end
 
 
-def _peg_change_pct(current: float, prev_rows: list[dict]) -> int | None:
-    """Percent change of the median vs the previous window; None if it had <5 runs."""
+def _peg_prev_median(prev_rows: list[dict]) -> float | None:
+    """Median of the previous window; None when it had fewer than 5 runs."""
     if len(prev_rows) < PEG_MIN_RUNS:
         return None
-    prev = _peg_quantile(sorted(r["peg_intensity_pct"] for r in prev_rows), 0.5)
-    if prev > 0:
-        return round(100 * (current - prev) / prev)
-    # From a median of exactly 0 any rise is unbounded; report only "no change".
-    return 0 if current == 0 else None
+    return _peg_quantile(sorted(r["peg_intensity_pct"] for r in prev_rows), 0.5)
+
+
+def _peg_change_pct(current: float, prev: float | None) -> int | None:
+    """Percent change of the median vs the previous window's median.
+
+    None without a previous median, or when it is below
+    PEG_CHANGE_FLOOR_PCT: relative change from next to nothing is
+    unbounded noise, not an improvement or a regression.
+    """
+    if prev is None or prev < PEG_CHANGE_FLOOR_PCT:
+        return None
+    return round(100 * (current - prev) / prev)
 
 
 def _peg_leaderboard(rows: list[dict], family: str, spd: int, window: int, now: datetime) -> dict:
@@ -2418,6 +2639,7 @@ def _peg_leaderboard(rows: list[dict], family: str, spd: int, window: int, now: 
             "rows": rs,
             "n": n,
             "median": _peg_quantile(sorted(r["peg_intensity_pct"] for r in rs), 0.5),
+            "prev_median": _peg_prev_median(prev.get(lab, [])),
             "clean": sum(1 for r in rs if r["peg_class"] == "clean") / n,
         })
     ranked_labs = sorted(
@@ -2434,7 +2656,7 @@ def _peg_leaderboard(rows: list[dict], family: str, spd: int, window: int, now: 
             "median_pct": _r3(lab["median"]),
             "clean_pct": _peg_share(lab["rows"], "clean"),
             "heavy_pct": _peg_share(lab["rows"], "heavy"),
-            "change_pct": _peg_change_pct(lab["median"], prev.get(lab["name"], [])),
+            "change_pct": _peg_change_pct(lab["median"], lab["prev_median"]),
             "weekly": _peg_weekly_medians(recent.get(lab["name"], []), edges),
             "badges": [],
         }
@@ -2443,8 +2665,9 @@ def _peg_leaderboard(rows: list[dict], family: str, spd: int, window: int, now: 
     if len(ranked) >= 2:
         ranked[0]["badges"].append("cleanest")
     improvers = [
-        r for r in ranked
+        r for r, lab in zip(ranked, ranked_labs)
         if r["change_pct"] is not None and r["change_pct"] <= PEG_MOST_IMPROVED_MAX
+        and lab["prev_median"] - lab["median"] >= PEG_MOST_IMPROVED_MIN_DROP
     ]
     if improvers:
         min(improvers, key=lambda r: (r["change_pct"], r["rank"]))["badges"].append("most_improved")
@@ -2458,7 +2681,7 @@ def _peg_leaderboard(rows: list[dict], family: str, spd: int, window: int, now: 
         "generated_at": _iso_z(now),
         "as_of": as_of.isoformat(),
         "window_days": window,
-        "family": names.get(fam_key, family),
+        "family": names.get(fam_key) or _PEG_FAMILY_SPELLING.get(fam_key, family),
         "spd": spd,
         "cohorts": cohorts,
         "ranked": ranked,
@@ -2552,7 +2775,7 @@ def _peg_lc_compare(rows: list[dict], family: str, window: int, now: datetime) -
         )
     ]
     return {
-        "family": names.get(fam_key, family),
+        "family": names.get(fam_key) or _PEG_FAMILY_SPELLING.get(fam_key, family),
         "window_days": window,
         "as_of": as_of.isoformat(),
         "groups": groups,
@@ -3200,9 +3423,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <h3>Put your lab on the board</h3>
             <p>Any lab running STAN 1.2 or later can join. PEG is read straight from raw MS1, so it needs no community search.</p>
             <ol class="peg-steps">
+                <li><div><b>Claim your lab name.</b> Run <code>stan community-claim</code> to prove it with an emailed code. Do this first: an unclaimed name can be claimed by anyone, who then takes over its place on the board. Unclaimed names show as <span class="peg-unv" title="This name is not claimed, so anyone could submit under it">unverified</span>.</div></li>
                 <li><div><b>Opt in.</b> Add <code>peg_share: true</code> to <code>~/.stan/community.yml</code>. Sharing stays off until you do.</div></li>
                 <li><div><b>Sync.</b> Run <code>stan peg-sync</code>. It sends every QC run that has a PEG measurement, and the relay keeps only what changed, so it is safe to run again at any time.</div></li>
-                <li><div><b>Get the check mark.</b> Run <code>stan community-claim</code> to prove your lab name with an emailed code, then sync again. Unclaimed names show as <span class="peg-unv" title="This name is not claimed, so anyone could submit under it">unverified</span>.</div></li>
             </ol>
             <p class="peg-fine">Lab names are pseudonyms. Shared per QC run: date, instrument model, LC system, Evosep method (SPD), acquisition mode, sample type and amount, and the PEG share, score, ion count and class. File and sample names, raw data, spectra and serial numbers never leave your lab.</p>
             <p class="peg-fine">Found PEG? <a href="https://github.com/bsphinney/stan/blob/main/docs/PEG_EVOSEP_DIAGNOSTIC.md">Isolate the source in one night</a> with STAN's Evosep PEG diagnostic.</p>
@@ -3212,7 +3435,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <p><b>PEG share of MS1.</b> STAN reads 80 MS1 scans spread across the gradient and matches peaks within 5&nbsp;ppm to the PEG ladder: PEG1&ndash;20 as [M+H]<sup>+</sup>, [M+NH<sub>4</sub>]<sup>+</sup> and [M+Na]<sup>+</sup>, spaced 44.026&nbsp;Da (C<sub>2</sub>H<sub>4</sub>O). The share is the matched intensity over all MS1 peaks above 10<sup>4</sup> counts. Unlike the 0&ndash;100 PEG score, it keeps rising with contamination, so it still separates labs that all score 100.</p>
             <p><b>Cohorts.</b> Labs are ranked only against the same instrument family and Evosep method, because detector response and gradient length change the number. Only Evosep runs are ranked.</p>
             <p><b>Rank.</b> Median over the window's QC runs, lowest first, with at least 5 runs; ties go to more clean runs, then more runs. <b>Clean</b> means a PEG score below 20. Runs with no PEG measurement are left out; they never count as clean.</p>
-            <p><b>Badges.</b> <span class="peg-badge peg-b-clean" style="margin-left:0">Cleanest</span> is rank 1 once two or more labs are ranked. <span class="peg-badge peg-b-impr" style="margin-left:0">Most improved</span> is the biggest fall in median against the previous window, if it fell by 15% or more. <b>Change</b> stays blank when the previous window had fewer than 5 runs.</p>
+            <p><b>Badges.</b> <span class="peg-badge peg-b-clean" style="margin-left:0">Cleanest</span> is rank 1 once two or more labs are ranked. <span class="peg-badge peg-b-impr" style="margin-left:0">Most improved</span> is the biggest fall in median against the previous window, if it fell by 15% or more and by at least 0.5 percentage points. <b>Change</b> stays blank when the previous window had fewer than 5 runs or a median below 0.1%, where a percent change is noise.</p>
         </div>
     </div>
 </div>
@@ -3577,6 +3800,26 @@ function toggleRefFilter(group, value) {
     renderRefRanges();
 }
 
+// Translate cohort bucket names to readable labels. Shared: the reference
+// cards and the column comparison chart both label cohorts with it (it once
+// lived inside renderRefRanges, and renderColumnComparison threw a
+// ReferenceError the moment two columns shared a cohort).
+const AMOUNT_LABELS = {
+    'ultra-low': '≤25 ng', 'low': '26-75 ng', 'mid': '76-150 ng',
+    'standard': '151-300 ng', 'high': '301-600 ng', 'very-high': '>600 ng',
+};
+const SPD_LABELS = {
+    '200+spd': '200+ SPD', '100spd': '100 SPD', '60spd': '60 SPD',
+    '30spd': '30 SPD', '15spd': '15 SPD', 'deep': 'Deep (>2h)',
+};
+function readableCohort(bid) {
+    const parts = bid.split('_');
+    const fam = parts[0] || '';
+    const spd = SPD_LABELS[parts[1]] || parts[1] || '';
+    const amt = AMOUNT_LABELS[parts[2]] || parts[2] || '';
+    return `${fam} · ${spd} · ${amt}`;
+}
+
 function renderRefRanges() {
     buildRefFilters();
 
@@ -3602,23 +3845,6 @@ function renderRefRanges() {
     }
     function colKey(s) {
         return (s.column_model || '').trim().toLowerCase() || '';
-    }
-
-    // Translate bucket names to readable labels
-    const AMOUNT_LABELS = {
-        'ultra-low': '≤25 ng', 'low': '26-75 ng', 'mid': '76-150 ng',
-        'standard': '151-300 ng', 'high': '301-600 ng', 'very-high': '>600 ng',
-    };
-    const SPD_LABELS = {
-        '200+spd': '200+ SPD', '100spd': '100 SPD', '60spd': '60 SPD',
-        '30spd': '30 SPD', '15spd': '15 SPD', 'deep': 'Deep (>2h)',
-    };
-    function readableCohort(bid) {
-        const parts = bid.split('_');
-        const fam = parts[0] || '';
-        const spd = SPD_LABELS[parts[1]] || parts[1] || '';
-        const amt = AMOUNT_LABELS[parts[2]] || parts[2] || '';
-        return `${fam} · ${spd} · ${amt}`;
     }
 
     // Build broad cohorts from filtered data
@@ -5724,7 +5950,8 @@ function pegBoardParts(board) {
     const cohort = `${esc(board.family)} · ${esc(pegCount(board.spd))} SPD`;
     const out = { main: '', unranked: '', community: '' };
     if (!cohorts.length) {
-        out.main = '<div class="peg-empty"><b>No Evosep lab is sharing PEG yet.</b> Be the first: add '
+        out.main = '<div class="peg-empty"><b>No Evosep lab is sharing PEG yet.</b> Be the first: run '
+            + '<code>stan community-claim</code>, add '
             + '<code>peg_share: true</code> to <code>~/.stan/community.yml</code> and run <code>stan peg-sync</code>. '
             + '<a href="#peg-join">How to join</a></div>';
         return out;

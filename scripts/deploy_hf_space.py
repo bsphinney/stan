@@ -24,7 +24,9 @@ After an upload the script polls ``/api/version`` until the rebuilt Space
 reports the new ``SPACE_VERSION``, then prints ``/api/health``. A redeploy
 restarts the container and drops any submissions still in the relay's
 in-memory commit queue, so ``--yes`` refuses to run in the half hour around
-the batch syncs (01:27, 07:27, 13:27, 19:27 UTC) unless told otherwise.
+the batch syncs (00:27, 06:27, 12:27, 18:27 Pacific, Hive's local time, so
+01:27 UTC and on in summer but 02:27 UTC and on in winter) unless told
+otherwise.
 
 ``--record-base`` rewrites ``RECORDED_BASE_SHA256`` below to the deployed
 file once the Space is confirmed to be serving it, so the next deploy is
@@ -44,8 +46,9 @@ import re
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 logger = logging.getLogger("deploy_hf_space")
 
@@ -60,10 +63,16 @@ SCRIPT_PATH = Path(__file__).resolve()
 # `--record-base` rewrites this line after a verified deploy.
 RECORDED_BASE_SHA256 = "d89ea3fd5bcb63b393c702e932af32f15643a45298ee7152d20c6b9def83b4c3"
 
-# Hive's cron_community_sync.sh submits at :27 past these UTC hours, and the
-# relay flushes its queue about a minute after each request.
-SYNC_HOURS_UTC = (1, 7, 13, 19)
+# Hive's crontab runs cron_community_sync.sh at "25 */6 * * *" in the
+# system zone, America/Los_Angeles (no CRON_TZ), so it submits at about :27
+# past these LOCAL hours, and the relay flushes its queue about a minute
+# after each request. In UTC that is 01/07/13/19 under PDT but 02/08/14/20
+# under PST, which is why the guard is evaluated in Hive's zone, not UTC.
+SYNC_TZ = "America/Los_Angeles"
+SYNC_HOURS_LOCAL = (0, 6, 12, 18)
 SYNC_GUARD_MINUTES = (15, 45)
+# Pacific's two UTC offsets, guarded together when there is no tz database.
+_SYNC_FALLBACK_OFFSETS = (timezone(timedelta(hours=-7)), timezone(timedelta(hours=-8)))
 
 _BASE_LINE_RE = re.compile(r'^RECORDED_BASE_SHA256 = "[0-9a-f]{64}"$', re.MULTILINE)
 _VERSION_RE = re.compile(r'^SPACE_VERSION = "([^"]+)"', re.MULTILINE)
@@ -109,10 +118,21 @@ def diff_stat(old: str, new: str) -> tuple[int, int, int]:
 
 
 def in_sync_window(now: datetime) -> bool:
-    """True inside the guard window around a scheduled community sync."""
-    now = now.astimezone(timezone.utc)
+    """True inside the guard window around a scheduled community sync.
+
+    ``now`` must be timezone-aware. Without a tz database (Windows lacking
+    the tzdata package) both Pacific offsets are guarded, which blocks an
+    extra half hour four times a day rather than missing a sync.
+    """
     lo, hi = SYNC_GUARD_MINUTES
-    return now.hour in SYNC_HOURS_UTC and lo <= now.minute < hi
+    try:
+        zones = (ZoneInfo(SYNC_TZ),)
+    except ZoneInfoNotFoundError:
+        zones = _SYNC_FALLBACK_OFFSETS
+    return any(
+        t.hour in SYNC_HOURS_LOCAL and lo <= t.minute < hi
+        for t in (now.astimezone(z) for z in zones)
+    )
 
 
 def rewrite_recorded_base(script_path: Path, new_sha: str) -> None:
@@ -264,10 +284,10 @@ def main(argv: list[str] | None = None) -> int:
     now = datetime.now(timezone.utc)
     if in_sync_window(now) and not args.ignore_sync_window:
         logger.error(
-            "REFUSING: %s UTC is inside the community-sync window (HH:%02d-HH:%02d at %s UTC). "
+            "REFUSING: %s UTC is inside the community-sync window (HH:%02d-HH:%02d at %s %s). "
             "A redeploy drops the relay's unflushed commit queue. Try again later or pass "
             "--ignore-sync-window.", now.strftime("%H:%M"), *SYNC_GUARD_MINUTES,
-            ", ".join(f"{h:02d}" for h in SYNC_HOURS_UTC),
+            ", ".join(f"{h:02d}" for h in SYNC_HOURS_LOCAL), SYNC_TZ,
         )
         return 5
 

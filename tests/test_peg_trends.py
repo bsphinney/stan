@@ -5,15 +5,18 @@ Two properties matter more than any single number here:
 * an ``'unknown'`` row -- the pipeline's failure sentinel, stored with
   peg_score 0.0, which is exactly a clean run's score -- never counts, and an
   unmeasured run is dropped rather than read as 0;
-* the episode detector reproduces the two UC Davis timsTOF PEG episodes the
-  spec quotes, both on a synthetic series shaped like them and, when the
-  read-only PG extract is on disk, on the real data.
+* one acquisition is one run: the same raw file sits in PG up to five times
+  with PEG readings that disagree, and every number here must count it once;
+* the episode detector reproduces the UC Davis timsTOF PEG episodes, on a
+  synthetic series shaped like them and, when the name-free real extract is
+  in tests/fixtures, on the real data through the real readers.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -24,12 +27,10 @@ from stan.metrics.peg_trends import PegRun
 
 UTC = timezone.utc
 
-# The read-only extract the spec numbers were computed from. Present on the
-# dev Mac during the PEG Watch build; CI has no copy, so that test skips.
-EXTRACT = Path(
-    "/private/tmp/claude-501/-Users-brettphinney-Documents-STAN/"
-    "39187c0f-28e0-4ce0-892b-286c8db04795/scratchpad/peg_extract.json"
-)
+# UC Davis's timsTOF HT real-PEG QC rows, read-only from PG Farm 2026-09-28,
+# with the run names replaced by an acquisition number and the ids by their
+# rank. Duplicate ingests are kept on purpose: they are what it tests.
+EXTRACT = Path(__file__).parent / "fixtures" / "peg_timstof_extract.json"
 
 # `stan submit-all`'s blank/wash skip, verbatim from stan/cli.py.
 SUBMIT_ALL_BLANK_RE = r"(?i)(wash|blank|blnk|blk|DELETE)"
@@ -109,7 +110,7 @@ def test_is_real_peg(score, pct, cls, ok):
 
 def test_non_finite_aggregates_become_null():
     row = pt.finalize_lab_lc_row("x", {"evosep": 1}, 1, float("nan"), 0, 1, float("inf"),
-                                 {}, date(2026, 9, 28))
+                                 {})
     assert row["median_90d"] is None and row["median_365d"] is None
     json.dumps(row, allow_nan=False)
 
@@ -130,6 +131,97 @@ def test_to_peg_runs_drops_unknown_null_and_bogus_dates():
     out = pt.to_peg_runs(rows)
     assert [r.cls for r in out] == ["clean", "heavy"]   # sorted by time
     assert out[0].spd == 100
+
+
+@pytest.mark.parametrize("prec,ions,pct,failed", [
+    (0, 0, 0.0, True),          # summed no MS1: reads 0 % / 'clean', measured nothing
+    ("0", "0", "0", True),
+    (0, 6, 0.0, False),         # found PEG ions: it saw spectra
+    (0, 0, 0.4, False),
+    (None, 0, 0.0, False),      # no precursor count (DDA, unsearched) is not 0
+    (31000, 0, 0.0, False),     # a genuinely clean run identifies precursors
+])
+def test_is_failed_acquisition(prec, ions, pct, failed):
+    assert pt.is_failed_acquisition(prec, ions, pct) is failed
+
+
+def test_to_peg_runs_drops_failed_acquisitions_and_carries_has_hits():
+    base = {"peg_score": 0.0, "peg_intensity_pct": 0.0, "peg_class": "clean"}
+    rows = [
+        dict(base, run_date_utc="2026-09-01T10:00:00Z", n_precursors=0,
+             peg_n_ions_detected=0),
+        dict(base, run_date_utc="2026-09-02T10:00:00Z", n_precursors=30000,
+             peg_n_ions_detected=0, has_hits=0),
+        dict(base, run_date_utc="2026-09-03T10:00:00Z", peg_n_ions_detected=4,
+             has_hits=1),
+    ]
+    out = pt.to_peg_runs(rows)
+    assert [r.day.day for r in out] == [2, 3]
+    assert [r.has_hits for r in out] == [False, True]
+    # ions 0 is a known ladder (nothing seen); ions without stored hits is not
+    assert out[0].ladder_known and out[1].ladder_known
+    assert not run("2026-09-04", 1.0, ions=4, has_hits=False).ladder_known
+    assert not run("2026-09-04", 1.0, ions=None).ladder_known
+
+
+# ── One row per acquisition ─────────────────────────────────────────
+
+@pytest.mark.parametrize("raw,key", [
+    ("1.0.10", (1, 0, 10)), ("v1.2", (1, 2)), ("0.2.376", (0, 2, 376)),
+    ("1.0.44rc2", (1, 0, 44)), (" 1.1.12 ", (1, 1, 12)),
+    (None, ()), ("", ()), ("unknown", ()),
+])
+def test_version_key(raw, key):
+    assert pt.version_key(raw) == key
+
+
+def test_version_key_is_numeric_not_text():
+    assert pt.version_key("1.0.10") > pt.version_key("1.0.9")
+    assert pt.version_key("1.0.44") > pt.version_key("0.2.376")   # text order is backwards
+    assert pt.version_key("1.0.1") > pt.version_key("1.0")
+    assert pt.version_key("0.0.1") > pt.version_key(None)
+
+
+def _copy(rid, pct, *, hits=False, ver="0.2.376", name="HeLa_1.d", when="2026-02-01T10:00:00Z",
+          inst="timsTOF HT"):
+    return {"id": rid, "instrument": inst, "run_name": name, "run_date_utc": when,
+            "stan_version": ver, "has_hits": hits, "peg_intensity_pct": pct}
+
+
+def _kept(rows):
+    return sorted(r["id"] for r in pt.pick_canonical(rows))
+
+
+def test_pick_canonical_rank_and_order_independence():
+    """Hits first, then the newest version (numerically), then the highest id.
+
+    Live PG: an instrument-PC 0.2.222 copy without hits beside the Hive
+    0.2.376 copy with them, reading 5.24 % against 1.89 % -- the choice
+    decides the number, so it can never depend on row order.
+    """
+    groups = [
+        [_copy("a", 5.2, ver="1.1.12"), _copy("b", 1.9, hits=True, ver="0.2.222")],
+        [_copy("c", 1.0, ver="1.0.9", name="x.d"), _copy("d", 2.0, ver="1.0.10", name="x.d")],
+        [_copy("e", 1.0, name="y.d"), _copy("f", 3.0, name="y.d")],
+        [_copy("g", 0.1, ver=None, name="z.d"), _copy("h", 0.2, ver="unknown", name="z.d"),
+         _copy("i", 0.3, ver="0.0.1", name="z.d")],
+    ]
+    rows = [r for g in groups for r in g]
+    assert _kept(rows) == ["b", "d", "f", "i"]
+    assert _kept(list(reversed(rows))) == ["b", "d", "f", "i"]
+    assert _kept(rows[1::2] + rows[0::2]) == ["b", "d", "f", "i"]
+
+
+def test_pick_canonical_keeps_distinct_acquisitions():
+    rows = [
+        _copy("a", 1.0),
+        _copy("b", 1.0, when="2026-02-01T10:00:01Z"),        # a second later
+        _copy("c", 1.0, name="HeLa_2.d"),                     # another file
+        _copy("d", 1.0, inst="Orbitrap Exploris 480"),        # another instrument
+    ]
+    assert _kept(rows) == ["a", "b", "c", "d"]
+    # returned in input order
+    assert [r["id"] for r in pt.pick_canonical(rows)] == ["a", "b", "c", "d"]
 
 
 # ── Time handling ───────────────────────────────────────────────────
@@ -159,13 +251,17 @@ def test_parse_utc_objects_and_garbage():
     assert pt.parse_utc("not a date") is None
 
 
-def test_week_starts_are_mondays_oldest_first():
-    ws = pt.week_starts(date(2026, 9, 28), 26)   # a Monday
-    assert len(ws) == 26
-    assert ws[-1] == date(2026, 9, 28)
-    assert all(w.weekday() == 0 for w in ws)
-    assert ws[0] == date(2026, 9, 28) - timedelta(weeks=25)
-    assert pt.week_starts(date(2026, 10, 4), 2) == [date(2026, 9, 21), date(2026, 9, 28)]
+def test_week_window_trails_the_as_of_day():
+    """The relay's lc-compare buckets: 26 x 7 days ending at the next midnight."""
+    start, end = pt.week_window(date(2026, 9, 28), 26)       # a Monday
+    assert end == datetime(2026, 9, 29, tzinfo=UTC)
+    assert start == end - timedelta(days=182) == datetime(2026, 3, 31, tzinfo=UTC)
+    assert pt.week_index(start, start) == 0
+    assert pt.week_index(start - timedelta(seconds=1), start) is None
+    assert pt.week_index(datetime(2026, 9, 28, 23, 59, tzinfo=UTC), start) == 25
+    assert pt.week_index(datetime(2026, 9, 22, tzinfo=UTC), start) == 25
+    assert pt.week_index(datetime(2026, 9, 21, 23, 59, tzinfo=UTC), start) == 24
+    assert pt.week_index(end, start) is None
 
 
 # ── Rolling median ──────────────────────────────────────────────────
@@ -259,6 +355,27 @@ def test_a_gap_longer_than_21_days_splits_episodes():
     assert [e["start"] for e in eps] == ["2026-01-11", "2026-04-11"]
 
 
+def _hot_spans(first_start: date, gap: int) -> tuple[list, list[PegRun], date]:
+    """Two 20-day hot spans whose hot days are ``gap`` days apart."""
+    d0 = first_start
+    a = [d0 + timedelta(days=i) for i in range(21)]
+    b = [a[-1] + timedelta(days=gap + i) for i in range(21)]
+    hot = set(a + b)
+    end = b[-1] + timedelta(days=40)
+    days = [d0 + timedelta(days=i) for i in range((end - d0).days + 1)]
+    daily = [5.0 if d in hot else 0.0 for d in days]
+    runs = [run(d, 5.0 if d in hot else 0.0, "heavy" if d in hot else "clean") for d in days]
+    return daily, runs, d0
+
+
+@pytest.mark.parametrize("gap,n_episodes", [(20, 1), (21, 2), (22, 2)])
+def test_hot_days_merge_only_when_closer_than_the_gap(gap, n_episodes):
+    """Spec 4.2 and the docstring: hot days *closer than* gap_days merge."""
+    daily, runs, d0 = _hot_spans(date(2026, 1, 1), gap)
+    eps = pt.detect_episodes(daily, d0, runs, gap_days=21)
+    assert len(eps) == n_episodes
+
+
 def test_short_bursts_are_dropped():
     """Five hot injections in a row are a blip, not an episode."""
     runs = daily_runs("2026-03-01", "2026-03-05", 9.0, "heavy")
@@ -282,29 +399,81 @@ def test_episodes_empty_and_single_run():
     assert _episodes([run("2026-01-01", 50.0, "heavy")], "2026-01-10") == []
 
 
-@pytest.mark.skipif(not EXTRACT.exists(), reason="read-only PG extract not on this machine")
-def test_real_uc_davis_extract_yields_the_spec_episodes():
-    """The numbers quoted in the spec, from the 1,682-run timsTOF HT extract."""
-    d = json.loads(EXTRACT.read_text())
-    cols = d["runs_cols"]
-    rows = []
-    for r in d["runs"]:
-        x = dict(zip(cols, r))
-        rows.append({"run_date_utc": x["t"], "spd": x["spd"], "peg_score": x["score"],
-                     "peg_intensity_pct": x["pct"], "peg_n_ions_detected": x["ions"],
-                     "peg_class": x["cls"], "n_precursors": x["prec"], "mode": x["mode"]})
-    runs = pt.to_peg_runs(rows)
-    assert len(runs) == 1682
-    eps = _episodes(runs, "2026-09-28")
-    assert eps == [
-        {"start": "2025-12-15", "end": "2026-04-26", "days": 132, "n": 406,
-         "median_pct": 4.25, "heavy_pct": 37, "ongoing": False},
-        {"start": "2026-05-21", "end": "2026-09-18", "days": 120, "n": 248,
-         "median_pct": 5.18, "heavy_pct": 40, "ongoing": False},
+def _load_extract(tmp_path: Path) -> tuple[Path, dict]:
+    """The real extract as a SQLite store, duplicates and all."""
+    import stan.db as stan_db
+
+    fx = json.loads(EXTRACT.read_text())
+    path = tmp_path / "stan.db"
+    stan_db.init_db(path)
+    with sqlite3.connect(path) as con:
+        for row in fx["runs"]:
+            x = dict(zip(fx["runs_cols"], row))
+            con.execute(
+                "INSERT INTO runs (id, instrument, run_name, run_date, raw_path, mode, spd, "
+                "peg_score, peg_intensity_pct, peg_n_ions_detected, peg_class, n_precursors, "
+                "lc_system, stan_version, hidden) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)",
+                (x["id"], fx["instrument"], f"acq{x['acq']:05d}.d", x["t"], f"/p/{x['id']}",
+                 x["mode"], x["spd"], x["score"], x["pct"], x["ions"], x["cls"], x["prec"],
+                 fx["lc_system"], x["ver"]))
+            for n, adduct in x["hits"]:
+                con.execute(
+                    "INSERT INTO peg_ion_hits (run_id, source, mz, observed_intensity, "
+                    "adduct, repeat_n, charge, ppm_error) VALUES (?, 'runs', ?, 1, ?, ?, 1, 0)",
+                    (x["id"], 100.0 + n, adduct, n))
+    return path, fx
+
+
+@pytest.mark.skipif(not EXTRACT.exists(), reason="tests/fixtures/peg_timstof_extract.json absent")
+def test_real_uc_davis_extract_through_the_readers(tmp_path, monkeypatch):
+    """The real timsTOF HT history, end to end through the SQLite readers.
+
+    1,674 rows are 1,404 acquisitions. Counted once each (and without the
+    failed acquisitions), the first episode ends 2026-04-07 after 113 days,
+    not 2026-04-26 after 132, and the Feb-Apr ladder no longer reads cleaner
+    than the months around it.
+    """
+    import stan.db as stan_db
+
+    monkeypatch.delenv("STAN_DB_BACKEND", raising=False)
+    path, fx = _load_extract(tmp_path)
+    inst, as_of = fx["instrument"], date.fromisoformat(fx["as_of"])
+    assert len(fx["runs"]) == 1674
+    assert len({(r[1], r[2]) for r in fx["runs"]}) == 1404      # (acq, t)
+
+    runs = stan_db.get_peg_runs(inst, db_path=path)
+    assert len(runs) == 1385            # 1,404 acquisitions less 19 failed ones
+    doc = pt.build_overview(
+        as_of=as_of, instrument=inst, instruments=[], runs=runs,
+        ladder_rows=stan_db.get_peg_ladder_month_counts(inst, db_path=path),
+        column_events=[tuple(e) for e in fx["column_changes"]],
+        family_fn=lambda m: "timsTOF")
+    assert doc["episodes"] == [
+        {"start": "2025-12-15", "end": "2026-04-07", "days": 113, "n": 169,
+         "median_pct": 5.3, "heavy_pct": 41, "ongoing": False},
+        {"start": "2026-05-21", "end": "2026-09-18", "days": 120, "n": 236,
+         "median_pct": 5.31, "heavy_pct": 42, "ongoing": False},
     ]
-    s = pt.summary_30d(runs, date(2026, 9, 28))
+    s = doc["summary"]
     assert (s["n_30d"], s["change_pct"], s["clean_30d"], s["heavy_30d"],
-            s["clean_rate_30d"], s["streak_clean"]) == (74, -71, 21, 13, 28, 2)
+            s["clean_rate_30d"], s["streak_clean"]) == (71, -73, 19, 13, 27, 0)
+    periods = {p["installed"]: (p["n_qc"], p["median_pct"]) for p in doc["column_periods"]}
+    assert periods["2025-12-23"] == (106, 5.65) and periods["2026-03-12"] == (166, 1.64)
+    assert doc["impact"]["60"]["heavy"] == [112, 34730]
+    assert doc["impact"]["100"]["clean"] == [378, 36688]
+    lad = doc["ladder"]
+    j = lad["n"].index(10)
+    share10 = {m: lad["share"][j][i] for i, m in enumerate(lad["months"])}
+    # Known-ladder denominator: the episode months are dirty, not clean.
+    assert [share10[m] for m in ("2026-01", "2026-02", "2026-03", "2026-04", "2026-05")] == \
+        [0.887, 0.829, 0.831, 0.651, 0.747]
+    assert all(0 <= v <= 1 for row in lad["share"] for v in row)
+
+    share = stan_db.get_peg_share_rows(db_path=path)
+    assert len(share) == len(runs)
+    assert len({(r["run_name"], r["run_date"]) for r in share}) == len(share)
+    assert stan_db.get_peg_instruments(db_path=path) == [
+        {"instrument": inst, "n_runs": 1385, "evosep": True}]
 
 
 # ── Baseline ────────────────────────────────────────────────────────
@@ -454,6 +623,8 @@ def test_impact_by_class_dia_only_and_thresholds():
     # 100 SPD: plenty clean, too few heavy -> no contrast, omitted
     runs += [run("2026-01-05", 0.0, "clean", spd=100, prec=30000, mode="dia")] * 12
     runs += [run("2026-01-05", 9.0, "heavy", spd=100, prec=25000, mode="dia")] * 9
+    # Failed searches: 0 precursors is not a depth, and would drag clean down.
+    runs += [run("2026-01-06", 0.4, "clean", spd=60, prec=0, mode="diaPASEF")] * 6
     imp = pt.impact_by_class(runs)
     assert list(imp) == ["60"]
     assert imp["60"]["clean"] == [12, round((40005 + 40006) / 2)]
@@ -505,11 +676,41 @@ def test_lab_lc_summary():
     assert (t["n_90d"], t["median_90d"], t["clean_rate_90d"]) == (3, 4.0, 33)
     assert (t["n_365d"], t["median_365d"]) == (4, 3.0)
     assert len(t["weekly"]) == 26
-    assert t["weekly"][-1] == 2.0 and t["weekly"][-2] == 4.0
-    assert t["weekly"][pt.week_starts(as_of).index(pt.week_start(date(2026, 7, 1)))] == 6.0
+    # 09-27 and 09-28 share the last trailing week (09-22 .. 09-28)
+    assert t["weekly"][-1] == 3.0 and t["weekly"][-2] is None
+    w0, _ = pt.week_window(as_of)
+    assert t["weekly"][pt.week_index(datetime(2026, 7, 1, 10, tzinfo=UTC), w0)] == 6.0
     o = out[1]
     assert (o["n_90d"], o["median_90d"], o["clean_rate_90d"], o["n_365d"]) == (0, None, None, 0)
     assert o["weekly"] == [None] * 26 and o["lc_system"] == "custom"
+
+
+def test_lab_lc_weekly_ends_on_a_full_week_like_the_relay():
+    """Monday as_of, runs through Sunday: the sparkline must not end on null.
+
+    Calendar weeks left the last point empty on a Monday and, on other days,
+    a 1-6 day stub beside the relay's full trailing week in the same panel.
+    """
+    as_of = date(2026, 9, 28)                                  # a Monday
+
+    def row(day, pct):
+        return {"instrument": "timsTOF HT", "lc_system": "evosep",
+                "run_date_utc": f"{day}T10:00:00Z", "peg_intensity_pct": pct,
+                "peg_class": "trace"}
+
+    steady = [row(as_of - timedelta(days=i + 1), 3.0) for i in range(28)]
+    weekly = pt.lab_lc_summary(steady, as_of)[0]["weekly"]
+    assert weekly[-4:] == [3.0, 3.0, 3.0, 3.0]
+    # One outlier on as_of joins the six days before it; as a calendar week
+    # of its own on a Monday it would have been the whole last point.
+    weekly = pt.lab_lc_summary(steady + [row(as_of, 9.0)], as_of)[0]["weekly"]
+    assert weekly[-1] == 3.0
+
+    # Bucket for bucket the relay's _peg_week_edges: (t - edges[0]) // 7 days.
+    end = datetime(2026, 9, 29, tzinfo=UTC)
+    edges = [end - timedelta(days=7 * (26 - i)) for i in range(27)]
+    for t in (edges[0], edges[0] + timedelta(days=6, hours=23), edges[13], end - timedelta(seconds=1)):
+        assert pt.week_index(t, edges[0]) == int((t - edges[0]) // timedelta(days=7))
 
 
 # ── The overview document ───────────────────────────────────────────
@@ -525,7 +726,7 @@ def _row(day: str, pct: float, cls: str, spd: int = 100, **kw) -> dict:
     return {"run_date_utc": f"{day}T08:30:00Z", "spd": spd, "peg_score": 10.0,
             "peg_intensity_pct": pct, "peg_n_ions_detected": 3, "peg_class": cls,
             "n_precursors": 30000, "mode": "diaPASEF", "lc_system": "evosep",
-            "instrument": "timsTOF HT", **kw}
+            "instrument": "timsTOF HT", "has_hits": True, **kw}
 
 
 def test_build_overview_shape():
@@ -557,6 +758,28 @@ def test_build_overview_shape():
     assert doc["column_periods"][0]["n_qc"] == 17
     assert doc["summary"]["n_30d"] == 1
     json.dumps(doc)                                   # serialisable as-is
+
+
+def test_ladder_denominator_is_runs_with_a_known_ladder():
+    """A run with PEG ions but no stored hits is unknown, not "oligomer absent".
+
+    Live PG had 206 such timsTOF rows, 147 in Feb-Apr 2026; counted in the
+    denominator they halved the share and drew the worst months as clean.
+    """
+    rows = [
+        _row("2026-03-02", 6.0, "heavy", peg_n_ions_detected=9, has_hits=True),
+        _row("2026-03-03", 6.0, "heavy", peg_n_ions_detected=9, has_hits=True),
+        _row("2026-03-04", 5.0, "heavy", peg_n_ions_detected=3, has_hits=False),
+        _row("2026-03-05", 0.0, "clean", peg_n_ions_detected=0, has_hits=False),
+    ]
+    doc = pt.build_overview(as_of=date(2026, 3, 31), instrument="timsTOF HT",
+                            instruments=[], runs=rows,
+                            ladder_rows=[("2026-03", 10, "+NH4", 2)],
+                            family_fn=lambda m: "timsTOF")
+    lad = doc["ladder"]
+    assert lad["months"] == ["2026-03"] and lad["nruns"] == [3]
+    assert lad["share"][lad["n"].index(10)] == [round(2 / 3, 3)]
+    assert len(doc["runs"]) == 4                    # still a run everywhere else
 
 
 def test_build_overview_without_runs_is_valid_and_empty():

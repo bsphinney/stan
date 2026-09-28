@@ -310,6 +310,17 @@ def _run_peg_and_drift(
     try:
         spectra = list(read_ms1_any(raw_path))
         peg = detect_peg_in_spectra(spectra)
+        if not spectra or peg.total_intensity <= 0:
+            # Nothing read, or nothing above detect_peg_in_spectra's 1e4
+            # floor (no real QC run produces that). Scored, it is a clean
+            # 0.0 that peg-sync publishes as clean -- an unmeasured run
+            # passed off as a clean one. Leave PEG NULL, as the Thermo
+            # backfill does, and skip drift: there is no MS1 to drift.
+            logger.warning(
+                "PEG: no MS1 signal read for %s (%d spectra); leaving PEG NULL",
+                raw_path.name, len(spectra),
+            )
+            return out
         out = {
             "peg_score": peg.peg_score,
             "peg_n_ions_detected": peg.n_ions_detected,

@@ -21,10 +21,16 @@ exists.
 
 from __future__ import annotations
 
+import builtins
+import contextlib
+import errno
 import hashlib
 import importlib
+import io
 import json
+import os
 import re
+import stat
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -329,6 +335,63 @@ def test_records_sorted_by_date():
     assert dates == sorted(dates)
 
 
+# ── re-processing duplicates ────────────────────────────────────────────
+#
+# Live PG holds 241 acquisitions two to five times over (same file, same
+# instant, different id), and in 168 of them the PEG values differ -- 78 in
+# peg_class. Keeping "the first row the reader returned" published whichever
+# the heap happened to hold first, so the same run could flip clean <-> heavy
+# on the public board after any UPDATE touched those rows.
+
+def _clean(**over) -> dict:
+    return _row(0, peg_class="clean", peg_score=2.0, peg_intensity_pct=0.2,
+                peg_n_ions_detected=1, **over)
+
+
+def _heavy(**over) -> dict:
+    return _row(0, peg_class="heavy", peg_score=60.0, peg_intensity_pct=9.5,
+                peg_n_ions_detected=40, **over)
+
+
+def test_duplicate_winner_does_not_depend_on_row_order():
+    # What the reader returns today: nothing that says which row is newer.
+    forward = build_peg_records([_clean(), _heavy()], "1.2.0")
+    backward = build_peg_records([_heavy(), _clean()], "1.2.0")
+    assert forward == backward
+    assert len(forward[0]) == 1 and forward[1] == {"duplicate_run_key": 1}
+
+
+@pytest.mark.parametrize("newest_first", [False, True])
+def test_newest_processing_of_a_duplicate_is_shared(newest_first):
+    # 1.0.10 is newer than 1.0.9, which a string comparison gets backwards; the
+    # ids are ordered the other way so an id-first rule would pick the old row.
+    old = _clean(id="ff01", stan_version="1.0.9")
+    new = _heavy(id="0a02", stan_version="1.0.10")
+    rows = [new, old] if newest_first else [old, new]
+    (rec,), skipped = build_peg_records(rows, "1.2.0")
+    assert (rec["peg_class"], rec["peg_intensity_pct"]) == ("heavy", 9.5)
+    assert skipped == {"duplicate_run_key": 1}
+    assert set(rec) == SPEC_RECORD_KEYS, "id / stan_version must not ride along"
+
+
+def test_duplicate_tie_breaks_migrated_at_then_id():
+    t0 = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    pairs = [
+        # same version: the later migrated_at wins, whatever the ids say
+        (_heavy(id="aaa", stan_version="1.0.85", migrated_at=t0 + timedelta(days=1)),
+         _clean(id="zzz", stan_version="1.0.85", migrated_at=t0.isoformat())),
+        # same version and migrated_at: the id decides, so it is still fixed
+        (_heavy(id="zzz", stan_version="1.0.85", migrated_at=t0),
+         _clean(id="aaa", stan_version="1.0.85", migrated_at=t0)),
+        # a version beats no version (rows processed before the column existed)
+        (_heavy(stan_version="0.2.301"), _clean(stan_version=None)),
+    ]
+    for winner, loser in pairs:
+        for rows in ([winner, loser], [loser, winner]):
+            (rec,), _ = build_peg_records(rows, "1.2.0")
+            assert rec["peg_class"] == "heavy", (winner, loser)
+
+
 # ── sync: opt-in, identity, network ─────────────────────────────────────
 
 def test_sharing_off_makes_no_db_read_no_post_and_no_log(_isolated, relay, share_rows):
@@ -585,6 +648,83 @@ def test_write_community_keys_creates_file(_isolated):
     assert yaml.safe_load(path.read_text()) == {"display_name": "Lab", "auth_token": "t"}
 
 
+@contextlib.contextmanager
+def _umask(mask: int):
+    old = os.umask(mask)
+    try:
+        yield
+    finally:
+        os.umask(old)
+
+
+class _QuotaHit:
+    """A text file that dies half-way through its write, as on a full home quota."""
+
+    def __init__(self, fh, modes: list[int]):
+        self._fh, self._modes = fh, modes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._fh.close()
+        return False
+
+    def __getattr__(self, name):
+        return getattr(self._fh, name)
+
+    def write(self, text):
+        self._modes.append(stat.S_IMODE(os.fstat(self._fh.fileno()).st_mode))
+        self._fh.write(text[: len(text) // 2])
+        self._fh.flush()
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_community_yml_tmp_is_private_from_creation_and_removed_on_failure(
+        _isolated, monkeypatch):
+    # Hive: umask 002, and ~ and ~/.stan are drwxrwsr-x. write_text() made the
+    # tmp 0664 with the Slack bot token already in it, and a write that died
+    # left it behind at 0664 for anyone to read.
+    path = _write_cfg(_isolated["user_dir"], display_name="Clogged PeakTail",
+                      auth_token="old", slack_bot_token="xoxb-secret")
+    path.chmod(0o600)
+    before = path.read_text()
+    modes: list[int] = []
+    real_open = io.open
+
+    def spy_open(file, mode="r", *args, **kwargs):
+        fh = real_open(file, mode, *args, **kwargs)
+        is_tmp = isinstance(file, int) or str(file).endswith("community.yml.tmp")
+        return _QuotaHit(fh, modes) if "w" in mode and is_tmp else fh
+
+    monkeypatch.setattr(io, "open", spy_open)
+    monkeypatch.setattr(builtins, "open", spy_open)
+    with _umask(0o002), pytest.raises(OSError):
+        write_community_keys({"auth_token": "new"})
+    assert modes == [0o600], "secrets were written into a group/world-readable file"
+    assert not (_isolated["user_dir"] / "community.yml.tmp").exists()
+    assert path.read_text() == before
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks and modes")
+def test_planted_or_stale_tmp_is_replaced_not_followed(_isolated, tmp_path):
+    # ~/.stan is group-writable on Hive, so the tmp name can already exist --
+    # left over from a crash, or a symlink someone else put there.
+    path = _write_cfg(_isolated["user_dir"], display_name="Lab", slack_bot_token="xoxb-secret")
+    bait = tmp_path / "elsewhere.txt"
+    bait.write_text("")
+    (_isolated["user_dir"] / "community.yml.tmp").symlink_to(bait)
+    with _umask(0o002):
+        write_community_keys({"auth_token": "new"})
+    assert bait.read_text() == "", "the secrets followed a planted symlink"
+    assert not path.is_symlink()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert yaml.safe_load(path.read_text()) == {
+        "display_name": "Lab", "slack_bot_token": "xoxb-secret", "auth_token": "new"}
+    assert not (_isolated["user_dir"] / "community.yml.tmp").exists()
+
+
 # ── CLI ─────────────────────────────────────────────────────────────────
 
 def _cli(args, input_=None):
@@ -644,6 +784,54 @@ def test_cli_community_claim_failure_leaves_file_alone(_isolated, monkeypatch):
     res = _cli(["community-claim"])
     assert res.exit_code == 1
     assert path.read_text() == before
+
+
+@pytest.mark.parametrize("problem", ["not_a_mapping", "not_yaml", "read_only_dir"])
+def test_cli_community_claim_checks_the_file_before_the_relay_rotates(
+        _isolated, monkeypatch, problem):
+    # The relay retires the old token the moment it issues a new one, so a
+    # community.yml that cannot then be written must stop the claim first.
+    import stan.setup as stan_setup
+    user_dir = _isolated["user_dir"]
+    monkeypatch.setenv("STAN_DISPLAY_NAME", "Clogged PeakTail")
+    if problem == "not_a_mapping":
+        (user_dir / "community.yml").write_text("- display_name\n- auth_token\n")
+    elif problem == "not_yaml":
+        (user_dir / "community.yml").write_text("display_name: [unclosed\n")
+    else:
+        if sys.platform == "win32" or os.geteuid() == 0:
+            pytest.skip("POSIX directory permissions, not as root")
+        _write_cfg(user_dir, display_name="Clogged PeakTail", auth_token="old")
+        user_dir.chmod(0o500)
+    asked: list[str] = []
+    monkeypatch.setattr(stan_setup, "_verify_name_ownership",
+                        lambda name, reclaim=False: asked.append(name) or "tok-new")
+    try:
+        res = _cli(["community-claim"])
+    finally:
+        user_dir.chmod(0o700)
+    assert res.exit_code == 1, res.output
+    assert asked == [], "the relay was asked for a token that could not be stored"
+    assert "community.yml" in res.output or str(user_dir) in res.output
+
+
+def test_cli_community_claim_prints_the_token_if_the_write_fails(_isolated, monkeypatch):
+    import stan.setup as stan_setup
+    _write_cfg(_isolated["user_dir"], display_name="Clogged PeakTail", auth_token="old")
+    monkeypatch.setattr(stan_setup, "_verify_name_ownership",
+                        lambda name, reclaim=False: "tok-new-Zq9_x")
+
+    tmp = str(_isolated["user_dir"] / "community.yml.tmp")
+
+    def full_disk(*a, **k):
+        raise OSError(errno.EDQUOT, "Disk quota exceeded", tmp)
+
+    monkeypatch.setattr(peg_submit, "write_community_keys", full_disk)
+    res = _cli(["community-claim"])
+    assert res.exit_code == 1
+    assert "auth_token: tok-new-Zq9_x" in res.output, "the only working token was lost"
+    # Whole, not hard-wrapped at 80 columns: the path is what the user acts on.
+    assert "Disk quota exceeded" in res.output and tmp in res.output
 
 
 def test_cli_community_claim_needs_a_name(_isolated, monkeypatch):

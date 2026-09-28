@@ -1468,6 +1468,12 @@ def get_peg_ion_hits_pg(run_id: str, source: str = "runs") -> list[dict]:
 # the blank/wash exclusion in Python (one regex, shared with submit-all) and
 # strips the name before anything leaves the process. Queries that aggregate
 # here use PG_BLANK_WASH_REGEX, the same alternation.
+#
+# Every reader goes through _peg_canonical_sql: one row per acquisition. PG
+# holds the same raw file up to five times (1,674 timsTOF rows for 1,404
+# acquisitions on 2026-09-28), with PEG readings that disagree; counting every
+# copy moved the episode, column-period and impact numbers, and an unordered
+# tie decided which copy the share client sent.
 
 def _peg_real_qc_where(alias: str = "") -> str:
     """The real-PEG + QC filter (spec 4.1) as a SQL fragment.
@@ -1476,7 +1482,10 @@ def _peg_real_qc_where(alias: str = "") -> str:
     sentinel, stored with peg_score 0.0, and must never count as clean. The
     2015 floor drops the bogus 1980-01-02 Lumos row. NaN is excluded because
     float4 can hold it, PG sorts it above every number (so it would drag a
-    percentile_cont upward), and it is not a measurement.
+    percentile_cont upward), and it is not a measurement. The last clause
+    drops failed acquisitions -- 0 precursors, 0 PEG ions, exactly 0 % -- which
+    detect_peg_in_spectra classifies 'clean' when it summed no MS1 at all
+    (``stan.metrics.peg_trends.is_failed_acquisition``).
     """
     p = f"{alias}." if alias else ""
     return (
@@ -1484,7 +1493,45 @@ def _peg_real_qc_where(alias: str = "") -> str:
         f"AND {p}run_date > TIMESTAMPTZ '2015-01-01 00:00:00+00' "
         f"AND {p}peg_score IS NOT NULL AND {p}peg_intensity_pct IS NOT NULL "
         f"AND {p}peg_score <> 'NaN' AND {p}peg_intensity_pct <> 'NaN' "
-        f"AND COALESCE({p}peg_class, '') IN ('clean', 'trace', 'moderate', 'heavy')"
+        f"AND COALESCE({p}peg_class, '') IN ('clean', 'trace', 'moderate', 'heavy') "
+        f"AND NOT (COALESCE({p}n_precursors, -1) = 0 "
+        f"AND COALESCE({p}peg_n_ions_detected, -1) = 0 AND {p}peg_intensity_pct = 0)"
+    )
+
+
+# Whether a run's PEG ion ladder was stored. peg_ion_hits is indexed on run_id.
+_PEG_HAS_HITS = (
+    "EXISTS (SELECT 1 FROM peg_ion_hits x WHERE x.run_id = r.id AND x.source = 'runs')"
+)
+# stan_version as a numeric array: the leading dotted number, so 1.0.10 beats
+# 1.0.9 and 1.0.44 beats 0.2.376 (text order gets both wrong). NULL when there
+# is none. Same regex as peg_trends.version_key and peg_submit's ranking.
+_PEG_VERSION_KEY = (
+    r"string_to_array(substring(r.stan_version FROM '^\s*v?([0-9]+(?:\.[0-9]+)*)'),"
+    " '.')::numeric[]"
+)
+
+
+def _peg_canonical_sql(cols: str, extra_where: str = "") -> str:
+    """Real-PEG QC runs, one row per acquisition, as a subquery (alias ``r``).
+
+    An acquisition is ``(instrument, run_name, run_date to the second)`` --
+    the fields the share client's run_key hashes. Of its copies, the one kept
+    has its ion ladder stored, then the newest ``stan_version``, then the
+    highest ``id`` (bytewise, ``COLLATE "C"``, to match Python's order):
+    exactly ``stan.metrics.peg_trends.pick_canonical``, which the SQLite path
+    runs in Python, so the mirror and PG keep the same copy.
+
+    Args:
+        cols: Select list over ``runs r``; may use ``_PEG_HAS_HITS``.
+        extra_where: More ``AND`` clauses on ``r`` (instrument, blank regex).
+    """
+    return (
+        "SELECT DISTINCT ON (r.instrument, r.run_name, date_trunc('second', r.run_date)) "
+        f"{cols} FROM runs r WHERE {_peg_real_qc_where('r')}{extra_where} "
+        "ORDER BY r.instrument, r.run_name, date_trunc('second', r.run_date), "
+        f"{_PEG_HAS_HITS} DESC, {_PEG_VERSION_KEY} DESC NULLS LAST, "
+        'r.id::text COLLATE "C" DESC'
     )
 
 
@@ -1498,22 +1545,25 @@ _PEG_RUN_DATE_UTC = (
 def get_peg_runs_pg(instrument: str | None = None) -> list[dict]:
     """Real-PEG QC ``runs`` rows for the PEG tab, oldest first.
 
-    Seven scalars a run plus the identifiers the filter needs. ``run_name``
+    Seven scalars a run plus the identifiers the filter needs, one row per
+    acquisition, and ``has_hits`` for the ladder's denominator. ``run_name``
     is returned only so ``stan.db.get_peg_runs`` can drop blanks with the
     submit-all regex; it strips the name before returning.
     """
+    inner = _peg_canonical_sql(
+        "r.run_date, r.run_name, r.instrument, r.spd, r.peg_score, "
+        "r.peg_intensity_pct, r.peg_n_ions_detected, r.peg_class, r.n_precursors, "
+        f"r.mode, r.lc_system, {_PEG_HAS_HITS} AS has_hits",
+        " AND r.instrument = %s" if instrument else "",
+    )
     sql = (
         f"SELECT {_PEG_RUN_DATE_UTC} AS run_date_utc, run_name, instrument, spd, "
         "peg_score::numeric AS peg_score, "
         "peg_intensity_pct::numeric AS peg_intensity_pct, "
-        "peg_n_ions_detected, peg_class, n_precursors, mode, lc_system "
-        f"FROM runs WHERE {_peg_real_qc_where()}"
+        "peg_n_ions_detected, peg_class, n_precursors, mode, lc_system, has_hits "
+        f"FROM ({inner}) c ORDER BY run_date ASC, instrument, run_name"
     )
-    args: list = []
-    if instrument:
-        sql += " AND instrument = %s"
-        args.append(instrument)
-    sql += " ORDER BY run_date ASC"
+    args: list = [instrument] if instrument else []
     with _connect() as pg, pg.cursor() as cur:
         cur.execute(sql, tuple(args))
         return _rows(cur)
@@ -1524,11 +1574,11 @@ def get_peg_instrument_counts_pg(blank_regex: str) -> list[tuple[str, str, int]]
 
     A handful of rows: which instruments have PEG at all, and on which LC.
     """
+    inner = _peg_canonical_sql("r.instrument, r.lc_system",
+                               " AND COALESCE(r.run_name, '') !~* %s")
     sql = (
         "SELECT instrument, COALESCE(lc_system, '') AS lc_system, count(*) "
-        f"FROM runs WHERE {_peg_real_qc_where()} "
-        "AND COALESCE(run_name, '') !~* %s "
-        "GROUP BY 1, 2"
+        f"FROM ({inner}) c GROUP BY 1, 2"
     )
     with _connect() as pg, pg.cursor() as cur:
         cur.execute(sql, (blank_regex,))
@@ -1541,15 +1591,20 @@ def get_peg_ladder_month_counts_pg(
     """Runs per (UTC month, oligomer, adduct) in which that PEG ion was seen.
 
     Aggregated here so ~8k hit rows cross the wire as a few hundred counts.
-    ``count(DISTINCT run_id)`` because the numerator is runs, not hits.
+    ``count(DISTINCT run_id)`` because the numerator is runs, not hits. The
+    runs are the ones ``get_peg_runs_pg`` returns -- same filter, same copy
+    of each acquisition -- so the numerator never counts a run the
+    denominator does not.
     """
+    inner = _peg_canonical_sql(
+        "r.id, r.run_date",
+        " AND r.instrument = %s AND COALESCE(r.run_name, '') !~* %s",
+    )
     sql = (
-        "SELECT to_char(r.run_date AT TIME ZONE 'UTC', 'YYYY-MM') AS month, "
+        "SELECT to_char(c.run_date AT TIME ZONE 'UTC', 'YYYY-MM') AS month, "
         "h.repeat_n, h.adduct, count(DISTINCT h.run_id) AS n_runs "
-        "FROM peg_ion_hits h JOIN runs r ON r.id = h.run_id "
-        "WHERE h.source = 'runs' AND r.instrument = %s "
-        f"AND {_peg_real_qc_where('r')} "
-        "AND COALESCE(r.run_name, '') !~* %s "
+        f"FROM peg_ion_hits h JOIN ({inner}) c ON c.id = h.run_id "
+        "WHERE h.source = 'runs' "
         "GROUP BY 1, 2, 3 ORDER BY 1, 2, 3"
     )
     with _connect() as pg, pg.cursor() as cur:
@@ -1580,16 +1635,26 @@ def get_peg_share_rows_pg() -> list[dict]:
     ``run_name`` is included because the client hashes it into ``run_key``;
     it is never sent. ``sample_type`` is selected only when PG has the
     column (it does not today); the client falls back to the filename.
+
+    One row per acquisition, in a total order: with ``ORDER BY run_date``
+    alone, copies of one raw file tied and came back in whatever order the
+    sort left them, so which PEG reading the client shared could change
+    after any UPDATE -- and the relay would commit the flip.
     """
     with _connect() as pg, pg.cursor() as cur:
-        extra = ", sample_type" if "sample_type" in _runs_columns(cur) else ""
+        has_st = "sample_type" in _runs_columns(cur)
+        inner = _peg_canonical_sql(
+            "r.run_date, r.run_name, r.instrument, r.spd, r.mode, r.amount_ng, "
+            "r.lc_system, r.peg_score, r.peg_intensity_pct, r.peg_n_ions_detected, "
+            "r.peg_class" + (", r.sample_type" if has_st else "")
+        )
         cur.execute(
             f"SELECT run_name, instrument, {_PEG_RUN_DATE_UTC} AS run_date_utc, "
             "spd, mode, amount_ng::numeric AS amount_ng, lc_system, "
             "peg_score::numeric AS peg_score, "
             "peg_intensity_pct::numeric AS peg_intensity_pct, "
-            f"peg_n_ions_detected, peg_class{extra} "
-            f"FROM runs WHERE {_peg_real_qc_where()} ORDER BY run_date ASC"
+            "peg_n_ions_detected, peg_class" + (", sample_type" if has_st else "")
+            + f" FROM ({inner}) c ORDER BY run_date ASC, instrument, run_name"
         )
         return _rows(cur)
 
@@ -1601,31 +1666,36 @@ def get_peg_lab_lc_summary_pg(as_of, blank_regex: str, weeks: int = 26) -> list[
     median ``statistics.median`` computes on the SQLite path -- so the
     payload is a few numbers per instrument however many runs there are.
     The UTC timestamp ``t`` is a plain ``timestamp`` (``AT TIME ZONE 'UTC'``
-    of a timestamptz), compared against naive UTC datetimes; weeks are
-    ``date_trunc('week', t)``, Monday-start.
+    of a timestamptz), compared against naive UTC datetimes. Weeks are the
+    trailing 7-day buckets of ``peg_trends.week_window``, ``floor((t -
+    wstart) / 7 days)`` -- the relay's lc-compare buckets, not calendar weeks.
     """
     import datetime as _dt
 
-    from stan.metrics.peg_trends import finalize_lab_lc_row, sort_lab_lc, week_starts
+    from stan.metrics.peg_trends import finalize_lab_lc_row, sort_lab_lc, week_window
 
     def _midnight(d):
         return _dt.datetime(d.year, d.month, d.day)
 
+    wstart, _wend = week_window(as_of, weeks)
     params = {
         "blank": blank_regex,
         "end": _midnight(as_of + _dt.timedelta(days=1)),
         "s90": _midnight(as_of - _dt.timedelta(days=89)),
         "s365": _midnight(as_of - _dt.timedelta(days=364)),
-        "w0": _midnight(week_starts(as_of, weeks)[0]),
+        "wstart": wstart.replace(tzinfo=None),
     }
+    inner = _peg_canonical_sql(
+        "r.instrument, r.lc_system, r.peg_intensity_pct, r.peg_class, r.run_date",
+        " AND COALESCE(r.run_name, '') !~* %(blank)s",
+    )
     cte = (
         "WITH q AS ("
         " SELECT instrument, COALESCE(lc_system, '') AS lc_system,"
         "  peg_intensity_pct::float8 AS pct, peg_class,"
         "  (run_date AT TIME ZONE 'UTC') AS t"
-        f" FROM runs WHERE {_peg_real_qc_where()}"
-        "  AND COALESCE(run_name, '') !~* %(blank)s"
-        "  AND (run_date AT TIME ZONE 'UTC') < %(end)s"
+        f" FROM ({inner}) c"
+        "  WHERE (run_date AT TIME ZONE 'UTC') < %(end)s"
         ") "
     )
     with _connect() as pg, pg.cursor() as cur:
@@ -1648,9 +1718,10 @@ def get_peg_lab_lc_summary_pg(as_of, blank_regex: str, weeks: int = 26) -> list[
         lc_rows = cur.fetchall()
         cur.execute(
             cte
-            + "SELECT instrument, to_char(date_trunc('week', t), 'YYYY-MM-DD'),"
+            + "SELECT instrument,"
+            " floor(extract(epoch FROM (t - %(wstart)s)) / 604800)::int AS wk,"
             " percentile_cont(0.5) WITHIN GROUP (ORDER BY pct)"
-            " FROM q WHERE t >= %(w0)s GROUP BY 1, 2",
+            " FROM q WHERE t >= %(wstart)s GROUP BY 1, 2",
             params,
         )
         week_rows = cur.fetchall()
@@ -1660,13 +1731,12 @@ def get_peg_lab_lc_summary_pg(as_of, blank_regex: str, weeks: int = 26) -> list[
         lcs.setdefault(inst, {})[lc or ""] = int(n)
     weekly: dict[str, dict] = {}
     for inst, wk, med in week_rows:
-        weekly.setdefault(inst, {})[_dt.date.fromisoformat(wk)] = (
-            None if med is None else float(med))
+        weekly.setdefault(inst, {})[int(wk)] = None if med is None else float(med)
     out = [
         finalize_lab_lc_row(
             inst, lcs.get(inst, {}), n90, None if m90 is None else float(m90), c90,
             n365, None if m365 is None else float(m365), weekly.get(inst, {}),
-            as_of, weeks,
+            weeks,
         )
         for inst, n90, m90, c90, n365, m365 in stats
     ]

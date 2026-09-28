@@ -244,7 +244,7 @@ def convert_ms1_mzml(
         Path of the written mzML.
 
     Raises:
-        TrfpUnavailable: no image or runtime.
+        TrfpUnavailable: no image, or a runtime that cannot be executed.
         TrfpConversionError: the raw is missing, TRFP failed or timed out,
             or it exited 0 without writing a non-empty mzML.
     """
@@ -260,8 +260,13 @@ def convert_ms1_mzml(
     try:
         proc = subprocess.run(
             cmd, check=True, timeout=timeout_s, capture_output=True, text=True,
+            # mono's crash output is not guaranteed UTF-8; strict decoding
+            # would turn a TRFP failure into a UnicodeDecodeError.
+            errors="replace",
         )
-    except FileNotFoundError as e:
+    except OSError as e:
+        # FileNotFoundError, and PermissionError from a runtime without its
+        # execute bit (find_trfp_container only checks that it is a file).
         raise TrfpUnavailable(f"cannot execute {container.apptainer}: {e}") from e
     except subprocess.TimeoutExpired as e:
         raise TrfpConversionError(

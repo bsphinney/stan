@@ -1740,6 +1740,12 @@ def get_peg_ion_hits(
 #   * QC only -- hidden = 0, run_date after 2015 (PG holds a 1980-01-02 row),
 #     and no blank/wash names (the submit-all regex, via
 #     stan.metrics.peg_trends.is_blank_or_wash).
+#   * not a failed acquisition -- 0 precursors AND 0 PEG ions AND exactly 0 %
+#     is what detect_peg_in_spectra answers when it summed no MS1 at all, and
+#     it classifies 'clean' (peg_trends.is_failed_acquisition).
+#   * one row per acquisition -- the same raw file sits in runs up to five
+#     times with different PEG readings; peg_trends.pick_canonical keeps one,
+#     the copy stan.db_pg's DISTINCT ON keeps on PG.
 #
 # SQLite stores run_date as TEXT with whatever offset the acquisition PC wrote,
 # so the date floor and every date bucket are computed after parsing to UTC in
@@ -1753,12 +1759,25 @@ def _peg_real_qc_sqlite(alias: str = "") -> str:
     return (
         f"COALESCE({p}hidden, 0) = 0 "
         f"AND {p}peg_score IS NOT NULL AND {p}peg_intensity_pct IS NOT NULL "
-        f"AND COALESCE({p}peg_class, '') IN ('clean', 'trace', 'moderate', 'heavy')"
+        f"AND COALESCE({p}peg_class, '') IN ('clean', 'trace', 'moderate', 'heavy') "
+        f"AND NOT (COALESCE({p}n_precursors, -1) = 0 "
+        f"AND COALESCE({p}peg_n_ions_detected, -1) = 0 AND {p}peg_intensity_pct = 0)"
     )
 
 
+#: Columns every SQLite PEG reader selects so ``pick_canonical`` can tell
+#: copies of one acquisition apart and rank them.
+_PEG_IDENTITY_COLS = "id, instrument, run_name, run_date, stan_version"
+
+
 def _sqlite_peg_rows(sql: str, params, db_path: Path | None, who: str) -> list[dict]:
-    """Run one read-only PEG query on SQLite; [] if the DB or table is absent."""
+    """Run one read-only PEG query on SQLite; [] if the DB or table is absent.
+
+    Only a missing table or column means "no PEG here". Anything else -- a
+    lock held past the busy timeout, SQLITE_IOERR on network storage -- is
+    raised: answered as [], it rendered "no PEG measured" and the endpoint
+    cached that for ten minutes after the lock cleared.
+    """
     if db_path is None:
         db_path = get_db_path()
     if not db_path.exists():
@@ -1768,21 +1787,41 @@ def _sqlite_peg_rows(sql: str, params, db_path: Path | None, who: str) -> list[d
             con.row_factory = sqlite3.Row
             return [dict(r) for r in con.execute(sql, params).fetchall()]
     except sqlite3.OperationalError as e:
-        logger.warning("%s: %s (db=%s)", who, e, db_path)
-        return []
+        msg = str(e).lower()
+        if "no such table" in msg or "no such column" in msg:
+            logger.warning("%s: %s (db=%s)", who, e, db_path)
+            return []
+        raise
 
 
-def _finish_peg_rows(rows, keep_name: bool = False) -> list[dict]:
+def _sqlite_peg_hit_run_ids(db_path: Path | None) -> set:
+    """Ids of runs whose PEG ion ladder was stored (``peg_ion_hits``, source 'runs')."""
+    rows = _sqlite_peg_rows(
+        "SELECT DISTINCT run_id FROM peg_ion_hits WHERE source = 'runs'",
+        (), db_path, "peg hit run ids",
+    )
+    return {r["run_id"] for r in rows}
+
+
+def _finish_peg_rows(rows, keep_name: bool = False, hit_ids: set | None = None,
+                     keep: tuple[str, ...] = ()) -> list[dict]:
     """The Python half of the PEG filter, shared by both backends.
 
-    Drops blanks/washes, anything not a real measurement, and anything
-    undated or dated before 2015; stamps ``run_date_utc`` in the
-    shared-record format. Strips ``run_name`` unless ``keep_name``, in which
-    case ``run_date`` is also set to that UTC string for the share client.
-    Returns rows oldest first.
+    Drops blanks/washes, anything not a real measurement, failed
+    acquisitions, and anything undated or dated before 2015; stamps
+    ``run_date_utc`` in the shared-record format. With ``hit_ids`` (the
+    SQLite path) it also sets ``has_hits`` and keeps one row per
+    acquisition (``pick_canonical``); PG rows arrive already de-duplicated
+    by ``DISTINCT ON``. Strips ``run_name`` unless ``keep_name``, in which
+    case ``run_date`` is also set to that UTC string for the share client,
+    and strips the ranking columns (``id``, ``stan_version``, ``has_hits``)
+    except those named in ``keep``. Returns rows oldest first, ties in a
+    fixed order, so which of two same-second runs comes first never
+    depends on how the store happened to return them.
     """
     from stan.metrics.peg_trends import (
-        MIN_RUN_DATE, is_blank_or_wash, is_real_peg, parse_utc, utc_iso,
+        MIN_RUN_DATE, is_blank_or_wash, is_failed_acquisition, is_real_peg,
+        parse_utc, pick_canonical, utc_iso,
     )
 
     out: list[dict] = []
@@ -1793,17 +1832,29 @@ def _finish_peg_rows(rows, keep_name: bool = False) -> list[dict]:
         if not is_real_peg(d.get("peg_score"), d.get("peg_intensity_pct"),
                            d.get("peg_class")):
             continue
+        if is_failed_acquisition(d.get("n_precursors"), d.get("peg_n_ions_detected"),
+                                 d.get("peg_intensity_pct")):
+            continue
         t = parse_utc(d.pop("run_date_utc", None) or d.get("run_date"))
         if t is None or t <= MIN_RUN_DATE:
             continue
         d["run_date_utc"] = utc_iso(t)
+        if hit_ids is not None:
+            d["has_hits"] = d.get("id") in hit_ids
+        out.append(d)
+    if hit_ids is not None:
+        out = pick_canonical(out)
+    out.sort(key=lambda x: (x["run_date_utc"], str(x.get("instrument") or ""),
+                            str(x.get("run_name") or "")))
+    for d in out:
+        for k in ("id", "stan_version", "has_hits"):
+            if k not in keep:
+                d.pop(k, None)
         if keep_name:
             d["run_date"] = d["run_date_utc"]
         else:
             d.pop("run_name", None)
             d.pop("run_date", None)
-        out.append(d)
-    out.sort(key=lambda x: x["run_date_utc"])
     return out
 
 
@@ -1818,14 +1869,15 @@ def get_peg_runs(instrument: str | None = None, db_path: Path | None = None) -> 
         Dicts with ``run_date_utc`` (``YYYY-MM-DDTHH:MM:SSZ``), ``spd``,
         ``peg_score``, ``peg_intensity_pct``, ``peg_n_ions_detected``,
         ``peg_class``, ``n_precursors``, ``mode``, ``lc_system``,
-        ``instrument``.
+        ``instrument`` and ``has_hits`` (its ion ladder was stored), one per
+        acquisition.
     """
     from stan.db_pg import get_peg_runs_pg, use_pg
     if use_pg():
-        return _finish_peg_rows(get_peg_runs_pg(instrument))
+        return _finish_peg_rows(get_peg_runs_pg(instrument), keep=("has_hits",))
 
     sql = (
-        "SELECT run_date, run_name, instrument, spd, peg_score, peg_intensity_pct, "
+        f"SELECT {_PEG_IDENTITY_COLS}, spd, peg_score, peg_intensity_pct, "
         "peg_n_ions_detected, peg_class, n_precursors, mode, lc_system "
         f"FROM runs WHERE {_peg_real_qc_sqlite()}"
     )
@@ -1833,7 +1885,9 @@ def get_peg_runs(instrument: str | None = None, db_path: Path | None = None) -> 
     if instrument:
         sql += " AND instrument = ?"
         params.append(instrument)
-    return _finish_peg_rows(_sqlite_peg_rows(sql, params, db_path, "get_peg_runs"))
+    rows = _sqlite_peg_rows(sql, params, db_path, "get_peg_runs")
+    return _finish_peg_rows(rows, hit_ids=_sqlite_peg_hit_run_ids(db_path),
+                            keep=("has_hits",))
 
 
 def get_peg_instruments(db_path: Path | None = None) -> list[dict]:
@@ -1850,12 +1904,13 @@ def get_peg_instruments(db_path: Path | None = None) -> list[dict]:
         return instruments_from_counts(get_peg_instrument_counts_pg(PG_BLANK_WASH_REGEX))
 
     rows = _sqlite_peg_rows(
-        "SELECT instrument, lc_system, run_date, run_name, peg_score, "
-        "peg_intensity_pct, peg_class FROM runs "
+        f"SELECT {_PEG_IDENTITY_COLS}, lc_system, peg_score, peg_intensity_pct, "
+        "peg_n_ions_detected, peg_class, n_precursors FROM runs "
         f"WHERE {_peg_real_qc_sqlite()}", (), db_path, "get_peg_instruments",
     )
     counts = Counter((r["instrument"], r.get("lc_system") or "")
-                     for r in _finish_peg_rows(rows))
+                     for r in _finish_peg_rows(
+                         rows, hit_ids=_sqlite_peg_hit_run_ids(db_path)))
     return instruments_from_counts((i, lc, n) for (i, lc), n in counts.items())
 
 
@@ -1865,27 +1920,38 @@ def get_peg_ladder_month_counts(
     """Runs per (UTC month, oligomer n, adduct) in which that PEG ion fired.
 
     Joins ``peg_ion_hits`` (``source='runs'``) to its QC run, under the same
-    real-PEG + QC filter as ``get_peg_runs``, so the ladder's numerator and
-    the monthly run count it is divided by describe the same runs. Counts
-    distinct runs, not hits. Sorted by month, n, adduct.
+    real-PEG + QC filter and the same one-row-per-acquisition choice as
+    ``get_peg_runs``, so the ladder's numerator and the monthly run count it
+    is divided by describe the same runs. Counts distinct runs, not hits.
+    Sorted by month, n, adduct.
     """
     from stan.db_pg import get_peg_ladder_month_counts_pg, use_pg
     from stan.metrics.peg_trends import PG_BLANK_WASH_REGEX
     if use_pg():
         return get_peg_ladder_month_counts_pg(instrument, PG_BLANK_WASH_REGEX)
 
-    rows = _sqlite_peg_rows(
-        "SELECT h.run_id, h.repeat_n, h.adduct, r.run_date, r.run_name, "
-        "r.peg_score, r.peg_intensity_pct, r.peg_class "
+    runs = _sqlite_peg_rows(
+        f"SELECT {_PEG_IDENTITY_COLS}, peg_score, peg_intensity_pct, "
+        "peg_n_ions_detected, peg_class, n_precursors "
+        f"FROM runs WHERE instrument = ? AND {_peg_real_qc_sqlite()}",
+        (instrument,), db_path, "get_peg_ladder_month_counts",
+    )
+    month_of = {r["id"]: r["run_date_utc"][:7]
+                for r in _finish_peg_rows(runs, hit_ids=_sqlite_peg_hit_run_ids(db_path),
+                                          keep=("id",))}
+    hits = _sqlite_peg_rows(
+        "SELECT h.run_id, h.repeat_n, h.adduct "
         "FROM peg_ion_hits h JOIN runs r ON r.id = h.run_id "
-        f"WHERE h.source = 'runs' AND r.instrument = ? AND {_peg_real_qc_sqlite('r')}",
+        "WHERE h.source = 'runs' AND r.instrument = ?",
         (instrument,), db_path, "get_peg_ladder_month_counts",
     )
     runs_by_key: dict[tuple[str, int, str], set] = {}
-    for r in _finish_peg_rows(rows):
-        month = r["run_date_utc"][:7]
-        runs_by_key.setdefault((month, int(r["repeat_n"]), r["adduct"]), set()).add(
-            r["run_id"])
+    for h in hits:
+        month = month_of.get(h["run_id"])
+        if month is None:       # not a kept QC run: filtered, or a dropped copy
+            continue
+        runs_by_key.setdefault((month, int(h["repeat_n"]), h["adduct"]), set()).add(
+            h["run_id"])
     return sorted((m, n, a, len(ids)) for (m, n, a), ids in runs_by_key.items())
 
 
@@ -1915,6 +1981,10 @@ def get_peg_share_rows(db_path: Path | None = None) -> list[dict]:
     The one PEG reader that returns ``run_name``: the client hashes it into
     ``run_key`` and must never send it. Rows with an empty ``lc_system`` are
     returned as they are; mapping and dropping LCs is the client's call.
+    One row per acquisition, the same copy the PEG tab counts, in a fixed
+    order: which reading of a duplicated raw file gets shared must not
+    change between syncs, or the relay sees a "changed" record and the
+    public value flips.
 
     Returns:
         Dicts with ``run_name``, ``instrument``, ``run_date`` and
@@ -1937,12 +2007,12 @@ def get_peg_share_rows(db_path: Path | None = None) -> list[dict]:
         except sqlite3.OperationalError:
             extra = ""
     rows = _sqlite_peg_rows(
-        "SELECT run_name, instrument, run_date, spd, mode, amount_ng, lc_system, "
+        f"SELECT {_PEG_IDENTITY_COLS}, spd, mode, amount_ng, lc_system, "
         f"peg_score, peg_intensity_pct, peg_n_ions_detected, peg_class{extra} "
         f"FROM runs WHERE {_peg_real_qc_sqlite()}",
         (), db_path, "get_peg_share_rows",
     )
-    return _finish_peg_rows(rows, keep_name=True)
+    return _finish_peg_rows(rows, keep_name=True, hit_ids=_sqlite_peg_hit_run_ids(db_path))
 
 
 def get_peg_lab_lc_summary(as_of=None, db_path: Path | None = None) -> list[dict]:
@@ -1950,9 +2020,10 @@ def get_peg_lab_lc_summary(as_of=None, db_path: Path | None = None) -> list[dict
 
     One row per instrument with any real PEG: ``instrument, lc_system,
     n_90d, median_90d, clean_rate_90d, n_365d, median_365d, weekly`` (26
-    Monday-start weekly medians, oldest first, the last being the week of
-    ``as_of``). Aggregated in SQL on PG (``percentile_cont``) so the payload
-    is a few numbers per instrument.
+    medians over trailing 7-day buckets, oldest first, the last ending with
+    ``as_of`` -- the relay's lc-compare buckets, so both sparklines in the
+    panel mean the same week). Aggregated in SQL on PG
+    (``percentile_cont``) so the payload is a few numbers per instrument.
 
     Args:
         as_of: UTC ``date`` the windows end on; today (UTC) when None.
@@ -1966,11 +2037,12 @@ def get_peg_lab_lc_summary(as_of=None, db_path: Path | None = None) -> list[dict
     if use_pg():
         return get_peg_lab_lc_summary_pg(as_of, PG_BLANK_WASH_REGEX)
     rows = _sqlite_peg_rows(
-        "SELECT instrument, lc_system, run_date, run_name, peg_score, "
-        "peg_intensity_pct, peg_class FROM runs "
+        f"SELECT {_PEG_IDENTITY_COLS}, lc_system, peg_score, peg_intensity_pct, "
+        "peg_n_ions_detected, peg_class, n_precursors FROM runs "
         f"WHERE {_peg_real_qc_sqlite()}", (), db_path, "get_peg_lab_lc_summary",
     )
-    return lab_lc_summary(_finish_peg_rows(rows), as_of)
+    return lab_lc_summary(
+        _finish_peg_rows(rows, hit_ids=_sqlite_peg_hit_run_ids(db_path)), as_of)
 
 
 def insert_drift_window_centroids(

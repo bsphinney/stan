@@ -15,6 +15,14 @@ stored with ``peg_score = 0.0`` -- exactly what a spotless run scores -- so
 anything that forgets the class check counts a failed read as a clean one.
 An unmeasured run is dropped, never treated as 0.
 
+**One acquisition is one run.** PG holds the same raw file up to five
+times (re-ingested under a second path, re-processed by a newer STAN), and
+the copies disagree: live PG on 2026-09-28 had 1,674 timsTOF rows for 1,404
+acquisitions, 179 of the 270 extras inside the Dec-Apr episode, with PEG
+differing in 168 of the 241 groups. Counting every copy weighted those
+acquisitions twice or more; ``pick_canonical`` chooses one, the same one on
+both backends and in the share client.
+
 **The unit is ``peg_intensity_pct``** ("PEG share of MS1"), not the 0-100
 score. The score saturates at both ends (29 % of UC Davis timsTOF runs are
 exactly 0, 95 are exactly 100), so a median of it cannot tell a bad month
@@ -105,6 +113,80 @@ def _finite(v: Any) -> bool:
         return False
 
 
+def is_failed_acquisition(n_precursors: Any, peg_n_ions_detected: Any,
+                          peg_intensity_pct: Any) -> bool:
+    """True for a row that looks unmeasured though its PEG reads clean.
+
+    ``detect_peg_in_spectra`` answers 0 % and 0 ions when it summed no MS1
+    signal at all, and that scores 0 and classifies ``'clean'`` -- the same
+    trap as the ``'unknown'`` sentinel. The readers cannot see the spectra,
+    so they drop the combination that marks it: no precursors identified,
+    no PEG ion, and exactly 0 % PEG. On live PG 21 of the 22 timsTOF runs
+    with 0 precursors read exactly that, against a 29 % base rate, and the
+    ones checked on Hive were 13-364 MB acquisitions beside a 1.1 GB median.
+    A genuinely clean run identifies precursors, so it is not caught; a
+    missing precursor count (DDA, or never searched) is not 0 and keeps the
+    row. Both readers apply it in SQL too (``COALESCE(..., -1) = 0``).
+    """
+    return (_int_or_none(n_precursors) == 0
+            and _int_or_none(peg_n_ions_detected) == 0
+            and _float_or_none(peg_intensity_pct) == 0.0)
+
+
+_VERSION_RE = re.compile(r"\s*v?([0-9]+(?:\.[0-9]+)*)")
+
+
+def version_key(value: Any) -> tuple[int, ...]:
+    """``"1.0.10"`` -> ``(1, 0, 10)``; NULL or unparseable -> ``()``, oldest.
+
+    The leading dotted number, compared numerically (text order would put
+    ``0.2.376`` after ``1.0.44``). Same regex as ``stan.community.peg_submit``
+    and as the PG readers' ``substring(stan_version FROM ...)``, so all three
+    rank a run's copies alike.
+    """
+    m = _VERSION_RE.match(str(value or ""))
+    return tuple(int(p) for p in m.group(1).split(".")) if m else ()
+
+
+def acquisition_key(row: dict) -> tuple:
+    """``(instrument, run_name, UTC second)``: which rows are one raw file.
+
+    PG's ``DISTINCT ON`` uses the same three (``date_trunc('second', ...)``);
+    the share client's ``run_key`` hashes them too, with the name's basename.
+    """
+    return (row.get("instrument"), row.get("run_name"), row.get("run_date_utc"))
+
+
+def pick_canonical(rows: Iterable[dict]) -> list[dict]:
+    """One row per acquisition, the rest dropped (both backends, spec 4.1).
+
+    Among copies of one acquisition (``acquisition_key``) the kept row is
+    the one whose ion ladder was stored (``has_hits``), then the newest
+    ``stan_version`` (``version_key``), then the highest ``id``. Hits come
+    first because the ladder needs them -- a copy without them is a run
+    whose oligomers are unknown -- and on live PG the copies with hits are
+    also the Hive re-processing (0.2.376) of the instrument PC's 0.2.222
+    rows. The PG readers apply the identical order in SQL (``DISTINCT ON``
+    in ``stan.db_pg``), so the SQLite mirror and PG keep the same copy.
+
+    The choice never depends on input order. Rows must carry
+    ``run_date_utc`` (already normalised); ``id``, ``stan_version`` and
+    ``has_hits`` may be absent and then rank lowest. Returns the kept rows
+    in input order.
+    """
+    best: dict[tuple, tuple[tuple, int]] = {}
+    ordered = list(rows)
+    for i, r in enumerate(ordered):
+        rank = (bool(r.get("has_hits")), version_key(r.get("stan_version")),
+                str(r.get("id") or ""))
+        k = acquisition_key(r)
+        held = best.get(k)
+        if held is None or rank > held[0]:
+            best[k] = (rank, i)
+    keep = {i for _, i in best.values()}
+    return [r for i, r in enumerate(ordered) if i in keep]
+
+
 # ── Time handling ───────────────────────────────────────────────────
 
 _FRACTION_RE = re.compile(r"(\d{2}:\d{2}:\d{2})\.(\d+)")
@@ -157,18 +239,31 @@ def utc_iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def week_start(d: date) -> date:
-    """Monday of ``d``'s ISO week -- PG's ``date_trunc('week', ...)``."""
-    return d - timedelta(days=d.weekday())
+def week_window(as_of: date, weeks: int = 26) -> tuple[datetime, datetime]:
+    """``(start, end)`` of ``weeks`` trailing 7-day buckets ending with ``as_of``.
 
-
-def week_starts(as_of: date, weeks: int = 26) -> list[date]:
-    """The Monday of each of the last ``weeks`` weeks, oldest first.
-
-    The last entry is the (possibly partial) week containing ``as_of``.
+    ``end`` is the end of the as-of day (next UTC midnight), ``start`` is
+    ``weeks`` x 7 days before it. These are the relay's lc-compare buckets
+    (``_peg_week_edges``): the newest point is always a full week, where a
+    Monday-start calendar week left the lab's sparkline ending on a partial
+    week (or on nothing at all when ``as_of`` was a Monday) beside the
+    community one ending on a full one, in the same panel.
     """
-    last = week_start(as_of)
-    return [last - timedelta(weeks=weeks - 1 - i) for i in range(weeks)]
+    nxt = as_of + timedelta(days=1)
+    end = datetime(nxt.year, nxt.month, nxt.day, tzinfo=timezone.utc)
+    return end - timedelta(days=7 * weeks), end
+
+
+def week_index(t: datetime, start: datetime, weeks: int = 26) -> int | None:
+    """Bucket of ``t`` in ``week_window`` (0 = oldest), None outside it.
+
+    ``(t - start) // 7 days``, as the relay computes it and as the PG reader
+    does with ``floor(extract(epoch FROM t - start) / 604800)``.
+    """
+    if t < start:
+        return None
+    i = int((t - start) // timedelta(days=7))
+    return i if i < weeks else None
 
 
 # ── Run records ─────────────────────────────────────────────────────
@@ -186,29 +281,48 @@ class PegRun:
     prec: int | None = None
     mode: str | None = None
     lc_system: str | None = None
+    has_hits: bool | None = None
 
     @property
     def day(self) -> date:
         """UTC calendar date of the acquisition."""
         return self.t.date()
 
+    @property
+    def ladder_known(self) -> bool:
+        """True when this run's oligomer ladder is on record.
+
+        Either its ion hits were stored, or it detected no PEG ion at all
+        (so every oligomer is known to be absent). A run with ions but no
+        stored hits is unknown, not "oligomer absent": counting it in the
+        ladder's denominator is the same error as counting an unmeasured
+        run as clean.
+        """
+        return bool(self.has_hits) or self.ions == 0
+
 
 def to_peg_runs(rows: Iterable[dict]) -> list[PegRun]:
     """Build sorted ``PegRun``s from reader rows, dropping anything not real.
 
     Accepts the ``stan.db.get_peg_runs`` shape (``run_date_utc``,
-    ``peg_intensity_pct``, ...). Defends the same filter the readers apply
-    in SQL, so a caller that hands in raw rows still cannot smuggle an
-    ``'unknown'`` or a 1980 row into the maths.
+    ``peg_intensity_pct``, ``has_hits``, ...). Defends the same filter the
+    readers apply in SQL, so a caller that hands in raw rows still cannot
+    smuggle an ``'unknown'``, a failed acquisition or a 1980 row into the
+    maths. It does not de-duplicate: that needs run names, which never
+    reach this module, so the readers do it (``pick_canonical``).
     """
     out: list[PegRun] = []
     for r in rows:
         if not is_real_peg(r.get("peg_score"), r.get("peg_intensity_pct"),
                            r.get("peg_class")):
             continue
+        if is_failed_acquisition(r.get("n_precursors"), r.get("peg_n_ions_detected"),
+                                 r.get("peg_intensity_pct")):
+            continue
         t = parse_utc(r.get("run_date_utc") or r.get("run_date"))
         if t is None or t <= MIN_RUN_DATE:
             continue
+        hits = r.get("has_hits")
         out.append(PegRun(
             t=t,
             pct=float(r["peg_intensity_pct"]),
@@ -219,6 +333,7 @@ def to_peg_runs(rows: Iterable[dict]) -> list[PegRun]:
             prec=_int_or_none(r.get("n_precursors")),
             mode=r.get("mode"),
             lc_system=r.get("lc_system"),
+            has_hits=None if hits is None else bool(hits),
         ))
     out.sort(key=lambda p: p.t)
     return out
@@ -324,8 +439,10 @@ def detect_episodes(
     taken as the as-of day, and an episode is ``ongoing`` when its last hot
     day is within ``ongoing_days`` of it.
 
-    On UC Davis's timsTOF HT this yields 2025-12-15 -> 2026-04-26 (132 d,
-    median 4.25 %) and 2026-05-21 -> 2026-09-18 (120 d, median 5.18 %).
+    On UC Davis's timsTOF HT (live PG, 2026-09-28, one row per acquisition)
+    this yields 2025-12-15 -> 2026-04-07 (113 d, median 5.30 %) and
+    2026-05-21 -> 2026-09-18 (120 d, median 5.31 %). Counting every
+    duplicate ingest had stretched the first to 04-26 (132 d).
 
     Returns:
         ``[{start, end, days, n, median_pct, heavy_pct, ongoing}]`` oldest
@@ -340,7 +457,7 @@ def detect_episodes(
         if m is None or m < threshold_pct:
             continue
         day = start + timedelta(days=i)
-        if cur is not None and (day - cur[1]).days <= gap_days:
+        if cur is not None and (day - cur[1]).days < gap_days:
             cur[1] = day
         else:
             if cur is not None:
@@ -470,20 +587,23 @@ def ladder_by_month(
     """How often each PEG oligomer was seen, month by month.
 
     ``share[j][i]`` is, for oligomer ``n_values[j]`` in ``months[i]``, the
-    largest fraction of that month's real-PEG runs in which any single
-    adduct of it was detected. Max over adducts rather than a union because
+    largest fraction of that month's runs *with a known ladder*
+    (``PegRun.ladder_known``) in which any single adduct of it was
+    detected. Max over adducts rather than a union because
     the reader aggregates per (month, n, adduct) in SQL; a run seen as both
     [M+H]+ and [M+NH4]+ is one run, and the max never double counts it.
 
     Months run from January of the year before ``as_of`` through ``as_of``'s
-    month, keeping only months with at least one real-PEG run. ``adducts``
+    month, keeping only months with at least one known-ladder run. ``adducts``
     totals every (run, oligomer) detection per adduct across all the rows
     given, for the adduct-mix bar.
 
     Args:
         hits_rows: ``(month 'YYYY-MM', repeat_n, adduct, n_runs)`` tuples
             from ``stan.db.get_peg_ladder_month_counts``.
-        runs_per_month: Real-PEG QC runs per UTC month (the denominator).
+        runs_per_month: Real-PEG QC runs per UTC month whose ladder is
+            known (the denominator). Every run the numerator counts has
+            hits, so it is always in here too.
         as_of: The overview's as-of date.
         n_values: Oligomers to report (rows of ``share``).
     """
@@ -589,9 +709,12 @@ def impact_by_class(runs: Sequence[PegRun], min_per_class: int = 10) -> dict:
 
     Precursor count is STAN's primary DIA depth metric, so this is what PEG
     costs in identifications. Only DIA runs (``mode`` contains "dia") with a
-    precursor count are used -- DDA reports PSMs, which do not compare --
-    and only SPDs with at least ``min_per_class`` clean *and* heavy runs,
-    since a contrast needs both ends populated.
+    positive precursor count are used -- DDA reports PSMs, which do not
+    compare, and 0 precursors is a failed search, not a depth (on live PG
+    all 22 such timsTOF runs were 'clean', which understated the clean-heavy
+    gap at 100 SPD by 7.6 %) -- and only SPDs with at least
+    ``min_per_class`` clean *and* heavy runs, since a contrast needs both
+    ends populated.
 
     Returns:
         ``{"<spd>": {class: [n, median n_precursors]}}``, SPDs descending.
@@ -599,7 +722,7 @@ def impact_by_class(runs: Sequence[PegRun], min_per_class: int = 10) -> dict:
     """
     by_spd: dict[int, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
     for r in runs:
-        if r.spd is None or r.prec is None or not _is_dia(r.mode):
+        if r.spd is None or r.prec is None or r.prec <= 0 or not _is_dia(r.mode):
             continue
         by_spd[r.spd][r.cls].append(r.prec)
     out: dict[str, dict] = {}
@@ -660,15 +783,15 @@ def finalize_lab_lc_row(
     clean_90d: int,
     n_365d: int,
     median_365d: float | None,
-    weekly: dict[date, float | None],
-    as_of: date,
+    weekly: dict[int, float | None],
     weeks: int = 26,
 ) -> dict:
     """One ``lab_lc`` entry, identical in shape whichever backend aggregated.
 
     Both the PG path (``percentile_cont`` in SQL) and the SQLite path
     (``lab_lc_summary`` here) end in this function, so rounding and keys
-    cannot differ between them.
+    cannot differ between them. ``weekly`` maps a ``week_index`` bucket
+    (0 = oldest) to its median; missing buckets are null.
     """
     return {
         "instrument": instrument,
@@ -678,7 +801,7 @@ def finalize_lab_lc_row(
         "clean_rate_90d": _pct_of(int(clean_90d or 0), int(n_90d or 0)),
         "n_365d": int(n_365d or 0),
         "median_365d": _rnd(median_365d, 3),
-        "weekly": [_rnd(weekly.get(w), 3) for w in week_starts(as_of, weeks)],
+        "weekly": [_rnd(weekly.get(i), 3) for i in range(weeks)],
     }
 
 
@@ -693,14 +816,14 @@ def lab_lc_summary(rows: Iterable[dict], as_of: date, weeks: int = 26) -> list[d
     ``rows`` are already-filtered real-PEG QC rows with ``instrument``,
     ``lc_system``, ``run_date_utc`` (or ``t``), ``peg_intensity_pct`` and
     ``peg_class``. Windows are UTC days ``as_of - 89 .. as_of`` and
-    ``as_of - 364 .. as_of``; weeks are Monday-start (PG's
-    ``date_trunc('week')``), the last one being the week of ``as_of``.
-    Runs after ``as_of`` are ignored. Every instrument with a real
-    measurement gets a row, even one idle for a year.
+    ``as_of - 364 .. as_of``; weeks are the trailing 7-day buckets of
+    ``week_window``, the last ending with ``as_of``. Runs after ``as_of``
+    are ignored. Every instrument with a real measurement gets a row, even
+    one idle for a year.
     """
     s90 = as_of - timedelta(days=89)
     s365 = as_of - timedelta(days=364)
-    w0 = week_starts(as_of, weeks)[0]
+    w0, _end = week_window(as_of, weeks)
     per: dict[str, dict] = {}
     for r in rows:
         inst = r.get("instrument")
@@ -719,13 +842,14 @@ def lab_lc_summary(rows: Iterable[dict], as_of: date, weeks: int = 26) -> list[d
             acc["c90"] += 1 if r.get("peg_class") == "clean" else 0
         if d >= s365:
             acc["p365"].append(float(pct))
-        if d >= w0:
-            acc["wk"][week_start(d)].append(float(pct))
+        wk = week_index(t, w0, weeks)
+        if wk is not None:
+            acc["wk"][wk].append(float(pct))
     out = [
         finalize_lab_lc_row(
             inst, dict(a["lc"]), len(a["p90"]), _median(a["p90"]), a["c90"],
             len(a["p365"]), _median(a["p365"]),
-            {w: _median(v) for w, v in a["wk"].items()}, as_of, weeks,
+            {w: _median(v) for w, v in a["wk"].items()}, weeks,
         )
         for inst, a in per.items()
     ]
@@ -779,7 +903,8 @@ def build_overview(
             mis-set acquisition clock cannot stretch the series.
         instrument: The instrument the per-run sections describe.
         instruments: ``stan.db.get_peg_instruments()`` output.
-        runs: ``stan.db.get_peg_runs(instrument)`` rows.
+        runs: ``stan.db.get_peg_runs(instrument)`` rows, one per
+            acquisition, with ``has_hits`` for the ladder's denominator.
         ladder_rows: ``stan.db.get_peg_ladder_month_counts(instrument)``.
         column_events: ``stan.db.get_column_change_events(instrument)``.
         lab_lc: ``stan.db.get_peg_lab_lc_summary(as_of)`` rows.
@@ -826,7 +951,13 @@ def build_overview(
 
     doc["baseline"] = best_baseline(peg, as_of=as_of)
     doc["summary"] = summary_30d(peg, as_of)
-    doc["ladder"] = ladder_by_month(ladder_rows, runs_per_month(peg), as_of)
+    # The denominator is runs whose ladder is known, not every real-PEG
+    # run. Live PG had 206 timsTOF rows with ions but no stored hits, 147 in
+    # Feb-Apr 2026; counted as "oligomer absent" they drew the heart of the
+    # worst episode as its cleanest months. Most were duplicate ingests, but
+    # 13 remain once each acquisition counts once.
+    doc["ladder"] = ladder_by_month(
+        ladder_rows, runs_per_month(r for r in peg if r.ladder_known), as_of)
     doc["column_periods"] = column_periods(column_events, peg, as_of)
     doc["impact"] = impact_by_class(peg)
     return doc

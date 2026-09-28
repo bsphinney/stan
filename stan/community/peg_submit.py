@@ -257,6 +257,28 @@ def _record_or_reason(row: Mapping[str, Any], now: datetime) -> tuple[dict | Non
     }, ""
 
 
+def _version_tuple(value: Any) -> tuple[int, ...]:
+    """``"1.0.10"`` -> ``(1, 0, 10)``; NULL or ``"unknown"`` -> ``()``, oldest."""
+    m = re.match(r"\s*v?(\d+(?:\.\d+)*)", str(value or ""))
+    return tuple(int(p) for p in m.group(1).split(".")) if m else ()
+
+
+def _processing_rank(row: Mapping[str, Any], rec: Mapping[str, Any]) -> tuple:
+    """Order duplicate rows of one acquisition; the highest is the one shared.
+
+    Newest processing first: ``stan_version`` (numerically, so 1.0.10 beats
+    1.0.9), then ``migrated_at``, then ``id`` so a tie still has one answer.
+    The record itself is the last key, which keeps the choice independent of
+    row order even when the reader supplies none of those columns.
+    """
+    return (
+        _version_tuple(row.get("stan_version")),
+        utc_iso(row.get("migrated_at")) or "",
+        str(row.get("id") or ""),
+        json.dumps(rec, sort_keys=True, default=str),
+    )
+
+
 def build_peg_records(
     rows: Iterable[Mapping[str, Any]],
     stan_version: str | None = None,
@@ -269,11 +291,15 @@ def build_peg_records(
     ``no_instrument``, ``bad_date``, ``no_spd`` or ``duplicate_run_key``.
     Unmeasured PEG is dropped, never sent as 0.
 
+    When several rows are the same acquisition (one ``run_key``), the one
+    shared is chosen by :func:`_processing_rank`, never by row order.
+
     Args:
         rows: Dicts with ``run_name, instrument, run_date, spd, mode,
             amount_ng, lc_system, peg_score, peg_intensity_pct,
-            peg_n_ions_detected, peg_class`` and optionally ``sample_type``
-            and ``hidden``.
+            peg_n_ions_detected, peg_class`` and optionally ``sample_type``,
+            ``hidden``, and ``id``, ``stan_version`` and ``migrated_at`` to
+            rank duplicates by processing. None of those three is sent.
         stan_version: Accepted for symmetry with the batch payload, which
             carries the version once per request; records do not repeat it
             (the spec §4.4 record has no version field).
@@ -285,21 +311,27 @@ def build_peg_records(
     """
     del stan_version  # the version travels in the batch envelope, not per record
     now = datetime.now(timezone.utc)
-    records: list[dict] = []
+    best: dict[str, tuple[tuple, dict]] = {}
     skipped: Counter[str] = Counter()
-    seen: set[str] = set()
     for row in rows:
         rec, reason = _record_or_reason(row, now)
         if rec is None:
             skipped[reason] += 1
             continue
-        # The same acquisition can sit in runs twice (re-ingested under a
-        # second path or host_origin). One key, one record.
-        if rec["run_key"] in seen:
+        # The same acquisition sits in runs more than once: re-ingested under
+        # a second path, or re-processed (live PG, 2026-09-28: 241 run_keys
+        # with 2-5 rows, the PEG values differing in 168 and the class in 78).
+        # Neither backend orders the tied rows, so "first one read" was heap
+        # order -- and the public value could flip clean <-> heavy after any
+        # UPDATE moved a row. One key, one record, picked by what it is.
+        rank = _processing_rank(row, rec)
+        held = best.get(rec["run_key"])
+        if held is not None:
             skipped["duplicate_run_key"] += 1
-            continue
-        seen.add(rec["run_key"])
-        records.append(rec)
+            if held[0] >= rank:
+                continue
+        best[rec["run_key"]] = (rank, rec)
+    records = [rec for _, rec in best.values()]
     records.sort(key=lambda r: (r["run_date"], r["run_key"]))
     return records, dict(skipped)
 
@@ -369,12 +401,55 @@ def _display_name_problem(name: str) -> str:
     return ""
 
 
+def _community_yml_path() -> Path:
+    """The community.yml this module writes (the user config dir's)."""
+    from stan.config import get_user_config_dir
+
+    return get_user_config_dir() / "community.yml"
+
+
+def _read_community_mapping(path: Path) -> dict:
+    """community.yml as a dict, ``{}`` when absent; raises when it is not one."""
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} is not a YAML mapping; refusing to overwrite it")
+    return data
+
+
+def community_yml_problem() -> str:
+    """Why :func:`write_community_keys` would fail here, or ``""`` when it would not.
+
+    ``stan community-claim`` asks this *before* the email round trip. The
+    relay retires a name's old token the moment it issues the new one, so a
+    community.yml found unwritable only afterwards leaves the lab with no
+    working token on any machine. A full disk can still fail the write
+    itself; this catches what can be known in advance.
+    """
+    path = _community_yml_path()
+    try:
+        _read_community_mapping(path)
+    except yaml.YAMLError as e:
+        first = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+        return f"{path} is not valid YAML ({first})"
+    except (OSError, ValueError) as e:
+        return str(e)
+    probe = path.parent
+    while not probe.exists() and probe != probe.parent:  # mkdir() will create the rest
+        probe = probe.parent
+    if not os.access(probe, os.W_OK | os.X_OK):
+        return f"{probe} is not writable, so {path.name} cannot be updated"
+    return ""
+
+
 def write_community_keys(updates: Mapping[str, Any], set_if_missing: Mapping[str, Any] | None = None) -> Path:
     """Merge keys into the user's community.yml without dropping the others.
 
-    The file holds the auth token, so it is written through a temp file and
-    left owner-readable only. YAML comments do not survive the round trip,
-    exactly as with ``stan setup``.
+    The file holds the auth token (and on Hive the Slack secrets), so it is
+    written through a temp file that is owner-only from the moment it exists
+    and removed if anything fails. YAML comments do not survive the round
+    trip, exactly as with ``stan setup``.
 
     Args:
         updates: Keys to set unconditionally (e.g. ``auth_token``).
@@ -383,15 +458,10 @@ def write_community_keys(updates: Mapping[str, Any], set_if_missing: Mapping[str
     Returns:
         Path of the written file.
     """
-    from stan.config import get_user_config_dir
-
-    path = get_user_config_dir() / "community.yml"
+    path = _community_yml_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    data: dict = {}
+    data = _read_community_mapping(path)
     if path.exists():
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        if not isinstance(data, dict):
-            raise ValueError(f"{path} is not a YAML mapping; refusing to overwrite it")
         try:
             # Windows installs have been seen with the read-only flag set.
             path.chmod(stat.S_IWRITE | stat.S_IREAD)
@@ -401,13 +471,30 @@ def write_community_keys(updates: Mapping[str, Any], set_if_missing: Mapping[str
         if not data.get(key):
             data[key] = value
     data.update(updates)
+    text = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+
+    # tmp.write_text() created the file under the umask -- 0664 on Hive, in a
+    # group-writable ~/.stan -- with every secret in it until the chmod, and a
+    # write that died on the home quota left it there like that. So the tmp is
+    # 0600 from creation, O_EXCL so a stale or planted one (a symlink) is never
+    # followed, and it is removed on any failure.
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
     try:
-        tmp.chmod(0o600)
-    except OSError:
+        tmp.unlink()
+    except FileNotFoundError:
         pass
-    os.replace(tmp, path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     return path
 
 

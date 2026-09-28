@@ -1100,6 +1100,11 @@ def _peg_sharing_status() -> dict:
     obeys. The name comes from ``_load_community_cfg`` -- community.yml,
     else ``STAN_DISPLAY_NAME`` on the hosted container -- so it matches the
     name the lab's rows carry on the relay; None when the lab has none yet.
+
+    This is *this host's* setting. Where the sync runs somewhere else --
+    UC Davis shares from the Hive cron, and the hosted dashboard has no
+    community.yml -- ``enabled`` is only true if the host mirrors it with
+    ``STAN_PEG_SHARE=1``; nothing here can see what another machine sends.
     """
     from stan.community.submit import RELAY_URL
 
@@ -1169,9 +1174,16 @@ def api_peg_overview(instrument: str | None = None) -> dict:
 
     as_of = _peg_today()
     requested = (instrument or "").strip() or None
+
+    def _instruments():
+        # An empty list is served but not kept: "no instrument has PEG" is
+        # also what a store that could not be read looked like, and pinning
+        # it for the TTL hid the lab's PEG for ten minutes after one lock.
+        found = stan_db.get_peg_instruments()
+        return found, bool(found)
+
     try:
-        instruments = _peg_cached(("instruments", as_of.isoformat()),
-                                  lambda: (stan_db.get_peg_instruments(), True))
+        instruments = _peg_cached(("instruments", as_of.isoformat()), _instruments)
         chosen = requested or pick_default_instrument(instruments)
         known = {d["instrument"] for d in instruments}
         if chosen and chosen in known:

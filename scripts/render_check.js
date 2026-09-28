@@ -87,6 +87,7 @@ const names = [
   // reads it synchronously on first render, and server rendering never
   // runs the effects that would fetch.
   'PegTab', 'PegBoardView', 'PegLcView', 'PegBadge', 'Sparkline',
+  'PegBoard', 'PegImpact', 'PegTabLoad', 'PegLoadError', 'pegDefaultSpd',
   'PEG_CACHE', 'PEG_RELAY_DEFAULT', 'pegBoardUrl', 'pegLcUrl', 'pegTrendUrl',
 ];
 const factory = new Function(
@@ -336,7 +337,8 @@ function renderQuiet(name, props) {
 
 function checkPeg(fx) {
   const E = exported;
-  const missing = ['PegTab', 'PegBoardView', 'PegLcView', 'PEG_CACHE', 'pegBoardUrl', 'pegLcUrl', 'pegTrendUrl'].filter(n => !E[n]);
+  const missing = ['PegTab', 'PegBoardView', 'PegLcView', 'PegBoard', 'PegImpact', 'PegTabLoad', 'PegLoadError',
+                   'PEG_CACHE', 'pegBoardUrl', 'pegLcUrl', 'pegTrendUrl'].filter(n => !E[n]);
   if (missing.length) { console.error(`FAIL  PEG: page does not define ${missing.join(', ')}`); fails++; return; }
   console.log(`\nPEG Watch (fixtures: ${fx.source})`);
   const ov = fx.ov;
@@ -395,10 +397,11 @@ function checkPeg(fx) {
     expect('leaderboard shows every ranked lab the relay returned', rows === (fx.lb.ranked || []).length, `${rows} rows`);
     const me = ov.sharing && ov.sharing.display_name;
     const meRanked = (fx.lb.ranked || []).some(r => r.display_name === me);
-    if (meRanked) {
-      expect('your row highlighted with a YOU tag', /<tr class="peg-you"[\s\S]*?YOU/.test(out));
-      expect('rank tile shows your rank', /Community rank[\s\S]{0,200}#\d/.test(out));
-    }
+    if (meRanked) expect('your row highlighted with a YOU tag', /<tr class="peg-you"[\s\S]*?YOU/.test(out));
+    /* Off Evosep the board shown is the family's Evosep labs, for
+       comparison; this lab has no rank there whatever the relay says. */
+    if (ov.lc_system !== 'evosep') expect('rank tile says the board ranks Evosep runs only', /Community rank[\s\S]{0,300}ranks Evosep runs only/.test(out));
+    else if (meRanked) expect('rank tile shows your rank', /Community rank[\s\S]{0,200}#\d/.test(out));
     const hostile = [...(fx.lb.ranked || []), ...(fx.lb.unranked || [])].find(r => /[<>&]/.test(r.display_name));
     if (hostile) {
       expect('relay display_name is escaped, never markup', !out.includes(hostile.display_name)
@@ -406,12 +409,33 @@ function checkPeg(fx) {
     }
     const lab = ov.lab_lc || [];
     const ev = new Set(lab.filter(x => x.lc_system === 'evosep').map(x => x.family));
-    const ot = new Set(lab.filter(x => x.lc_system !== 'evosep').map(x => x.family));
+    // A null lc_system is "no LC recorded", not another LC (review UI-7).
+    const ot = new Set(lab.filter(x => x.lc_system && x.lc_system !== 'evosep').map(x => x.family));
     const cross = ev.size && ot.size && ![...ev].some(f => ot.has(f));
     expect('cross-family caveat matches lab_lc', /Different instrument families/.test(out) === !!cross);
     expect('one lab_lc row per instrument', (out.match(/class="peg-lc-row"/g) || []).length === lab.length);
     const lcBoth = (fx.lcOne.groups || []).every(g => g.n_runs > 0);
     expect('LC comparison empty state until a family has both groups', /Nothing to compare on/.test(out) === !lcBoth);
+    /* The calendar and ladder pin their scroller to the newest column, so a
+       row label drawn inside the scrolled SVG is scrolled out of view with
+       the oldest weeks (M/W/F rendered as '/I', '/V' at 1280 px; the ladder
+       lost every n label at phone width). They belong before the scroller. */
+    const sectionOf = (head) => { const a = out.indexOf(head); return a < 0 ? '' : out.slice(a, out.indexOf('</section>', a)); };
+    const beforeScroller = (sec, label) => {
+      const lab = sec.indexOf(label), sc = sec.indexOf('class="peg-scrollx"');
+      return lab >= 0 && sc >= 0 && lab < sc;
+    };
+    expect('calendar day labels sit outside its scroller', beforeScroller(sectionOf('Every QC day since'), '>M</text>'));
+    if ((ov.ladder && ov.ladder.months || []).length) {
+      expect('ladder n labels sit outside its scroller', beforeScroller(sectionOf('PEG ladder fingerprint'), '>PEG n</text>'));
+    }
+    /* A best-90-day median of 0% sits on the chart floor under the jittered
+       clean dots; its label must be painted after them, over a halo. */
+    if (ov.baseline && ov.baseline.median_pct != null) {
+      const bm = /<text[^>]*class="peg-base-t"[^>]*>your best 90 days \(/.exec(out);
+      expect('best-90-day label painted over the dots, with a halo',
+             bm && bm.index > out.lastIndexOf('class="peg-pt '), bm ? 'drawn under the dots' : 'no peg-base-t label');
+    }
     console.log(`ok    PegTab              ${got} runs plotted · ${rows} board rows · ${lab.length} lab_lc rows` +
                 `${cross ? ' · cross-family note' : ''} · ${ms.toFixed(0)} ms${okOrder ? '' : ' · ORDER WRONG'}`);
   }
@@ -508,7 +532,177 @@ function checkPeg(fx) {
         && expect("Sparkline drops the 'unknown' sentinel", med(sentinel) === '30', `median ${med(sentinel)}`))
       console.log('ok    Sparkline           peg_score zeros kept, unknown dropped');
   }
+
+  /* 8. Review findings, 2026-09-28 (UI-1, UI-3, UI-7, UI-8). */
+  const peerCoh = [...(fx.lb.cohorts || []), { family: 'Exploris', spd: 60, n_labs: 2, n_runs_365d: 90 }];
+  const expl = Object.assign({}, ov, { instrument: 'Orbitrap Exploris 480', instrument_family: 'Exploris', lc_system: 'custom' });
+  const explBoard = { ov: expl, isEvosep: false, family: 'Exploris', relayBase: relay, defaultSpd: '38',
+                      myName: ov.sharing && ov.sharing.display_name, rankLb: { data: null, error: null } };
+  const pressed = (h) => ((/<button[^>]*aria-pressed="true"[^>]*>Exploris · (\d+) SPD</.exec(h) || [])[1]);
+  /* Every URL the board asks the cache for is a URL it would fetch. */
+  const asked = [];
+  const cacheGet = E.PEG_CACHE.get;
+  E.PEG_CACHE.get = function (k) { asked.push(k); return cacheGet.call(this, k); };
+  try {
+    /* UI-1. A non-Evosep instrument's own SPD (38 on a 30 min Exploris
+       gradient) is not a board cohort: the relay ranks Evosep methods only,
+       so that board is empty for good. Nothing known yet -> 100 SPD. */
+    E.PEG_CACHE.clear();
+    const cold = renderQuiet('PegBoard', explBoard);
+    if (cold !== null) {
+      rendered++;
+      const tx = text(cold);
+      if (expect('non-Evosep board opens on an Evosep cohort, not its own SPD', pressed(cold) === '100', `pressed ${pressed(cold)}`)
+          & expect('non-Evosep board never asks for its own SPD', !asked.some(u => /[?&]spd=38\b/.test(u)),
+                   asked.filter(u => /spd=38/.test(u)).join(' '))
+          & expect('non-Evosep board never names its own SPD', !/\b38 SPD\b/.test(tx)))
+        console.log('ok    PegBoard            non-Evosep: Evosep cohort, not 38 SPD');
+    }
+    /* ...and once the relay reports Exploris labs on Evosep at 60 SPD only,
+       that is the board it shows. */
+    E.PEG_CACHE.clear(); asked.length = 0;
+    seed(E.pegBoardUrl(relay, 'Exploris', '100', '30'), Object.assign({}, fx.lbEmpty, { family: 'Exploris', spd: 100, cohorts: peerCoh }));
+    seed(E.pegBoardUrl(relay, 'Exploris', '60', '30'), Object.assign({}, fx.lb, { family: 'Exploris', spd: 60, cohorts: peerCoh }));
+    const peers = renderQuiet('PegBoard', explBoard);
+    if (peers !== null) {
+      rendered++;
+      const tx = text(peers);
+      if (expect('non-Evosep board follows the relay to the cohort with labs', pressed(peers) === '60', `pressed ${pressed(peers)}`)
+          & expect('non-Evosep board shows those labs', (peers.match(/<tr class="peg-(you|oth)"/g) || []).length === (fx.lb.ranked || []).length)
+          & expect('no 38 SPD chip or request', !/\b38 SPD\b/.test(tx) && !asked.some(u => /[?&]spd=38\b/.test(u)))
+          & expect('says why this lab is not on the board', /custom LC, not Evosep/.test(tx) && /Exploris labs on Evosep/.test(tx)))
+        console.log('ok    PegBoard            non-Evosep: follows relay cohorts to Exploris · 60 SPD');
+    }
+    /* No Exploris lab on Evosep at all: say that, and do not tell a lab
+       that cannot join how to join. */
+    E.PEG_CACHE.clear();
+    seed(E.pegBoardUrl(relay, 'Exploris', '100', '30'), Object.assign({}, fx.lbEmpty, { family: 'Exploris', spd: 100 }));
+    const lone = renderQuiet('PegBoard', explBoard);
+    if (lone !== null) {
+      rendered++;
+      const tx = text(lone);
+      if (expect('empty non-Evosep board says no Evosep lab of its family shared', /No Exploris lab on Evosep has shared/.test(tx))
+          & expect('empty non-Evosep board has no "Labs join by"', !/Labs join by/.test(tx)))
+        console.log('ok    PegBoard            non-Evosep: empty, no join instructions');
+    }
+  } finally {
+    E.PEG_CACHE.get = cacheGet;
+  }
+
+  /* Same defect on an Evosep instrument: a derived SPD (36, from a 32 min
+     gradient) is no board cohort either, however often it ran. */
+  if (E.pegDefaultSpd) {
+    const t = Date.parse(String(ov.as_of).slice(0, 10) + 'T12:00:00Z');
+    const mkRun = (spd, k) => ({ t: t - k * 864e5, spd });
+    const d36 = E.pegDefaultSpd([...Array(9)].map((_, k) => mkRun(36, k)).concat([mkRun(60, 1), mkRun(60, 2)]), t + 432e5);
+    const d0 = E.pegDefaultSpd([...Array(9)].map((_, k) => mkRun(36, k)), t + 432e5);
+    if (expect('default cohort skips an SPD the board never ranks', d36 === '60', `got ${d36}`)
+        & expect('default cohort with no board SPD at all is 100', d0 === '100', `got ${d0}`))
+      console.log('ok    pegDefaultSpd       derived SPD (36) never picked as a board cohort');
+  }
+
+  /* UI-7. lc_system null means no LC was recorded. That is neither Evosep
+     nor "another LC", and must not trigger the cross-family caveat. */
+  const evRow = (ov.lab_lc || []).find(x => x.lc_system === 'evosep')
+    || { instrument: 'timsTOF HT', family: 'timsTOF', lc_system: 'evosep', n_90d: 40, median_90d: 1.2, clean_rate_90d: 40, n_365d: 160, median_365d: 1.0, weekly: [] };
+  const nullRow = { instrument: 'Orbitrap Exploris 480', family: 'Exploris', lc_system: null, n_90d: 20, median_90d: 0.3,
+                    clean_rate_90d: 90, n_365d: 60, median_365d: 0.3, weekly: [] };
+  const nullLc = renderQuiet('PegLcView', Object.assign({}, lcProps, { labLc: [evRow, nullRow], data: fx.lcOne }));
+  if (nullLc !== null) {
+    rendered++;
+    if (expect('null LC is not an "Other LC"', !/>Other LC</.test(nullLc) && /peg-lcchip nr/.test(nullLc))
+        & expect('null LC does not trigger the cross-family caveat', !/Different instrument families/.test(nullLc)))
+      console.log('ok    PegLcView           lc_system null -> Unknown, no cross-family note');
+  }
+  const noLc = renderQuiet('PegBoardView', Object.assign({}, boardProps, { isEvosep: false, family: 'Exploris', data: fx.lbEmpty,
+                           ov: Object.assign({}, ov, { instrument: 'Orbitrap Exploris 480', lc_system: null }) }));
+  if (noLc !== null) {
+    rendered++;
+    if (expect('board note for an unrecorded LC', !/non-Evosep LC/.test(noLc) && /No LC is recorded/.test(noLc)))
+      console.log('ok    PegBoardView        lc_system null -> "No LC is recorded"');
+  }
+
+  /* UI-3. Real UC Davis numbers: at 30 SPD clean and heavy are ~600
+     precursors apart, and both value labels centred over their dots
+     rendered as "43,74,332". The +1.4% there is a gain, not a loss. */
+  const impact = { 100: { clean: [441, 36133], trace: [166, 33838], moderate: [57, 32097], heavy: [178, 31584] },
+                   60: { clean: [407, 41424], trace: [149, 39187], moderate: [50, 39474], heavy: [146, 37061] },
+                   30: { clean: [43, 43737], trace: [9, 46077], moderate: [1, 43928], heavy: [10, 44332] } };
+  const imp = renderQuiet('PegImpact', { impact, firstT: Date.UTC(2024, 4, 1) });
+  if (imp !== null) {
+    rendered++;
+    const texts = [...imp.matchAll(/<text([^>]*)>([^<]*)<\/text>/g)].map(([, a, t]) => {
+      const at = (k) => ((new RegExp(`\\b${k}="([^"]*)"`).exec(a) || [])[1]);
+      return { t, x: +at('x'), y: +at('y'), anchor: at('text-anchor') || 'start', cls: at('class') };
+    });
+    /* 11 px labels; 6.2 units a character over-estimates digits and commas. */
+    const span = (e) => { const w = e.t.length * 6.2; return e.anchor === 'middle' ? [e.x - w / 2, e.x + w / 2] : e.anchor === 'end' ? [e.x - w, e.x] : [e.x, e.x + w]; };
+    let clash = 0;
+    for (const [k, v] of Object.entries(impact)) {
+      const a = texts.find(e => e.t === v.clean[1].toLocaleString('en-US'));
+      const b = texts.find(e => e.t === v.heavy[1].toLocaleString('en-US'));
+      if (!a || !b) { clash++; console.error(`FAIL  PegImpact: ${k} SPD value labels missing`); fails++; continue; }
+      const [a0, a1] = span(a), [b0, b1] = span(b);
+      if (a.y === b.y && a0 < b1 && b0 < a1) { clash++; expect(`${k} SPD clean and heavy labels do not overlap`, false, `${a.t} [${a0.toFixed(0)}, ${a1.toFixed(0)}] vs ${b.t} [${b0.toFixed(0)}, ${b1.toFixed(0)}]`); }
+    }
+    const gain = texts.find(e => e.t === '+1.4%');
+    if (!clash
+        & expect('a gain is not painted as a loss', gain && gain.cls !== 'peg-ep-t', gain ? `class ${gain.cls}` : 'no +1.4% label')
+        & expect('a loss is still red', texts.some(e => /^-\d/.test(e.t) && e.cls === 'peg-ep-t'))
+        & expect('a class with n < 3 is not drawn as a median', !/n=1</.test(imp)))
+      console.log('ok    PegImpact           30 SPD labels apart · +1.4% not red · n=1 dot dropped');
+  }
+
+  /* UI-8. Switching instrument must keep the tab (and its picker) on
+     screen while the new overview loads, and a failed load must offer a
+     way back. Server rendering never runs effects, so the switch is posed
+     as "a previous overview exists, the new URL is not cached yet". */
   E.PEG_CACHE.clear();
+  const multi = Object.assign({}, ov, { instruments: (ov.instruments || []).length >= 2 ? ov.instruments
+    : [...(ov.instruments || []), { instrument: 'Orbitrap Exploris 480', n_runs: 5, evosep: false }] });
+  const other = multi.instruments.find(i => i.instrument !== ov.instrument).instrument;
+  const switching = renderQuiet('PegTabLoad', { instrument: other, onInstrument: () => {}, onRetry: () => {},
+                                                lastGood: { current: { ov: multi, instrument: '' } } });
+  if (switching !== null) {
+    rendered++;
+    if (expect('instrument switch keeps the tab mounted, dimmed', /peg-busy/.test(switching) && /PEG over time/.test(switching) && !/Loading PEG history/.test(switching))
+        & expect('instrument picker stays, showing the new pick', new RegExp(`<option[^>]*selected=""[^>]*>${other.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(switching)))
+      console.log('ok    PegTabLoad          switch in flight: previous view kept, picker shows the pick');
+  }
+  const failed = renderQuiet('PegLoadError', { error: 'HTTP 503', onRetry: () => {}, back: ov.instrument, onBack: () => {} });
+  if (failed !== null) {
+    rendered++;
+    if (expect('failed load offers Retry and a way back', />Retry</.test(failed) && new RegExp(`>Back to (<!-- -->)?${ov.instrument}<`).test(failed)))
+      console.log('ok    PegLoadError        Retry + back to the previous instrument');
+  }
+  E.PEG_CACHE.clear();
+}
+
+/* ======================================================================
+   CSS the server renderer cannot see (review, 2026-09-28)
+   ====================================================================== */
+function checkCss() {
+  const style = (/<style>([\s\S]*?)<\/style>/.exec(html) || [])[1] || '';
+  const rule = (sel) => {
+    const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const m = new RegExp(`(?:^|[}\\s])${esc}\\s*\\{([^}]*)\\}`, 'm').exec(style);
+    return m ? m[1] : null;
+  };
+  const want = (label, sel, re) => {
+    const body = rule(sel);
+    if (body !== null && re.test(body)) return true;
+    console.error(`FAIL  CSS: ${label} (${sel} { ${body === null ? 'no such rule' : body.trim()} })`);
+    fails++; return false;
+  };
+  /* Twelve tabs came to ~1 px over the 1168 px container and flex-shrink
+     wrapped four labels onto two lines on every tab; at phone width the
+     row forced the whole page to scroll sideways. */
+  const a = want('tab labels never wrap', '.tab', /white-space:\s*nowrap/) & want('tabs keep their width', '.tab', /flex:\s*none/)
+          & want('the tab row scrolls instead of the page', '.tabs', /overflow-x:\s*auto/);
+  /* .peg-seg clips its children, so a ring drawn outside the button showed
+     as slivers between buttons. It has to sit inside. */
+  const b = want('segmented-toggle focus ring drawn inside the button', '.peg-root .peg-seg button:focus-visible', /outline-offset:\s*-\d/);
+  if (a && b) console.log('ok    CSS                 tab row nowrap + scroll · seg focus ring inset');
 }
 
 /* ====================================================================== */
@@ -522,6 +716,7 @@ if (haveDoc) {
   console.error(`no API document at ${docPath} — pass one as argv[1] ` +
                 '(or run only the PEG checks with --peg DIR). Evosep charts NOT checked.');
 }
+checkCss();
 checkPeg(pegDir ? loadPegFixtures(pegDir) : syntheticPeg());
 
 console.log(`\n${rendered} render(s), ${fails} failure(s)`);

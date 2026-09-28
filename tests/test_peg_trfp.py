@@ -4,7 +4,9 @@ Covers the streaming mzML reader (32/64-bit, zlib and uncompressed, MS1+MS2
 mixed, param-group refs), the stride sampling shared with the fisher_py
 reader, the fallback order in ``peg_io.read_ms1_thermo`` (fisher_py ->
 container -> PegReaderUnavailable) and its temp-dir cleanup, the apptainer
-command line, and the Hive backfill driver. Nothing here runs apptainer.
+command line, the Hive backfill driver, and the inline Hive pipeline's rule
+that an unmeasured run stays NULL. Nothing here runs apptainer; a few tests
+exec a two-line shell script standing in for it.
 """
 from __future__ import annotations
 
@@ -367,6 +369,32 @@ def test_convert_missing_raw(tmp_path, fake_container):
         peg_trfp.convert_ms1_mzml(tmp_path / "gone.raw", tmp_path, container=fake_container)
 
 
+def _fake_apptainer(tmp_path: Path, body: bytes, mode: int) -> TrfpContainer:
+    """A real executable standing in for apptainer -- a shell script, not the image."""
+    runtime = tmp_path / "apptainer"
+    runtime.write_bytes(b"#!/bin/sh\n" + body)
+    runtime.chmod(mode)
+    return TrfpContainer(apptainer=str(runtime), sif=tmp_path / "trfp.sif")
+
+
+def test_convert_unexecutable_runtime_is_unavailable(tmp_path):
+    # find_trfp_container accepts STAN_APPTAINER on is_file() alone, so a
+    # runtime without its execute bit reaches exec: PermissionError, which is
+    # an OSError but not the FileNotFoundError that used to be the only one
+    # caught. Escaping, it became the pipeline's 'unknown' sentinel.
+    c = _fake_apptainer(tmp_path, b"exit 0\n", 0o644)
+    with pytest.raises(TrfpUnavailable, match="cannot execute"):
+        peg_trfp.convert_ms1_mzml(_raw(tmp_path), tmp_path, container=c)
+
+
+def test_convert_non_utf8_output_is_a_conversion_error(tmp_path):
+    # mono's crash output is not guaranteed UTF-8; with text=True and strict
+    # decoding that was a UnicodeDecodeError instead of the TRFP failure.
+    c = _fake_apptainer(tmp_path, b"printf '\\377\\376 mono crashed' >&2\nexit 1\n", 0o755)
+    with pytest.raises(TrfpConversionError, match="mono crashed"):
+        peg_trfp.convert_ms1_mzml(_raw(tmp_path), tmp_path, container=c)
+
+
 # ── fallback order in peg_io.read_ms1_thermo ───────────────────────
 
 class _FakeConverter:
@@ -483,6 +511,81 @@ def test_neither_reader_raises_unavailable_with_both_reasons(monkeypatch, tmp_pa
         list(peg_io.read_ms1_thermo(_raw(tmp_path)))
     msg = str(ei.value)
     assert "fisher_py not installed" in msg and "image not found" in msg
+
+
+def _mzml_writer(spectra: list[str]):
+    """A convert_ms1_mzml stand-in that writes exactly ``spectra``."""
+    def conv(raw_path, out_dir, container=None, timeout_s=0):
+        return _write(Path(out_dir), _mzml(spectra))
+    return conv
+
+
+# What TRFP hands back for an MS2-only method or an aborted acquisition:
+# nothing at MS level 1, or MS1 spectra that carry no peaks.
+_NO_MS1_MZML = {
+    "ms2-only": [_spectrum(i, 2, [500.0, 600.0], [1e6, 2e6]) for i in range(3)],
+    "empty-ms1": [_spectrum(i, 1, [], []) for i in range(5)],
+}
+
+
+@pytest.mark.parametrize("spectra", list(_NO_MS1_MZML.values()), ids=list(_NO_MS1_MZML))
+def test_mzml_without_ms1_peaks_is_unavailable_not_clean(monkeypatch, trfp_env, spectra):
+    _no_fisher(monkeypatch)
+    monkeypatch.setattr(peg_trfp, "convert_ms1_mzml", _mzml_writer(spectra))
+    with pytest.raises(PegReaderUnavailable, match="no MS1 peaks"):
+        list(peg_io.read_ms1_thermo(trfp_env.raw))
+    assert list(trfp_env.tmpdir.iterdir()) == []
+
+
+def test_unexecutable_apptainer_is_unavailable(monkeypatch, tmp_path):
+    _no_fisher(monkeypatch)
+    sif = tmp_path / "trfp.sif"
+    sif.write_bytes(b"x")
+    c = _fake_apptainer(tmp_path, b"exit 0\n", 0o644)
+    node_tmp = tmp_path / "node_tmp"
+    node_tmp.mkdir()
+    monkeypatch.setenv("STAN_TRFP_SIF", str(sif))
+    monkeypatch.setenv("STAN_APPTAINER", c.apptainer)
+    monkeypatch.setenv("TMPDIR", str(node_tmp))
+    with pytest.raises(PegReaderUnavailable, match="cannot execute"):
+        list(peg_io.read_ms1_thermo(_raw(tmp_path)))
+    assert list(node_tmp.iterdir()) == []
+
+
+def test_missing_tmpdir_is_unavailable(monkeypatch, trfp_env):
+    _no_fisher(monkeypatch)
+    monkeypatch.setenv("TMPDIR", str(trfp_env.tmpdir / "gone"))
+    with pytest.raises(PegReaderUnavailable, match="scratch directory"):
+        list(peg_io.read_ms1_thermo(trfp_env.raw))
+    assert trfp_env.conv.out_dirs == []
+
+
+def test_temp_dir_cleanup_failure_keeps_the_spectra(monkeypatch, trfp_env):
+    # A timed-out apptainer can leave mono holding files open in the scratch
+    # dir; NFS answers the delete with EBUSY, which TemporaryDirectory's own
+    # handler neither retries nor swallows. The spectra were already read --
+    # a cleanup error must not turn them into a failure.
+    import errno
+    import os
+    import shutil
+
+    _no_fisher(monkeypatch)
+    real_rmtree = shutil.rmtree
+
+    def busy_rmtree(path, *a, onerror=None, onexc=None, **kw):
+        try:
+            raise OSError(errno.EBUSY, "Device or resource busy", str(path))
+        except OSError as e:
+            if onexc is not None:        # 3.12+
+                onexc(os.unlink, str(path), e)
+            elif onerror is not None:    # 3.10, 3.11
+                onerror(os.unlink, str(path), sys.exc_info())
+            else:
+                raise
+        real_rmtree(path, ignore_errors=True)
+
+    monkeypatch.setattr(shutil, "rmtree", busy_rmtree)
+    assert len(list(peg_io.read_ms1_thermo(trfp_env.raw))) == 5
 
 
 # ── Hive backfill driver ───────────────────────────────────────────
@@ -641,3 +744,103 @@ def test_main_refuses_without_any_reader(pbt, monkeypatch, tmp_path):
 def test_main_rejects_out_of_range_shard(pbt, tmp_path):
     with pytest.raises(SystemExit):
         pbt.main(["--shard", "4", "--nshards", "4", "--log-dir", str(tmp_path)])
+
+
+# ── inline Hive pipeline: unmeasured stays NULL, never clean ───────
+#
+# hive_process._run_peg_and_drift scores every new Orbitrap QC run through
+# the fallback above, and hive_steps.step_pegdrift is the split-step twin.
+# The backfill driver refuses a read with no MS1 signal and any container
+# failure (it leaves PEG NULL); these hold the inline paths to the same
+# rule. A clean 0.0 is what peg-sync publishes as clean (spec §4.1), and the
+# 'unknown' sentinel takes the run out of the backfill's NULL queue.
+
+@pytest.fixture
+def inline(monkeypatch):
+    """hive_process + hive_steps with every PEG DB write recorded, not made."""
+    from stan import db
+    from stan.pipeline import hive_process, hive_steps
+
+    calls: list = []
+    monkeypatch.setattr(db, "update_peg_result",
+                        lambda **kw: calls.append(("scalars", kw)) or True)
+    monkeypatch.setattr(db, "insert_peg_ion_hits",
+                        lambda **kw: calls.append(("hits", kw)) or len(kw["matches"]))
+    return types.SimpleNamespace(hp=hive_process, hs=hive_steps, calls=calls)
+
+
+# Every reader, not only TRFP: fisher_py and alphatims can yield these too.
+_NO_SIGNAL = {
+    "no-spectra": [],
+    "empty-spectra": [[], []],
+    "below-1e4-floor": [[(445.2, 50.0)], [(489.3, 900.0)]],
+}
+
+
+@pytest.mark.parametrize("spectra", list(_NO_SIGNAL.values()), ids=list(_NO_SIGNAL))
+def test_inline_no_ms1_signal_leaves_peg_null(inline, monkeypatch, tmp_path, spectra):
+    monkeypatch.setattr(peg_io, "read_ms1_any", lambda *a, **k: iter(spectra))
+    got = inline.hp._run_peg_and_drift(_raw(tmp_path), "r1", tmp_path / "x.db")
+    assert got == {} and inline.calls == []
+
+
+def test_inline_real_signal_is_written(inline, monkeypatch, tmp_path):
+    # The control: the recorders above do see a real measurement.
+    monkeypatch.setattr(peg_io, "read_ms1_any", lambda *a, **k: iter(_ladder_spectra()))
+    got = inline.hp._run_peg_and_drift(_raw(tmp_path), "r1", tmp_path / "x.db")
+    assert got["peg_n_ions_detected"] == 5
+    assert [c[0] for c in inline.calls] == ["scalars", "hits"]
+
+
+@pytest.mark.parametrize("spectra", list(_NO_MS1_MZML.values()), ids=list(_NO_MS1_MZML))
+def test_inline_trfp_without_ms1_signal_leaves_peg_null(inline, monkeypatch, trfp_env, spectra):
+    _no_fisher(monkeypatch)
+    monkeypatch.setattr(peg_trfp, "convert_ms1_mzml", _mzml_writer(spectra))
+    got = inline.hp._run_peg_and_drift(trfp_env.raw, "r1", trfp_env.tmpdir / "x.db")
+    assert got == {} and inline.calls == []
+
+
+@pytest.mark.parametrize("breakage", ["unexecutable-apptainer", "missing-tmpdir"])
+def test_inline_container_misconfig_leaves_peg_null(inline, monkeypatch, tmp_path, breakage):
+    _no_fisher(monkeypatch)
+    sif = tmp_path / "trfp.sif"
+    sif.write_bytes(b"x")
+    mode = 0o644 if breakage == "unexecutable-apptainer" else 0o755
+    c = _fake_apptainer(tmp_path, b"exit 0\n", mode)
+    node_tmp = tmp_path / "node_tmp"
+    if breakage != "missing-tmpdir":
+        node_tmp.mkdir()
+    monkeypatch.setenv("STAN_TRFP_SIF", str(sif))
+    monkeypatch.setenv("STAN_APPTAINER", c.apptainer)
+    monkeypatch.setenv("TMPDIR", str(node_tmp))
+    got = inline.hp._run_peg_and_drift(_raw(tmp_path), "r1", tmp_path / "x.db")
+    assert got == {} and inline.calls == []
+
+
+@pytest.mark.parametrize("spectra", list(_NO_SIGNAL.values()), ids=list(_NO_SIGNAL))
+def test_step_pegdrift_no_ms1_signal_writes_no_result(inline, monkeypatch, tmp_path, spectra):
+    monkeypatch.setattr(peg_io, "read_ms1_any", lambda *a, **k: iter(spectra))
+    out = inline.hs.step_pegdrift(_raw(tmp_path), tmp_path / "out")
+    assert out["status"] == "failed" and out["peg_path"] is None
+    assert "no MS1 signal" in out["error"]
+    assert not (tmp_path / "out" / "peg_result.json").exists()
+
+
+def test_step_pegdrift_real_signal_writes_result(inline, monkeypatch, tmp_path):
+    monkeypatch.setattr(peg_io, "read_ms1_any", lambda *a, **k: iter(_ladder_spectra()))
+    out = inline.hs.step_pegdrift(_raw(tmp_path), tmp_path / "out")
+    assert out["status"] == "ok"
+    assert json.loads(Path(out["peg_path"]).read_text())["n_ions_detected"] == 5
+
+
+def test_step_pegdrift_reports_the_readers_reason(inline, monkeypatch, tmp_path):
+    # A Thermo .raw reaches this through TRFP; "alphatims missing" sent the
+    # reader after a Bruker dependency that had nothing to do with it.
+    def unavailable(*a, **k):
+        raise PegReaderUnavailable(
+            "fisher_py not installed; ThermoRawFileParser fallback failed: exit 1")
+
+    monkeypatch.setattr(peg_io, "read_ms1_any", unavailable)
+    out = inline.hs.step_pegdrift(_raw(tmp_path), tmp_path / "out")
+    assert "alphatims" not in out["error"]
+    assert "ThermoRawFileParser fallback failed: exit 1" in out["error"]

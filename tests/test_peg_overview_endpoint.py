@@ -5,8 +5,12 @@ What this pins, in order of how badly it would hurt to lose it:
 * The endpoint is PUBLIC on the hosted dashboard, so no run name, sample name
   or maintenance note may appear anywhere in its response.
 * Only real PEG on QC runs counts: an ``'unknown'`` row (the failure sentinel,
-  score 0.0), a NULL row, a hidden row, a blank and the bogus 1980 row are
-  all excluded -- from the runs AND from the ladder built out of their hits.
+  score 0.0), a NULL row, a hidden row, a blank, a failed acquisition and the
+  bogus 1980 row are all excluded -- from the runs AND from the ladder built
+  out of their hits.
+* One acquisition is one run, on both backends and in the share rows, and
+  the copy kept never depends on the order the store returns rows in.
+* A store that cannot be read is a 503, never a cached "no PEG".
 * SQLite's mixed-offset TEXT dates land on the right UTC minute.
 * Nothing local reproduces a PG type error, so the PG SQL is checked for the
   shapes CLAUDE.md warns about (timestamptz formatting, integer hidden,
@@ -47,14 +51,20 @@ CLASSES = [("clean", 0.1, 5.0), ("trace", 1.5, 30.0), ("moderate", 3.0, 55.0),
 
 # ── Fixture data ─────────────────────────────────────────────────────
 
+_DEFAULT = object()
+
+
 def _insert_run(con, rid, name, run_date, *, instrument=TIMS, spd=100, cls="clean",
-                pct=0.1, score=5.0, hidden=0, lc="evosep", prec=30000, mode="diaPASEF"):
+                pct=0.1, score=5.0, hidden=0, lc="evosep", prec=30000, mode="diaPASEF",
+                ions=_DEFAULT, version=None, raw_path=None):
+    if ions is _DEFAULT:
+        ions = 3 if score is not None else None
     con.execute(
         "INSERT INTO runs (id, instrument, run_name, run_date, raw_path, mode, spd, "
         "peg_score, peg_intensity_pct, peg_n_ions_detected, peg_class, n_precursors, "
-        "lc_system, hidden) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (rid, instrument, name, run_date, f"/data/{name}", mode, spd, score, pct,
-         3 if score is not None else None, cls, prec, lc, hidden),
+        "lc_system, hidden, stan_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (rid, instrument, name, run_date, raw_path or f"/data/{name}", mode, spd, score,
+         pct, ions, cls, prec, lc, hidden, version),
     )
 
 
@@ -213,13 +223,34 @@ def test_mixed_offsets_land_on_the_utc_minute(client):
 
 def test_ladder_counts_only_real_qc_runs(client):
     lad = client.get("/api/peg/overview").json()["ladder"]
-    assert lad["months"] == ["2026-08", "2026-09"]
+    # Only t0-t2 (all August) have stored hits; every other run found 3 PEG
+    # ions and kept none, so its ladder is unknown and September has no
+    # month to show -- not a month of clean ladders.
+    assert lad["months"] == ["2026-08"] and lad["nruns"] == [3]
     # +NH4 on t0, t1; +H on t1; +Na on t2. The +Na PEG15 hits on the unknown,
     # hidden, blank and 1980 rows must be nowhere.
     assert lad["adducts"] == {"+H": 1, "+NH4": 2, "+Na": 1}
     assert all(v == 0 for v in lad["share"][lad["n"].index(15)])
-    aug = lad["months"].index("2026-08")
-    assert lad["share"][lad["n"].index(9)][aug] == round(2 / lad["nruns"][aug], 3)
+    assert lad["share"][lad["n"].index(9)] == [round(2 / 3, 3)]
+
+
+def test_ladder_denominator_skips_runs_with_ions_but_no_hits(client, db_path):
+    """The verifier's case: 2 runs with PEG10, 1 with ions and no hits, 1 clean.
+
+    share(n=10) is 2/3, not 2/4: the run whose hits were never stored is not
+    evidence that PEG10 was absent.
+    """
+    inst = "timsTOF Ultra"
+    with sqlite3.connect(db_path) as con:
+        for rid, day, ions in [("u1", 2, 9), ("u2", 3, 9), ("u3", 4, 3), ("u4", 5, 0)]:
+            _insert_run(con, rid, f"HeLa_u_{rid}.d", f"2026-09-{day:02d}T10:00:00Z",
+                        instrument=inst, ions=ions, cls="heavy" if ions else "clean",
+                        pct=6.0 if ions else 0.0)
+        _hit(con, "u1", 10, "+NH4")
+        _hit(con, "u2", 10, "+NH4")
+    lad = client.get("/api/peg/overview", params={"instrument": inst}).json()["ladder"]
+    assert lad["months"] == ["2026-09"] and lad["nruns"] == [3]
+    assert lad["share"][lad["n"].index(10)] == [round(2 / 3, 3)]
 
 
 def test_lab_lc_lists_every_instrument_with_its_family(client):
@@ -307,6 +338,22 @@ def test_sharing_env_override_and_hosted_name(client, monkeypatch):
     assert s == {"enabled": True, "display_name": "Clogged PeakTail", "relay_url": RELAY_URL}
 
 
+def test_hosted_sharing_is_only_what_this_host_is_told(client, monkeypatch):
+    """The hosted container knows the name but not the Hive cron's peg_share.
+
+    Documents the deploy dependency: at UC Davis the sync runs on Hive, so
+    ucd.stan-proteomics.org reports sharing on only with STAN_PEG_SHARE=1 in
+    its own app settings -- without it the tab says PEG stays in the lab.
+    """
+    def _missing():
+        raise FileNotFoundError("community.yml")
+
+    monkeypatch.setattr("stan.config.load_community", _missing)
+    monkeypatch.setenv("STAN_DISPLAY_NAME", "Clogged PeakTail")
+    s = client.get("/api/peg/overview").json()["sharing"]
+    assert s == {"enabled": False, "display_name": "Clogged PeakTail", "relay_url": RELAY_URL}
+
+
 def test_sharing_status_is_not_cached(client, monkeypatch):
     assert client.get("/api/peg/overview").json()["sharing"]["enabled"] is False
     monkeypatch.setenv("STAN_PEG_SHARE", "1")
@@ -373,6 +420,207 @@ def test_runs_failure_is_503_not_an_empty_tab(client, monkeypatch):
     assert "closed" not in r.text
 
 
+def test_locked_store_is_503_and_nothing_is_cached(client, db_path, monkeypatch):
+    """A lock (or SQLITE_IOERR) is not "no PEG measured".
+
+    The readers swallowed every OperationalError as [], and the endpoint
+    cached the empty answer for PEG_OVERVIEW_TTL_S: ten minutes of an empty
+    tab telling the lab to install PEG dependencies, after one lock.
+    """
+    real_connect = stan_db.connect
+    monkeypatch.setattr(stan_db, "connect", lambda p, **kw: real_connect(p, timeout=0.05))
+    holder = sqlite3.connect(db_path)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        r = client.get("/api/peg/overview")
+        assert r.status_code == 503
+        assert server._PEG_CACHE == {}
+    finally:
+        holder.rollback()
+        holder.close()
+    r = client.get("/api/peg/overview")
+    assert r.status_code == 200 and len(r.json()["runs"]) == 31
+
+
+def test_lock_during_the_build_is_503_not_a_cached_empty_tab(client, db_path, monkeypatch):
+    """Instruments already cached, then the store locks: still a 503."""
+    assert client.get("/api/peg/overview").status_code == 200
+    server._PEG_CACHE.pop(next(k for k in server._PEG_CACHE if k[0] == "overview"))
+    real_connect = stan_db.connect
+    monkeypatch.setattr(stan_db, "connect", lambda p, **kw: real_connect(p, timeout=0.05))
+    holder = sqlite3.connect(db_path)
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        assert client.get("/api/peg/overview").status_code == 503
+        assert not any(k[0] == "overview" for k in server._PEG_CACHE)
+    finally:
+        holder.rollback()
+        holder.close()
+    assert len(client.get("/api/peg/overview").json()["runs"]) == 31
+
+
+class _LockedFor:
+    """A real connection whose queries touching ``needle`` hit a lock."""
+
+    def __init__(self, con, needle):
+        object.__setattr__(self, "_con", con)
+        object.__setattr__(self, "_needle", needle)
+
+    def execute(self, sql, params=()):
+        if self._needle in sql:
+            raise sqlite3.OperationalError("database is locked")
+        return self._con.execute(sql, params)
+
+    def __getattr__(self, name):
+        return getattr(self._con, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._con, name, value)
+
+    def __enter__(self):
+        self._con.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._con.__exit__(*exc)
+
+
+def test_side_panel_lock_degrades_instead_of_reading_empty(client, monkeypatch):
+    """A locked column log is a degraded panel, not "no column changes"."""
+    real_connect = stan_db.connect
+    monkeypatch.setattr(stan_db, "connect",
+                        lambda p, **kw: _LockedFor(real_connect(p, **kw), "maintenance_events"))
+    r = client.get("/api/peg/overview")
+    assert r.status_code == 200
+    doc = r.json()
+    assert doc["degraded"] == ["column_periods"] and doc["column_periods"] == []
+    assert len(doc["runs"]) == 31
+    assert not any(k[0] == "overview" for k in server._PEG_CACHE)
+
+
+def test_missing_table_is_still_empty_not_an_error(tmp_path, monkeypatch):
+    path = tmp_path / "bare.db"
+    with sqlite3.connect(path) as con:
+        con.execute("CREATE TABLE unrelated (x INTEGER)")
+    assert stan_db.get_peg_runs(db_path=path) == []
+    assert stan_db.get_peg_instruments(db_path=path) == []
+
+
+def test_empty_instrument_list_is_not_cached(tmp_path, monkeypatch):
+    monkeypatch.delenv("STAN_DB_BACKEND", raising=False)
+    path = tmp_path / "empty.db"
+    stan_db.init_db(path)
+    monkeypatch.setattr(stan_db, "get_db_path", lambda: path)
+    monkeypatch.setattr(server, "_peg_today", lambda: AS_OF)
+    monkeypatch.setattr(server, "_PEG_CACHE", {})
+    monkeypatch.setattr("stan.config.load_community", lambda: {})
+    c = TestClient(server.app)
+    assert c.get("/api/peg/overview").json()["instruments"] == []
+    assert server._PEG_CACHE == {}
+    with sqlite3.connect(path) as con:
+        _insert_run(con, "late", "HeLa_late.d", "2026-09-27T10:00:00Z")
+    assert [i["instrument"] for i in c.get("/api/peg/overview").json()["instruments"]] == [TIMS]
+
+
+# ── One acquisition, one run ─────────────────────────────────────────
+
+def _seed_duplicates(con, order):
+    """One raw file ingested three times, as live PG holds 241 of them.
+
+    The instrument-PC copy (0.2.222, no ladder) reads heavy; the Hive copies
+    have the ladder, and the newer of those (by number: 1.0.44 > 0.2.376,
+    though not as text) is the one kept. Offsets differ, the instant does not.
+    """
+    copies = {
+        "pc": dict(stamp="2026-09-15T03:00:00-07:00", version="0.2.222", cls="heavy",
+                   pct=7.5, score=80.0, raw_path="D:/Data/dup.d"),
+        "hive_old": dict(stamp="2026-09-15T10:00:00Z", version="0.2.376", cls="trace",
+                         pct=1.9, score=30.0, raw_path="/quobyte/dup.d"),
+        "hive_new": dict(stamp="2026-09-15 10:00:00+00:00", version="1.0.44", cls="clean",
+                         pct=0.4, score=9.0, raw_path="/nfs/dup.d"),
+    }
+    for rid in order:
+        c = copies[rid]
+        _insert_run(con, rid, "HeLa_dup_1_3001.d", c["stamp"], cls=c["cls"], pct=c["pct"],
+                    score=c["score"], version=c["version"], raw_path=c["raw_path"])
+    _hit(con, "hive_old", 9, "+NH4")
+    _hit(con, "hive_new", 12, "+Na")
+
+
+@pytest.mark.parametrize("order", [("pc", "hive_old", "hive_new"),
+                                   ("hive_new", "hive_old", "pc"),
+                                   ("hive_old", "pc", "hive_new")])
+def test_a_duplicated_acquisition_counts_once_whatever_the_row_order(client, db_path, order):
+    with sqlite3.connect(db_path) as con:
+        _seed_duplicates(con, order)
+    doc = client.get("/api/peg/overview").json()
+    dup = [row for row in doc["runs"] if row[0] == "2026-09-15T10:00"]
+    assert dup == [["2026-09-15T10:00", 100, 0.4, 9.0, 3, 0, 30000]]    # the 1.0.44 copy
+    assert len(doc["runs"]) == 32
+    assert doc["instruments"][0]["n_runs"] == 32
+    lad = doc["ladder"]
+    sep = lad["months"].index("2026-09")
+    assert lad["nruns"][sep] == 1                   # the kept copy has hits
+    assert lad["share"][lad["n"].index(12)][sep] == 1.0
+    assert lad["share"][lad["n"].index(9)][sep] == 0.0      # the dropped copy's hit
+    assert next(x for x in doc["lab_lc"] if x["instrument"] == TIMS)["n_90d"] == 32
+
+    share = [r for r in stan_db.get_peg_share_rows() if r["run_name"] == "HeLa_dup_1_3001.d"]
+    assert len(share) == 1
+    assert (share[0]["peg_class"], share[0]["peg_intensity_pct"]) == ("clean", 0.4)
+    assert share[0]["run_date"] == "2026-09-15T10:00:00Z"
+    assert "id" not in share[0] and "stan_version" not in share[0]
+
+
+def test_hits_outrank_a_newer_version(db_path):
+    """A newer copy without its ladder loses to one with it (spec 4.1)."""
+    with sqlite3.connect(db_path) as con:
+        _insert_run(con, "new_nohits", "HeLa_d2.d", "2026-09-16T10:00:00Z", pct=5.0,
+                    cls="heavy", score=80.0, version="1.1.12", raw_path="/a/HeLa_d2.d")
+        _insert_run(con, "old_hits", "HeLa_d2.d", "2026-09-16T10:00:00Z", pct=0.5,
+                    cls="clean", score=9.0, version="0.2.376", raw_path="/b/HeLa_d2.d")
+        _hit(con, "old_hits", 9, "+H")
+    row = next(r for r in stan_db.get_peg_share_rows() if r["run_name"] == "HeLa_d2.d")
+    assert row["peg_intensity_pct"] == 0.5
+    kept = [r for r in stan_db.get_peg_runs(TIMS) if r["run_date_utc"] == "2026-09-16T10:00:00Z"]
+    assert len(kept) == 1 and kept[0]["has_hits"] is True
+
+
+def test_share_rows_come_in_a_total_order(db_path):
+    """Same-second runs on two instruments: the order is fixed, not heap order."""
+    with sqlite3.connect(db_path) as con:
+        _insert_run(con, "z1", "HeLa_same_b.d", "2026-09-17T10:00:00Z")
+        _insert_run(con, "z2", "HeLa_same_a.d", "2026-09-17T10:00:00Z", instrument=EXPL)
+        _insert_run(con, "z3", "HeLa_same_a.d", "2026-09-17T10:00:00Z")
+    rows = [(r["instrument"], r["run_name"]) for r in stan_db.get_peg_share_rows()
+            if r["run_date"] == "2026-09-17T10:00:00Z"]
+    assert rows == [(EXPL, "HeLa_same_a.d"), (TIMS, "HeLa_same_a.d"), (TIMS, "HeLa_same_b.d")]
+
+
+# ── Failed acquisitions ──────────────────────────────────────────────
+
+def test_failed_acquisitions_are_not_counted_clean(client, db_path):
+    """0 precursors + 0 PEG ions + exactly 0 %: nothing was measured.
+
+    detect_peg_in_spectra returns that when it summed no MS1, and it scores
+    0 and classifies 'clean'. Live PG holds 21 such timsTOF rows.
+    """
+    with sqlite3.connect(db_path) as con:
+        _insert_run(con, "f_empty", "HeLa_aborted_1.d", "2026-09-18T10:00:00Z",
+                    pct=0.0, score=0.0, prec=0, ions=0)
+        _insert_run(con, "f_ions", "HeLa_prec0_ions.d", "2026-09-18T11:00:00Z",
+                    pct=0.0, score=0.0, prec=0, ions=6)
+        _insert_run(con, "f_nullprec", "HeLa_dda_1.d", "2026-09-18T12:00:00Z",
+                    pct=0.0, score=0.0, prec=None, ions=0)
+    names = {r["run_name"] for r in stan_db.get_peg_share_rows()}
+    assert "HeLa_aborted_1.d" not in names
+    assert {"HeLa_prec0_ions.d", "HeLa_dda_1.d"} <= names
+    stamps = {r["run_date_utc"] for r in stan_db.get_peg_runs(TIMS)}
+    assert "2026-09-18T10:00:00Z" not in stamps
+    assert {"2026-09-18T11:00:00Z", "2026-09-18T12:00:00Z"} <= stamps
+    assert client.get("/api/peg/overview").json()["instruments"][0]["n_runs"] == 33
+
+
 def test_public_get_passes_the_readonly_gate(monkeypatch):
     """The hosted dashboard sets STAN_DASHBOARD_READONLY; this GET stays open.
 
@@ -406,7 +654,8 @@ def test_pg_branch_uses_the_pg_readers_and_still_filters(monkeypatch):
                 "n_precursors": 31000, "mode": "diaPASEF", "lc_system": "evosep"}
         rows = [dict(base, run_date_utc=f"2026-09-{d:02d}T18:27:00Z",
                      run_name=f"HeLa_pg_{d}.d", peg_score=7.5,
-                     peg_intensity_pct=0.353, peg_class="clean") for d in range(1, 21)]
+                     peg_intensity_pct=0.353, peg_class="clean", has_hits=True)
+                for d in range(1, 21)]
         # The SQL filters these; the Python half must hold even if it didn't.
         rows.append(dict(base, run_date_utc="2026-09-21T10:00:00Z",
                          run_name="Blank_pg.d", peg_score=90.0,
@@ -438,6 +687,7 @@ def test_pg_branch_uses_the_pg_readers_and_still_filters(monkeypatch):
     assert doc["lab_lc"][0]["family"] == "timsTOF"
     assert doc["sharing"]["display_name"] == "PG Lab"
     assert "HeLa" not in r.text and "Blank" not in r.text
+    assert "has_hits" not in r.text                 # internal, not in the payload
 
 
 # ── The PG SQL itself, against a fake connection ─────────────────────
@@ -496,6 +746,22 @@ def _assert_runs_sql_is_safe(sql: str) -> None:
     assert "IN ('clean', 'trace', 'moderate', 'heavy')" in sql
     assert "peg_intensity_pct <> 'NaN'" in sql        # float4 NaN is not a measurement
     assert "substr(" not in sql                       # no substr on timestamptz
+    # failed acquisitions: 0 precursors, 0 ions, exactly 0 %
+    assert ("NOT (COALESCE(r.n_precursors, -1) = 0 "
+            "AND COALESCE(r.peg_n_ions_detected, -1) = 0 AND r.peg_intensity_pct = 0)") in sql
+    _assert_one_row_per_acquisition(sql)
+
+
+def _assert_one_row_per_acquisition(sql: str) -> None:
+    """The canonical-row rule, identical to peg_trends.pick_canonical."""
+    key = "r.instrument, r.run_name, date_trunc('second', r.run_date)"
+    assert f"SELECT DISTINCT ON ({key})" in sql
+    order = sql.split(f"ORDER BY {key}, ", 1)[1]
+    hits = ("EXISTS (SELECT 1 FROM peg_ion_hits x WHERE x.run_id = r.id "
+            "AND x.source = 'runs') DESC")
+    version = ("string_to_array(substring(r.stan_version FROM "
+               "'^\\s*v?([0-9]+(?:\\.[0-9]+)*)'), '.')::numeric[] DESC NULLS LAST")
+    assert order.startswith(f"{hits}, {version}, r.id::text COLLATE \"C\" DESC")
 
 
 def test_pg_runs_sql(fake_pg):
@@ -506,6 +772,8 @@ def test_pg_runs_sql(fake_pg):
     _assert_runs_sql_is_safe(sql)
     assert "to_char(run_date AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')" in sql
     assert "peg_score::numeric" in sql and "peg_intensity_pct::numeric" in sql
+    assert "AS has_hits" in sql and "AND r.instrument = %s" in sql
+    assert sql.endswith("ORDER BY run_date ASC, instrument, run_name")
     assert params == (TIMS,)
     assert rows == [{"run_date_utc": "2026-09-01T00:00:00Z", "run_name": "a.d",
                      "peg_score": 1}]
@@ -522,9 +790,10 @@ def test_pg_instrument_counts_and_ladder_filter_blanks_in_sql(fake_pg):
     assert db_pg.get_peg_ladder_month_counts_pg(TIMS, PG_BLANK_WASH_REGEX) == [
         ("2026-09", 9, "+H", 3)]
     sql, params = fake_pg.calls[-1]
-    assert "COALESCE(r.hidden, 0) = 0" in sql and "r.peg_class" in sql
-    assert "to_char(r.run_date AT TIME ZONE 'UTC', 'YYYY-MM')" in sql
+    _assert_runs_sql_is_safe(sql)                     # hits of the kept copy only
+    assert "to_char(c.run_date AT TIME ZONE 'UTC', 'YYYY-MM')" in sql
     assert "count(DISTINCT h.run_id)" in sql and "h.source = 'runs'" in sql
+    assert "JOIN (SELECT DISTINCT ON" in sql and "c.id = h.run_id" in sql
     assert params == (TIMS, PG_BLANK_WASH_REGEX)
 
 
@@ -546,12 +815,15 @@ def test_pg_share_rows_sql(fake_pg, monkeypatch, has_sample_type):
     _assert_runs_sql_is_safe(sql)
     assert ("sample_type" in sql) is has_sample_type
     assert "run_name" in sql and "lc_system" in sql and "amount_ng::numeric" in sql
+    # A total order: run_date alone left copies of one file tied, and the
+    # client kept whichever the sort happened to put first.
+    assert sql.endswith("ORDER BY run_date ASC, instrument, run_name")
 
 
 def test_pg_lab_lc_sql_and_assembly(fake_pg):
     def answer(sql, params):
-        if "date_trunc('week', t)" in sql:
-            return ["i", "w", "m"], [(TIMS, "2026-09-28", 2.0), (TIMS, "2026-04-06", 5.0)]
+        if "604800" in sql:
+            return ["i", "w", "m"], [(TIMS, 25, 2.0), (TIMS, 0, 5.0)]
         if "percentile_cont" in sql:
             return ["i", "n90", "m90", "c90", "n365", "m365"], [
                 (TIMS, 40, 3.14159, 10, 400, 2.5), (EXPL, 0, None, 0, 5, 0.25)]
@@ -563,13 +835,18 @@ def test_pg_lab_lc_sql_and_assembly(fake_pg):
     for sql, params in fake_pg.calls:
         assert "SELECT *" not in sql.upper() and "hidden, 0) = 0" in sql
         assert "(run_date AT TIME ZONE 'UTC') AS t" in sql and "!~* %(blank)s" in sql
+        _assert_one_row_per_acquisition(sql)
         assert params["blank"] == PG_BLANK_WASH_REGEX
         # naive UTC datetimes, compared with the naive UTC timestamp `t`
         assert params["end"] == datetime(2026, 9, 29) and params["end"].tzinfo is None
         assert params["s90"] == datetime(2026, 7, 1)
         assert params["s365"] == datetime(2025, 9, 29)
-        assert params["w0"] == datetime(2026, 4, 6)
+        # 26 trailing 7-day buckets ending with as_of: the relay's weeks
+        assert params["wstart"] == datetime(2026, 3, 31) and params["wstart"].tzinfo is None
     assert "percentile_cont(0.5) WITHIN GROUP (ORDER BY pct)" in fake_pg.calls[0][0]
+    wk_sql = next(q for q, _ in fake_pg.calls if "604800" in q)
+    assert "floor(extract(epoch FROM (t - %(wstart)s)) / 604800)::int" in wk_sql
+    assert "t >= %(wstart)s" in wk_sql and "date_trunc('week'" not in wk_sql
     tims, expl = out
     assert tims == {"instrument": TIMS, "lc_system": "evosep", "n_90d": 40,
                     "median_90d": 3.142, "clean_rate_90d": 25, "n_365d": 400,
