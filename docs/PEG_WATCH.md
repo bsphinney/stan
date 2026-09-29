@@ -118,7 +118,9 @@ applied to are not the same:
 So a timsTOF 3 % and an Orbitrap 3 % are not the same amount of PEG. The
 leaderboard ranks within `instrument_family × Evosep SPD method`, the
 "Evosep vs other LC" panel compares LC groups **within one family**, and
-the tab labels any cross-family comparison as such.
+the tab labels any cross-family comparison as such. The score and classes
+are further off than the share, and since v1.2.1 the tab keeps them out
+of cross-family comparisons altogether (Known limitations, first entry).
 
 ### Classes
 
@@ -694,6 +696,35 @@ Nothing is lost while that lasts — the clients retry next tick.
 
 ## Known limitations and follow-ups
 
+- **The measurement is not comparable across instrument families, and the
+  classes least of all** (found 2026-09-29, from PG). All three UC Davis
+  instruments show the same ladder (PEG8–13, mostly [M+NH₄]⁺); the
+  difference is STAN's measurement, not what a detector can see. The
+  Bruker reader (`peg_io.read_ms1_bruker`, alphatims) yields raw per-push
+  TOF events stored as uint16: recorded timsTOF PEG ion intensities are
+  p10 10,861 / median 24,365 / p90 56,771 / max 65,260 against a 65,535
+  ceiling, and brighter events wrap and fall under the floor. Orbitrap
+  centroids (TRFP mzML) run p10 ~20–30k / median 110–190k / p90
+  1.3–2.3 M / max 4.5–6.0 × 10⁹. At the same absolute 10⁴ floor
+  (`detect_peg_in_spectra`) a timsTOF run records ~3 PEG ions to an
+  Orbitrap's ~27, and the 0–100 score, its classes and "clean %" are
+  driven by the ion count. So the tab showed the timsTOF 15 % clean
+  against 1 % on the Orbitraps, although the Orbitraps' PEG share is
+  25–35× lower (90-day median: timsTOF 4.66 %, Lumos 0.14 %, Exploris
+  0.19 %). Within one instrument over time the measurement is
+  consistent. **What the dashboard does now (v1.2.1, UI only):** the
+  "Your instruments" table leaves out the clean column whenever its rows
+  span more than one family and says the score and classes are calibrated
+  on timsTOF data; off a timsTOF, the Clean and Heavy tiles, the timeline
+  class legend and the calendar legend are tagged "timsTOF-calibrated"
+  with a one-line note to compare PEG share, and the headline does not
+  quote a best-90-day clean rate. PEG share is the closer measure, not a
+  comparable one: the floor and the uint16 ceiling bear on it too. The
+  community LC comparison (one family) keeps its clean %. **The fix is
+  pending a design** — reading Bruker intensities without the uint16
+  ceiling, a floor and score calibration that hold per family, and a
+  rescore of the history — and nothing in PG, the relay or the classes
+  has changed.
 - **PEG on blanks and `sample_health`.** The monitor PEG step is a no-op
   and a `sample_health` PEG write in PG mode goes to local SQLite. Blank
   PEG is carry-over and would be the most direct Evosep signal; it needs

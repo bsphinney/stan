@@ -26,9 +26,13 @@
  * --peg DIR reads PEG fixtures from DIR: peg_overview.json (required) and,
  * when present, peg_overview_empty.json, relay_leaderboard.json,
  * relay_leaderboard_empty.json, relay_trend.json, relay_lc_compare.json and
- * relay_lc_compare_both.json. Without --peg the PEG checks run on a small
- * synthetic document built below, so they always run. With --peg and no
- * Evosep document, the Evosep checks are skipped rather than failing.
+ * relay_lc_compare_both.json. Any other peg_overview_<name>.json is one more
+ * instrument's overview (e.g. ?instrument=Orbitrap%20Exploris%20480): the
+ * whole tab is rendered once per overview for the cross-family checks
+ * (v1.2.1), so put a timsTOF and a non-timsTOF one there. Without --peg the
+ * PEG checks run on a small synthetic document built below, so they always
+ * run. With --peg and no Evosep document, the Evosep checks are skipped
+ * rather than failing.
  *
  * Exit 0 = every component rendered. Exit 1 = one threw, with the stack.
  * Exit 2 = missing dependency or input.
@@ -284,7 +288,10 @@ function syntheticPeg() {
   const ovEmpty = Object.assign({}, ov, { runs: [], rolling: {}, episodes: [], baseline: null, lab_lc: [], impact: {}, column_periods: [],
     ladder: { months: [], n: [], share: [], nruns: [], adducts: {} },
     summary: { n_30d: 0, median_30d: null, median_prev_30d: null, change_pct: null, clean_30d: 0, heavy_30d: 0, clean_rate_30d: null, streak_clean: 0 } });
-  return { source: 'built-in synthetic', ov, ovEmpty, lb, lbEmpty, trend, lcOne, lcBoth };
+  /* The same lab seen from its Orbitrap, for the cross-family checks. */
+  const ovOrbi = Object.assign({}, ov, { instrument: 'Orbitrap Exploris 480', instrument_family: 'Exploris', lc_system: 'custom' });
+  const views = [{ name: 'synthetic timsTOF', ov }, { name: 'synthetic Exploris', ov: ovOrbi }];
+  return { source: 'built-in synthetic', ov, ovEmpty, lb, lbEmpty, trend, lcOne, lcBoth, views };
 }
 
 function loadPegFixtures(dir) {
@@ -297,9 +304,12 @@ function loadPegFixtures(dir) {
     return JSON.parse(fs.readFileSync(p, 'utf8'));
   };
   const syn = syntheticPeg();
+  const ov = read('peg_overview.json', true);
+  const more = fs.readdirSync(dir).filter(f => /^peg_overview_.+\.json$/.test(f) && f !== 'peg_overview_empty.json').sort();
   return {
     source: dir,
-    ov: read('peg_overview.json', true),
+    ov,
+    views: [{ name: 'peg_overview.json', ov }, ...more.map(f => ({ name: f, ov: read(f, true) }))],
     ovEmpty: read('peg_overview_empty.json') || syn.ovEmpty,
     lb: read('relay_leaderboard.json') || syn.lb,
     lbEmpty: read('relay_leaderboard_empty.json') || syn.lbEmpty,
@@ -708,7 +718,121 @@ function checkPeg(fx) {
   /* 9. Review round 1 leftovers: canonical lab names (F1), sharing as the
      relay sees it (F2/F10), case-blind family matching (F4). */
   checkPegNamesAndSharing(fx, { relay, fam, seed, expect, text, boardProps, lcProps });
+
+  /* 10. v1.2.1: the score's classes are timsTOF-calibrated. */
+  checkPegCalibration(fx, { seed, expect, text });
   E.PEG_CACHE.clear();
+}
+
+/* v1.2.1. The 0-100 PEG score and its classes are calibrated on timsTOF
+   data, and the two vendors' readers put intensities on different scales:
+   UC Davis's timsTOF records ~3 PEG ions a run to the Orbitraps' ~27 at the
+   same 1e4 floor, so the live tab read 15% clean on the timsTOF against 1%
+   on Orbitraps carrying 25-35x less PEG (2026-09-29). Until the
+   measurement is fixed the tab must not set classes side by side across
+   families: no clean column in a multi-family "Your instruments" table,
+   class elements labelled off a timsTOF, and no clean rate in that lede.
+   Rendered once per overview in fx.views -- the live UC Davis timsTOF HT,
+   Exploris 480 and Lumos documents when --peg points at them. */
+function checkPegCalibration(fx, { seed, expect, text }) {
+  const E = exported;
+  const views = fx.views || [{ name: 'peg_overview.json', ov: fx.ov }];
+  const famKey = (f) => String(f == null ? '' : f).trim().toLowerCase();
+  const kinds = { tims: 0, off: 0 };
+  const sectionOf = (h, head) => { const a = h.indexOf(head); return a < 0 ? '' : h.slice(a, h.indexOf('</section>', a)); };
+  for (const { name, ov: v } of views) {
+    const vfam = v.instrument_family || '';
+    const tims = famKey(vfam) === 'timstof';
+    const relay = ((v.sharing && v.sharing.relay_url) || E.PEG_RELAY_DEFAULT).replace(/\/+$/, '');
+    E.PEG_CACHE.clear();
+    seed('/api/peg/overview', v);
+    if (vfam) {
+      for (const spd of ['100', '60', '30']) {
+        for (const win of ['30', '90', '365']) seed(E.pegBoardUrl(relay, vfam, spd, win), fx.lbEmpty);
+        seed(E.pegTrendUrl(relay, vfam, spd), fx.trend);
+      }
+      seed(E.pegLcUrl(relay, vfam), fx.lcOne);
+    }
+    const h = renderQuiet('PegTab', {});
+    if (h === null) continue;
+    rendered++;
+    if (!(v.runs || []).length) { console.log(`skip  PegTab              ${name}: no PEG runs, nothing class-based on screen`); continue; }
+    kinds[tims ? 'tims' : 'off']++;
+    const who = `${name} (${v.instrument}, ${vfam || 'no family'})`;
+    const tx = text(h);
+    let ok = expect(`${who}: no NaN / undefined on screen`, !/\bNaN\b|\bundefined\b|\[object Object\]/.test(tx));
+
+    /* The note, and the tag on each class-based element. */
+    const tags = (h.match(/class="peg-caltag"/g) || []).length;
+    const tileAt = h.indexOf('Clean QCs · 30 days');
+    const cleanTile = tileAt < 0 ? '' : h.slice(tileAt, h.indexOf('class="peg-tile"', tileAt));
+    const tl = sectionOf(h, 'PEG over time'), legend = tl.slice(tl.indexOf('class="peg-legend"'));
+    const cal = sectionOf(h, 'Every QC day since'), calMeta = cal.slice(cal.indexOf('class="peg-cal-meta"'));
+    if (tims) {
+      ok &= expect(`${who}: no timsTOF-calibrated note on a timsTOF`, !/peg-calnote/.test(h) && !/timsTOF-calibrated/.test(tx), `${tags} tag(s)`);
+    } else {
+      ok &= expect(`${who}: one-line calibration note`, (h.match(/class="peg-fine peg-calnote"/g) || []).length === 1
+                   && /calibrated on timsTOF data; on this instrument, compare PEG share/.test(tx));
+      ok &= expect(`${who}: Clean QCs tile labelled timsTOF-calibrated`, /peg-caltag[^>]*>timsTOF-calibrated</.test(cleanTile), cleanTile.slice(0, 200));
+      ok &= expect(`${who}: timeline class legend labelled`, legend.length > 0 && /peg-caltag[^>]*>timsTOF-calibrated</.test(legend));
+      ok &= expect(`${who}: calendar legend labelled`, calMeta.length > 0 && /peg-caltag[^>]*>timsTOF-calibrated</.test(calMeta));
+      ok &= expect(`${who}: tags only on class-based elements (2 tiles, 2 legends)`, tags === 4, `${tags} tags`);
+    }
+
+    /* The hero lede: the clean rate of the best 90 days goes, the rest stays. */
+    const lede = text((/<p class="peg-lede">([\s\S]*?)<\/p>/.exec(h) || [])[1] || '').replace(/\s+/g, ' ');
+    const s = v.summary || {}, B = v.baseline;
+    const vsBest = !!(s.n_30d && B && B.median_pct != null);
+    if (tims) {
+      if (vsBest) ok &= expect(`${who}: timsTOF lede still quotes the best-90-day clean rate (control)`, /% of QCs came back clean/.test(lede), lede);
+    } else {
+      ok &= expect(`${who}: lede does not quote a clean rate`, !/came back clean/.test(lede), lede);
+      if (vsBest) ok &= expect(`${who}: lede keeps the best-90-day comparison`, /your best 90 days \(/.test(lede), lede);
+    }
+
+    /* "Your instruments": no class-based column once the rows span families. */
+    const lab = v.lab_lc || [];
+    const multi = new Set(lab.map(x => famKey(x.family)).filter(Boolean)).size > 1;
+    const lc = sectionOf(h, 'Evosep vs other LC');
+    const hd = text((/<div class="peg-lc-row peg-hd">([\s\S]*?)<\/div>/.exec(lc) || [])[1] || '');
+    if (lab.length) {
+      const shares = (lc.match(/class="peg-val"/g) || []).length, sparks = (lc.match(/class="peg-spark/g) || []).length;
+      if (multi) {
+        ok &= expect(`${who}: multi-family LC rows have no clean column`, !/\bclean\b/i.test(hd) && !/class="peg-m"/.test(lc) && /peg-lc-rows peg-noclean/.test(lc), hd);
+        ok &= expect(`${who}: ...and keep median PEG share and the 26-week line`, /median PEG share/.test(hd) && /26 weeks/.test(hd)
+                     && shares === lab.length, `${shares} shares for ${lab.length} rows, ${sparks} sparklines`);
+        ok &= expect(`${who}: ...and the caveat says the classes are timsTOF-calibrated`,
+                     /calibrated on timsTOF data and are not comparable across instrument families/.test(text(lc).replace(/\s+/g, ' ')));
+      } else {
+        ok &= expect(`${who}: single-family LC rows keep the clean column`, /\bclean\b/i.test(hd) && (lc.match(/class="peg-m"/g) || []).length === lab.length, hd);
+      }
+    }
+    if (ok) {
+      console.log(`ok    PegTab              ${name}: ${vfam}${tims ? ' · no calibration labels' : ` · note + ${tags} timsTOF-calibrated tags · lede without a clean rate`}` +
+                  `${lab.length ? (multi ? ` · ${lab.length} LC rows, ${new Set(lab.map(x => famKey(x.family))).size} families, no clean column` : ' · LC clean column kept') : ''}`);
+    }
+  }
+  if (!kinds.off) console.log('note  no non-timsTOF overview among the fixtures: the calibration labels were not exercised');
+  if (!kinds.tims) console.log('note  no timsTOF overview among the fixtures: the unlabelled control was not exercised');
+
+  /* PegLcView on its own: one family keeps its clean column; two custom-LC
+     families (no Evosep split, so no "Different instrument families"
+     headline) still lose it, and still say why. */
+  const row = (instrument, family, lc_system, clean) => ({ instrument, family, lc_system, n_90d: 30, median_90d: 0.4,
+    clean_rate_90d: clean, n_365d: 100, median_365d: 0.5, weekly: [0.2, 0.3, 0.4] });
+  const lcBase = { fam: 'timsTOF', onFam: () => {}, relayBase: E.PEG_RELAY_DEFAULT, data: fx.lcOne };
+  const one = renderQuiet('PegLcView', Object.assign({}, lcBase, { labLc: [row('timsTOF HT', 'timsTOF', 'evosep', 15), row('timsTOF Ultra', 'timsTOF', 'custom', 30)] }));
+  const two = renderQuiet('PegLcView', Object.assign({}, lcBase, { labLc: [row('Orbitrap Fusion Lumos', 'Lumos', 'custom', 1), row('Orbitrap Exploris 480', 'Exploris', 'custom', 1)] }));
+  if (one !== null && two !== null) {
+    rendered += 2;
+    const hdOf = (h) => text((/<div class="peg-lc-row peg-hd">([\s\S]*?)<\/div>/.exec(h) || [])[1] || '');
+    if (expect('one family on two LCs: clean column kept, no calibration caveat',
+               /\bclean\b/.test(hdOf(one)) && (one.match(/class="peg-m"/g) || []).length === 2 && !/calibrated on timsTOF/.test(one), hdOf(one))
+        & expect('two custom-LC families: no clean column, caveat without the Evosep headline',
+                 !/\bclean\b/.test(hdOf(two)) && !/class="peg-m"/.test(two) && /calibrated on timsTOF data/.test(text(two))
+                 && !/Different instrument families/.test(two), hdOf(two)))
+      console.log('ok    PegLcView           one family keeps clean; Lumos + Exploris drop it and say why');
+  }
 }
 
 /* The relay's own answers, computed with _clean_text from hf_space/app.py

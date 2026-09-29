@@ -11,6 +11,42 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.1] — 2026-09-29
+
+### Fixed
+- **The PEG tab implied the Orbitraps were dirtier than the timsTOF.**
+  They are not. STAN's PEG measurement is not comparable across
+  instrument families: the Bruker reader yields raw per-push TOF events
+  stored as uint16 (recorded timsTOF PEG ions: median 24,365, max 65,260
+  against a 65,535 ceiling), while Orbitrap centroids run from a median of
+  110–190k to a max of 4.5–6.0 × 10⁹, so at
+  the same absolute 10⁴ floor a timsTOF run records ~3 PEG ions to an
+  Orbitrap's ~27. The ion-count-driven score and its classes follow: the
+  live tab showed the timsTOF 15 % clean against 1 % on Orbitraps whose
+  90-day median PEG share is 25–35× lower (timsTOF 4.66 %, Lumos 0.14 %,
+  Exploris 0.19 %). All three show the same ladder (PEG8–13, mostly
+  [M+NH₄]⁺). Interim UI fix, no data or colour changes:
+  - **Evosep vs other LC → Your instruments** drops the clean column
+    whenever its rows span more than one instrument family, and the
+    caveat says the score and classes are calibrated on timsTOF data;
+    PEG share is the closer measure. The community half (one family) keeps
+    its clean %.
+  - **Off a timsTOF**, the Clean and Heavy QC tiles, the timeline's class
+    legend and the calendar legend are tagged *timsTOF-calibrated*, with a
+    one-line note to compare PEG share instead, and the headline no longer
+    quotes the best-90-day clean rate ("…when N % of QCs came back
+    clean").
+  - `scripts/render_check.js` renders the tab once per
+    `peg_overview_<name>.json` in the `--peg` directory (and a synthetic
+    Exploris view without one) and asserts all of the above.
+  The measurement itself is unchanged; a fix needs a design
+  (`docs/PEG_WATCH.md`, Known limitations). A read-only prototype since
+  found most of the Orbitraps' ~27 matches are chance hits on dense
+  centroid spectra (decoy ladders shifted 40–200 ppm match 20–23), so the
+  Orbitrap ion count is not evidence of more PEG either.
+
+---
+
 ## [1.2.0] — 2026-09-28
 
 PEG Watch: STAN's per-run PEG score leaves the run modal and becomes a

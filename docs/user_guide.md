@@ -308,6 +308,10 @@ trace, moderate, heavy) as a badge.
 **Compare it only within one instrument family.** The 10⁴ floor is the
 same number on every instrument, but a timsTOF and an Orbitrap report
 intensity on different scales, so 3 % on one is not 3 % on the other.
+The classes are further off still: the PEG score behind them is
+calibrated on timsTOF data, so on any other instrument the tab tags the
+class tiles and legends **timsTOF-calibrated** and leaves the clean rate
+out of any table that spans families — compare PEG share there instead.
 
 Runs whose PEG could not be read are left out. They never count as clean,
 and neither does a run that read no MS1 signal at all.
@@ -412,7 +416,8 @@ Evosep board for context.
 "Does PEG follow the LC?" The panel has two halves:
 
 - **Your instruments, last 90 days** — every instrument with PEG, its LC,
-  90-day median, clean rate and a 26-week sparkline. Instruments with no
+  90-day median, clean rate (only when every row is one instrument
+  family) and a 26-week sparkline. Instruments with no
   LC recorded are marked Unknown.
 - **Community, same instrument family** — Evosep and other-LC runs from
   every sharing lab, compared only within one family.

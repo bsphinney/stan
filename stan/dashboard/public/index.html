@@ -182,6 +182,10 @@
     .peg-cal-meta b { color: var(--text); font-variant-numeric: tabular-nums; }
     .peg-note { border: 1px dashed var(--border); border-radius: 10px; padding: 14px; color: var(--muted); font-size: .85rem; margin-bottom: 10px; }
     .peg-note b { color: var(--text); }
+    /* Off a timsTOF the classes are labelled, not recoloured: the score
+       behind them is calibrated on timsTOF data. */
+    .peg-caltag { justify-self: start; font-size: .68rem; font-weight: 650; letter-spacing: .03em; padding: 1px 6px; border-radius: 4px; border: 1px dashed var(--border); color: var(--muted); white-space: nowrap; }
+    .peg-calnote { margin: -8px 0 0; }
     table.peg-board { width: 100%; border-collapse: collapse; font-size: .86rem; min-width: 780px; }
     .peg-board th { text-align: left; color: var(--muted); font-weight: 600; font-size: .74rem; letter-spacing: .04em; text-transform: uppercase; padding: 8px; border-bottom: 2px solid var(--border); white-space: nowrap; }
     .peg-board td { padding: 9px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
@@ -214,6 +218,9 @@
     .peg-lc-rows { display: grid; gap: 6px; min-width: 560px; }
     .peg-lc-row { display: grid; grid-template-columns: minmax(150px, 1.4fr) 84px minmax(120px, 1fr) 58px 104px; gap: 10px; align-items: center; font-size: .84rem; }
     .peg-lc-row.peg-hd { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .05em; }
+    /* More than one instrument family: the class-based clean column is left
+       out (the score is calibrated on timsTOF data), so one fewer track. */
+    .peg-lc-rows.peg-noclean .peg-lc-row { grid-template-columns: minmax(150px, 1.4fr) 84px minmax(120px, 1fr) 104px; }
     .peg-lc-row .peg-m { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
     .peg-lc-name b { font-weight: 650; }
     .peg-lc-name span { color: var(--muted); font-size: .76rem; margin-left: 6px; }
@@ -9772,6 +9779,8 @@ function BFailTable({ rows }) {
        than failing the tab. Say that, instead of an empty state that would
        read as "nothing was ever recorded". */
     const PEG_UNREAD = 'This could not be read from the database just now. It will be back on the next load.';
+    /* Shown off a timsTOF, beside every element read off the score's classes. */
+    const PEG_CAL_NOTE = 'Classes use a PEG score calibrated on timsTOF data; on this instrument, compare PEG share.';
 
     const pegMedian = (a) => {
       if (!a.length) return null;
@@ -10111,6 +10120,12 @@ function BFailTable({ rows }) {
       }, [ov, runs]);
       const isEvosep = ov.lc_system === 'evosep';
       const family = ov.instrument_family || '';
+      /* The 0-100 score and its classes are calibrated on timsTOF data, and
+         the Bruker and Thermo readers put intensities on different scales
+         (docs/PEG_WATCH.md). Off a timsTOF the classes are still consistent
+         over time on this instrument, but a clean rate is not comparable
+         with a timsTOF one, so class-based elements say what they are. */
+      const timsCal = pegSameFam(family, 'timsTOF');
       const relayBase = pegRelayBase(ov);
       /* Canonical, so it is the name the relay's rows carry; every
          comparison below and the name on screen use this one form. */
@@ -10150,13 +10165,15 @@ function BFailTable({ rows }) {
       const degraded = new Set(Array.isArray(ov.degraded) ? ov.degraded : []);
       return (
         <div className={`peg-root peg-stack${busy ? ' peg-busy' : ''}`} aria-busy={busy || undefined}>
-          <PegHero ov={ov} runs={runs} isEvosep={isEvosep} myName={myName} baseClean={baseClean}
+          {/* The lede quotes a clean rate only where the classes were calibrated. */}
+          <PegHero ov={ov} runs={runs} isEvosep={isEvosep} myName={myName} baseClean={timsCal ? baseClean : null}
                    onInstrument={onInstrument} pick={pick} unread={degraded.has('ladder')} />
           <PegTiles ov={ov} runs={runs} asOfT={asOfT} isEvosep={isEvosep} family={family}
-                    spd={defaultSpd} myName={myName} rankLb={rankLb} baseClean={baseClean} sharingOn={sharingOn} />
+                    spd={defaultSpd} myName={myName} rankLb={rankLb} baseClean={baseClean} sharingOn={sharingOn} timsCal={timsCal} />
+          {!timsCal && <p className="peg-fine peg-calnote">{PEG_CAL_NOTE}</p>}
           <PegTimeline ov={ov} runs={runs} asOfT={asOfT} isEvosep={isEvosep} family={family}
-                       relayBase={relayBase} cohorts={cohorts} />
-          <PegCalendar runs={runs} asOfT={asOfT} />
+                       relayBase={relayBase} cohorts={cohorts} timsCal={timsCal} />
+          <PegCalendar runs={runs} asOfT={asOfT} timsCal={timsCal} />
           <PegBoard ov={ov} isEvosep={isEvosep} family={family} relayBase={relayBase}
                     defaultSpd={defaultSpd} myName={myName} rankLb={rankLb} onSeen={noteSeen} />
           <PegLcPanel ov={ov} relayBase={relayBase} unread={degraded.has('lab_lc')} />
@@ -10276,7 +10293,7 @@ function BFailTable({ rows }) {
       );
     }
 
-    function PegTiles({ ov, runs, asOfT, isEvosep, family, spd, myName, rankLb, baseClean, sharingOn }) {
+    function PegTiles({ ov, runs, asOfT, isEvosep, family, spd, myName, rankLb, baseClean, sharingOn, timsCal = true }) {
       const s = ov.summary || {};
       const eps = ov.episodes || [];
       const last = eps.length ? eps[eps.length - 1] : null;
@@ -10305,13 +10322,14 @@ function BFailTable({ rows }) {
         }
       }
       const epStart = last ? pegDayT(last.start) + PEG_HALF_DAY_MS : null;
+      /* A fourth entry marks a tile read off the score's classes. */
       const tiles = [
         ['PEG share of MS1 · 30-day median', pegFmtPct(s.median_30d),
          ch == null ? '' : <><span className={ch < 0 ? 'peg-down' : 'peg-up'}>{ch < 0 ? '▼' : '▲'} {Math.abs(Math.round(ch))}%</span> vs previous 30 days</>],
         ['Clean QCs · 30 days', s.clean_rate_30d == null ? '—' : `${s.clean_rate_30d}%`,
-         `${s.clean_30d || 0} of ${s.n_30d || 0} runs${baseClean != null ? ` · best 90 days ${baseClean}%` : ''}`],
+         `${s.clean_30d || 0} of ${s.n_30d || 0} runs${baseClean != null ? ` · best 90 days ${baseClean}%` : ''}`, true],
         ['Heavy PEG QCs · 30 days', String(s.heavy_30d || 0),
-         s.n_30d ? `${Math.round((s.heavy_30d || 0) / s.n_30d * 100)}% of runs · score 70 or more` : 'no PEG-scored QC in 30 days'],
+         s.n_30d ? `${Math.round((s.heavy_30d || 0) / s.n_30d * 100)}% of runs · score 70 or more` : 'no PEG-scored QC in 30 days', true],
         ['Latest episode', last ? `${last.days} days` : 'None',
          !last ? 'the 14-day median has not held above 3%'
            : last.ongoing ? `${pegFmtD(epStart, false)} – now · ongoing · median ${pegFmtPct(last.median_pct)}`
@@ -10322,11 +10340,12 @@ function BFailTable({ rows }) {
       ];
       return (
         <div className="peg-tiles">
-          {tiles.map(([k, v, d]) => (
+          {tiles.map(([k, v, d, cls]) => (
             <div className="peg-tile" key={k}>
               <div className="peg-tile-k">{k}</div>
               <div className="peg-tile-v">{v}</div>
               <div className="peg-tile-d">{d}</div>
+              {cls && !timsCal && <span className="peg-caltag" title={PEG_CAL_NOTE}>timsTOF-calibrated</span>}
             </div>
           ))}
         </div>
@@ -10469,7 +10488,7 @@ function BFailTable({ rows }) {
       return { H, t0, t1, xs, ys, rr, band, layer: els };
     }
 
-    function PegTimeline({ ov, runs, asOfT, isEvosep, family, relayBase, cohorts }) {
+    function PegTimeline({ ov, runs, asOfT, isEvosep, family, relayBase, cohorts, timsCal = true }) {
       const spdKeys = useMemo(() => Object.keys(ov.rolling || {})
         .filter(k => k !== 'all' && /^\d+$/.test(k)).sort((a, b) => +b - +a), [ov]);
       const [spdPick, setSpdPick] = useState(() => pegStore.get('spd', 'all'));
@@ -10564,6 +10583,7 @@ function BFailTable({ rows }) {
             {PEG_CLS_NAMES.map((n, i) => (
               <span key={n}><i className="peg-dot" style={{background: ['var(--pass)', 'var(--warn)', 'var(--moderate)', 'var(--fail)'][i]}} />{n}</span>
             ))}
+            {!timsCal && <span className="peg-caltag" title={PEG_CAL_NOTE}>timsTOF-calibrated</span>}
             <span><i className="peg-ln" />14-day median</span>
             <span><i className="peg-bx" />PEG episode</span>
             {ov.baseline && ov.baseline.median_pct != null && <span><i className="peg-dsh" />Your best 90 days</span>}
@@ -10574,7 +10594,7 @@ function BFailTable({ rows }) {
       );
     }
 
-    function PegCalendar({ runs, asOfT }) {
+    function PegCalendar({ runs, asOfT, timsCal = true }) {
       const scRef = useRef(null);
       const prevYear = new Date(asOfT).getUTCFullYear() - 1;
       const cal = useMemo(() => {
@@ -10634,6 +10654,7 @@ function BFailTable({ rows }) {
             {PEG_CLS_NAMES.map((l, i) => (
               <span key={l}><span className="peg-sw" style={{background: ['var(--pass)', 'var(--warn)', 'var(--moderate)', 'var(--fail)'][i]}} />{l} <b>{cal.counts[i]}</b></span>
             ))}
+            {!timsCal && <span className="peg-caltag" title={PEG_CAL_NOTE}>timsTOF-calibrated</span>}
           </div>
         </section>
       );
@@ -10810,7 +10831,12 @@ function BFailTable({ rows }) {
        (Brett, 2026-09-28). PEG share depends on the detector as well as the
        LC (the 1e4 intensity floor is absolute), so the community half only
        compares LCs inside one instrument family, and the lab half says so
-       when its Evosep and non-Evosep instruments are different families. */
+       when its Evosep and non-Evosep instruments are different families.
+       The class-based clean rate is worse than that: the score is
+       calibrated on timsTOF data, and a timsTOF records ~3 PEG ions to an
+       Orbitrap's ~27, so UC Davis's timsTOF read 15% clean against 1% on
+       Orbitraps carrying 25-35x less PEG (2026-09-29). When the lab's rows
+       span more than one family the clean column is left out (v1.2.1). */
     function PegLcPanel({ ov, relayBase, unread }) {
       const [famPick, setFamPick] = useState('');
       const labLc = Array.isArray(ov.lab_lc) ? ov.lab_lc : [];
@@ -10853,6 +10879,9 @@ function BFailTable({ rows }) {
       const evFam = [...new Set(rows.filter(isEv).map(x => x.family))];
       const otFam = [...new Set(rows.filter(x => kind(x) === 'ot').map(x => x.family))];
       const crossFamily = evFam.length > 0 && otFam.length > 0 && !evFam.some(f => otFam.includes(f));
+      /* Any two families, whatever their LC: then a clean rate compares
+         a timsTOF-calibrated class across detectors. */
+      const multiFam = new Set(rows.map(x => pegFamKey(x.family)).filter(Boolean)).size > 1;
       /* One option per family whatever its case: "Timstof" from a relay and
          "timsTOF" from this lab are one family, and two chips for it would
          leave one of them unselectable. The first spelling wins -- the
@@ -10895,8 +10924,8 @@ function BFailTable({ rows }) {
           <div className="peg-h4">Your instruments · last 90 days</div>
           {rows.length === 0 ? <p className="peg-fine">{unread ? PEG_UNREAD : 'No instrument here has PEG measurements yet.'}</p> : (
             <div className="peg-scrollx">
-              <div className="peg-lc-rows">
-                <div className="peg-lc-row peg-hd"><span>Instrument</span><span>LC</span><span>median PEG share</span><span style={{textAlign: 'right'}}>clean</span><span>26 weeks</span></div>
+              <div className={`peg-lc-rows${multiFam ? ' peg-noclean' : ''}`}>
+                <div className="peg-lc-row peg-hd"><span>Instrument</span><span>LC</span><span>median PEG share</span>{!multiFam && <span style={{textAlign: 'right'}}>clean</span>}<span>26 weeks</span></div>
                 {rows.map(x => (
                   <div className="peg-lc-row" key={`${x.instrument}|${x.lc_system || ''}`}
                        title={`${pegFmtN(x.n_90d)} QC runs in 90 days · ${pegFmtN(x.n_365d)} in 12 months · 12-month median ${pegFmtPct(x.median_365d)}`}>
@@ -10908,17 +10937,22 @@ function BFailTable({ rows }) {
                       <div className="peg-track"><div className="peg-fill" style={{width: `${barW(x.median_90d)}%`, background: ({ev: 'var(--accent-hi)', ot: '#7dd3fc', nr: 'var(--muted)'})[kind(x)]}} /></div>
                       <span className="peg-val">{pegFmtPct(x.median_90d)}</span>
                     </div>
-                    <div className="peg-m">{x.clean_rate_90d == null ? '—' : `${x.clean_rate_90d}%`}</div>
+                    {!multiFam && <div className="peg-m">{x.clean_rate_90d == null ? '—' : `${x.clean_rate_90d}%`}</div>}
                     <PegSpark vals={x.weekly} w={100} h={26} hi={isEv(x)} />
                   </div>
                 ))}
               </div>
             </div>
           )}
-          {crossFamily && (
+          {(crossFamily || multiFam) && (
             <div className="peg-note" style={{marginTop: 10, marginBottom: 0}}>
-              <b>Different instrument families — not a like-for-like LC comparison.</b>{' '}
-              Your Evosep runs are on {evFam.join(', ')} and your other LC on {otFam.join(', ')}; PEG share depends on the detector as well as the LC.
+              {crossFamily && <><b>Different instrument families — not a like-for-like LC comparison.</b>{' '}
+                Your Evosep runs are on {evFam.join(', ')} and your other LC on {otFam.join(', ')}.{' '}</>}
+              {multiFam
+                ? <>The PEG score and its classes are calibrated on timsTOF data and are not comparable across instrument
+                    families, so this table has no clean column. PEG share is the closer measure, though it too depends on
+                    the detector as well as the LC.</>
+                : 'PEG share depends on the detector as well as the LC.'}
             </div>
           )}
           <hr className="peg-lc-sep" />
