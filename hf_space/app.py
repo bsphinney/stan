@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.2.0"
+SPACE_VERSION = "1.2.1"
 
 app = FastAPI(title="STAN Community Benchmark", version=SPACE_VERSION)
 
@@ -3159,6 +3159,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
         #peg .peg-lcg-meta b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
         #peg .peg-lcg-wk { display: grid; gap: 0.2rem; font-size: 0.7rem; color: var(--text-muted); }
         #peg .peg-lcg-wk svg.peg-spark { width: 100%; height: auto; }
+        /* An LC slot with no runs yet: same card box, dashed, holding how to fill it. */
+        #peg .peg-lcg-empty { border: 1px dashed var(--ucd-gold-border); background: transparent; grid-template-rows: auto 1fr; }
+        #peg .peg-lcg-join { display: grid; align-content: center; justify-items: start; gap: 0.45rem; padding: 0.6rem 0; color: var(--text-secondary); font-size: 0.85rem; line-height: 1.55; }
+        #peg .peg-lcg-join a { font-size: 0.8rem; }
         #peg .peg-note { margin-top: 0.85rem; font-size: 0.8rem; color: var(--yellow); display: flex; gap: 0.5rem; align-items: flex-start; line-height: 1.5; }
         #peg .peg-note::before { content: '!'; flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: 0.66rem; font-weight: 800; margin-top: 1px; }
         #peg .chart-card > h3 { padding-right: 2.75rem; } /* clear the injected .fs-btn (top-right) at phone width */
@@ -6087,8 +6091,11 @@ function pegLcFamilyChipsHtml(families, current) {
     }).join('');
 }
 
-// One family's Evosep vs other-LC comparison. Nothing is drawn until both
-// sides have runs: one group alone is not a comparison, just a number.
+// One family's Evosep vs other-LC comparison: always two slots side by
+// side, one per LC. A slot with runs draws its full card; a slot without
+// is a placeholder card that says so and how to fill it, so a family with
+// one LC so far shows its data instead of an empty box. Families are never
+// set side by side here: PEG share is not comparable across detectors.
 function pegLcHtml(d) {
     d = d || {};
     const groups = Array.isArray(d.groups) ? d.groups : [];
@@ -6100,13 +6107,22 @@ function pegLcHtml(d) {
     if (!nE && !nO) {
         return head + `<div class="peg-empty">No ${fam} lab has shared PEG in the last ${days} days.</div>`;
     }
-    if (!nE || !nO) {
-        const have = nE ? evo : oth;
-        const side = nE ? 'Evosep' : 'non-Evosep', missing = nE ? 'non-Evosep' : 'Evosep';
-        return head + `<div class="peg-empty">So far ${fam} has ${pegPlural(have.n_runs, 'QC run')} from `
-            + `${pegPlural(have.n_labs, side + ' lab')} and no ${missing} lab sharing. The comparison appears once `
-            + `${fam} has both Evosep and non-Evosep labs sharing.</div>`;
-    }
+    // The empty slot. Its weekly line spans 26 weeks and the window only
+    // `days`, so a group can have older runs and none in the window: that
+    // is "none lately", not "no lab yet".
+    const placeholder = (g, label, cls, joiners) => {
+        const older = (Array.isArray(g.weekly) ? g.weekly : []).some(v => pegNum(v) != null);
+        const status = older ? `none in the last ${days} days` : 'no lab yet';
+        const lead = older ? `No ${fam} lab ${label === 'Evosep' ? 'on an Evosep' : 'on a non-Evosep LC'} `
+            + `has shared PEG in the last ${days} days. ` : '';
+        return '<div class="peg-lcg peg-lcg-empty">'
+            + `<div class="peg-lcg-top"><span class="peg-lcchip ${cls}">${label}</span>`
+            + `<span class="peg-muted">${status}</span></div>`
+            + `<div class="peg-lcg-join"><p>${lead}Labs running ${fam} ${joiners} can join: <code>stan peg-sync</code></p>`
+            + '<a href="#peg-join">How to put your lab on the board</a></div>'
+            + '</div>';
+    };
+    const otherJoiners = pegSameFamily(d.family, 'timsTOF') ? 'with a nanoElute or other LC' : 'with a non-Evosep LC';
     // Both weekly lines on one scale, so their heights can be compared.
     const all = [].concat(evo.weekly || [], oth.weekly || []).map(pegNum).filter(x => x != null);
     const lo = all.length ? Math.min(...all) : 0, hi = all.length ? Math.max(...all) : 1;
@@ -6128,10 +6144,17 @@ function pegLcHtml(d) {
             + `<div class="peg-lcg-wk"><span>weekly median, last 26 weeks</span>${pegSpark(g.weekly, { w: 480, h: 44, lo: lo, hi: hi, fluid: true })}</div>`
             + '</div>';
     };
+    const bar = 'Bar: the middle half of runs (25th to 75th percentile) on a log scale, tick = median.';
     return head + '<div class="peg-lcgroups">'
-        + card(evo, 'Evosep', 'peg-lc-evosep', '#FFBF00') + card(oth, 'Other LC', 'peg-lc-other', '#60a5fa')
-        + '</div><p class="peg-fine">Bar: the middle half of runs (25th to 75th percentile) on a log scale, tick = median. '
-        + 'The two weekly lines share one scale.</p>';
+        + (nE ? card(evo, 'Evosep', 'peg-lc-evosep', '#FFBF00')
+              : placeholder(evo, 'Evosep', 'peg-lc-evosep', 'on an Evosep'))
+        + (nO ? card(oth, 'Other LC', 'peg-lc-other', '#60a5fa')
+              : placeholder(oth, 'Other LC', 'peg-lc-other', otherJoiners))
+        + '</div><p class="peg-fine">'
+        + (nE && nO ? `${bar} The two weekly lines share one scale.`
+            : `Only ${fam} labs are compared here; the ${nE ? 'Other LC' : 'Evosep'} side fills in as `
+              + `${fam} labs ${nE ? 'on a non-Evosep LC' : 'on an Evosep'} join. ${bar}`)
+        + '</p>';
 }
 
 // Plotly traces for the weekly community band. The band is one closed

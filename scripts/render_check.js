@@ -25,7 +25,10 @@
  *
  * --peg DIR reads PEG fixtures from DIR: peg_overview.json (required) and,
  * when present, peg_overview_empty.json, relay_leaderboard.json,
- * relay_leaderboard_empty.json, relay_trend.json, relay_lc_compare.json and
+ * relay_leaderboard_empty.json, relay_trend.json, relay_lc_compare.json (a
+ * timsTOF answer with Evosep labs only), relay_lc_compare_other.json (an
+ * Orbitrap family's answer with other-LC labs only),
+ * relay_lc_compare_none.json (a family nobody shares) and
  * relay_lc_compare_both.json. Any other peg_overview_<name>.json is one more
  * instrument's overview (e.g. ?instrument=Orbitrap%20Exploris%20480): the
  * whole tab is rendered once per overview for the cross-family checks
@@ -279,19 +282,32 @@ function syntheticPeg() {
   };
   const lbEmpty = Object.assign({}, lb, { spd: 60, ranked: [], unranked: [], community: { n_labs: 0, n_runs: 0, p25_pct: null, median_pct: null, p75_pct: null } });
   const trend = { weeks: Array.from({ length: 52 }, (_, i) => ({ week_start: new Date(end - (52 - i) * 7 * DAY).toISOString().slice(0, 10), n_labs: 3, n_runs: 20, p25: 0.1, p50: 0.5, p75: 2 })) };
+  /* The relay always answers both groups; an empty one carries 26 null
+     weeks, as the live relay's does (2026-09-29). */
+  const noLab = (lc) => ({ lc, n_labs: 0, n_runs: 0, p25_pct: null, median_pct: null, p75_pct: null, clean_pct: null, heavy_pct: null,
+                           weekly: Array(26).fill(null) });
+  const lcFams = [{ family: 'timsTOF', evosep_runs: 120, other_runs: 0, evosep_labs: 3, other_labs: 0 },
+                  { family: 'Exploris', evosep_runs: 0, other_runs: 95, evosep_labs: 0, other_labs: 1 }];
   const lcOne = { family: 'timsTOF', window_days: 90, as_of: asOf,
     groups: [{ lc: 'evosep', n_labs: 3, n_runs: 120, p25_pct: 0.1, median_pct: 1.1, p75_pct: 4, clean_pct: 45, heavy_pct: 20, weekly },
-             { lc: 'other', n_labs: 0, n_runs: 0, p25_pct: null, median_pct: null, p75_pct: null, clean_pct: null, heavy_pct: null, weekly: [] }],
-    families: [{ family: 'timsTOF', evosep_runs: 120, other_runs: 0, evosep_labs: 3, other_labs: 0 }] };
+             noLab('other')],
+    families: lcFams };
   const lcBoth = JSON.parse(JSON.stringify(lcOne));
   lcBoth.groups[1] = { lc: 'other', n_labs: 2, n_runs: 70, p25_pct: 0.02, median_pct: 0.15, p75_pct: 0.7, clean_pct: 80, heavy_pct: 2, weekly };
+  /* The mirror image, as the relay answers an Orbitrap family today: other
+     LC only. And a family no lab shares at all. */
+  const lcOther = { family: 'Exploris', window_days: 90, as_of: asOf,
+    groups: [noLab('evosep'),
+             { lc: 'other', n_labs: 1, n_runs: 95, p25_pct: 0.135, median_pct: 0.192, p75_pct: 0.283, clean_pct: 1, heavy_pct: 0, weekly }],
+    families: lcFams };
+  const lcNone = { family: 'Astral', window_days: 90, as_of: asOf, groups: [noLab('evosep'), noLab('other')], families: lcFams };
   const ovEmpty = Object.assign({}, ov, { runs: [], rolling: {}, episodes: [], baseline: null, lab_lc: [], impact: {}, column_periods: [],
     ladder: { months: [], n: [], share: [], nruns: [], adducts: {} },
     summary: { n_30d: 0, median_30d: null, median_prev_30d: null, change_pct: null, clean_30d: 0, heavy_30d: 0, clean_rate_30d: null, streak_clean: 0 } });
   /* The same lab seen from its Orbitrap, for the cross-family checks. */
   const ovOrbi = Object.assign({}, ov, { instrument: 'Orbitrap Exploris 480', instrument_family: 'Exploris', lc_system: 'custom' });
   const views = [{ name: 'synthetic timsTOF', ov }, { name: 'synthetic Exploris', ov: ovOrbi }];
-  return { source: 'built-in synthetic', ov, ovEmpty, lb, lbEmpty, trend, lcOne, lcBoth, views };
+  return { source: 'built-in synthetic', ov, ovEmpty, lb, lbEmpty, trend, lcOne, lcBoth, lcOther, lcNone, views };
 }
 
 function loadPegFixtures(dir) {
@@ -316,7 +332,82 @@ function loadPegFixtures(dir) {
     trend: read('relay_trend.json') || syn.trend,
     lcOne: read('relay_lc_compare.json') || syn.lcOne,
     lcBoth: read('relay_lc_compare_both.json') || syn.lcBoth,
+    lcOther: read('relay_lc_compare_other.json') || syn.lcOther,
+    lcNone: read('relay_lc_compare_none.json') || syn.lcNone,
   };
+}
+
+/* The community half of the "Evosep vs other LC" panel, read off rendered
+   markup: every LC slot in page order, whether it is a data card or an
+   empty placeholder, and whether the whole half is the no-data note.
+   Each slot's html runs to the next slot, or to the end of the section. */
+function lcCommunity(h) {
+  const a = h.indexOf('Community, same instrument family');
+  const sec = a < 0 ? '' : h.slice(a, h.indexOf('</section>', a) < 0 ? undefined : h.indexOf('</section>', a));
+  const starts = [...sec.matchAll(/<div class="peg-lc-group( peg-lc-empty)?">/g)];
+  const slots = starts.map((x, i) => {
+    const body = sec.slice(x.index, i + 1 < starts.length ? starts[i + 1].index : undefined);
+    return { empty: !!x[1], lc: ((/class="peg-lcchip (?:ev|ot)">([^<]*)</.exec(body)) || [])[1] || '?', html: body };
+  });
+  const foot = (/<p class="peg-fine peg-lc-foot">([\s\S]*?)<\/p>/.exec(sec) || [])[1];
+  return { sec, slots, noData: /Nothing to compare on/.test(sec),
+           foot: foot == null ? null : foot.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() };
+}
+
+/* What the community half must show for one relay answer: a card per LC
+   with runs, a placeholder for the other slot, the no-data note only when
+   neither has runs. Returns a list of failures (empty = fine). */
+function lcExpectations(h, d, fam) {
+  const c = lcCommunity(h);
+  const errs = [];
+  const grp = (lc) => ((d && d.groups) || []).find(x => x && x.lc === lc);
+  const has = (lc) => { const g = grp(lc); return !!(g && g.n_runs > 0); };
+  const ev = has('evosep'), ot = has('other');
+  /* React's server renderer separates adjacent text nodes with <!-- -->:
+     drop those outright, or "3 lab" + "s" reads "3 lab s". */
+  const txt = (x) => x.replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  if (!ev && !ot) {
+    if (!c.noData) errs.push('no-data family lost its empty state');
+    if (c.slots.length) errs.push(`no-data family drew ${c.slots.length} LC card(s)`);
+    return { c, errs, kind: 'none' };
+  }
+  if (c.noData) errs.push('a family with data still shows "Nothing to compare"');
+  const order = c.slots.map(s => `${s.lc}${s.empty ? ' (empty)' : ''}`).join(' | ');
+  const want = `Evosep${ev ? '' : ' (empty)'} | Other LC${ot ? '' : ' (empty)'}`;
+  if (order !== want) errs.push(`slots "${order}", want "${want}"`);
+  const tims = String(fam).toLowerCase() === 'timstof';
+  for (const s of c.slots) {
+    const t = txt(s.html);
+    if (s.empty) {
+      /* weekly spans 26 weeks, n_runs 90 days: older runs on this side mean
+         "none lately", not "no lab yet" (the relay page says the same). */
+      const g = grp(s.lc === 'Evosep' ? 'evosep' : 'other') || {};
+      const older = (g.weekly || []).some(x => x != null && isFinite(x));
+      const on = s.lc === 'Evosep' ? 'on an Evosep' : 'on a non-Evosep LC';
+      if (older) {
+        if (!/none in the last 90 days/.test(t) || /no lab yet/.test(t)) errs.push(`${s.lc} placeholder with older runs does not say "none in the last 90 days"`);
+        if (!t.includes(`No ${fam} lab ${on} has shared PEG in the last 90 days.`)) errs.push(`${s.lc} placeholder with older runs lacks its lead sentence: ${t.trim()}`);
+      } else if (!/no lab yet/.test(t) || /none in the last/.test(t)) errs.push(`${s.lc} placeholder does not say "no lab yet"`);
+      if (!/peg_share: true/.test(t) || !/stan peg-sync/.test(t)) errs.push(`${s.lc} placeholder does not say how to join`);
+      const how = s.lc === 'Evosep' ? 'on an Evosep' : tims ? 'with a nanoElute or other LC' : 'with a non-Evosep LC';
+      if (!t.includes(`Labs running ${fam} ${how} can join`)) errs.push(`${s.lc} placeholder does not say "Labs running ${fam} ${how} can join": ${t.trim()}`);
+      if (/\d%|peg-spark|peg-rng/.test(s.html)) errs.push(`${s.lc} placeholder shows a number or chart`);
+    } else {
+      const g = grp(s.lc === 'Evosep' ? 'evosep' : 'other') || {};
+      const weeks = (g.weekly || []).filter(x => x != null && isFinite(x)).length;
+      const want = [['median PEG share', /median PEG share/, t], ['p25–p75', /p25–p75/, t], ['clean', /Clean/, t],
+                    ['labs · runs', /\d+ labs? · [\d,]+ runs/, t], ['p25–p75 bar', /class="peg-rng-iqr"/, s.html]];
+      // PegSpark draws a dash, not a line, below two weeks of data.
+      if (weeks >= 2) want.push(['weekly sparkline', /class="peg-spark/, s.html]);
+      for (const [what, re, where] of want) if (!re.test(where)) errs.push(`${s.lc} card has no ${what}`);
+    }
+  }
+  const one = ev !== ot;
+  if (one) {
+    const want = `Only ${fam} labs are compared here, since PEG share also depends on the detector; the ${ev ? 'Other LC' : 'Evosep'} side fills in as labs join.`;
+    if (c.foot !== want) errs.push(`one-sided footnote is "${c.foot}", want "${want}"`);
+  } else if (c.foot != null) errs.push('two-sided family grew the one-sided footnote');
+  return { c, errs, kind: one ? 'one' : 'both' };
 }
 
 /* React reports duplicate keys and bad props through console.error; on a
@@ -427,8 +518,10 @@ function checkPeg(fx) {
     const cross = ev.size && ot.size && ![...ev].some(f => ot.has(f));
     expect('cross-family caveat matches lab_lc', /Different instrument families/.test(out) === !!cross);
     expect('one lab_lc row per instrument', (out.match(/class="peg-lc-row"/g) || []).length === lab.length);
-    const lcBoth = (fx.lcOne.groups || []).every(g => g.n_runs > 0);
-    expect('LC comparison empty state until a family has both groups', /Nothing to compare on/.test(out) === !lcBoth);
+    /* v1.2.4: a family with runs on one LC shows that card beside an empty
+       slot; only a family with no runs at all keeps the empty note. */
+    const lcTab = lcExpectations(out, fx.lcOne, fam);
+    expect(`LC comparison in the full tab (${lcTab.kind})`, !lcTab.errs.length, lcTab.errs.join('; '));
     /* The calendar and ladder pin their scroller to the newest column, so a
        row label drawn inside the scrolled SVG is scrolled out of view with
        the oldest weeks (M/W/F rendered as '/I', '/V' at 1280 px; the ladder
@@ -503,13 +596,66 @@ function checkPeg(fx) {
                           ov: Object.assign({}, ov, { instrument: 'Orbitrap Exploris 480', lc_system: 'custom' }) }));
   if (orbi !== null) { rendered++; if (expect('non-Evosep note', /not Evosep, so your lab is not on this board/.test(orbi))) console.log('ok    PegBoardView        non-Evosep instrument'); }
 
-  /* 6. LC comparison with both groups present. */
+  /* 6. LC comparison with both groups present: unchanged by v1.2.4. */
   const lcProps = { labLc: ov.lab_lc || [], fam, onFam: () => {}, relayBase: relay };
   const both = renderQuiet('PegLcView', Object.assign({}, lcProps, { data: fx.lcBoth }));
   if (both !== null) {
     rendered++;
     const g = (both.match(/class="peg-lc-group"/g) || []).length;
-    if (expect('both LC groups side by side', g === 2, `${g} groups`)) console.log('ok    PegLcView           Evosep + other LC groups');
+    const r = lcExpectations(both, fx.lcBoth, fam);
+    if (expect('both LC groups side by side', g === 2, `${g} groups`)
+        & expect('two groups: two data cards, no placeholder, no footnote', r.kind === 'both' && !r.errs.length, r.errs.join('; ')))
+      console.log('ok    PegLcView           Evosep + other LC groups');
+  }
+
+  /* 6b. v1.2.4. Brett's screenshot (2026-09-29): every family on the live
+     relay has one LC side only -- UC Davis runs Evosep on its timsTOF and
+     custom LC on its Orbitraps -- so the panel was one empty note. The side
+     with runs is now its full card, the other a placeholder of the same
+     footprint; only a family nobody shares keeps the empty note. Each
+     answer is rendered as the relay gives it, under its own family. */
+  /* A side with runs older than the window and none inside it. */
+  const lcStale = JSON.parse(JSON.stringify(fx.lcOne));
+  const staleOther = lcStale.groups.find(g => g.lc === 'other');
+  staleOther.weekly = staleOther.weekly.length ? staleOther.weekly.map((v, i) => (i < 4 ? 0.3 + i / 10 : null))
+                                               : [0.3, 0.4, 0.5, 0.6].concat(Array(22).fill(null));
+  const lcCases = [['timsTOF, Evosep labs only', fx.lcOne], ['Orbitrap, other-LC labs only', fx.lcOther],
+                   ['no lab shares this family', fx.lcNone], ['other LC with older runs only', lcStale]];
+  for (const [label, d] of lcCases) {
+    const dfam = (d && d.family) || fam;
+    const h = renderQuiet('PegLcView', Object.assign({}, lcProps, { fam: dfam, data: d }));
+    if (h === null) continue;
+    rendered++;
+    const r = lcExpectations(h, d, dfam);
+    const tx = text(h).replace(/\s+/g, ' ');
+    let ok = expect(`LC ${label}: community half`, !r.errs.length, r.errs.join('; '));
+    ok &= expect(`LC ${label}: no NaN / undefined`, !/\bNaN\b|\bundefined\b|\[object Object\]/.test(tx));
+    /* The lab half and its caveats are not this change's business: they
+       must read the same whatever the relay says. */
+    const labHalf = (x) => x.slice(0, x.indexOf('class="peg-lc-sep"'));
+    ok &= expect(`LC ${label}: "Your instruments" half unchanged`, labHalf(h) === labHalf(both));
+    /* No cross-family side by side: every card and slot is this family. */
+    ok &= expect(`LC ${label}: at most one card per LC`, r.c.slots.length <= 2, `${r.c.slots.length} slots`);
+    /* Off a timsTOF family the cards' clean rate is a timsTOF-calibrated
+       class count, and says so (v1.2.1); on a timsTOF it carries no tag. */
+    const tims = String(dfam).toLowerCase() === 'timstof';
+    const calTags = (r.c.sec.match(/class="peg-caltag"/g) || []).length;
+    const cleanCards = ((d && d.groups) || []).filter(g => g && g.n_runs > 0 && g.clean_pct != null).length;
+    ok &= expect(`LC ${label}: clean rate tagged timsTOF-calibrated off a timsTOF`, calTags === (tims ? 0 : cleanCards), `${calTags} tag(s), ${cleanCards} clean card(s)`);
+    if (ok) {
+      const desc = r.c.slots.length ? r.c.slots.map(s => `${s.lc}${s.empty ? ' placeholder' : ' card'}`).join(' + ') : 'empty state';
+      console.log(`ok    PegLcView           ${label} (${dfam}): ${desc}${calTags ? ' · clean tagged timsTOF-calibrated' : ''}`);
+    }
+  }
+  /* The family name reaches the placeholder and the footnote as text, and
+     a relay can name any family: it must never become markup. */
+  const evil = '<img src=x onerror=alert(1)>';
+  const hostileFam = renderQuiet('PegLcView', Object.assign({}, lcProps, { fam: evil, data: Object.assign({}, fx.lcOne, { family: evil }) }));
+  if (hostileFam !== null) {
+    rendered++;
+    if (expect('LC family name escaped in the placeholder and footnote', !hostileFam.includes(evil)
+               && (hostileFam.match(/&lt;img src=x onerror=alert\(1\)&gt;/g) || []).length >= 3))
+      console.log('ok    PegLcView           hostile family name rendered as text');
   }
   const lcDown = renderQuiet('PegLcView', Object.assign({}, lcProps, { data: null, error: 'HTTP 502' }));
   if (lcDown !== null) { rendered++; if (expect('LC relay-unreachable note', /Community comparison unavailable/.test(lcDown))) console.log('ok    PegLcView           relay unreachable'); }
@@ -649,7 +795,10 @@ function checkPeg(fx) {
   const nullLc = renderQuiet('PegLcView', Object.assign({}, lcProps, { labLc: [evRow, nullRow], data: fx.lcOne }));
   if (nullLc !== null) {
     rendered++;
-    if (expect('null LC is not an "Other LC"', !/>Other LC</.test(nullLc) && /peg-lcchip nr/.test(nullLc))
+    /* Only the lab half: since v1.2.4 the community half draws an "Other
+       LC" placeholder for a family with Evosep labs only. */
+    const labHalf = nullLc.slice(0, nullLc.indexOf('class="peg-lc-sep"'));
+    if (expect('null LC is not an "Other LC"', !/>Other LC</.test(labHalf) && /peg-lcchip nr/.test(labHalf))
         & expect('null LC does not trigger the cross-family caveat', !/Different instrument families/.test(nullLc)))
       console.log('ok    PegLcView           lc_system null -> Unknown, no cross-family note');
   }
@@ -746,12 +895,15 @@ function checkPegCalibration(fx, { seed, expect, text }) {
     const relay = ((v.sharing && v.sharing.relay_url) || E.PEG_RELAY_DEFAULT).replace(/\/+$/, '');
     E.PEG_CACHE.clear();
     seed('/api/peg/overview', v);
+    /* The LC answer this family gets from the live relay today: Evosep
+       labs only on a timsTOF, other-LC labs only on an Orbitrap. */
+    const lcFx = tims ? fx.lcOne : Object.assign({}, fx.lcOther, { family: vfam });
     if (vfam) {
       for (const spd of ['100', '60', '30']) {
         for (const win of ['30', '90', '365']) seed(E.pegBoardUrl(relay, vfam, spd, win), fx.lbEmpty);
         seed(E.pegTrendUrl(relay, vfam, spd), fx.trend);
       }
-      seed(E.pegLcUrl(relay, vfam), fx.lcOne);
+      seed(E.pegLcUrl(relay, vfam), lcFx);
     }
     const h = renderQuiet('PegTab', {});
     if (h === null) continue;
@@ -762,8 +914,12 @@ function checkPegCalibration(fx, { seed, expect, text }) {
     const tx = text(h);
     let ok = expect(`${who}: no NaN / undefined on screen`, !/\bNaN\b|\bundefined\b|\[object Object\]/.test(tx));
 
-    /* The note, and the tag on each class-based element. */
-    const tags = (h.match(/class="peg-caltag"/g) || []).length;
+    /* The note, and the tag on each class-based element. The community LC
+       cards' clean rate is one more since v1.2.4, counted on its own. */
+    const lcCom = vfam ? lcExpectations(h, lcFx, vfam) : null;
+    const lcTags = lcCom ? (lcCom.c.sec.match(/class="peg-caltag"/g) || []).length : 0;
+    const lcCleanCards = vfam ? (lcFx.groups || []).filter(g => g && g.n_runs > 0 && g.clean_pct != null).length : 0;
+    const tags = (h.match(/class="peg-caltag"/g) || []).length - lcTags;
     const tileAt = h.indexOf('Clean QCs · 30 days');
     const cleanTile = tileAt < 0 ? '' : h.slice(tileAt, h.indexOf('class="peg-tile"', tileAt));
     const tl = sectionOf(h, 'PEG over time'), legend = tl.slice(tl.indexOf('class="peg-legend"'));
@@ -777,7 +933,11 @@ function checkPegCalibration(fx, { seed, expect, text }) {
       ok &= expect(`${who}: timeline class legend labelled`, legend.length > 0 && /peg-caltag[^>]*>timsTOF-calibrated</.test(legend));
       ok &= expect(`${who}: calendar legend labelled`, calMeta.length > 0 && /peg-caltag[^>]*>timsTOF-calibrated</.test(calMeta));
       ok &= expect(`${who}: tags only on class-based elements (2 tiles, 2 legends)`, tags === 4, `${tags} tags`);
+      ok &= expect(`${who}: community LC clean rate tagged too`, lcTags === lcCleanCards, `${lcTags} tag(s), ${lcCleanCards} clean card(s)`);
     }
+    /* v1.2.4: this family's LC answer, as the live relay gives it, is its
+       card beside an empty slot -- never the empty note. */
+    if (lcCom) ok &= expect(`${who}: community LC half`, !lcCom.errs.length, lcCom.errs.join('; '));
 
     /* The hero lede: the clean rate of the best 90 days goes, the rest stays. */
     const lede = text((/<p class="peg-lede">([\s\S]*?)<\/p>/.exec(h) || [])[1] || '').replace(/\s+/g, ' ');
@@ -808,8 +968,9 @@ function checkPegCalibration(fx, { seed, expect, text }) {
       }
     }
     if (ok) {
+      const slots = lcCom && lcCom.c.slots.length ? ` · community ${lcCom.c.slots.map(s => `${s.lc}${s.empty ? ' placeholder' : ' card'}`).join(' + ')}` : '';
       console.log(`ok    PegTab              ${name}: ${vfam}${tims ? ' · no calibration labels' : ` · note + ${tags} timsTOF-calibrated tags · lede without a clean rate`}` +
-                  `${lab.length ? (multi ? ` · ${lab.length} LC rows, ${new Set(lab.map(x => famKey(x.family))).size} families, no clean column` : ' · LC clean column kept') : ''}`);
+                  `${lab.length ? (multi ? ` · ${lab.length} LC rows, ${new Set(lab.map(x => famKey(x.family))).size} families, no clean column` : ' · LC clean column kept') : ''}${slots}`);
     }
   }
   if (!kinds.off) console.log('note  no non-timsTOF overview among the fixtures: the calibration labels were not exercised');

@@ -277,6 +277,13 @@ so they appear in neither group. UC Davis runs Evosep only on the timsTOF
 and its own LC on the Orbitraps, so its own comparison is cross-family
 and the tab says so; a within-family comparison needs a lab with both.
 
+Since 1.2.4 (relay 1.2.1) a family with data never shows an empty box:
+both slots stay side by side, the slot with runs shows its full card and
+the other a same-size placeholder ("Other LC · no lab yet", or "none in
+the last 90 days" when it only has older runs) that says how to join. A
+family with no runs at all keeps the empty state. Families are still never
+compared with each other.
+
 ---
 
 ## Relay API reference

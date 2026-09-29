@@ -239,8 +239,8 @@ def quartiles(values: list[float]) -> list[float]:
 
 # ── identity (spec §4.5, D3) ─────────────────────────────────────────
 
-def test_space_version_is_1_2_0(client):
-    assert client.get("/api/version").json()["version"] == "1.2.0"
+def test_space_version_is_1_2_1(client):
+    assert client.get("/api/version").json()["version"] == "1.2.1"
 
 
 def test_unclaimed_name_is_accepted_but_unverified(client, relay):
@@ -1638,7 +1638,7 @@ def run_page_js(tmp_path: Path, html: str, calls: list) -> list:
 
 def test_page_has_the_peg_section_linked_from_the_header(client):
     html = _page(client)
-    assert "community site v1.2.0" in html
+    assert "community site v1.2.1" in html
     assert '<a href="#peg">PEG Watch</a>' in html
     assert html.count('id="peg"') == 1
     for endpoint in ("/api/peg/leaderboard", "/api/peg/trend", "/api/peg/lc-compare"):
@@ -1708,33 +1708,100 @@ def test_builders_escape_every_relay_string(client, tmp_path):
         {"lc": "other", "n_labs": 1, "n_runs": 8, "p25_pct": 0.1, "median_pct": 0.3, "p75_pct": 0.6,
          "clean_pct": 90, "heavy_pct": 0, "weekly": [0.3, 0.2]},
     ], "families": [{"family": EVIL, "evosep_runs": 20, "other_runs": 8, "evosep_labs": 1, "other_labs": 1}]}
+    # One LC only: the populated card and the placeholder both carry the family name.
+    lc_one = dict(lc, groups=[lc["groups"][0], _lc_group("other", 0)])
     out = run_page_js(tmp_path, _page(client), [
         ["pegBoardParts", [board]],
         ["pegCohortChipsHtml", [board["cohorts"], EVIL, 100]],
         ["pegLcHtml", [lc]],
         ["pegLcFamilyChipsHtml", [lc["families"], EVIL]],
         ["esc", [EVIL]],
+        ["pegLcHtml", [lc_one]],
     ])
-    parts, chips, lc_html, fam_chips, escaped = out
+    parts, chips, lc_html, fam_chips, escaped, lc_one_html = out
     assert escaped == "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;"
-    for html in (parts["main"], parts["unranked"], parts["community"], chips, lc_html, fam_chips):
+    assert "peg-lcg-empty" in lc_one_html and lc_one_html.count("&lt;img") >= 3
+    for html in (parts["main"], parts["unranked"], parts["community"], chips, lc_html, fam_chips, lc_one_html):
         assert "<img" not in html and "onerror=\"" not in html
         assert "&lt;img" in html
 
 
+def _lc_group(lc: str, n_runs: int, n_labs: int = 0, weekly: list | None = None, **pcts) -> dict:
+    """One /api/peg/lc-compare group; with no runs, the relay's nulls (as served live)."""
+    g = {"lc": lc, "n_labs": n_labs, "n_runs": n_runs, "p25_pct": None, "median_pct": None, "p75_pct": None,
+         "clean_pct": None, "heavy_pct": None, "weekly": weekly if weekly is not None else [None] * 26}
+    g.update(pcts)
+    return g
+
+
+def _lc_slots(html: str) -> tuple[list[str], str]:
+    """(the two LC slot cards in order, the fine print under them)."""
+    body, fine = html.split('<p class="peg-fine">', 1)
+    starts = [m.start() for m in re.finditer(r'<div class="peg-lcg(?: peg-lcg-empty)?">', body)]
+    return [body[a:b] for a, b in zip(starts, starts[1:] + [len(body)])], fine
+
+
 @needs_node
-def test_lc_panel_waits_for_both_lc_groups(client, relay, hub, tmp_path):
+def test_lc_panel_shows_each_lc_with_data_and_a_placeholder_for_the_other(client, relay, hub, tmp_path):
+    """A family with one LC so far shows that LC's card, never an empty box (live: UC Davis
+    shares Evosep only on timsTOF and its own LC only on the Orbitraps)."""
     _seed_board(client, relay, hub)
     timstof = client.get("/api/peg/lc-compare", params={"family": "timsTOF"}).json()
     orbitrap = client.get("/api/peg/lc-compare", params={"family": "Orbitrap"}).json()
+    # The live timsTOF payload's shape: Evosep only, other LC all zeros and nulls.
+    families = [{"family": "timsTOF", "evosep_runs": 179, "other_runs": 0, "evosep_labs": 1, "other_labs": 0},
+                {"family": "Exploris", "evosep_runs": 0, "other_runs": 95, "evosep_labs": 0, "other_labs": 1}]
+    evosep_only = {"family": "timsTOF", "window_days": 90, "families": families, "groups": [
+        _lc_group("evosep", 179, 1, weekly=[4.0 + k / 10 for k in range(26)],
+                  p25_pct=2.1, median_pct=4.58, p75_pct=8.0, clean_pct=12, heavy_pct=30),
+        _lc_group("other", 0)]}
+    # Other-LC runs 4 months ago but none in the 90-day window: not "no lab yet".
+    lapsed = dict(evosep_only, groups=[evosep_only["groups"][0], _lc_group("other", 0, weekly=[None, 0.3] + [None] * 24)])
     empty = {"family": "Astral", "window_days": 90, "groups": [], "families": []}
-    both, one_side, none_ = run_page_js(tmp_path, _page(client), [
-        ["pegLcHtml", [timstof]], ["pegLcHtml", [orbitrap]], ["pegLcHtml", [empty]],
+    both, orbi, tims, lapsed_html, none_ = run_page_js(tmp_path, _page(client), [
+        ["pegLcHtml", [timstof]], ["pegLcHtml", [orbitrap]], ["pegLcHtml", [evosep_only]],
+        ["pegLcHtml", [lapsed]], ["pegLcHtml", [empty]],
     ])
-    assert both.count('class="peg-lcg"') == 2
+
+    # Both LCs: two data cards on one weekly scale, no placeholder.
+    assert both.count('class="peg-lcg"') == 2 and "peg-lcg-empty" not in both
     assert "EVOSEP" in both.upper() and "OTHER LC" in both.upper()
-    assert "peg-lcg" not in one_side
-    assert "7 QC runs from 1 non-Evosep lab" in one_side and "appears once Orbitrap has both" in one_side
+    assert "share one scale" in both
+
+    # Orbitrap, other LC only: an Evosep placeholder first, then the full other-LC card.
+    (evo_slot, oth_slot), fine = _lc_slots(orbi)
+    assert evo_slot.startswith('<div class="peg-lcg peg-lcg-empty">')
+    assert ">Evosep<" in evo_slot and "no lab yet" in evo_slot
+    assert "Labs running Orbitrap on an Evosep can join: <code>stan peg-sync</code>" in evo_slot
+    assert '<a href="#peg-join">' in evo_slot
+    for data_only in ("peg-big", "peg-iqr", "peg-spark", "median PEG share"):
+        assert data_only not in evo_slot, data_only
+    assert oth_slot.startswith('<div class="peg-lcg">') and ">Other LC<" in oth_slot
+    assert "1 lab · 7 runs" in oth_slot and "0.2%<small>median PEG share</small>" in oth_slot
+    for part in ('class="peg-iqr"', "peg-lcg-meta", "clean <b>", 'class="peg-spark', "weekly median, last 26 weeks"):
+        assert part in oth_slot, part
+    assert "Only Orbitrap labs are compared here; the Evosep side fills in as Orbitrap labs on an Evosep join." in fine
+    assert "share one scale" not in fine
+    assert "appears once" not in orbi, "the old wait-for-both note is gone"
+
+    # timsTOF, Evosep only (the live case): the Evosep card, then an other-LC placeholder.
+    (evo_slot, oth_slot), fine = _lc_slots(tims)
+    assert evo_slot.startswith('<div class="peg-lcg">') and "1 lab · 179 runs" in evo_slot
+    assert "4.6%<small>median PEG share</small>" in evo_slot and "clean <b>12%</b>" in evo_slot
+    assert oth_slot.startswith('<div class="peg-lcg peg-lcg-empty">') and ">Other LC<" in oth_slot
+    assert "no lab yet" in oth_slot
+    assert "Labs running timsTOF with a nanoElute or other LC can join: <code>stan peg-sync</code>" in oth_slot
+    assert "Only timsTOF labs are compared here; the Other LC side fills in as timsTOF labs on a non-Evosep LC join." in fine
+    # Never a cross-family comparison: the other families in the payload are not drawn.
+    assert "Exploris" not in tims and "timsTOF" not in orbi
+    assert all(len(_lc_slots(h)[0]) == 2 for h in (both, orbi, tims, lapsed_html)), "always exactly two slots"
+
+    # Older runs outside the window: the placeholder says "none lately", not "no lab yet".
+    (_, oth_slot), _ = _lc_slots(lapsed_html)
+    assert "none in the last 90 days" in oth_slot and "no lab yet" not in oth_slot
+    assert "No timsTOF lab on a non-Evosep LC has shared PEG in the last 90 days." in oth_slot
+
+    # No runs at all in the family: one empty state, no cards.
     assert "peg-lcg" not in none_ and "No Astral lab has shared PEG" in none_
 
 

@@ -230,6 +230,14 @@
     .peg-lcchip.nr { color: var(--muted); border-color: var(--border); border-style: dashed; }
     .peg-lc-groups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 12px; }
     .peg-lc-group { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: rgba(1,26,58,.35); display: grid; gap: 8px; min-width: 0; }
+    /* An LC slot no lab fills yet: the data card's footprint, drawn empty.
+       Side by side the grid row stretches it to the data card's height;
+       stacked at phone width the min-height keeps it a card, not a line. */
+    .peg-lc-group.peg-lc-empty { border-style: dashed; background: transparent; align-content: start; min-height: 168px; }
+    .peg-lc-empty .peg-lcchip { opacity: .7; }
+    .peg-lc-empty p { margin: 0; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+    .peg-lc-empty code { white-space: nowrap; }
+    .peg-lc-foot { margin: 8px 0 0; }
     .peg-lc-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
     .peg-lc-med { font-size: 1.5rem; font-weight: 750; font-variant-numeric: tabular-nums; line-height: 1.1; }
     .peg-lc-med span { font-size: .78rem; font-weight: 400; color: var(--muted); margin-left: 6px; }
@@ -10845,7 +10853,7 @@ function BFailTable({ rows }) {
       return <PegLcView labLc={labLc} fam={fam} onFam={setFamPick} data={r.data} error={r.error} relayBase={relayBase} unread={unread} />;
     }
 
-    function PegLcGroup({ g, evosep }) {
+    function PegLcGroup({ g, evosep, timsCal = true }) {
       const minL = pegLg(0), maxL = pegLg(30);
       const pos = (p) => Math.min(100, Math.max(0, (pegLg(p) - minL) / (maxL - minL) * 100));
       const lo = g.p25_pct == null ? null : pos(g.p25_pct), hi = g.p75_pct == null ? null : pos(g.p75_pct);
@@ -10863,8 +10871,38 @@ function BFailTable({ rows }) {
           <div className="peg-lc-meta">
             <span>p25–p75 <b>{pegFmtPct(g.p25_pct)} – {pegFmtPct(g.p75_pct)}</b></span>
             <span>Clean <b>{g.clean_pct == null ? '—' : `${g.clean_pct}%`}</b></span>
+            {!timsCal && g.clean_pct != null && <span className="peg-caltag" title={PEG_CAL_NOTE}>timsTOF-calibrated</span>}
           </div>
           <PegSpark vals={g.weekly} w={220} h={34} hi={evosep} />
+        </div>
+      );
+    }
+
+    /* The slot for an LC no lab in this family shares yet (v1.2.4). Until
+       then UC Davis alone fills the board, with Evosep only on timsTOF and
+       custom LC only on the Orbitraps, so no family had both sides and the
+       whole comparison was one empty note. Now the side with data is its
+       full card and this one says who could fill it. Never a number here:
+       the other family's value is not this family's missing side.
+       The relay's weekly line spans 26 weeks and n_runs only the 90-day
+       window, so a side can have older runs and none lately: that is "none
+       in the last 90 days", not "no lab yet". Wording matches the relay
+       page's placeholder (Space 1.2.1). */
+    function PegLcEmpty({ g, evosep, fam }) {
+      const older = ((g && Array.isArray(g.weekly)) ? g.weekly : []).some(v => v != null && isFinite(v));
+      const on = evosep ? 'on an Evosep' : 'on a non-Evosep LC';
+      const how = evosep ? 'on an Evosep'
+        : pegSameFam(fam, 'timsTOF') ? 'with a nanoElute or other LC' : 'with a non-Evosep LC';
+      return (
+        <div className="peg-lc-group peg-lc-empty">
+          <div className="peg-lc-head">
+            <span className={`peg-lcchip ${evosep ? 'ev' : 'ot'}`}>{evosep ? 'Evosep' : 'Other LC'}</span>
+            <span className="peg-fine">{older ? 'none in the last 90 days' : 'no lab yet'}</span>
+          </div>
+          <p>
+            {older && <>No {fam} lab {on} has shared PEG in the last 90 days. </>}
+            Labs running {fam} {how} can join: <code>peg_share: true</code>, then <code>stan peg-sync</code>.
+          </p>
         </div>
       );
     }
@@ -10897,6 +10935,10 @@ function BFailTable({ rows }) {
       const groups = (data && Array.isArray(data.groups)) ? data.groups : [];
       const ev = groups.find(g => g.lc === 'evosep'), ot = groups.find(g => g.lc === 'other');
       const evN = (ev && ev.n_runs) || 0, otN = (ot && ot.n_runs) || 0;
+      /* The community cards' clean rate is a class count, so off a timsTOF
+         family it is tagged like every other class-based element (v1.2.1).
+         Both cards share one family, so the tag is on both or neither. */
+      const famTims = pegSameFam(fam, 'timsTOF');
       const minL = pegLg(0), maxL = pegLg(30);
       const barW = (p) => p == null ? 0 : Math.min(100, Math.max(2, (pegLg(p) - minL) / (maxL - minL) * 100));
       let community;
@@ -10904,18 +10946,30 @@ function BFailTable({ rows }) {
         community = <div className="peg-note" style={{marginBottom: 0}}>Community comparison unavailable: the relay at <b>{pegHost(relayBase)}</b> did not answer ({error}).</div>;
       } else if (!data) {
         community = <div className="peg-note" style={{marginBottom: 0}}>Loading the community comparison…</div>;
-      } else if (!evN || !otN) {
-        const why = !evN && !otN ? `no lab has shared ${fam} PEG in the last 90 days`
-          : !otN ? `${pegFmtN(ev.n_labs)} Evosep lab${ev.n_labs === 1 ? '' : 's'} and no other-LC lab so far`
-          : `${pegFmtN(ot.n_labs)} other-LC lab${ot.n_labs === 1 ? '' : 's'} and no Evosep lab so far`;
+      } else if (!evN && !otN) {
         community = (
           <div className="peg-note" style={{marginBottom: 0}}>
-            Nothing to compare on {fam} yet: {why}. This fills in once {fam} labs on Evosep and on another LC
-            both share (<code>peg_share: true</code>, then <code>stan peg-sync</code>).
+            Nothing to compare on {fam} yet: no lab has shared {fam} PEG in the last 90 days. This fills in once {fam} labs
+            on Evosep and on another LC both share (<code>peg_share: true</code>, then <code>stan peg-sync</code>).
           </div>
         );
+      } else if (!evN || !otN) {
+        /* One side only: its full card beside an empty slot, never an empty
+           box for a family that has data. Still inside this one family. */
+        community = (
+          <>
+            <div className="peg-lc-groups">
+              {evN ? <PegLcGroup g={ev} evosep timsCal={famTims} /> : <PegLcEmpty g={ev} evosep fam={fam} />}
+              {otN ? <PegLcGroup g={ot} evosep={false} timsCal={famTims} /> : <PegLcEmpty g={ot} evosep={false} fam={fam} />}
+            </div>
+            <p className="peg-fine peg-lc-foot">
+              Only {fam} labs are compared here, since PEG share also depends on the detector; the {evN ? 'Other LC' : 'Evosep'} side
+              fills in as labs join.
+            </p>
+          </>
+        );
       } else {
-        community = <div className="peg-lc-groups"><PegLcGroup g={ev} evosep /><PegLcGroup g={ot} evosep={false} /></div>;
+        community = <div className="peg-lc-groups"><PegLcGroup g={ev} evosep timsCal={famTims} /><PegLcGroup g={ot} evosep={false} timsCal={famTims} /></div>;
       }
       return (
         <section className="card" aria-labelledby="peg-lc-h">

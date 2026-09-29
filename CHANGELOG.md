@@ -11,6 +11,39 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.4] — 2026-09-29
+
+### Changed
+- **Evosep vs other LC shows the side that has data.** Brett, from the
+  live community page: the panel was one empty note ("So far timsTOF has
+  179 QC runs from 1 Evosep lab and no non-Evosep lab sharing…"). It
+  compares LCs only within one instrument family, and every family on the
+  relay today has one LC side: UC Davis runs Evosep only on the timsTOF
+  and its own LC only on the Exploris and Lumos. Both the STAN tab's
+  community half and the relay's community page now draw a family's two
+  LC slots side by side as before. A slot with runs is its full card
+  (median PEG share, p25–p75 bar, clean %, labs and runs, weekly line); a
+  slot without is a dashed placeholder of the same size ("Other LC · no
+  lab yet — labs running timsTOF with a nanoElute or other LC can join";
+  "Evosep · no lab yet" on the Orbitrap families), with one line saying
+  only that family's labs are compared and the empty side fills in as
+  labs join. A slot whose runs are all older than the 90-day window says
+  "none in the last 90 days" instead, since its 26-week line reaches
+  further back than the window. Still no cross-family side by side; a
+  family no lab shares keeps its empty state; the "Your instruments" half
+  and its cross-family caveat are unchanged.
+  - **STAN tab:** off a timsTOF family the cards' clean rate is tagged
+    *timsTOF-calibrated*, like every class-based element since 1.2.1.
+    This change is the first time an Orbitrap community card reaches the
+    screen (Exploris, other LC: clean 1 %).
+  - **Relay page:** Space 1.2.1 (`SPACE_VERSION`), `pegLcHtml` in
+    `hf_space/app.py`.
+  - `scripts/render_check.js` renders one-sided answers in both
+    directions, two-sided, no-data and older-runs-only answers, and a
+    hostile family name, and renders each live overview against the LC
+    answer its family gets today. `--peg DIR` also reads
+    `relay_lc_compare_other.json` and `relay_lc_compare_none.json`.
+
 ## [1.2.3] — 2026-09-29
 
 ### Fixed
