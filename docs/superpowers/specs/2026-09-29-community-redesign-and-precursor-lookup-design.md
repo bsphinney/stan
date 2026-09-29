@@ -26,7 +26,7 @@ These come from Brett's feedback this session and are also in memory.
 
 1. **Keep every existing chart visible and recognisable** (`feedback_keep_existing_charts`). The redesign fixes the numbers inside the charts; it does not prune them.
    - The first mockup collapsed, redrew or left out charts: the TIC overlay, Points Across Peak, Depth by Throughput, MS1 signal, Dynamic Range, and Throughput vs. Quantitation Quality. Brett read each of those as a removal.
-   - Removing, collapsing, merging or replacing any chart is Brett's decision. List it and ask.
+   - Removing, collapsing, merging or replacing any chart is Brett's decision. List it and ask. The only removals he has approved are the IPS scatter and the fingerprint radar (decisions 3 and 4).
 2. **Mockup before UI changes.** Every kept chart is drawn in the mockup with real data, never a placeholder.
 3. **Deploy when verified; no need to ask** (`feedback_deploy_when_verified`). **Rewriting stored data always needs Brett's explicit go**, with a before/after first. That covers the parquet history, PG rows and stored IPS scores.
 4. The project CLAUDE.md applies:
@@ -44,8 +44,8 @@ These come from Brett's feedback this session and are also in memory.
 |---|---|---|---|
 | 1 | Implement the mocked changes (D1–D8, B1–B6, TIC fixes) | **Approved** 2026-09-29 | As in Part A, with the chart-keep correction in §A.2 |
 | 2 | Keep all live charts listed in §A.2 as KEEP | **Brett's direction** | Keep them, visible |
-| 3 | Identification Depth vs. IPS scatter | **Brett to decide** | Drop. It plots IPS against its own 50% input, so it shows diagonal bands only, and its legend lists Astral with no Astral data |
-| 4 | Instrument Health Fingerprint radar | **Brett to decide** | Rework to one vendor and one SPD tier at a time, or drop |
+| 3 | Identification Depth vs. IPS scatter | **Decided 2026-09-29: drop** (Brett: "I agree with you… drop the radar fingerprint and ips scatter") | Delete the chart and its `renderIps*` code. It plotted IPS against its own 50% input, so it showed diagonal bands only |
+| 4 | Instrument Health Fingerprint radar | **Decided 2026-09-29: drop** | Delete the chart and its code. It min-max scaled medians across mixed SPD tiers, and its ppm axis ranked the analyser type |
 | 5 | Filenames (D4): API and hovers | Approved with #1 | Remove from `/api/leaderboard`, `/api/cohorts` and hovers; keep them on the server only |
 | 5b | Filenames (D4): scrub the published parquet history | **Gated: data rewrite** | Brett's explicit go, with a backup first (`wipe_v1.py --backup`) |
 | 6 | IPS family→reference key fix, then recompute stored `ips_score` | **Gated: data rewrite** | Show Brett the before/after first. Decide on Exploris recalibration after that |
@@ -97,8 +97,8 @@ Each fix applies the shared cohort key (B2): DIA/DDA never mixed, instrument **m
 | Your Trend vs. Community Reference | **KEEP, rebuilt** as "Lab trend vs. reference" (B3) | Reference excludes the selected lab; percentile bands; own-baseline drift overlay |
 | Best Configurations | **KEEP** (B6) | Amount select (default 50 ng), Labs column, sort/bestDepth fix (D1) |
 | Reference range cards | **KEEP, regrouped** (D5) | |
-| Identification Depth vs. IPS | **Decision 3** (recommended drop) | If kept: IPS vs. date per instrument, not vs. precursors |
-| Instrument Health Fingerprint (radar) | **Decision 4** | If kept: one vendor and one SPD tier at a time; no min-max across tiers |
+| Identification Depth vs. IPS | **DROP** (decision 3, Brett 2026-09-29) | — |
+| Instrument Health Fingerprint (radar) | **DROP** (decision 4, Brett 2026-09-29) | — |
 | PEG Watch (leaderboard, week by week, Evosep vs other LC, join card, ranking card) | **KEEP, unchanged** | |
 | Info cards: HeLa Standard, IPS, Why This Benchmark Works, Points Across Peak | HeLa kept; IPS rewritten (D3); "Why…" becomes "How the numbers are made" (D7); Points Across Peak card kept with the DOI fix | |
 
