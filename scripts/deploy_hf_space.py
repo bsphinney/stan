@@ -71,9 +71,9 @@ SCRIPT_PATH = Path(__file__).resolve()
 # sha256 of the Space's app.py that hf_space/app.py was last synced from:
 # Space commit d041ef68, SPACE_VERSION 1.1.0, vendored 2026-09-28.
 # `--record-base` rewrites this line after a verified deploy.
-RECORDED_BASE_SHA256 = "d89ea3fd5bcb63b393c702e932af32f15643a45298ee7152d20c6b9def83b4c3"
+RECORDED_BASE_SHA256 = "cb9767482982f60932f113b400fc1722b93d78dc583b808057964f1392594d62"
 # The same for the Space's Dockerfile (unpinned pip installs at d041ef68).
-RECORDED_DOCKERFILE_SHA256 = "740bdbc2b794b8fa2646d082f1b289fb2a17f5387c88ef511551043c70cfaea6"
+RECORDED_DOCKERFILE_SHA256 = "963a848c863615304108c022338bc4f85189745fe80d5bd005c6bfb564244dcc"
 
 # Hive's crontab runs cron_community_sync.sh at "25 */6 * * *" in the
 # system zone, America/Los_Angeles (no CRON_TZ), so it submits at about :27
