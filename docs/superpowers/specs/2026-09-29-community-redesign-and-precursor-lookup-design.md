@@ -53,6 +53,7 @@ These come from Brett's feedback this session and are also in memory.
 | 8 | One-facility disclosure wording | **Approved 2026-09-29** | The mockup's line, see D2 below |
 | 9 | Engine-calibration panel compute on Hive (Part B) | **One go/no-go**, required by the pipeline skill | See §B.5 |
 | 10 | Spectronaut arm of the panel | **Brett runs it** on the licensed machine | See §B.5 |
+| 11 | **Which library defines STAN's reference count** (research finding M2, §B.10) | **Brett to decide, before any fit** | Recommended: the frozen community library for both cohorts and S; re-search the cohort rows (0.2–1 core-h each). Today timsTOF and Exploris cohorts use per-instrument subset libraries that no outside lab can reproduce |
 
 ---
 
@@ -299,19 +300,15 @@ For each **calibrated configuration** *c* and **instrument model** *m*, fit on p
 - *S* = the count from STAN's standard search;
 - *L* = the size of the frozen library for *m*'s vendor (read the exact count from the speclib).
 
-**Primary form (logit-coverage):**
+**Primary form: power law** (revised after the research, §B.10):
 
 ```
-logit(S / L) = a_cm + b_cm · ln N + ε
-Ŝ = L · expit(a_cm + b_cm · ln N)
+ln S = a_cm + b_cm · ln N + ε
 ```
 
-The logit link turns the library ceiling into a straight line, so predictions can never exceed *L*. At low coverage (the Orbitraps), logit(s) ≈ ln(s), and the model reduces to the power law S ∝ N^b.
+The first draft proposed a logit-coverage model, `logit(S/L) = a + b ln N`, so that predictions could never exceed the library size *L*. On the existing paired searches, the power law beats it: median error 1.74% vs 3.13% on the timsTOF full library, and 2.73% vs 6.00% on 2.6.1 empirical. The residuals also shrink near the ceiling. Keep the logit form only as a candidate for library-free timsTOF input. Cap Ŝ at *L*.
 
-**Competing forms, chosen by the grouped CV in §B.6:**
-1. Log–log linear: `ln S = a + b ln N`.
-2. Logit-coverage (above).
-3. A monotone spline in ln N with the logit link.
+**Candidate forms, chosen inside every leave-one-out fit** (research critique M7): power law; logit-coverage; a Box-Cox λ fixed in advance by class. Use a one-SE rule, not "the lowest error wins".
 
 Ship the simplest form that passes acceptance.
 
@@ -411,12 +408,12 @@ Its golden rules apply:
 
 One screen:
 
-> You entered **61,200** precursors (DIA-NN 1.9.2, library-free, single run, 1% run FDR).  
-> On STAN's standard search that is about **43,900** (41,800–45,700, 80% range).  
-> **48th–63rd percentile** of timsTOF HT · Evosep 60 SPD · 50 ng (606 runs · 1 facility).  
-> Scaled from 16 paired searches of UC Davis HeLa QC per cohort. For an exact placement, run STAN on the raw file.
+> You entered **40,000** precursors (DIA-NN 2.7.0, library-free, single run, MBR off, 1% run FDR).  
+> On STAN's search of the same file that would be about **43,800** (41,500–46,000).  
+> Within the **577 QC injections (failed runs included) from one timsTOF HT at UC Davis**, Evosep 60 SPD, that sits between the 56th and 85th percentile.  
+> Calibrated on one instrument at UC Davis. A lower STAN number is expected on timsTOF: STAN's library holds ~51k precursors.
 
-The numbers above are illustrative. Refusals use the §B.4 texts.
+The example is consistent with the only existing pairs (2.7.0 library-free, no MBR: N/S ≈ 0.91 on 8 timsTOF raws). The final numbers come from the fit. Name the reference population (critique M11): one instrument's history, not a ranking of labs. Refusals use the §B.4 texts. Show a one-sided state ("at least the 90th percentile") when N lies above the calibrated range.
 
 ## B.9 Implementation units
 
@@ -430,19 +427,42 @@ The numbers above are illustrative. Refusals use the §B.4 texts.
 | `docs/ENGINE_SCALING.md` | Method, acceptance, how to add a version | — |
 | Tests: `tests/test_engine_scaling.py` | Synthetic saturating data recovers `a` and `b`; interval coverage; refusal rules; JSON schema | — |
 
-## B.10 Research evidence
+## B.10 Research results (2026-09-29): these override §B.3–B.5 where they conflict
 
-A research workflow (`engine-scaling-design`, run `wf_52331c88-823`) was gathering this when the doc was written. Its outputs land in `~/stan-handoff-2026-09-29/scaling/`:
-- `inventory.md`: paired searches that already exist in PG, Hive, DE-LIMP or Spectronaut;
-- `sources.md`: DIA-NN and Spectronaut version changes and benchmarks, with DOIs;
-- `feasibility.md`: containers on Hive, runtimes, the measured library ceiling, and a panel proposal;
-- `DESIGN.md`: an independent design, plus a critique.
+The research workflow finished. Its full output is in `docs/community-redesign/precursor-lookup/`:
+- `inventory.md`: existing paired data;
+- `sources.md`: DIA-NN and Spectronaut primary sources;
+- `feasibility.md`: Hive feasibility;
+- `RESEARCH_DESIGN.md`: an independent, more detailed design (644 lines, arms A–F, gates G1–G9, refusal rules R1–R9);
+- `CRITIQUE.md`: an adversarial review, verdict **approve-with-changes**.
 
-**Fold these into §B.3–B.5 before the pilot.** In particular:
-- the exact DIA-NN versions available;
-- the q-value column per version;
-- measured runtimes;
-- any existing paired data that can seed or check the fit.
+Raw tables are in `~/stan-handoff-2026-09-29/scaling/`. **Implement from RESEARCH_DESIGN.md as amended by CRITIQUE.md's M1–M11.** This doc's §B.1–B.9 is the summary.
+
+**Findings that change the plan:**
+1. **STAN's cohorts are not searched against one frozen library.**
+   - `run_one_v1.py` and `stan/search/local.py` (~425–447) prefer a per-instrument subset library (`instrument_library.parquet`, built by `stan/library_builder.py` from the lab's own runs):
+     - timsTOF: TIMS-10878, ~51k precursors;
+     - Exploris: DESKTOP-FOT3DAA, ~53k, **not** the 170k Orbitrap library;
+     - only Lumos uses the frozen `hela_orbitrap_202604` (~170k).
+   - On the same raws, the full frozen library gives **1.034×** the subset on timsTOF, so the subset is not "speed-only".
+   - An outside lab cannot reproduce S, and "run STAN on the raw file for an exact placement" is false today.
+   - It also contradicts the D7 page text. **This is decision 11.**
+2. **Paired data already exist in quantity.** 904 non-DDA HeLa raws have STAN's search plus at least one other configuration:
+   - DIA-NN 2.3.0 vs 2.3.2;
+   - community library vs subset library;
+   - multi-run vs single-run;
+   - DE-LIMP library-free + MBR;
+   - 2.6.1/2.7.0 (8–35 raws each).
+
+   The Excel QC log has 639 Lumos/Exploris raws with **DIA-NN 1.8** counts (2.0/1.8 = 1.12 on 20 raws). The panel can be much smaller: fill only the gaps (library-free, newer versions, single-file MBR on and off, out-of-lab raws).
+3. **Count definition matters by 1–9%.** STAN counts unique `Precursor.Id` at `Q.Value ≤ 0.01`, without a Global.Q filter. That is 1–4% above DIA-NN's own `stats.tsv` "Precursors.Identified", and up to 9% on weak runs. **DIA-NN 2.5.0+ writes the main report at 5% FDR by default**, so counting rows gives about +28%. The form must ask.
+4. **MBR on one file** is how DIA-NN's GUI runs by default. Without it, the first pass reads 0.80× STAN; with MBR or a two-step search it reads 1.03–1.05×. Split "single run" into MBR off and on (M1).
+5. **Spectronaut depends heavily on experiment size.** PG/SN is 0.65–0.79 for multi-run directDIA and 1.56–1.74 for single-run. No version is recorded in the 76 HeLa exports found (204 runs, 83 matched to PG). **The Hive Spectronaut licence refuses Linux**, so Brett's Windows machine is the only route. Calibrate batches of 2–3 and 8–10 runs.
+6. **Transfer between labs is unmodelled** (M4). Settings the form doesn't capture already move the same raw 1–5%. Add an **out-of-lab hold-out**: at least 8 public HeLa raws per model from PRIDE, downloaded on the Mac and piped to Hive. Until then, every result reads "calibrated on one instrument at UC Davis".
+7. **Production parity** (M3). The reference arm must use the exact production command (`run_one_v1`: `--qvalue 0.01 --threads 8`, the sif, the fixed digest), not the pipeline skill. Only the visitor-configuration arms go through the skill.
+8. **Freeze the acceptance gates before any fit data are seen** (M8), and gate each vendor separately (M9).
+9. **Better input** (recommended). Let the visitor drop in DIA-NN's `report.log.txt` and `report.stats.tsv`. Parse them in the browser: the version banner and the command line fill every form field. Typed settings err by more than the model does.
+10. **Data bug found:** 67 DDA-named Exploris raws are stored in PG as mode=DIA. They were excluded from the pairs; fix them in PG (gated).
 
 ## B.11 Open questions
 
