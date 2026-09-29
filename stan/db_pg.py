@@ -1512,24 +1512,48 @@ _PEG_VERSION_KEY = (
 )
 
 
+# Python's str.strip(), as an ARE. The patterns in these expressions use only
+# what PG's AREs and Python's re read alike -- anchors, \s, and a bracket of
+# "/" and "\" written [/\\] (in an ARE a backslash stays special inside [],
+# so \\ is one literal backslash, as in Python) -- which is what lets
+# tests/test_peg_overview_endpoint.py run them against run_basename. Needs
+# standard_conforming_strings (PG's default since 9.1) so the literals reach
+# the regex engine unescaped.
+_PEG_STRIP_SQL = r"regexp_replace(COALESCE({col}, ''), '^\s+|\s+$', '', 'g')"
+# peg_trends.acquisition_key in SQL: the trimmed instrument, run_name's
+# basename (trim, drop trailing separators, drop everything up to the last
+# / or \), and the UTC second -- the fields run_key hashes, normalised the
+# way the share client normalises them. Keyed on the raw run_name, a file
+# ingested under a PC path and a Hive path was two runs on the tab and one
+# record on the board.
+_PEG_ACQUISITION_KEY = (
+    _PEG_STRIP_SQL.format(col="r.instrument") + ", "
+    + r"regexp_replace(regexp_replace("
+    + _PEG_STRIP_SQL.format(col="r.run_name")
+    + r", '[/\\]+$', ''), '^.*[/\\]', ''), "
+    + "date_trunc('second', r.run_date)"
+)
+
+
 def _peg_canonical_sql(cols: str, extra_where: str = "") -> str:
     """Real-PEG QC runs, one row per acquisition, as a subquery (alias ``r``).
 
-    An acquisition is ``(instrument, run_name, run_date to the second)`` --
-    the fields the share client's run_key hashes. Of its copies, the one kept
-    has its ion ladder stored, then the newest ``stan_version``, then the
-    highest ``id`` (bytewise, ``COLLATE "C"``, to match Python's order):
-    exactly ``stan.metrics.peg_trends.pick_canonical``, which the SQLite path
-    runs in Python, so the mirror and PG keep the same copy.
+    An acquisition is ``_PEG_ACQUISITION_KEY`` -- (instrument, basename of
+    run_name, run_date to the second), the fields the share client's run_key
+    hashes. Of its copies, the one kept has its ion ladder stored, then the
+    newest ``stan_version``, then the highest ``id`` (bytewise, ``COLLATE
+    "C"``, to match Python's order): exactly
+    ``stan.metrics.peg_trends.pick_canonical``, which the SQLite path runs in
+    Python, so the mirror and PG keep the same copy.
 
     Args:
         cols: Select list over ``runs r``; may use ``_PEG_HAS_HITS``.
         extra_where: More ``AND`` clauses on ``r`` (instrument, blank regex).
     """
     return (
-        "SELECT DISTINCT ON (r.instrument, r.run_name, date_trunc('second', r.run_date)) "
+        f"SELECT DISTINCT ON ({_PEG_ACQUISITION_KEY}) "
         f"{cols} FROM runs r WHERE {_peg_real_qc_where('r')}{extra_where} "
-        "ORDER BY r.instrument, r.run_name, date_trunc('second', r.run_date), "
+        f"ORDER BY {_PEG_ACQUISITION_KEY}, "
         f"{_PEG_HAS_HITS} DESC, {_PEG_VERSION_KEY} DESC NULLS LAST, "
         'r.id::text COLLATE "C" DESC'
     )
@@ -1640,20 +1664,26 @@ def get_peg_share_rows_pg() -> list[dict]:
     alone, copies of one raw file tied and came back in whatever order the
     sort left them, so which PEG reading the client shared could change
     after any UPDATE -- and the relay would commit the flip.
+
+    ``id``, ``stan_version`` and ``has_hits`` -- what the copy was chosen
+    by -- come along so the client's own tie-break ranks by the same keys
+    (``peg_trends.canonical_rank``). The client never sends them.
     """
     with _connect() as pg, pg.cursor() as cur:
         has_st = "sample_type" in _runs_columns(cur)
         inner = _peg_canonical_sql(
             "r.run_date, r.run_name, r.instrument, r.spd, r.mode, r.amount_ng, "
             "r.lc_system, r.peg_score, r.peg_intensity_pct, r.peg_n_ions_detected, "
-            "r.peg_class" + (", r.sample_type" if has_st else "")
+            f"r.peg_class, r.id, r.stan_version, {_PEG_HAS_HITS} AS has_hits"
+            + (", r.sample_type" if has_st else "")
         )
         cur.execute(
             f"SELECT run_name, instrument, {_PEG_RUN_DATE_UTC} AS run_date_utc, "
             "spd, mode, amount_ng::numeric AS amount_ng, lc_system, "
             "peg_score::numeric AS peg_score, "
             "peg_intensity_pct::numeric AS peg_intensity_pct, "
-            "peg_n_ions_detected, peg_class" + (", sample_type" if has_st else "")
+            "peg_n_ions_detected, peg_class, id, stan_version, has_hits"
+            + (", sample_type" if has_st else "")
             + f" FROM ({inner}) c ORDER BY run_date ASC, instrument, run_name"
         )
         return _rows(cur)

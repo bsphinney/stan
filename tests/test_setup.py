@@ -167,3 +167,55 @@ def test_word_lists_title_case() -> None:
         assert word[0].isupper(), f"ADJECTIVE {word!r} is not title case"
     for word in SCIENTISTS:
         assert word[0].isupper(), f"SCIENTIST {word!r} is not title case"
+
+
+# ── 5. Email verification echoes the relay's claim_id ─────────────────
+
+class _Resp:
+    def __init__(self, body: dict) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        import json
+        return json.dumps(self._body).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        return None
+
+
+def _run_verification(monkeypatch, claim_answer: dict) -> list[dict]:
+    """Drive _verify_name_ownership against a fake relay; return the JSON bodies posted."""
+    import json
+    import urllib.request
+
+    import stan.setup as stan_setup
+
+    answers = iter(["owner@lab.org", "123456"])
+    monkeypatch.setattr(stan_setup.Prompt, "ask", lambda *a, **k: next(answers))
+    posted: list[dict] = []
+
+    def fake_urlopen(req, timeout=None):
+        posted.append(json.loads(req.data))
+        if req.full_url.endswith("/api/claim-name"):
+            return _Resp(claim_answer)
+        return _Resp({"status": "verified", "token": "tok-new"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert stan_setup._verify_name_ownership("Clogged PeakTail") == "tok-new"
+    return posted
+
+
+def test_verification_echoes_the_claim_id(monkeypatch) -> None:
+    """The relay binds a code's wrong-guess budget to the claim_id, so a
+    stranger cannot throw away the code the owner was just emailed."""
+    posted = _run_verification(monkeypatch, {"status": "code_sent", "claim_id": "cid-Zq9"})
+    assert posted[1] == {"pseudonym": "Clogged PeakTail", "code": "123456", "claim_id": "cid-Zq9"}
+
+
+def test_verification_without_a_claim_id_sends_none(monkeypatch) -> None:
+    """A relay that predates claim_id still gets the request it expects."""
+    posted = _run_verification(monkeypatch, {"status": "code_sent"})
+    assert posted[1] == {"pseudonym": "Clogged PeakTail", "code": "123456"}

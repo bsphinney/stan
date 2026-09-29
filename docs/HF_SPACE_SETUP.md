@@ -1,5 +1,12 @@
 # HF Space Error Report Endpoint
 
+> **Since v1.2.0 the relay source lives in this repo** as `hf_space/app.py`
+> (this endpoint is already in it). Change it there and deploy with
+> `scripts/deploy_hf_space.py`. Do not follow the "edit `app.py` in the
+> Space editor" steps below any more: an edit made in the Space makes the
+> next deploy refuse until it is merged back into `hf_space/app.py`. See
+> `docs/PEG_WATCH.md` → "Deploy v1.2.0".
+
 ## What it does
 
 The `/api/error-report` endpoint on the STAN HF Space (`brettsp/stan`) receives

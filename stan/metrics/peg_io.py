@@ -92,6 +92,14 @@ def read_ms1_bruker(
             continue
         mzs = frame_df["mz_values"].to_numpy()
         ints = frame_df["intensity_values"].to_numpy()
+        # These are per-detector events, and alphatims (1.0.8) stores their
+        # intensity as uint16: an event above 65,535 has already wrapped
+        # before it gets here (70000 -> 4464) and usually lands under
+        # detect_peg_in_spectra's 1e4 floor, so the brightest PEG events are
+        # under-counted or dropped -- the metric is least linear exactly
+        # where contamination is heaviest. Nothing here can undo it; it is
+        # one reason PEG share is compared only within an instrument family
+        # (docs/GOTCHAS_DELIMP.md, "PEG Watch").
         # Cast intensities to Python int to avoid uint32 overflow when
         # downstream code does sort(key=lambda x: -x.intensity) etc.
         yield [(float(m), int(i)) for m, i in zip(mzs, ints)]
@@ -115,7 +123,9 @@ def read_ms1_thermo(
          at RawFile.__init__ time). The .raw becomes an MS1-only mzML in a
          temporary directory under $TMPDIR that is removed afterwards, and
          the same stride is sampled from it. Both readers return the FTMS
-         centroid stream, so the scores are comparable.
+         centroid stream (read from both readers' source), so the scores
+         should be comparable; that has not yet been checked numerically on
+         one file read both ways.
 
     Raises PegReaderUnavailable when neither reader works, with both
     reasons in the message.

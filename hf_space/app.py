@@ -409,8 +409,13 @@ class ClaimsMisconfigured(RuntimeError):
 # name, and a claim typed with a doubled space or pasted in NFD still
 # matches its owner's submissions.
 LAB_NAME_MAX = 60
-CLAIM_CODES_PER_HOUR = 3       # POST /api/claim-name per lab name per hour
-CLAIM_MAX_ATTEMPTS = 5         # wrong codes before a pending code is thrown away
+# Claim limits are keyed by who is asking, never by the lab name alone: a
+# budget any anonymous caller can spend on a name is a way to stop its
+# owner re-claiming it, and re-claiming is how a lab rotates its token.
+CLAIM_CALLS_PER_CLIENT_HOUR = 10    # POST /api/claim-name per caller address, refused calls included
+CLAIM_CODES_PER_HOUR = 3            # codes issued per (lab name, email)
+CLAIM_MAX_ATTEMPTS = 5              # wrong codes per claim_id; per caller without one
+CLAIM_LEGACY_ATTEMPTS_PER_NAME = 20  # wrong codes without a claim_id, all callers together
 CLAIM_RATE_WINDOW_SEC = 3600
 
 # Unicode Default_Ignorable_Code_Point (DerivedCoreProperties.txt). These
@@ -510,6 +515,14 @@ def _window_hit(buckets: dict[str, list[float]], lock: threading.Lock, key: str,
             for k in [k for k, v in buckets.items() if not v or v[-1] <= cutoff]:
                 del buckets[k]
     return allowed
+
+
+def _window_full(buckets: dict[str, list[float]], lock: threading.Lock, key: str,
+                 limit: int, window_sec: float, now: float) -> bool:
+    """Has ``key`` already had ``limit`` hits in the window? Counts nothing."""
+    cutoff = now - window_sec
+    with lock:
+        return sum(1 for t in buckets.get(key, ()) if t > cutoff) >= limit
 
 
 _CLAIM_RATE: dict[str, list[float]] = {}
@@ -1058,6 +1071,10 @@ class ClaimRequest(BaseModel):
 class VerifyRequest(BaseModel):
     pseudonym: str
     code: str
+    # Echoed from the claim-name answer; proves the caller is the one who
+    # asked for the code. Empty from STAN versions that predate it, which
+    # still verify, under the per-caller and per-name guess caps instead.
+    claim_id: str = ""
 
 
 @app.get("/api/names")
@@ -1068,12 +1085,15 @@ async def list_names() -> dict:
 
 
 @app.post("/api/claim-name")
-async def claim_name(req: ClaimRequest) -> dict:
+async def claim_name(req: ClaimRequest, request: Request) -> dict:
     """Start the name-claim process. Sends a 6-digit code to the email.
 
     Privacy: the email is NEVER stored. Only a SHA256 hash is kept to
     verify re-claims on new machines. STAN cannot de-anonymize participants.
     The verification code is ephemeral (15 minutes, in-memory only).
+
+    The answer carries a ``claim_id`` for verify-claim to echo: it binds
+    the code's wrong-guess budget to this caller.
     """
     email = req.email.strip().lower()
     if not req.pseudonym.strip() or not email:
@@ -1082,14 +1102,17 @@ async def claim_name(req: ClaimRequest) -> dict:
     # PEG channel looks a submitted display_name up by.
     pseudonym = _claim_name(req.pseudonym)
 
-    # Every call counts, refused ones included: this caps both how many
-    # codes one name can have re-rolled against it and how often the
-    # "different email" answer below can be used to test candidate emails.
-    if not _window_hit(_CLAIM_RATE, _CLAIM_RATE_LOCK, pseudonym, CLAIM_CODES_PER_HOUR,
-                       CLAIM_RATE_WINDOW_SEC, _claim_clock()):
+    # Every call counts, refused ones included, so the "different email"
+    # answer below cannot be used to test candidate emails freely. It counts
+    # against the CALLER: counted against the name, three strangers' refused
+    # calls an hour kept the owner from ever being sent a code.
+    # (_peg_client_key explains which address that is behind the proxy.)
+    client_key, _ = _peg_client_key(request)
+    if not _window_hit(_CLAIM_RATE, _CLAIM_RATE_LOCK, f"calls\n{client_key}",
+                       CLAIM_CALLS_PER_CLIENT_HOUR, CLAIM_RATE_WINDOW_SEC, _claim_clock()):
         raise HTTPException(
             status_code=429,
-            detail=f"Too many verification requests for '{pseudonym}'. Try again in an hour.",
+            detail="Too many verification requests from this address. Try again in an hour.",
         )
 
     # Check if already claimed by someone else. Strict: if claims.json
@@ -1116,13 +1139,26 @@ async def claim_name(req: ClaimRequest) -> dict:
                        "Pick a different name or use the email you originally registered with."
             )
 
+    # Codes actually sent are capped per (name, email), which also caps how
+    # many codes can be guessed at. For a claimed name only the owner's email
+    # gets this far, so only someone who knows it can spend this budget, and
+    # every code it costs lands in the owner's inbox.
+    if not _window_hit(_CLAIM_RATE, _CLAIM_RATE_LOCK, f"codes\n{pseudonym}\n{_hash(email)}",
+                       CLAIM_CODES_PER_HOUR, CLAIM_RATE_WINDOW_SEC, _claim_clock()):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many verification codes for '{pseudonym}'. Try again in an hour.",
+        )
+
     # Generate 6-digit code
     code = f"{secrets.randbelow(900000) + 100000}"
+    claim_id = secrets.token_urlsafe(16)
 
     # Store in memory (expires in 15 min)
     email_hash, hash_version = _stored_email_hash(email)
     _pending_codes[pseudonym] = {
         "code": code,
+        "claim_id": claim_id,
         "email_hash": email_hash,
         "email_raw": email,  # only held in memory for sending, never persisted
         "expires": time.time() + 900,
@@ -1137,12 +1173,13 @@ async def claim_name(req: ClaimRequest) -> dict:
 
     return {
         "status": "code_sent",
-        "message": f"Verification code sent to {email[:3]}...{email[email.index('@'):]}"
+        "message": f"Verification code sent to {email[:3]}...{email[email.index('@'):]}",
+        "claim_id": claim_id,
     }
 
 
 @app.post("/api/verify-claim")
-async def verify_claim(req: VerifyRequest) -> dict:
+async def verify_claim(req: VerifyRequest, request: Request) -> dict:
     """Complete the name-claim process. Returns an auth token.
 
     The token is stored locally at ~/.stan/community.yml and included in
@@ -1153,27 +1190,58 @@ async def verify_claim(req: VerifyRequest) -> dict:
     """
     pseudonym = _claim_name(req.pseudonym)
     code = req.code.strip()
+    claim_id = req.claim_id.strip()
 
     pending = _pending_codes.get(pseudonym)
-    if not pending:
+    # A claim_id that is not the one issued is not a guess at this code: it
+    # must neither spend the code's attempts nor fall back to the path below.
+    if not pending or (claim_id and not hmac.compare_digest(
+            str(pending.get("claim_id", "")).encode(), claim_id.encode())):
         raise HTTPException(status_code=400, detail="No pending verification for this name. Call /api/claim-name first.")
 
     if time.time() > pending["expires"]:
         del _pending_codes[pseudonym]
         raise HTTPException(status_code=410, detail="Code expired. Request a new one.")
 
-    # A 6-digit code is only safe against guessing if guesses are few: after
-    # CLAIM_MAX_ATTEMPTS wrong ones the code is gone, and claim-name only
-    # issues CLAIM_CODES_PER_HOUR new ones.
-    if not hmac.compare_digest(pending["code"].encode(), code.encode()):
-        pending["attempts"] = pending.get("attempts", 0) + 1
-        if pending["attempts"] >= CLAIM_MAX_ATTEMPTS:
-            _pending_codes.pop(pseudonym, None)
+    # A 6-digit code is only safe against guessing if guesses are few.
+    if claim_id:
+        # Only the caller that asked for this code holds its claim_id, so
+        # only that caller can spend its CLAIM_MAX_ATTEMPTS; claim-name
+        # sends at most CLAIM_CODES_PER_HOUR codes per name and email.
+        if not hmac.compare_digest(pending["code"].encode(), code.encode()):
+            pending["attempts"] = pending.get("attempts", 0) + 1
+            if pending["attempts"] >= CLAIM_MAX_ATTEMPTS:
+                _pending_codes.pop(pseudonym, None)
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many incorrect codes. Request a new one with /api/claim-name.",
+                )
+            raise HTTPException(status_code=403, detail="Incorrect code.")
+    else:
+        # No claim_id: a STAN that predates it, or anyone else. Such a guess
+        # cannot be tied to whoever asked for the code, so it never spends
+        # the code, which would let anyone throw away the one the owner was
+        # just emailed. Guesses are capped per caller instead, plus a per-name
+        # ceiling for callers that rotate addresses. That ceiling can hold up
+        # only claim_id-less verification; a caller with the claim_id is
+        # never affected by it.
+        client_key, _ = _peg_client_key(request)
+        by_caller = f"guesses\n{pseudonym}\n{client_key}"
+        by_name = f"guesses\n{pseudonym}"
+        now = _claim_clock()
+        if (_window_full(_CLAIM_RATE, _CLAIM_RATE_LOCK, by_caller, CLAIM_MAX_ATTEMPTS,
+                         CLAIM_RATE_WINDOW_SEC, now)
+                or _window_full(_CLAIM_RATE, _CLAIM_RATE_LOCK, by_name, CLAIM_LEGACY_ATTEMPTS_PER_NAME,
+                                CLAIM_RATE_WINDOW_SEC, now)):
             raise HTTPException(
                 status_code=429,
-                detail="Too many incorrect codes. Request a new one with /api/claim-name.",
+                detail=f"Too many incorrect codes for '{pseudonym}'. Try again in an hour, "
+                       "or update STAN, whose verification this limit does not apply to.",
             )
-        raise HTTPException(status_code=403, detail="Incorrect code.")
+        if not hmac.compare_digest(pending["code"].encode(), code.encode()):
+            for key, limit in ((by_caller, CLAIM_MAX_ATTEMPTS), (by_name, CLAIM_LEGACY_ATTEMPTS_PER_NAME)):
+                _window_hit(_CLAIM_RATE, _CLAIM_RATE_LOCK, key, limit, CLAIM_RATE_WINDOW_SEC, now)
+            raise HTTPException(status_code=403, detail="Incorrect code.")
 
     # Generate a permanent auth token for this pseudonym
     token = secrets.token_urlsafe(32)
@@ -2669,7 +2737,9 @@ def _peg_leaderboard(rows: list[dict], family: str, spd: int, window: int, now: 
         if r["change_pct"] is not None and r["change_pct"] <= PEG_MOST_IMPROVED_MAX
         and lab["prev_median"] - lab["median"] >= PEG_MOST_IMPROVED_MIN_DROP
     ]
-    if improvers:
+    # Like "cleanest", a badge on a one-lab board ranks the lab against
+    # nobody; the E2E run showed a lone lab collecting "Most improved".
+    if improvers and len(ranked) >= 2:
         min(improvers, key=lambda r: (r["change_pct"], r["rank"]))["badges"].append("most_improved")
     unranked = [
         {"display_name": lab["name"], "verified": lab["name"] in verified_names, "n_runs": lab["n"]}
@@ -3088,6 +3158,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         #peg .peg-lcg-wk svg.peg-spark { width: 100%; height: auto; }
         #peg .peg-note { margin-top: 0.85rem; font-size: 0.8rem; color: var(--yellow); display: flex; gap: 0.5rem; align-items: flex-start; line-height: 1.5; }
         #peg .peg-note::before { content: '!'; flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: 0.66rem; font-weight: 800; margin-top: 1px; }
+        #peg .chart-card > h3 { padding-right: 2.75rem; } /* clear the injected .fs-btn (top-right) at phone width */
         #peg .peg-trend-badge { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 4px; background: var(--ucd-gold-glow); color: var(--ucd-gold); margin-left: 0.5rem; font-weight: 600; }
         #peg ol.peg-steps { list-style: none; counter-reset: pegstep; display: grid; gap: 0.6rem; margin: 0.7rem 0 0.2rem; }
         #peg ol.peg-steps li { display: grid; grid-template-columns: 26px minmax(0,1fr); gap: 0.6rem; counter-increment: pegstep; color: var(--text-secondary); font-size: 0.88rem; line-height: 1.55; }
@@ -3435,7 +3506,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <p><b>PEG share of MS1.</b> STAN reads 80 MS1 scans spread across the gradient and matches peaks within 5&nbsp;ppm to the PEG ladder: PEG1&ndash;20 as [M+H]<sup>+</sup>, [M+NH<sub>4</sub>]<sup>+</sup> and [M+Na]<sup>+</sup>, spaced 44.026&nbsp;Da (C<sub>2</sub>H<sub>4</sub>O). The share is the matched intensity over all MS1 peaks above 10<sup>4</sup> counts. Unlike the 0&ndash;100 PEG score, it keeps rising with contamination, so it still separates labs that all score 100.</p>
             <p><b>Cohorts.</b> Labs are ranked only against the same instrument family and Evosep method, because detector response and gradient length change the number. Only Evosep runs are ranked.</p>
             <p><b>Rank.</b> Median over the window's QC runs, lowest first, with at least 5 runs; ties go to more clean runs, then more runs. <b>Clean</b> means a PEG score below 20. Runs with no PEG measurement are left out; they never count as clean.</p>
-            <p><b>Badges.</b> <span class="peg-badge peg-b-clean" style="margin-left:0">Cleanest</span> is rank 1 once two or more labs are ranked. <span class="peg-badge peg-b-impr" style="margin-left:0">Most improved</span> is the biggest fall in median against the previous window, if it fell by 15% or more and by at least 0.5 percentage points. <b>Change</b> stays blank when the previous window had fewer than 5 runs or a median below 0.1%, where a percent change is noise.</p>
+            <p><b>Badges.</b> <span class="peg-badge peg-b-clean" style="margin-left:0">Cleanest</span> is rank 1 once two or more labs are ranked. <span class="peg-badge peg-b-impr" style="margin-left:0">Most improved</span> is the biggest fall in median against the previous window, if it fell by 15% or more and by at least 0.5 percentage points, also once two or more labs are ranked. <b>Change</b> stays blank when the previous window had fewer than 5 runs or a median below 0.1%, where a percent change is noise.</p>
         </div>
     </div>
 </div>

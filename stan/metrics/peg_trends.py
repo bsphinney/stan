@@ -78,6 +78,13 @@ LADDER_N: tuple[int, ...] = tuple(range(2, 21))
 
 RUNS_COLS: list[str] = ["t", "spd", "pct", "score", "ions", "cls", "prec"]
 
+#: Previous-window median (PEG % of MS1) below which ``change_pct`` is None.
+#: A relative change from next to nothing is unbounded noise: 0.05 % -> 0.5 %
+#: reads as "+900 %". Mirrors ``PEG_CHANGE_FLOOR_PCT`` in hf_space/app.py
+#: (the relay's ``_peg_change_pct``), which is deployed on its own and cannot
+#: import this; tests/test_peg_trends.py fails if the two values drift apart.
+PEG_CHANGE_FLOOR_PCT = 0.1
+
 
 def is_blank_or_wash(run_name: str | None) -> bool:
     """True when a run name marks a blank, wash or deleted file.
@@ -148,13 +155,45 @@ def version_key(value: Any) -> tuple[int, ...]:
     return tuple(int(p) for p in m.group(1).split(".")) if m else ()
 
 
-def acquisition_key(row: dict) -> tuple:
-    """``(instrument, run_name, UTC second)``: which rows are one raw file.
+def run_basename(run_name: str | None) -> str:
+    """The file or directory name of a run, whatever the separator.
 
-    PG's ``DISTINCT ON`` uses the same three (``date_trunc('second', ...)``);
-    the share client's ``run_key`` hashes them too, with the name's basename.
+    ``runs.run_name`` is written by Windows instrument PCs (``\\``) and by
+    Hive (``/``), sometimes with a trailing separator on a Bruker ``.d``
+    directory, so one raw file can sit in ``runs`` under two directories.
+    The extension is kept (``X.d`` and ``X.raw`` stay distinct), as in
+    ``stan.community.fingerprint_dedup``. ``stan.db_pg`` computes the same
+    thing in SQL for its ``DISTINCT ON``; tests/test_peg_overview_endpoint.py
+    runs those patterns against this function.
     """
-    return (row.get("instrument"), row.get("run_name"), row.get("run_date_utc"))
+    s = (run_name or "").strip().rstrip("/\\")
+    return s.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def acquisition_key(row: dict) -> tuple:
+    """``(instrument, basename(run_name), UTC second)``: which rows are one raw file.
+
+    Exactly the fields the share client's ``run_key`` hashes, normalised the
+    way it normalises them (instrument stripped, name reduced to its
+    basename). Keyed on the full name, a file ingested under a PC path and a
+    Hive path was two runs on the tab and one record on the board. PG's
+    ``DISTINCT ON`` computes the same key in SQL.
+    """
+    return (str(row.get("instrument") or "").strip(),
+            run_basename(row.get("run_name")),
+            row.get("run_date_utc"))
+
+
+def canonical_rank(row: dict) -> tuple:
+    """How copies of one acquisition are ranked; the highest is kept.
+
+    ``(has_hits, version_key(stan_version), str(id))``. One function, so
+    ``pick_canonical`` and the share client's own tie-break
+    (``stan.community.peg_submit``) cannot rank differently; PG's ``ORDER
+    BY`` spells the same three keys in SQL.
+    """
+    return (bool(row.get("has_hits")), version_key(row.get("stan_version")),
+            str(row.get("id") or ""))
 
 
 def pick_canonical(rows: Iterable[dict]) -> list[dict]:
@@ -162,12 +201,13 @@ def pick_canonical(rows: Iterable[dict]) -> list[dict]:
 
     Among copies of one acquisition (``acquisition_key``) the kept row is
     the one whose ion ladder was stored (``has_hits``), then the newest
-    ``stan_version`` (``version_key``), then the highest ``id``. Hits come
-    first because the ladder needs them -- a copy without them is a run
-    whose oligomers are unknown -- and on live PG the copies with hits are
-    also the Hive re-processing (0.2.376) of the instrument PC's 0.2.222
-    rows. The PG readers apply the identical order in SQL (``DISTINCT ON``
-    in ``stan.db_pg``), so the SQLite mirror and PG keep the same copy.
+    ``stan_version`` (``version_key``), then the highest ``id``
+    (``canonical_rank``). Hits come first because the ladder needs them --
+    a copy without them is a run whose oligomers are unknown -- and on live
+    PG the copies with hits are also the Hive re-processing (0.2.376) of the
+    instrument PC's 0.2.222 rows. The PG readers apply the identical order
+    in SQL (``DISTINCT ON`` in ``stan.db_pg``), so the SQLite mirror and PG
+    keep the same copy.
 
     The choice never depends on input order. Rows must carry
     ``run_date_utc`` (already normalised); ``id``, ``stan_version`` and
@@ -177,8 +217,7 @@ def pick_canonical(rows: Iterable[dict]) -> list[dict]:
     best: dict[tuple, tuple[tuple, int]] = {}
     ordered = list(rows)
     for i, r in enumerate(ordered):
-        rank = (bool(r.get("has_hits")), version_key(r.get("stan_version")),
-                str(r.get("id") or ""))
+        rank = canonical_rank(r)
         k = acquisition_key(r)
         held = best.get(k)
         if held is None or rank > held[0]:
@@ -547,16 +586,18 @@ def summary_30d(runs: Sequence[PegRun], as_of: date) -> dict:
     "Last 30 days" is ``as_of - 29 .. as_of`` inclusive, the previous
     window the 30 days before that. ``change_pct`` is the relative change
     of the median share, None when either window is empty or the previous
-    median is 0 (a change from nothing has no percentage). ``streak_clean``
-    counts consecutive clean runs back from the newest.
+    median is below ``PEG_CHANGE_FLOOR_PCT`` -- the relay's rule, written as
+    the relay's expression, so the tab does not state a change the board
+    refuses to state. ``streak_clean`` counts consecutive clean runs back
+    from the newest.
     """
     last = _in_days(runs, as_of - timedelta(days=29), as_of)
     prev = _in_days(runs, as_of - timedelta(days=59), as_of - timedelta(days=30))
     m_last = _median([r.pct for r in last])
     m_prev = _median([r.pct for r in prev])
     change = None
-    if m_last is not None and m_prev:
-        change = round((m_last - m_prev) / m_prev * 100)
+    if m_last is not None and m_prev is not None and m_prev >= PEG_CHANGE_FLOOR_PCT:
+        change = round(100 * (m_last - m_prev) / m_prev)
     clean = sum(1 for r in last if r.cls == "clean")
     heavy = sum(1 for r in last if r.cls == "heavy")
     streak = 0

@@ -518,6 +518,7 @@ def _verify_name_ownership(pseudonym: str, reclaim: bool = False) -> str | None:
     import json
     import urllib.request
 
+    claim_id = ""
     try:
         payload = json.dumps({"pseudonym": pseudonym, "email": email}).encode()
         req = urllib.request.Request(
@@ -527,6 +528,10 @@ def _verify_name_ownership(pseudonym: str, reclaim: bool = False) -> str | None:
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read())
+            # Echoed to verify-claim: the relay only lets the caller holding
+            # it spend the code's wrong-guess budget, so a stranger's guesses
+            # cannot throw away the code this user was just emailed.
+            claim_id = str(result.get("claim_id") or "")
             console.print(f"  [green]{result.get('message', 'Code sent!')}[/green]")
     except urllib.error.HTTPError as e:
         body = json.loads(e.read().decode()) if e.headers.get("content-type", "").startswith("application/json") else {}
@@ -550,7 +555,10 @@ def _verify_name_ownership(pseudonym: str, reclaim: bool = False) -> str | None:
 
     # Verify the code
     try:
-        payload = json.dumps({"pseudonym": pseudonym, "code": code}).encode()
+        body = {"pseudonym": pseudonym, "code": code}
+        if claim_id:  # a relay that predates claim_id gets the request it expects
+            body["claim_id"] = claim_id
+        payload = json.dumps(body).encode()
         req = urllib.request.Request(
             f"{RELAY_URL}/api/verify-claim",
             data=payload,

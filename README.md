@@ -78,11 +78,12 @@ stan dashboard # serve dashboard at http://localhost:8421
 
 ## The dashboard
 
-Open `http://localhost:8421` after `stan dashboard`. Nine tabs:
+Open `http://localhost:8421` after `stan dashboard`. The main tabs:
 
 - **This Week's QCs** — gauge, weekly table, or metric-matrix view of recent HeLa runs. IPS badge front and center.
 - **QC History** — every run, sortable and filterable. Click a row for the full modal: metric breakdown, gate verdicts, PEG lollipop chart, diaPASEF drift cloud (Bruker), 4DFF Ion Cloud (Bruker, optional).
 - **Trends** — longitudinal sparklines for IPS, precursor/PSM count, peptide count, iRT deviation, TIC area, column age. Maintenance events render as vertical markers.
+- **PEG** (PEG Watch) — each instrument's PEG history: timeline with auto-detected contamination episodes, a daily calendar, the oligomer-ladder fingerprint, PEG per LC-column period, what PEG costs in precursors, the community PEG leaderboard, and an Evosep vs other LC comparison. Deep link `?tab=peg`. See [`docs/PEG_WATCH.md`](docs/PEG_WATCH.md).
 - **Sample Health** — non-QC Bruker `.d` acquisitions monitored for TIC dropout and injection failures.
 - **Fleet** — all instruments on the shared drive in one view; send remote commands.
 - **Config** — live view of `instruments.yml` and `thresholds.yml`.
@@ -148,7 +149,7 @@ detector.py → reads .d/analysis.tdf or .raw metadata → DIA or DDA?
 | **Median CV (precursor)** | DIA, replicates | Quantitative reproducibility. Healthy timsTOF Ultra: 4–9%. |
 | **iRT max deviation** | DIA | Retention-time drift from the empirical cIRT panel. |
 | **Points across peak** | both | Median MS2 scans per elution peak. Quantitation quality. |
-| **PEG contamination score** | Bruker | MS1 scan for the polyethylene-glycol ladder. |
+| **PEG share of MS1** + PEG class | Bruker + Thermo | MS1 scan for the polyethylene-glycol ladder. The share is compared only within one instrument family. Thermo on Hive reads through the ThermoRawFileParser container. |
 | **diaPASEF window drift** | Bruker | Detects MS2 windows walking off their 1/K0 calibration. |
 
 Full definitions, reference ranges, and formulas: [`docs/user_guide.md`](docs/user_guide.md) and [`docs/ips_metric.md`](docs/ips_metric.md).
@@ -165,6 +166,8 @@ Full definitions, reference ranges, and formulas: [`docs/user_guide.md`](docs/us
 Runs `stan setup`, answer yes to the benchmark question, and STAN claims an anonymous pseudonym and stores an auth token. Subsequent QC runs are submitted automatically via the HF Space relay — no HF token required on your end.
 
 Three tracks: Track A (DDA, PSM primary), Track B (DIA, precursor primary), Track C (both within 24 h from the same instrument — unlocks a six-axis radar fingerprint).
+
+**Evosep PEG Watch** is a separate, opt-in channel: `peg_share: true` in `community.yml`, then `stan peg-sync` sends per-run PEG (never file names) to the relay's PEG board, ranked within instrument family × Evosep method. It needs no community search. See [`docs/PEG_WATCH.md`](docs/PEG_WATCH.md).
 
 ---
 
@@ -189,7 +192,7 @@ What ships today vs. what's still planned.
 | Egress-aware PG readers (v1.1.8) | Done | PG Farm bills every byte read out of it. The dashboard mirror is xmin-fingerprinted, so a quiet refresh costs ~3 KB instead of 73 MB. The Hive crons ask PG only about what is new. Together they cut ~20 GB/day to well under 1 GB/day. See `docs/PG_FARM.md` → "Egress is billed". |
 | Parallel ingest sharding | Done | `stan ingest-orphans --shard N/M` for SLURM-array recovery of orphaned parquets. |
 | FastAPI dashboard backend | Done | All routes wired (runs, trends, instruments, thresholds, fleet, community, PEG, drift, 4DFF, sample-health, hide). Swagger at `/docs`. |
-| Single-file React dashboard | Done | `stan/dashboard/public/index.html`, React + Babel via CDN. 9 tabs. |
+| Single-file React dashboard | Done | `stan/dashboard/public/index.html`, React + Babel via CDN. Tabs listed under "The dashboard" above. |
 | Historical QC Museum | Done | `stan/dashboard/public/museum.html` — 999 BSA injections 2005–2022, Sage-searched; timeline, trend chart (log-scale), BSA coverage maps, Then vs Now table. Deploy guide: `docs/MUSEUM_DEPLOY.md`. |
 | Setup wizard | Done | 6 questions, dedupes `instruments.yml`, offers baseline at the end. |
 | Baseline builder | Done | Recursive discovery, auto-detect gradient/LC, pre-flight DIA-NN/Sage tests, resume on interrupt, scheduling (now / tonight / weekend). |
@@ -213,6 +216,10 @@ What ships today vs. what's still planned.
 | DIA-NN filename `--` sanitizer | Done | Junction/symlink workaround for the DIA-NN argv-parsing bug. |
 | Today TIC overlay | Done | `/api/today/tic-overview` powers the at-a-glance pump-and-spray view. |
 | PEG contamination panel | Done | `stan backfill-peg`, scoring, lollipop chart in the run modal. |
+| PEG Watch tab (v1.2.0) | Done | `GET /api/peg/overview`: timeline + 14-day median, contamination episodes, best 90-day baseline, daily calendar, ladder fingerprint, PEG by column period, precursor cost, Evosep vs other LC. One row per acquisition (duplicate ingests collapsed); failed acquisitions and the `unknown` sentinel never count as clean. See `docs/PEG_WATCH.md`. |
+| Community PEG board (v1.2.0) | Done | `stan peg-sync` (opt-in `peg_share`) → relay `POST /api/peg/submit` → `peg/peg_latest.parquet`; `GET /api/peg/leaderboard`, `/trend`, `/lc-compare`. Evosep-only ranking within family × SPD; claimed names need their token (`stan community-claim`). Runs on the Hive community-sync cron. |
+| Thermo PEG on Hive (v1.2.0) | Done | No `fisher_py` in the Hive venv, so `.raw` goes through the ThermoRawFileParser container (`stan/metrics/peg_trfp.py`), inside SLURM only. `scripts/peg_backfill_thermo.sbatch` backfills the historical Orbitrap runs. |
+| Relay source in the repo (v1.2.0) | Done | `hf_space/app.py` is the canonical HF Space source; deploy only with `scripts/deploy_hf_space.py`, which refuses to overwrite edits made in the Space. |
 | diaPASEF window drift | Done | `stan backfill-window-drift`, drift cloud scatter in the run modal. |
 | 4DFF Ion Cloud | Done | `stan install-4dff`, `run-4dff`, `backfill-features`, `backfill-feature-cloud`. Plotly per-charge view, SVG fallback. Clouds are stored in `feature_clouds` and served from the DB, so the view no longer needs the raw `.d` mounted on the dashboard host. |
 | cIRT panel + trends | Done | `stan backfill-cirt`, `derive-cirt-panel`, Trends tab visualisation. |
@@ -247,7 +254,8 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 - [ ] **Decouple community submission from the Mac.** Hive is firewalled from outbound internet to the HF Space (`*.hf.space` → HTTP 000), so `stan submit-all --backend pg` can only push from an internet-connected box — currently Brett's Mac, a single point of failure. PG Farm itself is reachable from both Hive and the Space. Preferred fix: have the HF Space's nightly consolidation job **pull from PG Farm directly** (the Space has internet; `pgfarm.library.ucdavis.edu` is reachable) instead of being pushed to. Alternative: ask HPCCF to allowlist `*.hf.space` egress on Hive so submit-all runs there (token is already at the Quobyte path). High priority for 1.1 — the Mac shouldn't be load-bearing.
 - [ ] **`backfill-tic --push` HF error capture.** Push-side relay errors aren't logged. Add a `push_errors` section to the summary log with response codes and bodies.
 - [ ] **Normalize `runs.instrument` + `sample_health.instrument`.** Some hosts split into two cards (`timsTOF HT` + `data_bruker`) because old rows hold the model name from metadata while newer rows use `name:` from `instruments.yml`. One-time migration that maps config name → model derived from the raw file.
-- [ ] **PEG + drift trend lines on the Trends tab.** We already store the per-run scalars and breakdowns. Add sparklines (peg_score, drift_median_im, drift_coverage) so slow weeks-long drifts are visible.
+- [ ] **Drift trend lines on the Trends tab.** We already store the per-run scalars and breakdowns. Add sparklines (drift_median_im, drift_coverage) so slow weeks-long drifts are visible. (PEG trends shipped as the PEG tab in v1.2.0.)
+- [ ] **PEG Watch follow-ups.** PEG on blanks / `sample_health`; persist `ladder_coherence` and `lc_model` (owner DDL); delete the duplicate `runs` rows in PG; guard `stan backfill-peg` against empty reads. List in `docs/PEG_WATCH.md` → "Known limitations".
 - [ ] **Rolling 3-month IPS baselines.** Recompute `IPS_REFERENCES` quarterly from each instrument's own history per SPD bucket. Decouples short-term variance from long-term drift. New `ips_baselines` table; `stan recalibrate-ips`; auto-monthly from the watcher.
 - [ ] **Auto-start `stan watch`.** New `stan install-service` CLI registers a Windows Scheduled Task with "At user logon" + "At system startup" triggers and "Restart on failure". `install-stan.bat` calls it; `update-stan.ps1` cycles it on update so post-update watch is never forgotten.
 - [ ] **`stan backfill-all`.** One wrapper that chains `backfill-metrics` + `backfill-cirt` + `backfill-tic` + `backfill-peg` + `backfill-window-drift` so a post-update sweep truly fills every gap.
@@ -298,6 +306,7 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 | [`docs/external_tools.md`](docs/external_tools.md) | DIA-NN, Sage, ThermoRawFileParser: CLI flags, version pins, container paths, gotchas. |
 | [`docs/HPC_PATHS.md`](docs/HPC_PATHS.md) | Hive HPC reference paths for SLURM integration. |
 | [`docs/PG_FARM.md`](docs/PG_FARM.md) | PG Farm Postgres backend: connection, schema, `STAN_DB_BACKEND=pg`, sync, token rotation. |
+| [`docs/PEG_WATCH.md`](docs/PEG_WATCH.md) | PEG tab + community PEG board: the metric, ranking rules, duplicate rule, relay API, identity, privacy, deploy and backfill runbooks. |
 | [`docs/GOTCHAS_DELIMP.md`](docs/GOTCHAS_DELIMP.md) | 50+ hard-learned lessons: DIA-NN edge cases, SLURM quirks, raw-file parsing traps. |
 | [`docs/INSTALL_REGRESSION_CHECKLIST.md`](docs/INSTALL_REGRESSION_CHECKLIST.md) | Mode A install regression checklist: pre-flight, during-install warnings, 10-question post-install verification, known failure modes. |
 | [`CLAUDE.md`](CLAUDE.md) | Context for AI coding agents working on this codebase. |

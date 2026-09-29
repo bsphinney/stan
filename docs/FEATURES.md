@@ -53,7 +53,7 @@ Three runtime modes:
 | `peak_capacity` | gradient ÷ peak_width | Computed |
 | `dynamic_range_log10` | log10(p99/p01) precursor intensity | |
 | `tic_rt_bins` + `tic_intensity` | 128-bin downsampled TIC trace | Identified-only, shipped to community for cross-lab gradient comparison |
-| `peg_score`, `peg_class` | PEG iRT-anchor coverage via alphatims | Bruker-only |
+| `peg_intensity_pct`, `peg_score`, `peg_class`, `peg_n_ions_detected` | MS1 PEG ladder (PEG1–20 × H/NH4/Na, 5 ppm, 80 strided scans) — `stan/metrics/peg.py` | Bruker (alphatims) + Thermo (fisher_py, or the ThermoRawFileParser container on Hive). `peg_intensity_pct` is the matched share of sampled MS1 peaks above 1e4 (not the TIC); compare within one instrument family only. `'unknown'` = failed read, never clean |
 | `drift_coverage`, `drift_median_im` | Bruker ion-mobility drift QC | Bruker-only — NULL on Thermo is correct |
 | `ms2_analyzer` | TRFP scan-filter parsing | "OT" / "IT" / "tof" for cohort split |
 | `library_coverage_pct` | n_precursors ÷ community library precursors | DIA only |
@@ -91,6 +91,31 @@ most-used gradients, not a fixed Evosep 100/60 pair.
   metrics, gates, TIC trace, library coverage, asset hashes.
 - `stan submit-all` walks runs, validates, posts un-submitted ones.
   Idempotent. Supports `--backend pg` for PG Farm reads.
+
+---
+
+## PEG Watch (v1.2.0) — full reference `docs/PEG_WATCH.md`
+
+- **PEG tab** (`?tab=peg`, `GET /api/peg/overview`): per-instrument
+  timeline with a 14-day median and auto-detected episodes (median ≥ 3 %
+  for ≥ 14 days), best 90-day baseline, daily calendar, ladder
+  fingerprint, PEG by column period, precursor cost per class, and
+  Evosep vs other LC. Maths in `stan/metrics/peg_trends.py` (pure).
+- **One acquisition = one run.** PG holds duplicate ingests (241 groups,
+  270 extra rows on 2026-09-28) that disagree on PEG. Every reader keeps
+  one copy per `(instrument, basename, UTC second)`: stored ion hits, then
+  newest `stan_version`, then highest id — `DISTINCT ON` in PG,
+  `pick_canonical` on SQLite, the same rank in the share client.
+- **Community PEG board**: `stan peg-sync` (opt-in `peg_share: true`) →
+  relay `POST /api/peg/submit` → `peg/peg_latest.parquet`. Ranks Evosep
+  runs only, within `instrument_family × Evosep SPD`, median PEG share,
+  ≥ 5 runs. Separate from the benchmark tracks and needs no search.
+  Claimed names need their token (`stan community-claim`).
+- **Thermo on Hive**: `stan/metrics/peg_trfp.py` converts `.raw` →
+  MS1-only mzML with `trfp.sif` inside SLURM (~35 s, 1.3 GB per file);
+  `scripts/peg_backfill_thermo.sbatch` for the history.
+- **Relay source**: `hf_space/app.py`, deployed only by
+  `scripts/deploy_hf_space.py` (refuses if the Space was edited directly).
 
 ---
 
@@ -148,6 +173,7 @@ keeps the per-instrument SQLites mirrored to PG every 30 min.
   sidecar from `stan run-4dff`). Falls back to SVG cloud when absent.
 - "QC History" tab with per-instrument filter dropdown
 - "Trends" tab cohort-keyed by SPD bucket
+- "PEG" tab — PEG Watch (see above)
 - **Museum** + **Karatemass** at `/museum.html` and `/karatemass.html` —
   historical mass-spec timeline + Karateka-parody educational game
 
@@ -161,6 +187,8 @@ Major commands:
 - `stan dashboard` — local web UI
 - `stan version|doctor|verify` — diagnostics
 - `stan submit-all [--backend pg]` — push to community relay
+- `stan peg-sync [--backend pg] [--dry-run]` — share per-run PEG with the PEG board (opt-in)
+- `stan community-claim` — re-verify the lab name by email, store a fresh `auth_token`
 - `stan hive-dispatch|hive-process|ingest-orphans` — HPC + recovery
 - `stan backfill-tic|backfill-metrics|fix-spds|fix-sample-spds` — re-derive metrics
 - `stan baseline` — retroactive QC over existing dirs
@@ -204,4 +232,5 @@ Domain alias `stan-proteomics.org` → HF Space.
 | Touch the Hive | `docs/HPC_PATHS.md` + CLAUDE.md "Hive rules" |
 | Avoid known traps | `docs/GOTCHAS_DELIMP.md` |
 | Search engine flags | `docs/external_tools.md` |
+| Touch PEG, the PEG tab or the PEG board | `docs/PEG_WATCH.md` |
 | Run the v1 release | `docs/V1_PRERELEASE_CHECKLIST.md` |

@@ -374,22 +374,73 @@ def test_newest_processing_of_a_duplicate_is_shared(newest_first):
     assert set(rec) == SPEC_RECORD_KEYS, "id / stan_version must not ride along"
 
 
-def test_duplicate_tie_breaks_migrated_at_then_id():
+def test_duplicate_rank_is_the_readers():
+    """Stored hits, then the newest version, then the highest id -- pick_canonical's order.
+
+    The reader already hands over one row per acquisition, so this rank is a
+    second line of defence. Ranked any other way (it used ``migrated_at``
+    and ignored hits), the moment two copies got through it would share a
+    different one from the copy the PEG tab counts.
+    """
+    from stan.metrics.peg_trends import pick_canonical
+
     t0 = datetime(2026, 6, 1, tzinfo=timezone.utc)
     pairs = [
-        # same version: the later migrated_at wins, whatever the ids say
-        (_heavy(id="aaa", stan_version="1.0.85", migrated_at=t0 + timedelta(days=1)),
-         _clean(id="zzz", stan_version="1.0.85", migrated_at=t0.isoformat())),
-        # same version and migrated_at: the id decides, so it is still fixed
+        # a stored ladder beats a newer version
+        (_heavy(id="aaa", stan_version="0.2.376", has_hits=True),
+         _clean(id="zzz", stan_version="1.1.12", has_hits=False)),
+        # no ladder on either: the newer version, by number not text
+        (_heavy(id="aaa", stan_version="1.0.10"), _clean(id="zzz", stan_version="1.0.9")),
+        # same version: the highest id, whatever migrated_at says
         (_heavy(id="zzz", stan_version="1.0.85", migrated_at=t0),
-         _clean(id="aaa", stan_version="1.0.85", migrated_at=t0)),
-        # a version beats no version (rows processed before the column existed)
+         _clean(id="aaa", stan_version="1.0.85", migrated_at=t0 + timedelta(days=1))),
+        # a version beats none (rows processed before the column existed)
         (_heavy(stan_version="0.2.301"), _clean(stan_version=None)),
     ]
     for winner, loser in pairs:
         for rows in ([winner, loser], [loser, winner]):
-            (rec,), _ = build_peg_records(rows, "1.2.0")
+            (rec,), skipped = build_peg_records(rows, "1.2.0")
             assert rec["peg_class"] == "heavy", (winner, loser)
+            assert skipped == {"duplicate_run_key": 1}
+            as_read = [dict(r, run_date_utc=utc_iso(r["run_date"])) for r in rows]
+            assert [r["peg_class"] for r in pick_canonical(as_read)] == ["heavy"]
+
+
+_KEY_PAIRS = {
+    # same acquisition
+    "windows-vs-posix-dir": (_row(run_name=r"D:\Data\QC\HeLa_k.d"),
+                             _row(run_name="/quobyte/proteomics-grp/STAN/raw/HeLa_k.d"), True),
+    "trailing-separator": (_row(run_name="HeLa_k.d/"), _row(run_name="HeLa_k.d"), True),
+    "instrument-whitespace": (_row(instrument="timsTOF HT "), _row(), True),
+    "offset-vs-utc": (_row(run_date="2025-02-03T11:47:26-08:00"),
+                      _row(run_date="2025-02-03 19:47:26+00:00"), True),
+    "fractional-second": (_row(run_date="2025-02-03T19:47:26.900Z"), _row(), True),
+    # different acquisitions
+    "next-second": (_row(run_date="2025-02-03T19:47:27Z"), _row(), False),
+    "d-vs-raw": (_row(run_name="HeLa_k.d"), _row(run_name="HeLa_k.raw"), False),
+    "other-instrument": (_row(instrument="timsTOF Ultra"), _row(), False),
+}
+
+
+@pytest.mark.parametrize("a,b,same", list(_KEY_PAIRS.values()), ids=list(_KEY_PAIRS))
+def test_run_key_and_the_readers_acquisition_key_agree(a, b, same):
+    """Two rows are one acquisition to the reader iff they share a run_key.
+
+    If these disagree, the tab counts one file twice while the board holds
+    it once (or the reverse), and neither side can see the other's rule.
+    """
+    from stan.metrics.peg_trends import acquisition_key, parse_utc
+    from stan.metrics.peg_trends import utc_iso as reader_utc
+
+    def akey(r):
+        return acquisition_key(dict(r, run_date_utc=reader_utc(parse_utc(r["run_date"]))))
+
+    def rkey(r):
+        (rec,), _ = build_peg_records([r], "1.2.0")
+        return rec["run_key"]
+
+    assert (akey(a) == akey(b)) is same
+    assert (rkey(a) == rkey(b)) is same
 
 
 # ── sync: opt-in, identity, network ─────────────────────────────────────
@@ -411,6 +462,36 @@ def test_env_opt_in(_isolated, relay, share_rows, monkeypatch):
     share_rows["rows"] = [_row()]
     assert sync_peg()["status"] == "ok"
     assert len(relay.calls) == 1
+
+
+def test_sharing_without_a_token_warns_the_name_is_unclaimed(_isolated, relay, share_rows,
+                                                             caplog):
+    """Unclaimed names are allowed, so it still sends -- but says who can take it."""
+    _write_cfg(_isolated["user_dir"], display_name="Clogged PeakTail", peg_share=True)
+    share_rows["rows"] = [_row()]
+    with caplog.at_level("WARNING", logger="stan.community.peg_submit"):
+        result = sync_peg()
+    assert result["status"] == "ok" and len(relay.calls) == 1
+    assert "X-STAN-Auth" not in relay.calls[0]["headers"]
+    assert result["unclaimed"] is True
+    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("unclaimed" in m and "stan community-claim" in m for m in warned), warned
+
+
+def test_a_token_means_no_unclaimed_warning(_isolated, relay, share_rows, caplog):
+    _write_cfg(_isolated["user_dir"], display_name="Clogged PeakTail", peg_share=True,
+               auth_token="tok")
+    share_rows["rows"] = [_row()]
+    with caplog.at_level("WARNING", logger="stan.community.peg_submit"):
+        result = sync_peg()
+    assert result["status"] == "ok" and result["unclaimed"] is False
+    assert relay.calls[0]["headers"]["X-STAN-Auth"] == "tok"
+    assert not [r for r in caplog.records if "unclaimed" in r.getMessage()]
+
+
+def test_sharing_off_says_nothing_about_claiming(_isolated, relay, share_rows):
+    _write_cfg(_isolated["user_dir"], display_name="Clogged PeakTail")
+    assert sync_peg()["unclaimed"] is False
 
 
 def test_no_community_yml_at_all_is_sharing_off(relay, share_rows):
@@ -756,6 +837,36 @@ def test_cli_peg_sync_success_summary(_isolated, relay, share_rows):
     res = _cli(["peg-sync", "--backend", "pg"])
     assert res.exit_code == 0, res.output
     assert "accepted 1" in res.output and "peg_unknown 1" in res.output
+
+
+def test_cli_peg_sync_unclaimed_name_prints_a_yellow_warning(_isolated, relay, share_rows,
+                                                             monkeypatch):
+    import stan.cli as stan_cli
+    from rich.console import Console
+
+    buf = io.StringIO()
+    monkeypatch.setattr(stan_cli, "console",
+                        Console(file=buf, force_terminal=True, color_system="standard",
+                                width=200))
+    _write_cfg(_isolated["user_dir"], display_name="Clogged PeakTail", peg_share=True)
+    share_rows["rows"] = [_row()]
+    res = _cli(["peg-sync", "--backend", "pg"])
+    assert res.exit_code == 0, res.output
+    assert len(relay.calls) == 1                     # still sent
+    out = buf.getvalue()
+    line = next((ln for ln in out.splitlines() if "unclaimed" in ln), "")
+    assert "\x1b[33m" in line, out                   # yellow
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", line)
+    assert "'Clogged PeakTail' is unclaimed" in plain
+    assert "anyone can claim it" in plain and "stan community-claim" in plain
+
+
+def test_cli_peg_sync_claimed_name_prints_no_unclaimed_line(_isolated, relay, share_rows):
+    _write_cfg(_isolated["user_dir"], display_name="Clogged PeakTail", peg_share=True,
+               auth_token="tok")
+    share_rows["rows"] = [_row()]
+    res = _cli(["peg-sync", "--backend", "pg"])
+    assert res.exit_code == 0 and "unclaimed" not in res.output
 
 
 def test_cli_peg_sync_rejects_bad_backend(_isolated, relay, share_rows):

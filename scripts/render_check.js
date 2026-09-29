@@ -89,6 +89,7 @@ const names = [
   'PegTab', 'PegBoardView', 'PegLcView', 'PegBadge', 'Sparkline',
   'PegBoard', 'PegImpact', 'PegTabLoad', 'PegLoadError', 'pegDefaultSpd',
   'PEG_CACHE', 'PEG_RELAY_DEFAULT', 'pegBoardUrl', 'pegLcUrl', 'pegTrendUrl',
+  'PegShare', 'pegCanonName',
 ];
 const factory = new Function(
   'React', 'ReactDOM', 'window', 'document', 'localStorage', 'sessionStorage',
@@ -395,8 +396,10 @@ function checkPeg(fx) {
     expect('timeline plots every run in the default range', got === want, `${got} circles, ${want} runs`);
     const rows = (out.match(/<tr class="peg-(you|oth)"/g) || []).length;
     expect('leaderboard shows every ranked lab the relay returned', rows === (fx.lb.ranked || []).length, `${rows} rows`);
-    const me = ov.sharing && ov.sharing.display_name;
-    const meRanked = (fx.lb.ranked || []).some(r => r.display_name === me);
+    /* Canonical on both sides, as the page compares (pegCanonName). */
+    const canon = E.pegCanonName || (v => v);
+    const me = canon(ov.sharing && ov.sharing.display_name);
+    const meRanked = !!me && (fx.lb.ranked || []).some(r => canon(r.display_name) === me);
     if (meRanked) expect('your row highlighted with a YOU tag', /<tr class="peg-you"[\s\S]*?YOU/.test(out));
     /* Off Evosep the board shown is the family's Evosep labs, for
        comparison; this lab has no rank there whatever the relay says. */
@@ -589,6 +592,32 @@ function checkPeg(fx) {
     E.PEG_CACHE.get = cacheGet;
   }
 
+  /* RG-UI-2. A lab with one Exploris on Evosep and one on a custom LC,
+     viewing the custom one: the family's Evosep board lists this lab and
+     nobody else. "No Exploris lab on Evosep has shared" over its own YOU
+     row is false, and contradicts the header note ("your lab is, through
+     another instrument") right above it. */
+  const me2 = 'E2E Lab';
+  const selfRow = Object.assign({}, (fx.lb.ranked || [])[0] || {}, { display_name: me2, rank: 1, verified: true, n_runs: 12 });
+  const selfOnly = Object.assign({}, fx.lb, { family: 'Exploris', spd: 60, ranked: [selfRow], unranked: [] });
+  const explView = { ov: Object.assign({}, expl, { sharing: { enabled: true, source: 'config', display_name: me2 } }),
+                     family: 'Exploris', isEvosep: false, chips: ['60'], coh: '60', win: '30', onCoh: () => {}, onWin: () => {},
+                     stale: false, error: null, myName: me2, relayBase: relay };
+  const onlyMe = renderQuiet('PegBoardView', Object.assign({}, explView, { data: selfOnly }));
+  const onlyMeUnranked = renderQuiet('PegBoardView', Object.assign({}, explView, {
+    data: Object.assign({}, selfOnly, { ranked: [], unranked: [{ display_name: me2, n_runs: 2, verified: true }] }) }));
+  const nobody = renderQuiet('PegBoardView', Object.assign({}, explView, {
+    data: Object.assign({}, fx.lbEmpty, { family: 'Exploris', spd: 60 }) }));
+  if (onlyMe !== null && onlyMeUnranked !== null && nobody !== null) {
+    rendered += 3;
+    const [a, b, c] = [onlyMe, onlyMeUnranked, nobody].map(h => text(h).replace(/\s+/g, ' '));
+    if (expect('board listing only this lab: "No other Exploris lab on Evosep"', /No other Exploris lab on Evosep has shared 60 SPD/.test(a), a.slice(0, 400))
+        & expect('...never "No Exploris lab" over its own YOU row', !/No Exploris lab on Evosep/.test(a) && /<tr class="peg-you"/.test(onlyMe))
+        & expect('...same when this lab is only unranked there', /No other Exploris lab on Evosep has shared/.test(b) && !/No Exploris lab on Evosep/.test(b))
+        & expect('empty board still says no Exploris lab on Evosep shared', /No Exploris lab on Evosep has shared 60 SPD/.test(c) && !/No other/.test(c)))
+      console.log('ok    PegBoardView        non-Evosep: board of only this lab says "No other"');
+  }
+
   /* Same defect on an Evosep instrument: a derived SPD (36, from a 32 min
      gradient) is no board cohort either, however often it ran. */
   if (E.pegDefaultSpd) {
@@ -675,7 +704,218 @@ function checkPeg(fx) {
     if (expect('failed load offers Retry and a way back', />Retry</.test(failed) && new RegExp(`>Back to (<!-- -->)?${ov.instrument}<`).test(failed)))
       console.log('ok    PegLoadError        Retry + back to the previous instrument');
   }
+
+  /* 9. Review round 1 leftovers: canonical lab names (F1), sharing as the
+     relay sees it (F2/F10), case-blind family matching (F4). */
+  checkPegNamesAndSharing(fx, { relay, fam, seed, expect, text, boardProps, lcProps });
   E.PEG_CACHE.clear();
+}
+
+/* The relay's own answers, computed with _clean_text from hf_space/app.py
+   (extracted through the AST and run on Python 3.13, unidata 15.1). If the
+   relay's rule changes, regenerate these from it -- do not edit them to
+   match the page. */
+const RELAY_CLEAN_TEXT = [
+  ['E2E  Lab', 'E2E Lab'], [' E2E\tLab \n', 'E2E Lab'], ['E2E\u200bLab', 'E2ELab'], ['E2E\u2800Lab', 'E2E Lab'],
+  ['\uff25\uff12\uff25 Lab', 'E2E Lab'], ['Proteo\u0302mica Lab', 'Prote\u00f4mica Lab'], ['Cafe\u034f\u0301 Lab', 'Caf\u00e9 Lab'],
+  ['\u202eLab', 'Lab'], ['Lab\u001cX', 'Lab X'], ['A\u0085B', 'A B'], ['A\ufeffB', 'AB'], ['\ufb01ne Lab', 'fine Lab'],
+  ['Clogged PeakTail', 'Clogged PeakTail'], ['A\u3164B', 'AB'], ['A\ufe0fB', 'AB'], ['A\u00a0\u3000B', 'A B'],
+  ['A\u180eB', 'AB'], ['A\u0000B\u007f', 'AB'], ['A\udb40\udc41B', 'AB'], ['\u2800', ''], ['UC\u2003Davis\u2029Core', 'UC Davis Core'],
+];
+
+function checkPegNamesAndSharing(fx, { relay, fam, seed, expect, text, boardProps, lcProps }) {
+  const E = exported;
+  if (!E.pegCanonName || !E.PegShare) {
+    console.error('FAIL  PEG: page does not define pegCanonName / PegShare'); fails++; return;
+  }
+  const ov = fx.ov;
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const q = (s) => JSON.stringify(s).replace(/[\u0080-￿]/g, c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+
+  /* F1. The page must canonicalise exactly as the relay does, or a name the
+     relay treats as the lab's is not the lab's here. */
+  const off = RELAY_CLEAN_TEXT.filter(([i, o]) => E.pegCanonName(i) !== o);
+  off.forEach(([i, o]) => expect(`pegCanonName(${q(i)}) matches the relay`, false, `got ${q(E.pegCanonName(i))}, relay ${q(o)}`));
+  if (!off.length & expect('pegCanonName of a non-string is empty', E.pegCanonName(null) === '' && E.pegCanonName(5) === ''))
+    console.log(`ok    pegCanonName        ${RELAY_CLEAN_TEXT.length} cases agree with the relay's _clean_text`);
+
+  /* The same lab name as community.yml might hold it: NFD accents, a
+     leading braille blank, zero-width spaces and doubled blanks. */
+  const mangle = (n) => '\u2800' + n.normalize('NFD').split(' ').join(' \u200b\u00a0') + '\ufeff';
+  const ranked = (fx.lb.ranked || []).filter(r => !/[<>&]/.test(r.display_name));
+  const unranked = fx.lb.unranked || [];
+  if (ranked.length) {
+    const who = ranked[0].display_name;
+    const yb = renderQuiet('PegBoardView', Object.assign({}, boardProps, { data: fx.lb, myName: mangle(who) }));
+    const nb = renderQuiet('PegBoardView', Object.assign({}, boardProps, { data: fx.lb, myName: who.toLowerCase() === who ? who.toUpperCase() : who.toLowerCase() }));
+    if (yb !== null && nb !== null) {
+      rendered += 2;
+      const you = (h) => ((/<tr class="peg-you"[\s\S]*?<span class="peg-labn">([^<]*)</.exec(h) || [])[1]);
+      const un = unranked.length ? renderQuiet('PegBoardView', Object.assign({}, boardProps, { data: fx.lb, myName: mangle(unranked[0].display_name) })) : '';
+      if (un) rendered++;
+      if (expect('YOU row found through a non-canonical local name', you(yb) === esc(who), `YOU on ${you(yb)}`)
+          & expect('exactly one YOU row', (yb.match(/<tr class="peg-you"/g) || []).length === 1)
+          & expect('case still tells labs apart (the relay keeps case)', !/<tr class="peg-you"/.test(nb))
+          & expect('unranked lab found through a non-canonical local name',
+                   !unranked.length || text(un).includes(`${unranked[0].display_name} (you)`)))
+        console.log(`ok    PegBoardView        YOU through NFD / zero-width / doubled blanks: "${who}"`);
+    }
+  }
+
+  /* F2 / F10, narrowed by RG-UI-1. With no setting on this host (the
+     hosted dashboard: source 'off') the relay's board speaks for the lab,
+     and only as a past fact -- a row on the board says runs were sent in
+     the window, not that anything is being sent now. An explicit opt-out
+     here (source 'opted_out') is never overridden by the board: the relay
+     keeps the runs sent before it for the whole window. */
+  const share = (sharing, onBoard, boardWin) => renderQuiet('PegShare', { sharing, myName: E.pegCanonName(sharing.display_name), onBoard, boardWin });
+  const S = {
+    seen: share({ enabled: false, display_name: 'E2E Lab', source: 'off' }, true, '30'),
+    seenNoSource: share({ enabled: false, display_name: 'E2E Lab' }, true, '30'),
+    seenYear: share({ enabled: false, display_name: 'E2E Lab', source: 'off' }, true, '365'),
+    optedSeen: share({ enabled: false, display_name: 'E2E Lab', source: 'opted_out' }, true, '30'),
+    opted: share({ enabled: false, display_name: 'E2E Lab', source: 'opted_out' }, false),
+    off: share({ enabled: false, display_name: 'E2E Lab' }, false),
+    offSrc: share({ enabled: false, display_name: 'E2E Lab', source: 'off' }, false),
+    env: share({ enabled: true, display_name: 'E2E Lab', source: 'env' }, false),
+    cfg: share({ enabled: true, display_name: 'E2E Lab', source: 'config' }, false),
+    old: share({ enabled: true, display_name: 'E2E Lab' }, false),
+  };
+  if (Object.values(S).every(h => h !== null)) {
+    rendered += Object.keys(S).length;
+    const T = Object.fromEntries(Object.entries(S).map(([k, h]) => [k, text(h).replace(/\s+/g, ' ')]));
+    const isOn = (t) => /Sharing PEG with the community as E2E Lab/.test(t) && !/PEG stays in your lab/.test(t);
+    const isOff = (k) => /PEG stays in your lab/.test(T[k]) && /peg-switch off/.test(S[k]) && !/Sharing PEG with the community/.test(T[k]);
+    /* What the relay shows, as a past fact, never "sharing is on". */
+    const seenOnly = (t) => /On the community board as E2E Lab/.test(t) && !/PEG stays in your lab/.test(t)
+      && !/Sharing PEG with the community/.test(t) && !/turn (that|it) off there/.test(t);
+    if (expect('no setting here, lab on the board -> what the board shows, not "sharing"', seenOnly(T.seen) && seenOnly(T.seenNoSource), T.seen.slice(-360))
+        & expect('...worded as a past fact over the window the board covered',
+                 /Runs from the last 30 days are on the board under this name/.test(T.seen)
+                 && /Runs from the last 12 months are on the board under this name/.test(T.seenYear))
+        & expect('...and says this dashboard is not what sends them', /does not send them/.test(T.seen))
+        & expect('opted out here, lab still on the board -> OFF, earlier runs named as such', isOff('optedSeen')
+                 && /set not to share/.test(T.optedSeen) && /still on the board/.test(T.optedSeen), T.optedSeen.slice(-360))
+        & expect('opted out here, not on a board -> OFF, no board sentence', isOff('opted') && /set not to share/.test(T.opted)
+                 && !/on the board under/.test(T.opted))
+        & expect('not on a board and off here -> the OFF text', isOff('off') && isOff('offSrc'))
+        & expect('source env -> names STAN_PEG_SHARE', isOn(T.env) && /STAN_PEG_SHARE/.test(T.env))
+        & expect('source config, or none (older server) -> the local community.yml text',
+                 [T.cfg, T.old].every(t => isOn(t) && /Each stan peg-sync sends your QC runs/.test(t) && !/STAN_PEG_SHARE/.test(t))))
+      console.log('ok    PegShare            no setting: board as past fact; opted out: OFF; env/config/absent worded');
+  }
+
+  /* The same, end to end: this host says off, the relay's board lists the
+     lab. The card and the rank tile both have to believe the board. */
+  const lbName = ranked.length ? ranked[0].display_name : null;
+  const unName = unranked.length ? unranked[0].display_name : null;
+  const tab = (sharing, board = fx.lb) => {
+    E.PEG_CACHE.clear();
+    seed('/api/peg/overview', Object.assign({}, ov, { sharing: Object.assign({}, ov.sharing, sharing) }));
+    for (const spd of ['100', '60', '30']) {
+      for (const win of ['30', '90', '365']) seed(E.pegBoardUrl(relay, fam, spd, win), spd === String(fx.lb.spd) ? board : fx.lbEmpty);
+    }
+    seed(E.pegLcUrl(relay, fam), fx.lcOne);
+    const h = renderQuiet('PegTab', {});
+    if (h !== null) rendered++;
+    return h;
+  };
+  const card = (h) => { const a = h.indexOf('What your lab shares'); return a < 0 ? '' : text(h.slice(a, h.indexOf('</section>', a))).replace(/\s+/g, ' '); };
+  const cardHtml = (h) => { const a = h.indexOf('What your lab shares'); return a < 0 ? '' : h.slice(a, h.indexOf('</section>', a)); };
+  const tile = (h) => text((/Community rank[\s\S]*?<div class="peg-tile-d">([\s\S]*?)<\/div>/.exec(h) || [])[1] || '');
+  if (ov.lc_system === 'evosep' && lbName) {
+    const a = tab({ enabled: false, source: 'off', display_name: mangle(lbName) });
+    const b = unName ? tab({ enabled: false, source: 'off', display_name: mangle(unName) }) : '';
+    const c = tab({ enabled: false, source: 'off', display_name: 'Nobody Shares Lab' });
+    if (a && c) {
+      if (expect('no setting here, lab ranked on the board -> card says so, as a past fact',
+                 /Runs from the last 30 days are on the board under this name/.test(card(a)), card(a).slice(-240))
+          & expect('...and the rank tile shows the rank', /Community rank[\s\S]{0,200}#\d/.test(a))
+          & expect('no setting here, lab only unranked -> tile says not ranked yet, not "sharing is off"',
+                   !b || (/not ranked yet/.test(tile(b)) && /on the board under this name/.test(card(b))), b ? tile(b) : '')
+          & expect('no setting here, lab on no board -> OFF card and "sharing is off"',
+                   /PEG stays in your lab/.test(card(c)) && /sharing is off/.test(tile(c)), `${card(c).slice(0, 80)} | ${tile(c)}`))
+        console.log(`ok    PegTab              no setting here, relay lists "${lbName}"${unName ? ` / "${unName}"` : ''}: shown from the board`);
+    }
+    /* RG-UI-1. The same lab, opted out on this host (peg_share: false).
+       Its pre-opt-out runs are still inside the relay's window, ranked or,
+       once fewer than 5 are left, unranked. Neither makes it "sharing". */
+    const canonLb = E.pegCanonName(lbName);
+    const onlyUnranked = Object.assign({}, fx.lb, {
+      ranked: (fx.lb.ranked || []).filter(r => E.pegCanonName(r.display_name) !== canonLb),
+      unranked: [...(fx.lb.unranked || []), { display_name: lbName, n_runs: 2, verified: true }] });
+    const d = tab({ enabled: false, source: 'opted_out', display_name: mangle(lbName) });
+    const e = tab({ enabled: false, source: 'opted_out', display_name: mangle(lbName) }, onlyUnranked);
+    if (d && e) {
+      const offCard = (h) => /PEG stays in your lab/.test(card(h)) && /peg-switch off/.test(cardHtml(h))
+        && !/Sharing PEG with the community/.test(card(h)) && !/On the community board as/.test(card(h));
+      if (expect('opted out here, lab ranked on the board -> card OFF, earlier runs named', offCard(d) && /still on the board/.test(card(d)), card(d).slice(-300))
+          & expect('opted out here, lab only unranked -> card OFF', offCard(e), card(e).slice(-300))
+          & expect('...and the tile says "sharing is off", not "5 QCs needed"', /sharing is off/.test(tile(e)) && !/not ranked yet/.test(tile(e)), tile(e)))
+        console.log(`ok    PegTab              opted out here, relay still lists "${lbName}": sharing shown OFF`);
+    }
+  }
+
+  /* F4. Families are one family whatever their case. */
+  const upper = (d) => Object.assign({}, d, { cohorts: (d.cohorts || []).map(c => Object.assign({}, c, { family: String(c.family).toUpperCase() })) });
+  if (fam) {
+    /* Board chips: an SPD the relay reports labs in, under another case. */
+    E.PEG_CACHE.clear();
+    const extra = { family: String(fam).toUpperCase(), spd: 200, n_labs: 2, n_runs_365d: 40 };
+    const lbU = upper(Object.assign({}, fx.lb, { cohorts: [...(fx.lb.cohorts || []), extra] }));
+    for (const spd of ['100', '60', '30', '200']) for (const win of ['30', '90', '365']) seed(E.pegBoardUrl(relay, fam, spd, win), lbU);
+    const brd = renderQuiet('PegBoard', { ov, isEvosep: true, family: fam, relayBase: relay, defaultSpd: '100',
+                                          myName: ov.sharing && ov.sharing.display_name, rankLb: { data: lbU, error: null } });
+    if (brd !== null) {
+      rendered++;
+      if (expect('cohort chips found under another case', new RegExp(`>${fam} · 200 SPD<`).test(brd), 'no 200 SPD chip'))
+        console.log(`ok    PegBoard            relay family "${extra.family}" matches "${fam}"`);
+    }
+    /* Timeline band: its n_labs lookup reads the rank board's cohorts. The
+       trend is forced to 3+ labs a week, since the band skips thinner weeks
+       and the real UC Davis trend has one lab. */
+    const trend3 = { weeks: ((fx.trend && fx.trend.weeks) || []).map(w => Object.assign({}, w, {
+      n_labs: Math.max(3, w.n_labs || 0), p25: w.p25 == null ? 0.1 : w.p25, p75: w.p75 == null ? 2 : w.p75 })) };
+    const orig = windowStub.localStorage.getItem;
+    windowStub.localStorage.getItem = (k) => (k === 'stan.peg.spd' ? '100' : null);
+    try {
+      const band = (lb) => {
+        E.PEG_CACHE.clear();
+        seed('/api/peg/overview', ov);
+        for (const spd of ['100', '60', '30']) {
+          for (const win of ['30', '90', '365']) seed(E.pegBoardUrl(relay, fam, spd, win), lb);
+          seed(E.pegTrendUrl(relay, fam, spd), trend3);
+        }
+        seed(E.pegLcUrl(relay, fam), fx.lcOne);
+        const h = renderQuiet('PegTab', {});
+        if (h !== null) rendered++;
+        return h && /Community p25–p75 · /.test(h);
+      };
+      const three = Object.assign({}, fx.lb, { cohorts: [{ family: fam, spd: 100, n_labs: 4, n_runs_365d: 400 }] });
+      if (ov.lc_system === 'evosep' && (ov.rolling || {})['100']) {
+        const same = band(three), diff = band(upper(three));
+        if (expect('timeline band drawn when the relay spells the family as we do (control)', same)
+            & expect('timeline band drawn when the relay spells it in another case', diff))
+          console.log('ok    PegTimeline         community band found under another family case');
+      }
+    } finally {
+      windowStub.localStorage.getItem = orig;
+    }
+    /* LC panel: one family option per family, whatever the relay's case. */
+    const lcU = Object.assign({}, fx.lcOne, { families: [...(fx.lcOne.families || []),
+      { family: String(fam).toUpperCase(), evosep_runs: 5, other_runs: 5, evosep_labs: 1, other_labs: 1 },
+      { family: String(fam).toLowerCase(), evosep_runs: 5, other_runs: 0, evosep_labs: 1, other_labs: 0 }] });
+    const lcv = renderQuiet('PegLcView', Object.assign({}, lcProps, { data: lcU }));
+    if (lcv !== null) {
+      rendered++;
+      const grp = (/<div class="peg-seg" role="group" aria-label="Instrument family">([\s\S]*?)<\/div>/.exec(lcv) || [])[1] || '';
+      const opts = [...grp.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map(x => x[1]);
+      const same = opts.filter(o => o.toLowerCase() === String(fam).toLowerCase());
+      if (expect('one family option per family, whatever its case', same.length === 1, opts.join(', '))
+          & expect('that option is the one pressed', new RegExp(`aria-pressed="true"[^>]*>${fam}<`).test(grp)))
+        console.log(`ok    PegLcView           family options: ${opts.join(', ')}`);
+    }
+  }
 }
 
 /* ======================================================================

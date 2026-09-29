@@ -1419,30 +1419,43 @@ class InstrumentWatcher:
         try:
             spectra = list(read_ms1_any(d_path))
             peg = detect_peg_in_spectra(spectra)
-            update_peg_result(
-                run_id=row_id,
-                peg_score=peg.peg_score,
-                peg_n_ions_detected=peg.n_ions_detected,
-                peg_intensity_pct=peg.intensity_pct,
-                peg_class=peg.peg_class,
-                table=table,
-            )
-            # v0.2.147: also persist the per-ion breakdown so the
-            # dashboard can render a lollipop chart. Dedup'd to one
-            # row per (repeat_n, adduct, charge) by insert_peg_ion_hits.
-            try:
-                insert_peg_ion_hits(run_id=row_id, matches=peg.matches, table=table)
-            except Exception:
-                logger.debug(
-                    "PEG breakdown write failed for %s", d_path.name,
-                    exc_info=True,
+            if not spectra or peg.total_intensity <= 0:
+                # Nothing read, or nothing above detect_peg_in_spectra's 1e4
+                # floor (no real QC run produces that). The detector answers
+                # score 0.0 / 0 ions / 0 % / 'clean' -- a spotless run -- and
+                # stored, `stan peg-sync` publishes it as clean. Leave PEG
+                # NULL, as hive_process._run_peg_and_drift and the Thermo
+                # backfill do. Drift below reads the .d on its own and runs
+                # exactly as before.
+                logger.warning(
+                    "PEG: no MS1 signal read for %s (%d spectra); leaving PEG NULL",
+                    d_path.name, len(spectra),
                 )
-            if peg.peg_class in ("moderate", "heavy"):
-                logger.info(
-                    "watcher: PEG %s on %s (score %.1f, %d ions)",
-                    peg.peg_class, d_path.name, peg.peg_score,
-                    peg.n_ions_detected,
+            else:
+                update_peg_result(
+                    run_id=row_id,
+                    peg_score=peg.peg_score,
+                    peg_n_ions_detected=peg.n_ions_detected,
+                    peg_intensity_pct=peg.intensity_pct,
+                    peg_class=peg.peg_class,
+                    table=table,
                 )
+                # v0.2.147: also persist the per-ion breakdown so the
+                # dashboard can render a lollipop chart. Dedup'd to one
+                # row per (repeat_n, adduct, charge) by insert_peg_ion_hits.
+                try:
+                    insert_peg_ion_hits(run_id=row_id, matches=peg.matches, table=table)
+                except Exception:
+                    logger.debug(
+                        "PEG breakdown write failed for %s", d_path.name,
+                        exc_info=True,
+                    )
+                if peg.peg_class in ("moderate", "heavy"):
+                    logger.info(
+                        "watcher: PEG %s on %s (score %.1f, %d ions)",
+                        peg.peg_class, d_path.name, peg.peg_score,
+                        peg.n_ions_detected,
+                    )
         except PegReaderUnavailable:
             logger.warning("alphatims missing - PEG + drift skipped for %s", d_path.name)
             peg_reader_available = False

@@ -25,6 +25,9 @@
 >   to HF Dataset (see `stan/community/submit.py`).
 > - **SQLite + parquet schemas**: regenerate from `stan/db.py` and
 >   `stan/community/submit.py` — schemas below are stale.
+> - **PEG (v1.2.0)**: added after the freeze as §12a, because it is a
+>   deliberate exception to the track separation. Current behaviour:
+>   `docs/PEG_WATCH.md`.
 >
 > Treat the rest as historical context; verify against the code before acting.
 
@@ -44,6 +47,7 @@
 10. [Community Benchmark — Track B (DIA)](#10-community-benchmark--track-b-dia)
 11. [Community Benchmark — Track A (DDA)](#11-community-benchmark--track-a-dda)
 12. [Community Benchmark — Track C (Dual Mode Fingerprint)](#12-community-benchmark--track-c-dual-mode-fingerprint)
+12a. [PEG Watch — per-run PEG, a separate share channel (v1.2.0)](#12a-peg-watch--per-run-peg-a-separate-share-channel-v120)
 13. [HF Dataset Infrastructure](#13-hf-dataset-infrastructure)
 14. [Instrument Config (instruments.yml)](#14-instrument-config-instrumentsyml)
 15. [Tech Stack](#15-tech-stack)
@@ -1309,6 +1313,66 @@ Expected values:
 
 ---
 
+## 12a. PEG Watch — per-run PEG, a separate share channel (v1.2.0)
+
+Added 2026-09-28, after this spec was frozen. Full reference:
+`docs/PEG_WATCH.md`; design and decisions:
+`docs/superpowers/specs/2026-09-28-peg-watch-design.md`.
+
+### Metric
+
+**PEG share of MS1** (`peg_intensity_pct`): matched intensity of a
+60-ion PEG panel (PEG1–20 × [M+H]⁺/[M+NH₄]⁺/[M+Na]⁺, 5 ppm) over the
+summed intensity of the sampled MS1 peaks at or above 10⁴ counts (80
+scans at an even stride). The denominator is the sampled above-floor MS1,
+**not the TIC**. The 0–100 `peg_score` saturates (29 % of UC Davis
+timsTOF runs score exactly 0, 95 score exactly 100), so ranking uses the
+share and the score/class are badges.
+
+The 10⁴ floor is absolute while detector intensity scales differ by
+vendor and model, so **PEG share is never compared across instrument
+families**.
+
+### Classes
+
+`clean` (< 20), `trace` (20–50, or higher with fewer than 4 ions),
+`moderate` (50–70), `heavy` (> 70). `unknown` is the reader-failure
+sentinel (score 0.0) and is never a measurement. A run with no MS1 signal
+is left NULL, never stored as clean. Heavy runs are shared, not held back.
+
+### Why a separate channel — the exception to track separation
+
+Tracks A/B/C never mix DDA and DIA because their primary metrics come
+from different search engines. PEG does not come from a search at all:
+it is a property of the **MS1** signal, the same measurement on a DDA or
+a DIA run. So PEG is shared through its own relay channel
+(`POST /api/peg/submit` → `peg/` in the dataset), independent of the
+tracks and of the frozen community search:
+
+- any lab that can read its raw MS1 can take part, pinned FASTA/library
+  or not;
+- a lab's whole history backfills in a few requests (batches of 2,000),
+  not one commit per row;
+- the benchmark schema is untouched.
+
+Cohorts are `instrument_family × Evosep SPD method`; only Evosep runs are
+ranked. Other LCs are shared for an "Evosep vs other LC" comparison that
+is shown within one family and never ranked. One acquisition counts once
+(duplicate ingests are collapsed by a fixed rule), and a lab needs ≥ 5
+runs in the window to be ranked.
+
+### Privacy
+
+Per run: `run_key` (a truncated sha256 of instrument, file basename and
+UTC run time), run time, instrument model/family, LC group, SPD,
+acquisition mode, sample type, amount and the four PEG fields. Never:
+file or sample names, raw data, spectra, serials. Opt-in
+(`peg_share: true`), off by default. Claimed lab names must present their
+token; claim email hashes are peppered (`CLAIMS_PEPPER`) so a public
+ranking cannot be joined to a list of candidate emails.
+
+---
+
 ## 13. HF Dataset Infrastructure
 
 ### Repository: `brettsp/stan-benchmark`
@@ -1319,6 +1383,9 @@ stan-community-benchmark/
 ├── benchmark_latest.parquet           # consolidated, all validated submissions
 ├── benchmark_flagged.parquet          # flagged (transparency)
 ├── submissions/                       # individual submission parquets
+├── peg/                               # v1.2.0, §12a: separate PEG channel
+│   ├── peg_latest.parquet             # one row per (display_name, run_key)
+│   └── submissions/                   # audit log of each accepted batch
 ├── community_fasta/
 │   ├── human_opg_202604.fasta
 │   └── human_opg_202604.fasta.md5

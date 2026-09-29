@@ -125,11 +125,27 @@ once. That is ~73 MB, plus ~88 MB of ion clouds drained 50 per tick. A deploy
 therefore costs a few hundred MB of egress, which is fine. A restart loop
 would not be.
 
+## PEG sharing status (v1.2.0)
+
+The PEG tab's "What your lab shares" card reports *this host's* PEG
+sharing setting. UC Davis shares from the Hive cron (`stan peg-sync`), and
+this container has no community.yml, so tell it:
+
+```bash
+az webapp config appsettings set -g rg-fran -n stan-ucd-proteomics \
+  --settings STAN_PEG_SHARE=1
+```
+
+Safe: the server never runs `peg-sync` itself; the setting only changes
+what the card says. Its lab name comes from `STAN_DISPLAY_NAME`. Keep the
+setting in step with `peg_share` on Hive (`docs/PEG_WATCH.md`).
+
 ## Expected public surface after a deploy
 
 | Route | Anonymous | Why |
 |---|---|---|
 | `GET /` | 200 | public by design |
+| `GET /api/peg/overview` | 200 | public by design; per-run PEG scalars, no run or sample names |
 | `GET /api/ht/submission` | 403 | customer submission data |
 | `POST /api/arcade/score` | 200 | shared leaderboard |
 | `POST /api/fleet/command` | 403 | RCE against instrument PCs |

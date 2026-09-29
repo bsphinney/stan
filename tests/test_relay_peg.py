@@ -328,11 +328,13 @@ def test_two_claims_for_one_canonical_name_both_bind_it(client, relay, hub):
 
 
 def _claim(client, relay, name: str, email: str = "owner@lab.org") -> str:
-    """claim-name + verify-claim; returns the token."""
+    """claim-name + verify-claim, echoing the claim_id as stan setup does; returns the token."""
     r = client.post("/api/claim-name", json={"pseudonym": name, "email": email})
     assert r.status_code == 200, r.text
+    claim_id = r.json()["claim_id"]
     pending = relay._pending_codes[relay._clean_text(name)]
-    r = client.post("/api/verify-claim", json={"pseudonym": name, "code": pending["code"]})
+    r = client.post("/api/verify-claim",
+                    json={"pseudonym": name, "code": pending["code"], "claim_id": claim_id})
     assert r.status_code == 200, r.text
     return r.json()["token"]
 
@@ -367,29 +369,128 @@ def test_claim_name_refuses_names_the_peg_channel_would_refuse(client, relay, na
     assert relay._pending_codes == {}
 
 
+def _wrong(code: str) -> str:
+    return "000000" if code != "000000" else "111111"
+
+
+def _verify(client, name: str, code: str, claim_id: str | None = None, xff: str | None = None):
+    body = {"pseudonym": name, "code": code}
+    if claim_id is not None:
+        body["claim_id"] = claim_id
+    headers = {"X-Forwarded-For": xff} if xff else {}
+    return client.post("/api/verify-claim", json=body, headers=headers)
+
+
 def test_verify_claim_gives_up_after_five_wrong_codes(client, relay, hub):
     set_claims(hub, {"Lab A": claim_entry(relay, "t")})
-    assert client.post("/api/claim-name", json={"pseudonym": "New Lab", "email": "new@lab.org"}).status_code == 200
+    r = client.post("/api/claim-name", json={"pseudonym": "New Lab", "email": "new@lab.org"})
+    assert r.status_code == 200
+    claim_id = r.json()["claim_id"]
     code = relay._pending_codes["New Lab"]["code"]
-    wrong = [client.post("/api/verify-claim", json={"pseudonym": "New Lab", "code": "000000"}).status_code
-             for _ in range(5)]
+    wrong = [_verify(client, "New Lab", _wrong(code), claim_id).status_code for _ in range(5)]
     assert wrong == [403, 403, 403, 403, 429]
-    r = client.post("/api/verify-claim", json={"pseudonym": "New Lab", "code": code})
+    r = _verify(client, "New Lab", code, claim_id)
     assert r.status_code == 400 and "No pending verification" in r.json()["detail"]
     assert list(json.loads(hub.files[CLAIMS])) == ["Lab A"] and hub.uploads == []
 
 
-def test_claim_name_issues_at_most_three_codes_per_name_per_hour(client, relay, hub, monkeypatch):
+def test_strangers_wrong_codes_cannot_spend_the_owners_pending_code(client, relay, hub):
+    """Only the caller holding the claim_id can use up a code's five attempts.
+
+    Keyed by name alone, five wrong guesses from anyone threw away the code
+    the owner had just been emailed.
+    """
+    set_claims(hub, {"Clogged PeakTail": claim_entry(relay, "old-token", email="owner@lab.org")})
+    r = client.post("/api/claim-name", json={"pseudonym": "Clogged PeakTail", "email": "owner@lab.org"},
+                    headers={"X-Forwarded-For": "203.0.113.7"})
+    assert r.status_code == 200
+    claim_id = r.json()["claim_id"]
+    code = relay._pending_codes["Clogged PeakTail"]["code"]
+    # Without a claim_id (as a STAN that predates it would send), from many addresses ...
+    for i in range(3 * relay.CLAIM_MAX_ATTEMPTS):
+        assert _verify(client, "Clogged PeakTail", _wrong(code), xff=f"198.51.100.{i}").status_code == 403
+    # ... and with a claim_id that is not the one issued.
+    for _ in range(3 * relay.CLAIM_MAX_ATTEMPTS):
+        assert _verify(client, "Clogged PeakTail", _wrong(code), "forged-claim-id").status_code == 400
+    assert _verify(client, "Clogged PeakTail", code, "forged-claim-id").status_code == 400
+    assert relay._pending_codes["Clogged PeakTail"].get("attempts", 0) == 0
+
+    r = _verify(client, "Clogged PeakTail", code, claim_id, xff="203.0.113.99")
+    assert r.status_code == 200, r.text
+    assert json.loads(hub.files[CLAIMS])["Clogged PeakTail"]["token_hash"] == relay._hash(r.json()["token"])
+
+
+def test_verify_without_a_claim_id_still_works_and_is_capped_per_caller_and_per_name(client, relay, hub):
+    """STAN versions before claim_id still verify; their guesses are capped but never spend the code."""
+    assert client.post("/api/claim-name", json={"pseudonym": "New Lab", "email": "new@lab.org"}).status_code == 200
+    code = relay._pending_codes["New Lab"]["code"]
+    one = "198.51.100.1"
+    assert [_verify(client, "New Lab", _wrong(code), xff=one).status_code
+            for _ in range(relay.CLAIM_MAX_ATTEMPTS)] == [403] * relay.CLAIM_MAX_ATTEMPTS
+    assert _verify(client, "New Lab", code, xff=one).status_code == 429, "that caller is out of guesses"
+    r = _verify(client, "New Lab", code, xff="198.51.100.2")
+    assert r.status_code == 200, "another caller with the emailed code still verifies"
+
+    # Callers rotating addresses share one per-name ceiling on claim_id-less guesses ...
+    r = client.post("/api/claim-name", json={"pseudonym": "Newer Lab", "email": "new@lab.org"})
+    claim_id = r.json()["claim_id"]
+    code = relay._pending_codes["Newer Lab"]["code"]
+    for i in range(relay.CLAIM_LEGACY_ATTEMPTS_PER_NAME):
+        assert _verify(client, "Newer Lab", _wrong(code), xff=f"198.51.101.{i}").status_code == 403
+    assert _verify(client, "Newer Lab", code, xff="198.51.102.1").status_code == 429
+    # ... which never locks out the caller holding the claim_id.
+    assert _verify(client, "Newer Lab", code, claim_id).status_code == 200
+
+
+def test_strangers_refused_claims_do_not_use_up_the_owners_claim_budget(client, relay, hub, monkeypatch):
+    """Re-claiming is how a lab rotates its token; a stranger must not be able to stop it.
+
+    Keyed by name, three "different email" answers an hour to anyone kept
+    the owner from ever being sent a code.
+    """
+    clock = {"t": 5000.0}
+    monkeypatch.setattr(relay, "_claim_clock", lambda: clock["t"])
+    set_claims(hub, {"Clogged PeakTail": claim_entry(relay, "old-token", email="owner@lab.org")})
+    for i in range(20):
+        r = client.post("/api/claim-name", json={"pseudonym": "Clogged PeakTail", "email": f"x{i}@evil.org"},
+                        headers={"X-Forwarded-For": f"198.51.100.{i}"})
+        assert r.status_code == 409
+    r = client.post("/api/claim-name", json={"pseudonym": "Clogged PeakTail", "email": "owner@lab.org"},
+                    headers={"X-Forwarded-For": "203.0.113.7"})
+    assert r.status_code == 200, r.text
+
+
+def test_claim_name_calls_are_capped_per_caller(client, relay, hub, monkeypatch):
+    """Every call counts against its caller, so "different email" answers cannot test emails freely."""
     clock = {"t": 5000.0}
     monkeypatch.setattr(relay, "_claim_clock", lambda: clock["t"])
     set_claims(hub, {"Lab A": claim_entry(relay, "t", email="owner@lab.org")})
 
-    def claim(name, email="owner@lab.org"):
-        return client.post("/api/claim-name", json={"pseudonym": name, "email": email}).status_code
+    def claim(email, xff="198.51.100.1", name="Lab A"):
+        return client.post("/api/claim-name", json={"pseudonym": name, "email": email},
+                           headers={"X-Forwarded-For": xff}).status_code
 
-    # "Different email" answers count too, so they cannot be used to test emails freely.
-    assert [claim("Lab A", "guess1@x.org"), claim("Lab A", "guess2@x.org"), claim("Lab A")] == [409, 409, 200]
-    assert claim("Lab A") == 429
+    n = relay.CLAIM_CALLS_PER_CLIENT_HOUR
+    assert [claim(f"guess{i}@x.org") for i in range(n)] == [409] * n
+    assert claim("guess-next@x.org") == 429
+    assert claim("new@lab.org", name="Lab B") == 429, "the cap is per caller, whatever the name"
+    assert claim("guess-next@x.org", xff="198.51.100.2") == 409, "another caller has its own"
+    clock["t"] += relay.CLAIM_RATE_WINDOW_SEC + 1
+    assert claim("guess-next@x.org") == 409
+
+
+def test_claim_name_issues_at_most_three_codes_per_name_and_email_per_hour(client, relay, hub, monkeypatch):
+    clock = {"t": 5000.0}
+    monkeypatch.setattr(relay, "_claim_clock", lambda: clock["t"])
+    set_claims(hub, {"Lab A": claim_entry(relay, "t", email="owner@lab.org")})
+
+    def claim(name, email="owner@lab.org", xff=None):
+        headers = {"X-Forwarded-For": xff} if xff else {}
+        return client.post("/api/claim-name", json={"pseudonym": name, "email": email},
+                           headers=headers).status_code
+
+    assert [claim("Lab A") for _ in range(3)] == [200, 200, 200]
+    assert claim("Lab A", xff="203.0.113.50") == 429, "codes issued are capped whichever address asks"
     assert claim("Lab  A") == 429, "a respelling of the same name shares its budget"
     assert claim("Lab B") == 200, "another name has its own"
     clock["t"] += relay.CLAIM_RATE_WINDOW_SEC + 1
@@ -950,6 +1051,17 @@ def test_most_improved_needs_a_real_fall_not_noise_at_the_floor(client, relay):
     assert ranked["Big Fix"]["change_pct"] == -42
     assert "most_improved" in ranked["Big Fix"]["badges"]
     assert "most_improved" not in ranked["Tiny Noise"]["badges"] + ranked["Small Drop"]["badges"]
+
+
+def test_most_improved_needs_a_second_lab_like_cleanest(client, relay):
+    """A lone lab has no one to out-improve; the E2E run showed it collecting the badge."""
+    rows = [record(rk("Solo", k), run_date=at(k), peg_intensity_pct=7.0) for k in range(1, 6)]
+    rows += [record(rk("Solo", 100 + j), run_date="2026-08-15T12:00:00Z", peg_intensity_pct=12.0)
+             for j in range(5)]
+    assert submit(client, "Solo", rows).json()["accepted"] == 10
+    (solo,) = client.get("/api/peg/leaderboard").json()["ranked"]
+    assert solo["change_pct"] == -42
+    assert solo["badges"] == []
 
 
 def test_family_spelling_cannot_be_changed_by_one_client(client, relay, hub):

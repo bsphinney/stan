@@ -224,6 +224,31 @@ def test_pick_canonical_keeps_distinct_acquisitions():
     assert [r["id"] for r in pt.pick_canonical(rows)] == ["a", "b", "c", "d"]
 
 
+def test_acquisition_key_is_what_run_key_hashes():
+    """One raw file under two directories is one acquisition.
+
+    The share client's run_key hashes (instrument, basename(run_name), UTC
+    second). Keyed on the full name, the reader kept an instrument-PC path
+    and a Hive path as two runs while the client sent one of them, so the
+    tab and the board counted the same file differently.
+    """
+    rows = [
+        _copy("a", 7.5, ver="1.1.12", name=r"D:\Data\QC\HeLa_1.d"),
+        _copy("b", 0.4, hits=True, name="/quobyte/proteomics-grp/STAN/raw/HeLa_1.d/"),
+        _copy("c", 1.0, name=" HeLa_1.d", inst="timsTOF HT "),
+    ]
+    assert _kept(rows) == ["b"]
+    assert len({pt.acquisition_key(r) for r in rows}) == 1
+    # the extension still separates a .d from a .raw of the same stem
+    assert _kept([_copy("d", 1.0, name="x.d"), _copy("r", 1.0, name="x.raw")]) == ["d", "r"]
+
+
+def test_canonical_rank_is_the_one_pick_canonical_uses():
+    rows = [_copy("z", 5.2, ver="1.1.12"), _copy("a", 1.9, hits=True, ver="0.2.222")]
+    best = max(rows, key=pt.canonical_rank)
+    assert [best["id"]] == _kept(rows) == ["a"]
+
+
 # ── Time handling ───────────────────────────────────────────────────
 
 @pytest.mark.parametrize("raw,expect", [
@@ -544,6 +569,27 @@ def test_summary_empty_and_no_previous_window():
     # A change from 0 % has no percentage.
     zero_prev = [run("2026-08-10", 0.0), run("2026-09-20", 1.0, "trace")]
     assert pt.summary_30d(zero_prev, date(2026, 9, 28))["change_pct"] is None
+
+
+def test_change_pct_has_the_relays_floor():
+    """Below 0.1 % the previous median is noise; the relay answers None there.
+
+    0.05 % -> 0.5 % read as "+900 %" on the lab's own tab while the board,
+    for the same runs, showed no change at all.
+    """
+    as_of = date(2026, 9, 28)
+    tiny = pt.summary_30d([run("2026-08-10", 0.05), run("2026-09-20", 0.5, "trace")], as_of)
+    assert tiny["median_prev_30d"] == 0.05 and tiny["change_pct"] is None
+    at_floor = pt.summary_30d([run("2026-08-10", 0.1), run("2026-09-20", 0.15)], as_of)
+    assert at_floor["change_pct"] == 50
+
+
+def test_change_floor_is_the_relays_constant():
+    """The relay is deployed on its own and cannot import this; pin the value."""
+    src = (Path(__file__).resolve().parents[1] / "hf_space" / "app.py").read_text()
+    m = re.search(r"^PEG_CHANGE_FLOOR_PCT\s*=\s*([0-9.]+)", src, re.M)
+    assert m, "PEG_CHANGE_FLOOR_PCT not found in hf_space/app.py"
+    assert float(m.group(1)) == pt.PEG_CHANGE_FLOOR_PCT
 
 
 # ── Ladder ──────────────────────────────────────────────────────────

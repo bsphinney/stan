@@ -1,6 +1,9 @@
 # PEG Watch: Evosep PEG tab + community PEG leaderboard
 
-Status: approved design (mockup approved by Brett 2026-09-28)
+Status: approved design (mockup approved by Brett 2026-09-28); built as
+v1.2.0. Numbers and rules changed in review are corrected in place and
+listed under "Changes during implementation" at the end. Operating
+reference: `docs/PEG_WATCH.md`.
 Mockup: https://claude.ai/artifact/1BFYbYQQPYhEUfgcufzP57 (private)
 Mockup source (design reference for the UI): see "Design reference" below.
 Branch: `feat/peg-watch` (worktree `/Users/brettphinney/Documents/STAN-peg`, from `origin/main` @ v1.1.12)
@@ -25,8 +28,10 @@ sparkline. This feature:
 4. Computes PEG for Thermo `.raw` QC runs on Hive (through the `trfp.sif`
    container, since `fisher_py` is not in the Hive venv), so UC Davis's
    Orbitraps (custom LC) give the non-Evosep side of the comparison.
-5. Seeds the board with UC Davis's 1,682 timsTOF HT + Evosep QC runs
-   (Jul 2023 – present) and, after the Thermo backfill, ~2,900 Orbitrap runs.
+5. Seeds the board with UC Davis's ~1,385 timsTOF HT + Evosep QC
+   acquisitions (Jul 2023 – present; 1,674 rows before duplicate ingests
+   and failed acquisitions were removed) and, after the Thermo backfill,
+   ~2,360 Orbitrap acquisitions (2,924 rows).
 
 ## 2. Decisions (approved)
 
@@ -71,6 +76,20 @@ QC-only: `hidden = 0` (integer compare; PG `runs.hidden` is integer),
 `run_date > '2015-01-01'` (there is a bogus 1980 row), and run names
 matching blank/wash/blk are excluded (reuse the filter `submit-all` uses).
 
+Failed acquisitions (added in review): a row with `n_precursors = 0` AND
+`peg_n_ions_detected = 0` AND `peg_intensity_pct = 0` is an empty read that
+`detect_peg_in_spectra` scored as a clean 0.0, not a measurement, and is
+excluded (SQL on both backends plus `peg_trends.is_failed_acquisition`).
+The writers now leave PEG NULL when no MS1 signal was read.
+
+One acquisition, one row (added in review): an acquisition is
+`(instrument, basename(run_name), run_date to the UTC second)` — the
+fields `run_key` hashes. Of duplicate copies, keep the one with stored
+ion hits, then the newest `stan_version` compared numerically, then the
+highest `id`. Every reader applies it (PG `DISTINCT ON`, SQLite
+`peg_trends.pick_canonical`), and the share client ranks copies by the
+same keys, so the tab and the board count the same copy.
+
 PG gotchas: `runs.run_date` is `timestamptz` (format with
 `to_char(run_date AT TIME ZONE 'UTC', ...)`), `peg_score` is `real`.
 SQLite stores TEXT with mixed offsets; normalise to UTC in Python.
@@ -86,22 +105,26 @@ only when the tab is open and pulls ~1.7k rows × 7 scalars).
 {
   "as_of": "2026-09-28",                      // UTC date of the request
   "instrument": "timsTOF HT",
-  "instruments": [{"instrument": "timsTOF HT", "n_runs": 1682, "evosep": true}],
+  "instruments": [{"instrument": "timsTOF HT", "n_runs": 1385, "evosep": true}],
   "lc_system": "evosep",                      // most common lc_system for this instrument's PEG runs
   "instrument_family": "timsTOF",             // via stan.community.submit._instrument_family
   "runs_cols": ["t","spd","pct","score","ions","cls","prec"],
   "runs": [["2023-07-15T10:51", 100, 0.011, 8.1, 3, 0, 1530], ...],   // t = UTC "YYYY-MM-DDTHH:MM", cls 0..3 = clean..heavy, sorted by t
   "rolling_start": "2023-07-13",              // first day of the daily series
   "rolling": {"all": [null, 0.12, ...], "100": [...], "60": [...], "30": [...]},  // trailing 14-day median pct per day through as_of; null when <5 runs in window; keys: "all" + each SPD with ≥20 runs
-  "episodes": [{"start":"2025-12-15","end":"2026-04-26","days":132,"n":406,"median_pct":4.25,"heavy_pct":37,"ongoing":false}],
-  "baseline": {"median_pct": 0.0, "start": "2025-03-01", "end": "2025-05-30", "n": 212},   // lowest trailing-90-day median with ≥20 runs; null if <20 runs total
-  "summary": {"n_30d": 74, "median_30d": 2.1, "median_prev_30d": 7.0, "change_pct": -71, "clean_30d": 21, "heavy_30d": 13, "clean_rate_30d": 28, "streak_clean": 2},
+  "episodes": [{"start":"2025-12-15","end":"2026-04-07","days":113,"n":169,"median_pct":5.3,"heavy_pct":41,"ongoing":false}],
+  "baseline": {"median_pct": 0.0, "start": "2024-05-14", "end": "2024-08-11", "n": 44},   // lowest trailing-90-day median with ≥20 runs; ties -> lowest upper quartile, then most runs, then newest; null if <20 runs total
+  "summary": {"n_30d": 71, "median_30d": 2.065, "median_prev_30d": 7.741, "change_pct": -73, "clean_30d": 19, "heavy_30d": 13, "clean_rate_30d": 27, "streak_clean": 0},   // change_pct null when the previous median < 0.1 %
   "ladder": {"months": ["2025-01", ...], "n": [2, ..., 20], "share": [[...per month...] per n], "nruns": [...], "adducts": {"+H": 2413, "+NH4": 4736, "+Na": 887}},
-  "column_periods": [{"installed": "2025-12-23", "retired": "2026-03-12", "n_qc": 186, "median_pct": 7.2, "heavy_pct": 48, "clean_pct": 14}],   // from maintenance_events event_type='column_change' for this instrument, newest last; [] if none
-  "impact": {"60": {"clean": [401, 41501], "trace": [...], "moderate": [...], "heavy": [...]}, "100": {...}},  // [n, median n_precursors] per class for DIA runs, SPDs with ≥10 clean and ≥10 heavy runs
+  "column_periods": [{"installed": "2025-12-23", "retired": "2026-03-12", "column_model": null, "n_qc": 106, "median_pct": 5.65, "heavy_pct": 45, "clean_pct": 13}],   // from maintenance_events event_type='column_change' for this instrument, newest last; [] if none
+  "impact": {"60": {"clean": [360, 41582], "trace": [...], "moderate": [...], "heavy": [112, 34730]}, "100": {...}},  // [n, median n_precursors] per class for DIA runs with >0 precursors, SPDs with ≥10 clean and ≥10 heavy runs
   "lab_lc": [{"instrument": "timsTOF HT", "family": "timsTOF", "lc_system": "evosep", "n_90d": 212, "median_90d": 3.1, "clean_rate_90d": 24, "n_365d": 802, "median_365d": 2.2, "weekly": [/*26*/]},
              {"instrument": "Orbitrap Exploris 480", "family": "Orbitrap", "lc_system": "custom", ...}],   // every instrument with real PEG, from get_peg_lab_lc_summary
-  "sharing": {"enabled": true, "display_name": "Clogged PeakTail", "relay_url": "https://brettsp-stan.hf.space"}
+  "sharing": {"enabled": true, "source": "config", "display_name": "Clogged PeakTail", "relay_url": "https://brettsp-stan.hf.space"}
+  // THIS host's setting, not the lab's. source: "config" (peg_share true in community.yml) | "env" (STAN_PEG_SHARE=1)
+  // | "opted_out" (peg_share or STAN_PEG_SHARE set to anything else: a decision) | "off" (no setting here, e.g. the hosted
+  // dashboard). With "off" the tab reports the lab's name on a relay board as a past fact ("runs from the last N days are
+  // on the board"); with "opted_out" the board never overrides it -- the relay keeps pre-opt-out runs for the whole window.
 }
 ```
 
@@ -112,11 +135,17 @@ Maths (pure, unit-tested, in `stan/metrics/peg_trends.py`):
   closer than `gap_days` merge; each episode's start is trimmed back to
   the first run ≥ threshold inside the first window; episodes shorter
   than `min_days` are dropped; `ongoing` when the last hot day is within
-  3 days of `as_of`. On UC Davis data this yields Dec 15 2025 → Apr 26
-  2026 (132 d, median 4.25 %) and May 21 → Sep 18 2026 (120 d).
-- `best_baseline(runs, window_days=90, min_runs=20)`.
+  3 days of `as_of`. On UC Davis data, one row per acquisition, this
+  yields Dec 15 2025 → Apr 7 2026 (113 d, 169 runs, median 5.30 %) and
+  May 21 → Sep 18 2026 (120 d, 236 runs, median 5.31 %).
+- `best_baseline(runs, window_days=90, min_runs=20)`. Ties on the median
+  (UC Davis: 425 of 969 windows have a median of exactly 0) go to the
+  lowest upper quartile, then the most runs, then the newest window.
+- `summary_30d`: `change_pct` is null when the previous median is below
+  0.1 % (the relay's `PEG_CHANGE_FLOOR_PCT`; a test pins the two equal).
 - `ladder_by_month(hits_rows, runs_per_month)`: share = max over adducts of
-  (#runs with that oligomer+adduct) / (#real-PEG runs that month).
+  (#runs with that oligomer+adduct) / (#real-PEG runs that month whose
+  ladder is known: hits stored, or no PEG ion detected).
 - `column_periods(events, runs)`, `impact_by_class(runs)`.
 - Month bucketing for the ladder uses UTC.
 
@@ -180,7 +209,10 @@ All LCs are shared (evosep and other). Opt-in: `peg_share: true` in `~/.stan/com
 `STAN_DISPLAY_NAME`; refuses "Anonymous Lab" / empty.
 
 CLI: `stan peg-sync [--backend pg|sqlite] [--dry-run] [--relay URL]`
-writes `~/STAN/logs/peg_sync_<UTC timestamp>.jsonl` (one line per batch +
+writes `<user config dir>/logs/peg_sync_<UTC timestamp>.jsonl` —
+`~/.stan/logs` on Linux and macOS (on Hive `/home/brettsp/.stan/logs`,
+lab-readable, as every other CLI log there), `~/STAN/logs` on Windows —
+(one line per batch +
 summary; errors at `logger.warning`+). Exit 0 when sharing is off
 (logs why) or on success; non-zero if every batch failed.
 `stan community-claim` re-verifies the lab's pseudonym by email code
@@ -232,7 +264,7 @@ UTC date. 5-minute cache.
   "ranked": [{"rank": 1, "display_name": "Clogged PeakTail", "verified": true,
               "instrument_models": ["timsTOF HT"], "n_runs": 38,
               "median_pct": 2.1, "clean_pct": 28, "heavy_pct": 18,
-              "change_pct": -71,            // vs previous window; null if <5 runs there
+              "change_pct": -71,            // vs previous window; null if <5 runs there or its median < 0.1 %
               "weekly": [0.4, null, ...],   // 12 weekly medians, oldest first
               "badges": ["cleanest", "most_improved"]}],
   "unranked": [{"display_name": "...", "verified": false, "n_runs": 3}],
@@ -241,9 +273,17 @@ UTC date. 5-minute cache.
 ```
 Rules: ranked needs ≥ 5 runs in window; order by median_pct asc, then
 clean_pct desc, then n_runs desc. `cleanest` = rank 1 when ≥ 2 ranked labs.
-`most_improved` = most negative `change_pct ≤ -15` among ranked labs.
+`most_improved` = most negative `change_pct ≤ -15` among ranked labs that
+also fell by at least 0.5 percentage points (previous median − median),
+and only when ≥ 2 labs are ranked.
+`change_pct` is null when the previous window had < 5 runs or a median
+below 0.1 % (relative change from next to nothing is noise). Once a name
+has any verified row, its unverified rows are left out of every aggregate.
 
-The leaderboard only ever ranks `lc_system == "evosep"` records.
+The leaderboard only ever ranks `lc_system == "evosep"` records, at an
+Evosep method SPD (500/300/200/100/60/40/30/15). Relay size caps (added in
+review): 20,000 rows per lab name (updates still land), 200 unclaimed
+names, 200,000 unclaimed rows in total.
 
 `GET /api/peg/lc-compare?family=timsTOF&window=90` →
 ```jsonc
@@ -264,6 +304,20 @@ Claims privacy: with Space secret `CLAIMS_PEPPER` set, stored
 claim flow compares in the same form. Without the secret, behaviour is
 unchanged. (Old values remain in the dataset's git history; a history
 squash is a separate decision for Brett.)
+
+Claim limits are keyed by the caller, never by the lab name alone. A
+budget that anyone can spend on a name lets a stranger stop the owner
+from re-claiming it, and re-claiming is how a lab rotates its token.
+`/api/claim-name` allows 10 calls per caller address per hour, refused
+calls included, which throttles the "different email" 409. It sends at
+most 3 codes per (name, email) per hour. Its answer carries a
+`claim_id`, which `stan setup` / `stan community-claim` echo to
+`/api/verify-claim`. After 5 wrong codes sent with that claim_id, the
+code is discarded. A verify without a claim_id (STAN before this change)
+still works, but it never spends the code. Such guesses are capped at 5
+per caller per name and 20 per name per hour. That per-name ceiling
+can block only claim_id-less verification, never a caller that holds
+the claim_id.
 
 Public page: a new "Evosep PEG Watch" section, plus one "Evosep vs other
 LC" panel (per family: percentile bars and weekly medians per LC group,
@@ -361,20 +415,68 @@ Running it is a deploy step that needs Brett's go-ahead.
 
 ## 6. Deploy (each step needs Brett's go-ahead)
 
+Commands for every step: `docs/PEG_WATCH.md` → "Runbooks".
+
 1. Merge `feat/peg-watch` to `main` and push.
-2. HF Space: `python scripts/deploy_hf_space.py` (uploads `app.py`;
-   bumps nothing else), then set Space secret `CLAIMS_PEPPER`. Deploy away
-   from the :27 batch-flush minutes. Check `/api/version` = 1.2.0 and
-   `/api/peg/leaderboard` returns an empty board.
+2. HF Space: `python scripts/deploy_hf_space.py` (dry run: live vs
+   recorded-base sha256 and a diff stat; refuses if the Space was edited
+   directly), then `python scripts/deploy_hf_space.py --yes --record-base`
+   (uploads `app.py` only; refuses in the half hour around the 00/06/12/18
+   Pacific syncs; waits for `/api/version` = 1.2.0; rewrites the recorded
+   base — commit that). Then set Space secret `CLAIMS_PEPPER` and keep a
+   copy: never remove or rotate it once set. Check `/api/peg/leaderboard`
+   returns an empty board, and check the rate-limit key in the Space log.
 3. Re-claim "Clogged PeakTail" (`stan community-claim`, email code to
    Brett), copy the new `auth_token` into `~/.stan/community.yml` on the Mac
    and on Hive; set `peg_share: true` on Hive.
 4. Hive: `git pull` in `/quobyte/proteomics-grp/brett/stan`; copy
    `scripts/cron_community_sync.sh` to `/quobyte/proteomics-grp/STAN/`; run
-   `stan peg-sync --backend pg` once and confirm 1,682 accepted.
-5. Azure: zip deploy per `docs/AZURE_DEPLOY.md` (after `check_jsx`).
+   `stan peg-sync --backend pg` once and confirm about 1,385 accepted,
+   verified (one record per acquisition, failed acquisitions dropped).
+5. Azure: zip deploy per `docs/AZURE_DEPLOY.md` (after `check_jsx`), then
+   `az webapp config appsettings set -g rg-fran -n stan-ucd-proteomics
+   --settings STAN_PEG_SHARE=1`, so the hosted PEG tab says the lab shares
+   (it shares from Hive; the hosted server never syncs).
 6. Thermo backfill: one test job on 5 runs, check PEG lands in PG, then the
    full `peg_backfill_thermo.sbatch` array; then `stan peg-sync --backend pg`.
+
+## Changes during implementation
+
+Recorded 2026-09-28, after review round 1. The sections above are
+corrected in place; this is the list of what moved and why.
+
+- **One acquisition, one row** (§4.1, §4.3). Live PG held 1,674 timsTOF
+  rows for 1,404 acquisitions (241 duplicate groups, 270 extra rows) from
+  instrument-PC plus Hive double ingest and `/quobyte` vs `/nfs` pairs,
+  and the copies disagreed on PEG in 168 groups. Rule: keep stored hits,
+  then the newest `stan_version` (numeric), then the highest `id`, in
+  every reader and in the share client. In 43 groups only the id decides;
+  deleting the duplicates in PG is a separate data fix.
+- **Failed acquisitions excluded** (§4.1): 0 precursors + 0 ions + 0 %
+  (19 acquisitions); writers store NULL for an empty read.
+- **Counts**: ~1,385 timsTOF acquisitions, not 1,682; ~2,360 Orbitrap
+  acquisitions (2,924 rows), not ~2,900; deploy step 4 expects ~1,385.
+- **Episode 1** ends 2026-04-07 (113 d, median 5.30 %), not 2026-04-26
+  (132 d, 4.25 %): the extra copies had stretched it.
+- **Ladder denominator** counts only runs whose ladder is known.
+- **`change_pct`** is null below a 0.1 % previous median, on the relay and
+  the tab alike; **`most_improved`** also needs a 0.5-point fall.
+- **Best baseline tie-break** (lowest upper quartile, most runs, newest)
+  picks 2024-05-14 → 2024-08-11 on UC Davis data, not the mockup's 2025
+  window. Deliberate and tested; wants Brett's sign-off.
+- **`sharing.source`** (§4.2) tells the tab whether this host opted in by
+  config, by env, opted out, or has no setting.
+- **Azure `STAN_PEG_SHARE=1`** (§6 step 5): the hosted dashboard never
+  syncs, so without it the PEG tab could not say the lab shares.
+- **Relay hardening**: canonical lab names (`_clean_text` on claims and
+  submits), claim limits keyed by caller with a `claim_id`, size caps on
+  the PEG store, `force_download` for `claims.json`, and the deploy
+  script's sync-window guard evaluated in America/Los_Angeles.
+- **Thermo**: an empty TRFP read, or a non-TRFP error on that path,
+  becomes `PegReaderUnavailable` (PEG NULL), never a clean 0.0 or the
+  `'unknown'` sentinel.
+- **peg-sync logs** land in `~/.stan/logs` (the convention every CLI log
+  follows), not `~/STAN/logs`, except on Windows.
 
 ## Design reference
 

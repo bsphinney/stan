@@ -21,6 +21,7 @@ What this pins, in order of how badly it would hurt to lose it:
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -300,7 +301,8 @@ def test_empty_store_is_a_valid_empty_document(tmp_path, monkeypatch):
     assert doc["instrument"] is None and doc["instruments"] == []
     assert doc["runs"] == [] and doc["episodes"] == [] and doc["lab_lc"] == []
     assert doc["rolling"] == {"all": []} and doc["summary"]["n_30d"] == 0
-    assert doc["sharing"] == {"enabled": False, "display_name": None, "relay_url": RELAY_URL}
+    assert doc["sharing"] == {"enabled": False, "source": "off", "display_name": None,
+                              "relay_url": RELAY_URL}
 
 
 def test_missing_store_file_is_empty_not_500(tmp_path, monkeypatch):
@@ -315,7 +317,8 @@ def test_missing_store_file_is_empty_not_500(tmp_path, monkeypatch):
 
 def test_sharing_off_by_default(client):
     s = client.get("/api/peg/overview").json()["sharing"]
-    assert s == {"enabled": False, "display_name": "Test Lab", "relay_url": RELAY_URL}
+    assert s == {"enabled": False, "source": "off", "display_name": "Test Lab",
+                 "relay_url": RELAY_URL}
 
 
 @pytest.mark.parametrize("flag", [True, "true", "yes", 1])
@@ -324,6 +327,7 @@ def test_sharing_on_from_community_yml(client, monkeypatch, flag):
                         lambda: {"display_name": "Clogged PeakTail", "peg_share": flag})
     s = client.get("/api/peg/overview").json()["sharing"]
     assert s["enabled"] is True and s["display_name"] == "Clogged PeakTail"
+    assert s["source"] == "config"
 
 
 def test_sharing_env_override_and_hosted_name(client, monkeypatch):
@@ -335,7 +339,67 @@ def test_sharing_env_override_and_hosted_name(client, monkeypatch):
     monkeypatch.setenv("STAN_PEG_SHARE", "1")
     monkeypatch.setenv("STAN_DISPLAY_NAME", "Clogged PeakTail")
     s = client.get("/api/peg/overview").json()["sharing"]
-    assert s == {"enabled": True, "display_name": "Clogged PeakTail", "relay_url": RELAY_URL}
+    assert s == {"enabled": True, "source": "env", "display_name": "Clogged PeakTail",
+                 "relay_url": RELAY_URL}
+
+
+def test_sharing_source_prefers_this_hosts_own_config(client, monkeypatch):
+    """community.yml is what `stan peg-sync` on this host obeys; name it first.
+
+    ``env`` is the weaker claim -- on the hosted dashboard it means "this
+    host was told", not "this host sends" -- so it is reported only when
+    the config does not already say so.
+    """
+    monkeypatch.setattr("stan.config.load_community",
+                        lambda: {"display_name": "Clogged PeakTail", "peg_share": True})
+    monkeypatch.setenv("STAN_PEG_SHARE", "1")
+    assert client.get("/api/peg/overview").json()["sharing"]["source"] == "config"
+    monkeypatch.setattr("stan.config.load_community",
+                        lambda: {"display_name": "Clogged PeakTail", "peg_share": False})
+    assert client.get("/api/peg/overview").json()["sharing"]["source"] == "env"
+    monkeypatch.setenv("STAN_PEG_SHARE", "0")
+    s = client.get("/api/peg/overview").json()["sharing"]
+    assert (s["enabled"], s["source"]) == (False, "opted_out")
+
+
+@pytest.mark.parametrize("flag", [False, "false", "no", 0, "0", "off"])
+def test_explicit_opt_out_is_told_apart_from_no_setting(client, monkeypatch, flag):
+    """``peg_share: false`` here is a decision; no key at all is not.
+
+    The tab lets the relay's board speak for a host that has no setting of
+    its own (the hosted dashboard, whose sync runs on Hive), but must not
+    override a lab that switched sharing off on this very machine -- its
+    runs from before the switch stay on the board for the whole window, and
+    reading them as "sharing is on" told it the opposite of what it chose
+    (review round 2, RG-UI-1). Both answers used to be ``source: "off"``.
+    """
+    monkeypatch.setattr("stan.config.load_community",
+                        lambda: {"display_name": "E2E Lab", "peg_share": flag})
+    s = client.get("/api/peg/overview").json()["sharing"]
+    assert (s["enabled"], s["source"]) == (False, "opted_out")
+
+
+@pytest.mark.parametrize("cfg", [{"display_name": "E2E Lab"},
+                                 {"display_name": "E2E Lab", "peg_share": None},
+                                 {"display_name": "E2E Lab", "peg_share": ""}])
+def test_no_peg_share_value_is_no_setting(client, monkeypatch, cfg):
+    """An absent or empty ``peg_share:`` says nothing either way."""
+    monkeypatch.setattr("stan.config.load_community", lambda: cfg)
+    s = client.get("/api/peg/overview").json()["sharing"]
+    assert (s["enabled"], s["source"]) == (False, "off")
+
+
+def test_explicit_env_opt_out_on_a_host_without_config(client, monkeypatch):
+    """``STAN_PEG_SHARE=0`` is the hosted container's only way to say no."""
+    def _missing():
+        raise FileNotFoundError("community.yml")
+
+    monkeypatch.setattr("stan.config.load_community", _missing)
+    monkeypatch.setenv("STAN_DISPLAY_NAME", "E2E Lab")
+    monkeypatch.setenv("STAN_PEG_SHARE", "0")
+    assert client.get("/api/peg/overview").json()["sharing"]["source"] == "opted_out"
+    monkeypatch.setenv("STAN_PEG_SHARE", "")
+    assert client.get("/api/peg/overview").json()["sharing"]["source"] == "off"
 
 
 def test_hosted_sharing_is_only_what_this_host_is_told(client, monkeypatch):
@@ -351,7 +415,8 @@ def test_hosted_sharing_is_only_what_this_host_is_told(client, monkeypatch):
     monkeypatch.setattr("stan.config.load_community", _missing)
     monkeypatch.setenv("STAN_DISPLAY_NAME", "Clogged PeakTail")
     s = client.get("/api/peg/overview").json()["sharing"]
-    assert s == {"enabled": False, "display_name": "Clogged PeakTail", "relay_url": RELAY_URL}
+    assert s == {"enabled": False, "source": "off", "display_name": "Clogged PeakTail",
+                 "relay_url": RELAY_URL}
 
 
 def test_sharing_status_is_not_cached(client, monkeypatch):
@@ -569,7 +634,9 @@ def test_a_duplicated_acquisition_counts_once_whatever_the_row_order(client, db_
     assert len(share) == 1
     assert (share[0]["peg_class"], share[0]["peg_intensity_pct"]) == ("clean", 0.4)
     assert share[0]["run_date"] == "2026-09-15T10:00:00Z"
-    assert "id" not in share[0] and "stan_version" not in share[0]
+    # the client ranks by the same keys, so it gets them (and never sends them)
+    assert (share[0]["id"], share[0]["stan_version"], share[0]["has_hits"]) == (
+        "hive_new", "1.0.44", True)
 
 
 def test_hits_outrank_a_newer_version(db_path):
@@ -584,6 +651,96 @@ def test_hits_outrank_a_newer_version(db_path):
     assert row["peg_intensity_pct"] == 0.5
     kept = [r for r in stan_db.get_peg_runs(TIMS) if r["run_date_utc"] == "2026-09-16T10:00:00Z"]
     assert len(kept) == 1 and kept[0]["has_hits"] is True
+
+
+# ── One rule for the tab, the share reader and the share client ─────
+
+#: Copies of three acquisitions, in the shapes live PG duplicates them. Per
+#: acquisition: (copies, the id the rule keeps). Copy: (id, run_name, stamp,
+#: class, pct, score, stan_version, has_hits).
+_ONE_RULE = {
+    # One file under two directories: the instrument PC's path and Hive's.
+    # The ladder is on the OLDER processing, and hits outrank the version.
+    "2026-09-19T10:00:00Z": ([
+        ("a_pc", r"D:\Data\QC\HeLa_rule_A_1.d", "2026-09-19T03:00:00-07:00",
+         "heavy", 7.5, 80.0, "1.1.12", False),
+        ("a_hive", "/quobyte/proteomics-grp/STAN/raw/HeLa_rule_A_1.d/",
+         "2026-09-19T10:00:00Z", "clean", 0.4, 9.0, "0.2.376", True),
+    ], "a_hive"),
+    # No ladder on either: the newer version by number (text says 1.0.9).
+    "2026-09-19T11:00:00Z": ([
+        ("b_old", "HeLa_rule_B_1.d", "2026-09-19T11:00:00Z", "trace", 1.5, 30.0, "1.0.9", False),
+        ("b_new", "HeLa_rule_B_1.d", "2026-09-19 11:00:00+00:00", "moderate", 3.0, 55.0,
+         "1.0.10", False),
+    ], "b_new"),
+    # Same processing on both (43 such /quobyte vs /nfs pairs on live PG):
+    # only the id can decide, and it must decide the same way everywhere.
+    "2026-09-19T12:00:00Z": ([
+        ("c_1", "/nfs/lssc0/flinders/HeLa_rule_C_1.d", "2026-09-19T12:00:00Z",
+         "heavy", 8.0, 85.0, "1.0.44", False),
+        ("c_2", "/quobyte/proteomics-grp/HeLa_rule_C_1.d", "2026-09-19T05:00:00-07:00",
+         "clean", 0.2, 5.0, "1.0.44", False),
+    ], "c_2"),
+}
+
+
+def test_one_dedupe_rule_for_the_tab_the_share_rows_and_the_client(client, db_path):
+    """The overview, the share reader and the share client keep the same copy.
+
+    Built through the real store and the real client: an acquisition the tab
+    counts at one PEG value must go to the board at that value, once --
+    including when its copies differ only by directory, which the client's
+    run_key (a basename) has always merged.
+    """
+    from stan.community.peg_submit import build_peg_records
+
+    by_id = {}
+    with sqlite3.connect(db_path) as con:
+        for stamp, (copies, _keep) in _ONE_RULE.items():
+            for rid, name, when, cls, pct, score, ver, hits in copies:
+                _insert_run(con, rid, name, when, cls=cls, pct=pct, score=score,
+                            version=ver, raw_path=f"/copy/{rid}/x.d")
+                if hits:
+                    _hit(con, rid, 9, "+NH4")
+                by_id[rid] = (cls, pct)
+
+    # 1. The tab: one run per acquisition, at the kept copy's value.
+    doc = client.get("/api/peg/overview").json()
+    cols = doc["runs_cols"]
+    for stamp, (_copies, keep) in _ONE_RULE.items():
+        got = [r for r in doc["runs"] if r[cols.index("t")] == stamp[:16]]
+        assert [r[cols.index("pct")] for r in got] == [by_id[keep][1]], stamp
+    assert doc["instruments"][0]["n_runs"] == 31 + len(_ONE_RULE)
+
+    # 2. The share reader: the same copies, carrying the keys the client ranks by.
+    share = stan_db.get_peg_share_rows()
+    mine = {r["run_date"]: r for r in share if r["run_date"] in _ONE_RULE}
+    assert {s: r["id"] for s, r in mine.items()} == {s: k for s, (_c, k) in _ONE_RULE.items()}
+    assert len(share) == len(REAL_NAMES) + len(_ONE_RULE)
+
+    # 3. The client, from the reader: one record each, at the tab's value.
+    records, skipped = build_peg_records(share)
+    sent = {r["run_date"]: (r["peg_class"], r["peg_intensity_pct"]) for r in records
+            if r["run_date"] in _ONE_RULE}
+    assert sent == {s: by_id[k] for s, (_c, k) in _ONE_RULE.items()}
+    assert "duplicate_run_key" not in skipped
+
+    # 4. The client alone, handed every copy (its second line of defence):
+    #    it still keeps exactly what the reader kept.
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        ids = [c[0] for copies, _k in _ONE_RULE.values() for c in copies]
+        raw = [dict(r) for r in con.execute(
+            "SELECT id, run_name, instrument, run_date, spd, mode, amount_ng, lc_system, "
+            "peg_score, peg_intensity_pct, peg_n_ions_detected, peg_class, stan_version "
+            f"FROM runs WHERE id IN ({','.join('?' * len(ids))})", ids)]
+        hit_ids = {r[0] for r in con.execute("SELECT run_id FROM peg_ion_hits")}
+    for r in raw:
+        r["has_hits"] = r["id"] in hit_ids
+    for rows in (raw, list(reversed(raw))):
+        alone, skipped = build_peg_records(rows)
+        assert {r["run_date"]: (r["peg_class"], r["peg_intensity_pct"]) for r in alone} == sent
+        assert skipped == {"duplicate_run_key": 3}
 
 
 def test_share_rows_come_in_a_total_order(db_path):
@@ -752,9 +909,20 @@ def _assert_runs_sql_is_safe(sql: str) -> None:
     _assert_one_row_per_acquisition(sql)
 
 
+#: The acquisition key the share client's run_key hashes: trimmed instrument,
+#: run_name's basename (trim, drop trailing separators, drop the directory),
+#: and the UTC second.
+_PG_ACQ_KEY = (
+    r"regexp_replace(COALESCE(r.instrument, ''), '^\s+|\s+$', '', 'g'), "
+    r"regexp_replace(regexp_replace(regexp_replace(COALESCE(r.run_name, ''), "
+    r"'^\s+|\s+$', '', 'g'), '[/\\]+$', ''), '^.*[/\\]', ''), "
+    "date_trunc('second', r.run_date)"
+)
+
+
 def _assert_one_row_per_acquisition(sql: str) -> None:
     """The canonical-row rule, identical to peg_trends.pick_canonical."""
-    key = "r.instrument, r.run_name, date_trunc('second', r.run_date)"
+    key = _PG_ACQ_KEY
     assert f"SELECT DISTINCT ON ({key})" in sql
     order = sql.split(f"ORDER BY {key}, ", 1)[1]
     hits = ("EXISTS (SELECT 1 FROM peg_ion_hits x WHERE x.run_id = r.id "
@@ -818,6 +986,33 @@ def test_pg_share_rows_sql(fake_pg, monkeypatch, has_sample_type):
     # A total order: run_date alone left copies of one file tied, and the
     # client kept whichever the sort happened to put first.
     assert sql.endswith("ORDER BY run_date ASC, instrument, run_name")
+    # The keys the client ranks copies by, so its rank is the reader's.
+    inner = sql.split(" FROM (", 1)[1]
+    assert "r.id, r.stan_version, EXISTS (SELECT 1 FROM peg_ion_hits x" in inner
+    outer = sql.split(" FROM (", 1)[0]
+    assert ", id, stan_version, has_hits" in outer
+
+
+@pytest.mark.parametrize("name", [
+    r"D:\Data\QC\HeLa_1.d", "/quobyte/proteomics-grp/STAN/raw/HeLa_1.d/",
+    " HeLa_1.d ", "HeLa_1.d", "a/b\\c.raw", "x.d\\\\", "/", "", "  ",
+    "/nfs/x/HeLa 2.d", "HeLa_1.d / ",
+])
+def test_pg_basename_is_run_basename(name):
+    """PG's acquisition basename, run with the same patterns, is run_basename.
+
+    Nothing local runs PG, but these patterns use only what POSIX AREs and
+    Python's ``re`` read alike (anchors, ``\\s``, a bracket of ``/`` and
+    ``\\``), so applying them here in the SQL's order checks what PG does.
+    """
+    from stan.community.peg_submit import run_basename
+
+    s = re.sub(r"^\s+|\s+$", "", name)                 # regexp_replace(..., 'g')
+    s = re.sub(r"[/\\]+$", "", s, count=1)
+    s = re.sub(r"^.*[/\\]", "", s, count=1)
+    assert s == run_basename(name)
+    assert _PG_ACQ_KEY.count(r"'^\s+|\s+$', '', 'g'") == 2
+    assert r"'[/\\]+$', ''), '^.*[/\\]', '')" in _PG_ACQ_KEY
 
 
 def test_pg_lab_lc_sql_and_assembly(fake_pg):
@@ -867,8 +1062,32 @@ def test_share_rows_keep_names_for_hashing_and_drop_the_rest(db_path):
     assert {r["lc_system"] for r in rows} == {"evosep", "custom"}
     assert set(tz) == {"run_name", "instrument", "run_date", "run_date_utc", "spd", "mode",
                        "amount_ng", "lc_system", "peg_score", "peg_intensity_pct",
-                       "peg_n_ions_detected", "peg_class"}
+                       "peg_n_ions_detected", "peg_class",
+                       "id", "stan_version", "has_hits"}      # ranking keys, never sent
     json.dumps(rows)
+
+
+def test_share_rows_survive_a_store_without_stan_version(tmp_path, monkeypatch):
+    """stan_version is a migration column; an unmigrated file lacks it.
+
+    Selected blind, "no such column" answered [] and the lab shared nothing.
+    Guarded by PRAGMA table_info, the rows come back ranked without it.
+    """
+    monkeypatch.delenv("STAN_DB_BACKEND", raising=False)
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as con:
+        con.execute(
+            "CREATE TABLE runs (id TEXT PRIMARY KEY, instrument TEXT, run_name TEXT, "
+            "run_date TEXT, spd INTEGER, mode TEXT, amount_ng REAL, lc_system TEXT, "
+            "hidden INTEGER DEFAULT 0, n_precursors INTEGER, peg_score REAL, "
+            "peg_n_ions_detected INTEGER, peg_intensity_pct REAL, peg_class TEXT)")
+        for rid in ("r1", "r2"):
+            con.execute(
+                "INSERT INTO runs VALUES (?, ?, 'HeLa_old.d', '2026-09-01T10:00:00Z', 100, "
+                "'diaPASEF', 50, 'evosep', 0, 30000, 5.0, 3, 0.1, 'clean')", (rid, TIMS))
+    rows = stan_db.get_peg_share_rows(db_path=path)
+    assert [(r["id"], r["stan_version"], r["has_hits"]) for r in rows] == [("r2", None, False)]
+    assert len(stan_db.get_peg_runs(TIMS, db_path=path)) == 1
 
 
 def test_share_rows_include_sample_type_when_the_column_exists(db_path):

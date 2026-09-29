@@ -141,7 +141,7 @@ Canonical copies live in `scripts/`.
 | `cron_ht_watch.sh` | */20 min | timsTOF watch/status |
 | `cron_evosep.sh` | */30 min | Evosep column health extractor |
 | `cron_ioncloud.sh` | hourly | Feature-cloud backfill from existing 4DFF sidecars |
-| `cron_community_sync.sh` | */6 h | Push to the community benchmark |
+| `cron_community_sync.sh` | */6 h | Push to the community benchmark, then `stan peg-sync` (PEG board) |
 | `cron_bruker_maintenance.sh` | daily 20:00 | Compass BACKUP → maintenance document |
 | `cron_stan_db_backup.sh` | daily 03:17 | pg_dump PG Farm → Flinders. **Runs via `bash`, not as an executable** |
 | `cron_stan_alerts.sh` | */20 min | Feed + publish staleness → Slack. **Runs via `bash`, not as an executable** |
@@ -1044,7 +1044,7 @@ extraction → DB → dashboard to confirm every value is actually populated.
   |---|---|
   | Hive | `ssh hive "cd /quobyte/proteomics-grp/brett/stan && git pull"` — `stan_venv` is editable, so that is the whole deploy |
   | Azure (`ucd.stan-proteomics.org`) | zip deploy, `docs/AZURE_DEPLOY.md`. Run `node scripts/check_jsx.js stan/dashboard/public/index.html` first — a JSX syntax error blanks the page rather than degrading |
-  | HF Space | see `reference_hf_space_deploy` / the Space repo |
+  | HF Space | `hf_space/app.py` is the canonical source (v1.2.0+). `python scripts/deploy_hf_space.py` (dry run), then `--yes --record-base`. Never edit `app.py` in the Space: the script refuses to deploy over a Space that no longer matches its recorded base |
 - **Say which surface you mean** when reporting a fix as shipped. "Pushed" is not "live".
 - `update-stan.bat` targets instrument PCs and is **not used at UC Davis** — those
   boxes acquire only. It remains for single-lab installs elsewhere.
@@ -1113,6 +1113,32 @@ Community benchmark submissions go through the HF Space relay — **no HF token 
 - Never re-introduce HF token requirements in client-side code
 - `tests/test_pipeline.py` has 7 tests that catch version desync, schema mismatch, and token regressions
 
+### PEG Watch (v1.2.0) — full reference `docs/PEG_WATCH.md`
+
+- **Code**: maths `stan/metrics/peg_trends.py`; readers `get_peg_*` in
+  `stan/db.py` / `stan/db_pg.py`; `GET /api/peg/overview` in
+  `server.py`; share client `stan/community/peg_submit.py`
+  (`stan peg-sync`, `stan community-claim`); relay `/api/peg/*` in
+  `hf_space/app.py`; Thermo reader `stan/metrics/peg_trfp.py`.
+- **PEG is its own channel**, not a benchmark track: it is an MS1
+  property, so DDA and DIA runs share it, and it needs no search.
+- **One acquisition, one row.** PG holds duplicate ingests that disagree
+  on PEG. Every PEG reader, the share client and the Thermo backfill agree
+  on one copy per `(instrument, basename(run_name), UTC second)`: stored
+  ion hits, then newest `stan_version` (numeric), then highest `id`. A new
+  PEG reader must use `_peg_canonical_sql` (PG) or `pick_canonical`
+  (SQLite), or its counts will disagree with the tab and the board.
+- **Never compare PEG share across instrument families.** The 1e4 floor
+  is absolute, the denominator is sampled above-floor MS1 (not the TIC),
+  and vendor intensity scales differ (alphatims also wraps at 65,535).
+  Rank within `family × Evosep SPD`; label any cross-family view.
+- **An empty read is NULL, never clean.** `'unknown'` and a
+  no-signal 0.0 both look like a spotless run by score alone.
+- **Thermo on Hive** goes through `trfp.sif` (no `fisher_py` in the venv).
+  Conversion (~35 s, 1.3 GB RSS per file) runs **only inside SLURM**;
+  nothing in the code enforces that, the callers' location does.
+- **`CLAIMS_PEPPER`** on the Space: never remove or rotate once set.
+
 ---
 
 ## Documentation Maintenance
@@ -1129,7 +1155,8 @@ Community benchmark submissions go through the HF Space relay — **no HF token 
 The README has an [Implementation Status](#implementation-status) table and a [TODO](#todo)
 checklist. These are the source of truth for what works vs what's planned. Keep them current.
 
-5. Check the **HF Space relay API** (`app.py` on `brettsp/stan`) — if schemas, field names,
+5. Check the **HF Space relay API** (`hf_space/app.py`, deployed to `brettsp/stan` with
+   `scripts/deploy_hf_space.py`) — if schemas, field names,
    or metrics changed, the relay must be updated and redeployed. The submission schema in
    the relay MUST match the client-side submission code in `stan/community/submit.py`.
 6. Check the **HF Space dashboard HTML** — if metrics are renamed, added, or removed,

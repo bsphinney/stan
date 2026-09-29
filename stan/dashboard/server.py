@@ -1105,13 +1105,39 @@ def _peg_sharing_status() -> dict:
     UC Davis shares from the Hive cron, and the hosted dashboard has no
     community.yml -- ``enabled`` is only true if the host mirrors it with
     ``STAN_PEG_SHARE=1``; nothing here can see what another machine sends.
+
+    ``source`` says which of those it is, so the tab can word the card
+    honestly: ``"config"`` -- this install's own community.yml opts in, the
+    file ``stan peg-sync`` here obeys; ``"env"`` -- only ``STAN_PEG_SHARE``
+    says so, which on the hosted dashboard means "this host was told", not
+    "this host sends"; ``"opted_out"`` -- this host says no in so many words
+    (``peg_share: false``, or ``STAN_PEG_SHARE=0``); ``"off"`` -- this host
+    has no setting at all. The config wins when both opt in because it is
+    the stronger statement.
+
+    The last two are both "not enabled" but mean different things to the
+    tab. With no setting (the hosted dashboard) the relay's board is the
+    best witness of whether the lab shares; after an explicit no it is not,
+    because the relay keeps a lab's earlier runs for the whole board
+    window, and reading those as "sharing is on" contradicted the lab's own
+    decision (review round 2, RG-UI-1).
     """
     from stan.community.submit import RELAY_URL
 
     cfg = _load_community_cfg()
-    enabled = _truthy(cfg.get("peg_share")) or _truthy(_os.environ.get("STAN_PEG_SHARE"))
+    env = _os.environ.get("STAN_PEG_SHARE")
+    if _truthy(cfg.get("peg_share")):
+        source = "config"
+    elif _truthy(env):
+        source = "env"
+    elif any(v is not None and str(v).strip() for v in (cfg.get("peg_share"), env)):
+        # Set, and not to a yes: `stan peg-sync` here sends nothing.
+        source = "opted_out"
+    else:
+        source = "off"
     name = str(cfg.get("display_name") or "").strip()
-    return {"enabled": enabled, "display_name": name or None, "relay_url": RELAY_URL}
+    return {"enabled": source in ("config", "env"), "source": source,
+            "display_name": name or None, "relay_url": RELAY_URL}
 
 
 def _build_peg_overview(instrument: str, as_of, instruments: list[dict]):

@@ -1745,7 +1745,9 @@ def get_peg_ion_hits(
 #     it classifies 'clean' (peg_trends.is_failed_acquisition).
 #   * one row per acquisition -- the same raw file sits in runs up to five
 #     times with different PEG readings; peg_trends.pick_canonical keeps one,
-#     the copy stan.db_pg's DISTINCT ON keeps on PG.
+#     the copy stan.db_pg's DISTINCT ON keeps on PG. An acquisition is
+#     (instrument, basename(run_name), UTC second) -- exactly what the share
+#     client's run_key hashes, so the tab and the board count the same runs.
 #
 # SQLite stores run_date as TEXT with whatever offset the acquisition PC wrote,
 # so the date floor and every date bucket are computed after parsing to UTC in
@@ -1765,9 +1767,32 @@ def _peg_real_qc_sqlite(alias: str = "") -> str:
     )
 
 
-#: Columns every SQLite PEG reader selects so ``pick_canonical`` can tell
-#: copies of one acquisition apart and rank them.
-_PEG_IDENTITY_COLS = "id, instrument, run_name, run_date, stan_version"
+def _sqlite_runs_columns(db_path: Path | None) -> set[str]:
+    """Columns of ``runs`` in this SQLite file; empty when there is no file.
+
+    A lock or I/O error is raised, not read as "no columns": answered as a
+    missing ``stan_version``, one read would rank copies without it and the
+    PEG tab would cache a different pick for ten minutes.
+    """
+    if db_path is None:
+        db_path = get_db_path()
+    if not db_path.exists():
+        return set()
+    with connect(db_path) as con:
+        return {row[1] for row in con.execute("PRAGMA table_info(runs)")}
+
+
+def _peg_identity_cols(db_path: Path | None) -> str:
+    """Columns every SQLite PEG reader selects so ``pick_canonical`` can rank copies.
+
+    ``stan_version`` arrived by migration (v0.2.219), so a file that was never
+    migrated lacks it; selected blind, "no such column" turned the whole
+    reader into "no PEG here". Without it every copy ranks as unversioned and
+    hits then ``id`` still decide.
+    """
+    version = ("stan_version" if "stan_version" in _sqlite_runs_columns(db_path)
+               else "NULL AS stan_version")
+    return f"id, instrument, run_name, run_date, {version}"
 
 
 def _sqlite_peg_rows(sql: str, params, db_path: Path | None, who: str) -> list[dict]:
@@ -1801,6 +1826,11 @@ def _sqlite_peg_hit_run_ids(db_path: Path | None) -> set:
         (), db_path, "peg hit run ids",
     )
     return {r["run_id"] for r in rows}
+
+
+#: What ``pick_canonical`` ranked copies by. Stripped from every reader's
+#: rows except the share reader's, whose client ranks by the same keys.
+_PEG_RANK_KEYS = ("id", "stan_version", "has_hits")
 
 
 def _finish_peg_rows(rows, keep_name: bool = False, hit_ids: set | None = None,
@@ -1847,7 +1877,7 @@ def _finish_peg_rows(rows, keep_name: bool = False, hit_ids: set | None = None,
     out.sort(key=lambda x: (x["run_date_utc"], str(x.get("instrument") or ""),
                             str(x.get("run_name") or "")))
     for d in out:
-        for k in ("id", "stan_version", "has_hits"):
+        for k in _PEG_RANK_KEYS:
             if k not in keep:
                 d.pop(k, None)
         if keep_name:
@@ -1877,7 +1907,7 @@ def get_peg_runs(instrument: str | None = None, db_path: Path | None = None) -> 
         return _finish_peg_rows(get_peg_runs_pg(instrument), keep=("has_hits",))
 
     sql = (
-        f"SELECT {_PEG_IDENTITY_COLS}, spd, peg_score, peg_intensity_pct, "
+        f"SELECT {_peg_identity_cols(db_path)}, spd, peg_score, peg_intensity_pct, "
         "peg_n_ions_detected, peg_class, n_precursors, mode, lc_system "
         f"FROM runs WHERE {_peg_real_qc_sqlite()}"
     )
@@ -1904,7 +1934,7 @@ def get_peg_instruments(db_path: Path | None = None) -> list[dict]:
         return instruments_from_counts(get_peg_instrument_counts_pg(PG_BLANK_WASH_REGEX))
 
     rows = _sqlite_peg_rows(
-        f"SELECT {_PEG_IDENTITY_COLS}, lc_system, peg_score, peg_intensity_pct, "
+        f"SELECT {_peg_identity_cols(db_path)}, lc_system, peg_score, peg_intensity_pct, "
         "peg_n_ions_detected, peg_class, n_precursors FROM runs "
         f"WHERE {_peg_real_qc_sqlite()}", (), db_path, "get_peg_instruments",
     )
@@ -1931,7 +1961,7 @@ def get_peg_ladder_month_counts(
         return get_peg_ladder_month_counts_pg(instrument, PG_BLANK_WASH_REGEX)
 
     runs = _sqlite_peg_rows(
-        f"SELECT {_PEG_IDENTITY_COLS}, peg_score, peg_intensity_pct, "
+        f"SELECT {_peg_identity_cols(db_path)}, peg_score, peg_intensity_pct, "
         "peg_n_ions_detected, peg_class, n_precursors "
         f"FROM runs WHERE instrument = ? AND {_peg_real_qc_sqlite()}",
         (instrument,), db_path, "get_peg_ladder_month_counts",
@@ -1986,33 +2016,33 @@ def get_peg_share_rows(db_path: Path | None = None) -> list[dict]:
     change between syncs, or the relay sees a "changed" record and the
     public value flips.
 
+    Also returns the keys the copy was chosen by (``has_hits``,
+    ``stan_version``, ``id``): the client ranks by the same
+    ``peg_trends.canonical_rank`` as a second line of defence, and a rank
+    with no keys to read would fall back to comparing records. None of them
+    is sent.
+
     Returns:
         Dicts with ``run_name``, ``instrument``, ``run_date`` and
         ``run_date_utc`` (both ``YYYY-MM-DDTHH:MM:SSZ``, identical on either
         backend), ``spd``, ``mode``, ``amount_ng``, ``lc_system``, the four
-        PEG fields, and ``sample_type`` when the ``runs`` table has it.
+        PEG fields, ``has_hits``, ``stan_version`` (None where the store has
+        no such column), ``id``, and ``sample_type`` when ``runs`` has it.
     """
     from stan.db_pg import get_peg_share_rows_pg, use_pg
     if use_pg():
-        return _finish_peg_rows(get_peg_share_rows_pg(), keep_name=True)
+        return _finish_peg_rows(get_peg_share_rows_pg(), keep_name=True,
+                                keep=_PEG_RANK_KEYS)
 
-    if db_path is None:
-        db_path = get_db_path()
-    extra = ""
-    if db_path.exists():
-        try:
-            with connect(db_path) as con:
-                cols = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
-            extra = ", sample_type" if "sample_type" in cols else ""
-        except sqlite3.OperationalError:
-            extra = ""
+    extra = ", sample_type" if "sample_type" in _sqlite_runs_columns(db_path) else ""
     rows = _sqlite_peg_rows(
-        f"SELECT {_PEG_IDENTITY_COLS}, spd, mode, amount_ng, lc_system, "
+        f"SELECT {_peg_identity_cols(db_path)}, spd, mode, amount_ng, lc_system, "
         f"peg_score, peg_intensity_pct, peg_n_ions_detected, peg_class{extra} "
         f"FROM runs WHERE {_peg_real_qc_sqlite()}",
         (), db_path, "get_peg_share_rows",
     )
-    return _finish_peg_rows(rows, keep_name=True, hit_ids=_sqlite_peg_hit_run_ids(db_path))
+    return _finish_peg_rows(rows, keep_name=True, hit_ids=_sqlite_peg_hit_run_ids(db_path),
+                            keep=_PEG_RANK_KEYS)
 
 
 def get_peg_lab_lc_summary(as_of=None, db_path: Path | None = None) -> list[dict]:
@@ -2037,7 +2067,7 @@ def get_peg_lab_lc_summary(as_of=None, db_path: Path | None = None) -> list[dict
     if use_pg():
         return get_peg_lab_lc_summary_pg(as_of, PG_BLANK_WASH_REGEX)
     rows = _sqlite_peg_rows(
-        f"SELECT {_PEG_IDENTITY_COLS}, lc_system, peg_score, peg_intensity_pct, "
+        f"SELECT {_peg_identity_cols(db_path)}, lc_system, peg_score, peg_intensity_pct, "
         "peg_n_ions_detected, peg_class, n_precursors FROM runs "
         f"WHERE {_peg_real_qc_sqlite()}", (), db_path, "get_peg_lab_lc_summary",
     )

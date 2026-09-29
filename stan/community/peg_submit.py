@@ -44,6 +44,12 @@ import yaml
 from stan import __version__
 from stan.community.submit import RELAY_URL, _detect_sample_type, _instrument_family
 
+# run_key hashes basename(run_name), and the PEG readers de-duplicate on the
+# same basename (peg_trends.acquisition_key); ranking copies uses the readers'
+# own canonical_rank. One definition of each, so the tab and the board cannot
+# disagree about which rows are one acquisition or which copy of it counts.
+from stan.metrics.peg_trends import canonical_rank, run_basename  # noqa: F401 - re-exported
+
 logger = logging.getLogger(__name__)
 
 PEG_METHOD = "stan-peg-1"  # 60-ion PEG1-20 x H/NH4/Na panel, 5 ppm, 1e4 floor, 80 MS1 scans
@@ -77,6 +83,15 @@ CLAIM_HINT = (
     "a fresh token."
 )
 
+# Sharing under a name with no auth_token works -- the relay accepts
+# unclaimed names -- but whoever claims the name first owns it: its rows then
+# need their token, and this lab's unverified rows drop off the board. The
+# relay's join card says so; a lab that only ever runs the cron sees this.
+UNCLAIMED_HINT = (
+    "'{name}' is unclaimed: anyone can claim it and take its place on the "
+    "board. Run `stan community-claim` first."
+)
+
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
 # Seam for tests: retry backoff must not sleep in the suite.
@@ -90,25 +105,6 @@ _DATE_RE = re.compile(
 
 
 # ── Record building ─────────────────────────────────────────────────────
-
-def run_basename(run_name: str) -> str:
-    """Return the file or directory name of a run, whatever the separator.
-
-    ``runs.run_name`` is written by Windows instrument PCs (``\\``), Hive
-    (``/``) and sometimes carries a trailing separator on a Bruker ``.d``
-    directory. The extension is kept, as in
-    :func:`stan.community.fingerprint_dedup.compute_submission_fingerprint`,
-    so ``X.d`` and ``X.raw`` stay distinct runs.
-
-    Args:
-        run_name: Run name or path as stored in ``runs.run_name``.
-
-    Returns:
-        The last path component, or ``""`` for an empty name.
-    """
-    s = (run_name or "").strip().rstrip("/\\")
-    return s.replace("\\", "/").rsplit("/", 1)[-1]
-
 
 def utc_iso(value: Any) -> str | None:
     """Normalise a ``runs.run_date`` value to ``YYYY-MM-DDTHH:MM:SSZ``.
@@ -257,26 +253,18 @@ def _record_or_reason(row: Mapping[str, Any], now: datetime) -> tuple[dict | Non
     }, ""
 
 
-def _version_tuple(value: Any) -> tuple[int, ...]:
-    """``"1.0.10"`` -> ``(1, 0, 10)``; NULL or ``"unknown"`` -> ``()``, oldest."""
-    m = re.match(r"\s*v?(\d+(?:\.\d+)*)", str(value or ""))
-    return tuple(int(p) for p in m.group(1).split(".")) if m else ()
-
-
 def _processing_rank(row: Mapping[str, Any], rec: Mapping[str, Any]) -> tuple:
     """Order duplicate rows of one acquisition; the highest is the one shared.
 
-    Newest processing first: ``stan_version`` (numerically, so 1.0.10 beats
-    1.0.9), then ``migrated_at``, then ``id`` so a tie still has one answer.
-    The record itself is the last key, which keeps the choice independent of
-    row order even when the reader supplies none of those columns.
+    The PEG readers already return one row per acquisition, chosen by
+    ``peg_trends.canonical_rank`` (stored ion hits, then the newest
+    ``stan_version`` by number, then the highest ``id``). This is the second
+    line of defence and ranks by exactly those keys: any other order would
+    share a different copy from the one the PEG tab counts the moment two
+    got through. The record itself is the last key, so the choice is still
+    independent of row order when a caller supplies none of those columns.
     """
-    return (
-        _version_tuple(row.get("stan_version")),
-        utc_iso(row.get("migrated_at")) or "",
-        str(row.get("id") or ""),
-        json.dumps(rec, sort_keys=True, default=str),
-    )
+    return (*canonical_rank(dict(row)), json.dumps(rec, sort_keys=True, default=str))
 
 
 def build_peg_records(
@@ -292,14 +280,15 @@ def build_peg_records(
     Unmeasured PEG is dropped, never sent as 0.
 
     When several rows are the same acquisition (one ``run_key``), the one
-    shared is chosen by :func:`_processing_rank`, never by row order.
+    shared is chosen by :func:`_processing_rank` -- the readers' own rank --
+    never by row order.
 
     Args:
         rows: Dicts with ``run_name, instrument, run_date, spd, mode,
             amount_ng, lc_system, peg_score, peg_intensity_pct,
             peg_n_ions_detected, peg_class`` and optionally ``sample_type``,
-            ``hidden``, and ``id``, ``stan_version`` and ``migrated_at`` to
-            rank duplicates by processing. None of those three is sent.
+            ``hidden``, and ``has_hits``, ``stan_version`` and ``id`` to rank
+            duplicates the way the readers do. None of those three is sent.
         stan_version: Accepted for symmetry with the batch payload, which
             carries the version once per request; records do not repeat it
             (the spec §4.4 record has no version field).
@@ -658,7 +647,8 @@ def sync_peg(
         "rows_read": 0, "n_records": 0, "skipped": {},
         "batches": 0, "batches_ok": 0, "batches_failed": 0,
         "accepted": 0, "unchanged": 0, "rejected": 0, "rejected_reasons": {},
-        "verified": None, "errors": [], "log_path": None, "exit_code": 0,
+        "verified": None, "unclaimed": False, "warnings": [],
+        "errors": [], "log_path": None, "exit_code": 0,
     }
 
     def _finish(status: str, reason: str = "") -> dict:
@@ -696,6 +686,16 @@ def sync_peg(
             result["errors"].append(name_problem)
             return _summary("no_display_name", name_problem)
 
+        # Always sent when present (unlike /api/submit, whose relay auth path
+        # was broken until the PEG relay work): a claimed name without its
+        # token is refused with 403 on this channel.
+        token = str(cfg.get("auth_token") or "").strip()
+        if enabled and not token and not name_problem:
+            hint = UNCLAIMED_HINT.format(name=display_name)
+            result["unclaimed"] = True
+            result["warnings"].append(hint)
+            logger.warning("PEG sync: %s", hint)
+
         try:
             with _backend_env(backend):
                 rows = _fetch_share_rows()
@@ -730,10 +730,6 @@ def sync_peg(
             "Content-Type": "application/json",
             "User-Agent": f"STAN/{__version__}",
         }
-        # Always sent when present (unlike /api/submit, whose relay auth path
-        # was broken until the PEG relay work): a claimed name without its
-        # token is refused with 403 on this channel.
-        token = str(cfg.get("auth_token") or "").strip()
         if token:
             headers["X-STAN-Auth"] = token
 

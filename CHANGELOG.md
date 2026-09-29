@@ -11,6 +11,79 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.0] — 2026-09-28
+
+PEG Watch: STAN's per-run PEG score leaves the run modal and becomes a
+history and a community board. Reference: `docs/PEG_WATCH.md`; design:
+`docs/superpowers/specs/2026-09-28-peg-watch-design.md`.
+
+### Added
+- **PEG tab** on the dashboard (`?tab=peg`, `GET /api/peg/overview`). Per
+  instrument: timeline with a 14-day median, auto-detected contamination
+  episodes (median ≥ 3 % for ≥ 14 days), best 90-day baseline, daily
+  calendar, oligomer-ladder fingerprint, PEG per LC-column period, median
+  precursors per PEG class, the community leaderboard, an Evosep vs other
+  LC comparison, the one-night isolation protocol, and what the lab shares.
+  Ranks and trends use **PEG share of MS1** (`peg_intensity_pct`), because
+  the 0–100 score saturates: 29 % of UC Davis timsTOF runs score exactly
+  0 and 95 score exactly 100.
+- **Community PEG board**, a channel separate from the benchmark tracks:
+  PEG comes from MS1 and needs no search. `stan peg-sync [--backend pg]
+  [--dry-run]` (opt-in `peg_share: true` or `STAN_PEG_SHARE=1`) resends
+  every shareable QC run in batches of 2,000; the relay keeps what changed.
+  Relay: `POST /api/peg/submit`, `GET /api/peg/leaderboard`, `/trend`,
+  `/lc-compare`, stored as `peg/peg_latest.parquet` + `peg/submissions/`.
+  Evosep runs only are ranked, within instrument family × Evosep SPD,
+  ≥ 5 runs; a public "Evosep PEG Watch" section on the community page.
+  File names never leave the lab (`run_key` is a truncated sha256).
+  `scripts/cron_community_sync.sh` runs `peg-sync` after `submit-all`.
+- **`stan community-claim`**: re-verify the lab name by email and store a
+  fresh `auth_token`. Claimed names must present it on the PEG channel.
+- **Thermo PEG on Hive.** The Hive venv has no `fisher_py`, so 0 of 2,924
+  Orbitrap QC rows had a score. `.raw` now falls back to the
+  ThermoRawFileParser container (`stan/metrics/peg_trfp.py`, ~35 s and
+  1.3 GB per file, inside SLURM only). `scripts/peg_backfill_thermo.sbatch`
+  scores the history on `low`.
+- **The relay source is in the repo** (`hf_space/`), deployed only by
+  `scripts/deploy_hf_space.py`, which refuses to overwrite edits made in
+  the Space, avoids the sync window, and waits for the new version.
+
+### Fixed
+- **Duplicate ingests counted twice.** PG held 1,674 timsTOF rows for
+  1,404 acquisitions, and copies disagreed on PEG in 168 of 241 groups.
+  Every PEG reader keeps one row per `(instrument, basename, UTC second)`:
+  stored ion hits, then newest `stan_version` by number, then highest id.
+  The share client ranks by the same keys, so the tab and the board agree.
+- **Empty reads stored as clean.** A run with no MS1 signal scored 0.0 /
+  `clean`. The watcher, the Hive pipeline and the Thermo path now leave
+  PEG NULL, and the readers drop old rows with 0 precursors, 0 ions and
+  0 % (19 timsTOF acquisitions).
+- `PegBadge` shows `unknown` as grey "n/a" instead of a green 0.0; the
+  QC History PEG column sorts by score; the PEG sparkline counts exact
+  zeros; the Samples tab badge reads `sample_health`.
+- The tab row no longer wraps onto two lines at desktop width and scrolls
+  on its own on a phone.
+- Docstrings: `intensity_pct` is over sampled MS1 peaks above 1e4, not the
+  TIC; heavy runs are not held from the community.
+
+### Security
+- Claim email hashes are peppered with the Space secret `CLAIMS_PEPPER`
+  (HMAC, entries marked `"v": 2`) so a public ranking cannot be joined to
+  a list of candidate emails. Never remove or rotate it once set.
+- Lab names are canonicalised (NFKC, invisible characters dropped) before
+  any claim lookup, so a look-alike cannot pass as an unclaimed name.
+- Claim limits are keyed by the caller, with a `claim_id` binding the
+  wrong-guess budget to whoever asked for the code.
+
+### Deploy
+- Each surface separately, in the order of spec §6: merge; HF Space via
+  `scripts/deploy_hf_space.py` + `CLAIMS_PEPPER`; re-claim the lab name;
+  Hive `git pull` + copy `cron_community_sync.sh`; Azure zip deploy +
+  `STAN_PEG_SHARE=1`; then the Thermo backfill. `$ScriptVersion` in both
+  instrument copy scripts is 1.2.0 (no behaviour change there).
+
+---
+
 ## [1.1.12] — 2026-09-24
 
 ### Fixed

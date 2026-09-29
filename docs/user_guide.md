@@ -18,12 +18,13 @@ This is the day-to-day manual for STAN — the Standardized proteomic Throughput
 4. [Reading the dashboard](#reading-the-dashboard)
 5. [The IPS score](#the-ips-score)
 6. [The community benchmark](#the-community-benchmark)
-7. [Three deployment modes](#three-deployment-modes)
-8. [Remote viewing — Tailscale and phone access](#remote-viewing--tailscale-and-phone-access)
-9. [STAN Godmode — multi-instrument view](#stan-godmode--multi-instrument-view)
-10. [Common workflows — recipes](#common-workflows--recipes)
-11. [Troubleshooting](#troubleshooting)
-12. [Where to get help](#where-to-get-help)
+7. [PEG Watch — PEG history and the community PEG board](#peg-watch--peg-history-and-the-community-peg-board)
+8. [Three deployment modes](#three-deployment-modes)
+9. [Remote viewing — Tailscale and phone access](#remote-viewing--tailscale-and-phone-access)
+10. [STAN Godmode — multi-instrument view](#stan-godmode--multi-instrument-view)
+11. [Common workflows — recipes](#common-workflows--recipes)
+12. [Troubleshooting](#troubleshooting)
+13. [Where to get help](#where-to-get-help)
 
 ---
 
@@ -146,6 +147,10 @@ The same run data across all time. Use the date filter controls (Week / Month / 
 ### Trends
 
 Time-series charts of key metrics plotted chronologically. One chart per metric (precursors, peptides, IPS, TIC AUC, etc.), with optional community median overlaid as a dashed line. Use the instrument selector at the top if you have multiple instruments configured. The time filter (Week / Month / 3 Months / etc.) lets you zoom in or out. A gradual downward slope in precursor count over weeks typically means column degradation. A sudden drop in a single run usually means a bad injection or a search failure.
+
+### PEG
+
+Polyethylene-glycol contamination on one instrument over time, plus the community PEG board. See [PEG Watch](#peg-watch--peg-history-and-the-community-peg-board) for what each panel means and how sharing works. Link straight to it with `?tab=peg`.
 
 ### Sample Health
 
@@ -277,6 +282,147 @@ dashboard reads a consolidated file that is rebuilt nightly, so allow a day.
 **The public dashboard** is at `https://huggingface.co/spaces/brettsp/stan`. It shows the community leaderboard, SPD-bucketed ID depth comparisons, and cross-lab TIC overlays. Your instrument appears under its family and throughput bucket; no lab name or location is shown unless you choose to add one.
 
 **To disable submissions temporarily:** set `community_submit: false` in `~/.stan/community.yml`. Submissions stop immediately on the next watcher config reload (within 30 seconds).
+
+---
+
+## PEG Watch — PEG history and the community PEG board
+
+STAN scores PEG (polyethylene glycol, the ladder of peaks 44.026 Da apart
+that plastics, detergents and some Evosep consumables leave behind) on
+every QC run it can read: Bruker `.d` through alphatims
+(`stan install-peg-deps`), Thermo `.raw` through `fisher_py`, or on a
+cluster without `fisher_py` through the ThermoRawFileParser container.
+The **PEG** tab turns those numbers into a history. Reference:
+[`docs/PEG_WATCH.md`](PEG_WATCH.md).
+
+### The number: PEG share of MS1
+
+STAN reads 80 MS1 scans spread across the gradient and matches peaks
+within 5 ppm to PEG1–20 as [M+H]⁺, [M+NH₄]⁺ and [M+Na]⁺. The **PEG share
+of MS1** is the matched intensity divided by the intensity of all sampled
+MS1 peaks above 10⁴ counts. It is not a fraction of the TIC. It keeps
+rising as contamination gets worse, where the 0–100 PEG score stops at
+100, so the tab and the board use the share and show the class (clean,
+trace, moderate, heavy) as a badge.
+
+**Compare it only within one instrument family.** The 10⁴ floor is the
+same number on every instrument, but a timsTOF and an Orbitrap report
+intensity on different scales, so 3 % on one is not 3 % on the other.
+
+Runs whose PEG could not be read are left out. They never count as clean,
+and neither does a run that read no MS1 signal at all.
+
+### The PEG tab
+
+Pick the instrument at the top (the one with the most PEG runs is the
+default). From top to bottom:
+
+- **Headline and tiles** — the 30-day median PEG share against the 30
+  days before, the clean and heavy QC counts, the latest episode, and
+  your community rank (Evosep instruments only).
+- **PEG over time** — every QC run, a 14-day median line, column changes
+  from the maintenance log, and the best 90-day stretch as a baseline.
+  Shaded bands are **episodes**: stretches where the 14-day median stayed
+  at or above 3 % for at least two weeks (hot spells less than three
+  weeks apart are one episode). Toggle the SPD and the time range.
+- **Every QC day** — a calendar since the start of last year, each day
+  coloured by its median QC's class, so one bad injection does not paint
+  the whole day.
+- **Community PEG leaderboard** and **Evosep vs other LC** — see below.
+- **What PEG costs you** — median precursors per PEG class for DIA runs,
+  for methods with enough clean and heavy runs to compare.
+- **PEG ladder fingerprint** — which oligomers (PEG2–20) were seen each
+  month, and the adduct mix. A shift in the ladder or the adducts often
+  points at a new source.
+- **PEG by column period** — one row per LC column from the maintenance
+  log.
+- **Found PEG? Isolate the source in one night** — the Evosep diagnostic
+  protocol ([`docs/PEG_EVOSEP_DIAGNOSTIC.md`](PEG_EVOSEP_DIAGNOSTIC.md)).
+- **What your lab shares** — whether this lab shares, and exactly what.
+
+Each raw file counts once, even when STAN ingested it twice (say from the
+instrument PC and again on the cluster).
+
+### Sharing PEG with the community
+
+Sharing is opt-in and separate from the benchmark: it needs no community
+search, and any lab that scores PEG can take part. Only Evosep runs are
+ranked; runs on other LCs feed the LC comparison.
+
+1. **Claim your lab name** so nobody else can take it:
+   ```
+   stan community-claim
+   ```
+   STAN emails a 6-digit code to the address the name was claimed with
+   and stores a fresh `auth_token` in `~/.stan/community.yml`. The relay
+   keeps one token per name, so copy that `auth_token` line to every other
+   machine that shares as your lab. (If you set up with `stan setup` and
+   claimed a name there, you already have a token.)
+2. **Opt in**: add `peg_share: true` to `~/.stan/community.yml` (or set
+   `STAN_PEG_SHARE=1`).
+3. **Sync**:
+   ```
+   stan peg-sync --dry-run    # see what would be sent, send nothing
+   stan peg-sync              # send
+   ```
+   Every sync resends all your shareable QC runs and the relay keeps only
+   what changed, so running it on a schedule is safe. On a cluster that
+   reads PG, use `stan peg-sync --backend pg`.
+
+**What is shared, per QC run:** date and time, instrument model and
+family, LC (Evosep or other), SPD, acquisition mode, sample type, load,
+the PEG share, score, ion count and class, and an anonymous `run_key`.
+**Never shared:** file or sample names, raw data or spectra, serial
+numbers, customer or project details. Blanks and washes are not shared.
+
+**Logs:** each sync writes `~/.stan/logs/peg_sync_<UTC time>.jsonl`
+(`~\STAN\logs` on Windows), one line per batch plus a summary, and the
+command's last lines say how many runs were accepted, unchanged, rejected
+and skipped, and why.
+
+**To stop sharing:** set `peg_share: false`. The runs already sent stay
+on the board for the rest of its window; the relay has no delete.
+
+### The community board
+
+The public page (`https://brettsp-stan.hf.space/#peg`) and the PEG tab
+both show it. Labs are grouped into **cohorts** of the same instrument
+family and Evosep method (for example timsTOF × 100 SPD), so a timsTOF lab
+is never ranked against an Orbitrap lab. Within a cohort, over the last
+30, 90 or 365 days:
+
+- A lab needs **5 QC runs** in the window to be ranked. Fewer, and it is
+  listed as unranked.
+- Lower is better: labs are ordered by median PEG share, then by clean
+  rate, then by run count.
+- **Cleanest** goes to rank 1 when at least two labs are ranked. **Most
+  improved** goes to the lab whose median fell furthest against the
+  previous window: at least 15 % down *and* at least 0.5 percentage
+  points. A change from a previous median below 0.1 % is not shown at
+  all — at the detection floor it is noise.
+- A check mark means the lab name is claimed and the runs came with its
+  token. Unclaimed names are shown as unverified, and once a name is
+  claimed, rows sent under it without the token are left out.
+
+On an instrument that is not on an Evosep, the tab shows the family's
+Evosep board for context.
+
+### Evosep vs other LC
+
+"Does PEG follow the LC?" The panel has two halves:
+
+- **Your instruments, last 90 days** — every instrument with PEG, its LC,
+  90-day median, clean rate and a 26-week sparkline. Instruments with no
+  LC recorded are marked Unknown.
+- **Community, same instrument family** — Evosep and other-LC runs from
+  every sharing lab, compared only within one family.
+
+**The caveat:** if your Evosep and non-Evosep runs are on different
+instrument families — at UC Davis the Evosep is on the timsTOF and the
+Orbitraps have their own LC — the panel says so, because the difference
+then mixes the LC with the detector. A like-for-like LC comparison needs
+the same instrument family on both sides, which is what the community
+half shows once labs with both have shared.
 
 ---
 
@@ -573,6 +719,14 @@ The virtual environment isn't activated, or your terminal hasn't picked up the u
 **"Community submission returns a 401 error"**
 
 The submission goes through the HF Space relay — you don't need an HF token on the client side. A 401 typically means the relay's server-side token expired; this is an infrastructure issue, not something you need to fix. File an issue on GitHub and it will be resolved.
+
+**"`stan peg-sync` fails with HTTP 403"**
+
+Your lab name is claimed and the relay did not accept this machine's `auth_token` — it is missing, or it was replaced when the name was re-claimed somewhere else. Run `stan community-claim` (or copy the current `auth_token` line from the machine that last claimed it). The relay keeps one token per name.
+
+**"The PEG tab says 'No PEG measurements yet'"**
+
+STAN cannot read that instrument's raw MS1 yet. On a timsTOF run `stan install-peg-deps` (alphatims); on an Orbitrap install `fisher_py` (`pip install stan-proteomics[thermo]`). Then `stan backfill-peg` scores the runs you already have. Runs whose read failed are left out rather than shown as clean.
 
 **"Files in F:\data\... aren't being picked up"**
 

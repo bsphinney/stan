@@ -14,9 +14,16 @@ This module:
   2. Scans an MS1 peak list for matches at user-controlled tolerance
   3. Returns a per-run summary: peg_score 0–100, n_ions, intensity_pct
 
-Pure Python, no IO. The caller (stan/metrics/peg_io.py — TBD) is
-responsible for reading MS1 peak lists from raw files via alphatims
-(Bruker) or fisher_py (Thermo).
+Pure Python, no IO. The caller (stan/metrics/peg_io.py) reads MS1 peak
+lists from raw files via alphatims (Bruker), or fisher_py / a
+ThermoRawFileParser container (Thermo, stan/metrics/peg_trfp.py).
+
+What intensity_pct is: the matched PEG intensity over the summed intensity
+of the *sampled* MS1 peaks at or above an absolute floor (1e4), not over
+the TIC. The floor is the same number on every vendor while the intensity
+scales are not (alphatims per-event counts vs Orbitrap centroids), so the
+value is comparable within one instrument family, never across families.
+The PEG board's cohorts exist because of this; see docs/PEG_WATCH.md.
 
 References:
     Rardin 2018 (J Am Soc Mass Spectrom 29, 1327-1330,
@@ -57,9 +64,12 @@ ADDUCTS_EXTENDED: list[tuple[str, float, str]] = ADDUCTS_DEFAULT + [
 ADDUCTS = ADDUCTS_EXTENDED
 
 # Default range matches Rardin 2018 Skyline panel: PEG1 through PEG20.
-# On Bruker timsTOF the scan range typically starts >=200 m/z so PEG1-3
-# (m/z 63-173) aren't acquired and the panel effectively starts at PEG4.
-# Orbitrap scans usually go lower and capture the full n=1-20 range.
+# Which oligomers a run can show depends on its method's MS1 scan range, so
+# the breadth term is method-dependent across labs. PEG1 (m/z 63-86) sits
+# below every scan range STAN has seen. On UC Davis's timsTOF HT the low
+# oligomers are reachable but rare: of 8,036 stored ion hits (PG,
+# 2026-09-28) there was one each of PEG2+NH4 (m/z 124.1), PEG3+NH4,
+# PEG3+Na and PEG4+H. The PEG tab's ladder fingerprint starts at PEG2.
 N_MIN_DEFAULT = 1
 N_MAX_DEFAULT = 20
 MZ_MIN_DEFAULT = 50.0
@@ -151,11 +161,15 @@ class PegResult:
     """Per-run PEG detection summary."""
     n_ions_detected: int = 0
     n_ions_reference: int = 0
-    intensity_pct: float = 0.0           # matched intensity / total MS1 TIC x 100
+    # matched intensity / total_intensity x 100 -- the sampled peaks at or
+    # above intensity_threshold, NOT the TIC (see the module docstring)
+    intensity_pct: float = 0.0
     peg_score: float = 0.0               # 0..100, see compute_peg_score
     peg_class: str = "clean"             # clean | trace | moderate | heavy
     matches: list[PegMatch] = field(default_factory=list)
-    total_intensity: float = 0.0         # sum of all peak intensities scanned
+    # Sum of the sampled peaks at or above intensity_threshold. 0 means no
+    # usable MS1 signal was read: callers must store NULL, not a clean 0.0.
+    total_intensity: float = 0.0
     # v0.2.168: ladder-coherence check inspired by HowDirty 2024
     # (doi:10.1002/pmic.202300134). PEG oligomers on reverse-phase LC
     # elute in monotonically increasing RT with size n, so if detected
@@ -209,15 +223,22 @@ def detect_peg_in_spectra(
             extracting these from raw files (vendor-specific).
         reference: PEG reference list (default = the module-level one).
         tolerance_ppm: mass tolerance for peak matching, default 5 ppm.
-        intensity_threshold: peaks below this intensity are ignored,
-            avoids matching electronic noise. Default 1e4 — works for
-            both Bruker and Thermo on typical proteomics samples.
+        intensity_threshold: peaks below this intensity are ignored, in
+            the numerator AND the denominator; avoids matching electronic
+            noise. Default 1e4. It is an absolute floor on intensity
+            scales that differ by vendor (alphatims per-event counts on
+            Bruker, FTMS centroid intensities on Thermo), so it keeps a
+            different fraction of peaks on each, and intensity_pct is only
+            comparable within one instrument family.
 
     Returns:
         PegResult. The matches list collapses to "best match per (ion, scan)"
         BUT a single ion seen in N scans counts as 1 detected ion (not N).
         intensity_pct is the SUM of all matched peak intensities across
-        every scan, divided by the total intensity of every scanned peak.
+        every scan, divided by the total intensity of every scanned peak at
+        or above intensity_threshold -- the sampled MS1, not the TIC. When
+        nothing reaches the floor, total_intensity is 0 and the result reads
+        as a spotless 'clean' 0.0; callers must treat that as "not measured".
     """
     ref = reference or PEG_REFERENCE
     seen_ions: set[tuple[int, str, int]] = set()  # (n, adduct, charge)
@@ -298,8 +319,11 @@ def compute_peg_score(
       - Breadth: how many reference ions were matched (saturates at 15
         - once you see 15 different PEG oligomers it's clearly a ladder,
         not noise)
-      - Magnitude: what fraction of total MS1 intensity is PEG
-        (saturates at 10%)
+      - Magnitude: intensity_pct, the PEG fraction of the sampled MS1
+        intensity above the floor (saturates at 10%). Because both terms
+        saturate, 29 % of UC Davis timsTOF runs score exactly 0 and 95
+        exactly 100, so the PEG board ranks on intensity_pct, not on this
+        score.
       - Ladder coherence: v0.2.168+. PEG oligomers on reverse-phase LC
         elute in monotonically increasing RT order. When detected ions
         peak in the correct order, coherence=1.0 and the score is kept
@@ -309,10 +333,16 @@ def compute_peg_score(
         >= 4 coherence pairs - below that the signal isn't statistically
         meaningful (could be 2 ions peaking randomly).
 
-    A run with 8 coherent ions covering 6% of TIC scores ~50; 20
-    coherent ions covering 20% of TIC scores ~100. A run with 8 ions
-    covering 20% of TIC but coherence=0.2 (signals at random RTs)
-    drops from ~100 to ~30.
+    A run with 8 coherent ions at 6% intensity_pct scores ~50; 20
+    coherent ions at 20% scores ~100. A run with 8 ions at 20% but
+    coherence=0.2 (signals at random RTs) drops from ~100 to ~30.
+
+    The penalty is not neutral about where PEG comes from. PEG present
+    throughout the run peaks in random scans, reads ~0.5 coherence and is
+    scaled by ~0.65; a ladder eluting off the column or tip (the Evosep
+    failure mode) keeps ~1.0. Ties (two oligomers peaking in the same
+    sampled scan) count as correct. ladder_coherence is not stored in the
+    DB today.
     """
     breadth = min(n_detected / 15.0, 1.0)
     magnitude = min(intensity_pct / 10.0, 1.0)
@@ -334,7 +364,12 @@ def classify_peg_score(score: float, n_ions_detected: int = 999) -> str:
       clean    < 20  - typical baseline for clean labs (a few stray PEG hits)
       trace   20-50  - measurable PEG, common with shared plasticware
       moderate 50-70 - clearly contaminated, fix sample prep before next QC
-      heavy    > 70  - sample is dominated by PEG, hold from community
+      heavy    > 70  - PEG dominates the sampled MS1
+
+    Nothing holds heavy runs back from anywhere. The community PEG board
+    shares them on purpose (v1.2.0): they are what it exists to show, and a
+    board that dropped them would rank a lab's worst weeks as its cleanest.
+    The class is a badge; ranking uses intensity_pct.
 
     v0.2.169: require n_ions_detected >= 4 before allowing moderate+
     classification. Calibration across 15 Hive timsTOF files 2023-2026

@@ -5404,6 +5404,10 @@ def peg_sync(
     schedule. Run names never leave the lab -- each run is sent under an
     anonymous hash. Writes ~/.stan/logs/peg_sync_<UTC ts>.jsonl.
 
+    Without an auth_token in community.yml the lab name is unclaimed: the
+    sync still sends, but warns, because anyone could claim the name and take
+    its place on the board. Run `stan community-claim` first.
+
     Exits 0 on success or when sharing is off, 1 when nothing could be sent.
     """
     from rich.markup import escape
@@ -5431,7 +5435,9 @@ def peg_sync(
     if result["verified"] is True:
         ident = "verified"
     elif result["verified"] is False:
-        ident = "unverified -- run `stan community-claim` to verify"
+        # The unclaimed line below already says what to run; say it once.
+        ident = ("unverified" if result.get("unclaimed")
+                 else "unverified -- run `stan community-claim` to verify")
     else:
         ident = ""
     colour = {"ok": "green", "dry_run": "cyan", "nothing_to_share": "cyan",
@@ -5455,6 +5461,11 @@ def peg_sync(
     if result["errors"] and result["errors"][0] != result["reason"]:
         more = len(result["errors"]) - 1
         _say(f"  [red]{escape(result['errors'][0])}[/red]" + (f" (+{more} more)" if more else ""))
+    # Sent anyway (the relay takes unclaimed names), but whoever claims the
+    # name first takes this lab's place on the board. Kept next to the log
+    # line so the cron's `tail -6` still shows it.
+    for warning in result.get("warnings") or []:
+        _say(f"  [yellow]{escape(warning)}[/yellow]")
     if result["log_path"]:
         _say(f"  [dim]Log: {escape(result['log_path'])}[/dim]")
 
