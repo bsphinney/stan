@@ -128,13 +128,21 @@ def pull_from_pg(db_path: Path | None = None, since: str = "") -> dict:
     decide whether that is fatal.
     """
     from stan.db import connect, get_db_path, init_db
-    from stan.db_pg import _connect
+    from stan.db_pg import _connect_with_retry
 
     if db_path is None:
         db_path = get_db_path()
     init_db(db_path)
 
-    pg = _connect()
+    # Its OWN connection, never the cached one from ``_connect()``. That one
+    # is shared by every request thread in the dashboard, and psycopg2 refuses
+    # a second ``with conn:`` on a connection another thread is inside ("the
+    # connection cannot be re-entered recursively"). The first pull after a
+    # restart re-copies the whole mirror and held the shared connection for
+    # minutes: on 2026-09-29 every PG-direct request on Azure (/api/runs,
+    # /api/peg/overview) failed with 500/503 until the app stopped answering
+    # at all. A handshake per 300 s tick is cheap; a jammed dashboard is not.
+    pg = _connect_with_retry()
     local = connect(db_path)
     try:
         # ``with pg`` is load-bearing, not decoration. ``_connect()`` returns a
@@ -153,6 +161,10 @@ def pull_from_pg(db_path: Path | None = None, since: str = "") -> dict:
             return _pull(local, _PgSource(cur), since=since)
     finally:
         local.close()
+        try:
+            pg.close()
+        except Exception:  # noqa: BLE001 - closing a dead connection must not mask the real error
+            pass
 
 
 def _pull(local, src, since: str = "") -> dict:

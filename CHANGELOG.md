@@ -11,6 +11,23 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.5] — 2026-09-29
+
+### Fixed
+- **The dashboard jammed after every restart.** The PG→SQLite mirror
+  (`stan/sync/pg_to_sqlite.py`) ran its pull inside `with pg:` on the
+  SAME cached connection `_connect()` hands every request thread, and
+  psycopg2 refuses a second `with conn:` on a connection another thread is
+  inside ("the connection cannot be re-entered recursively"). A quiet
+  5-minute tick is over in a moment, but the first pull after a restart
+  re-copies the whole mirror and held that connection for minutes: after
+  the 1.2.4 deploy every PG-direct request on Azure (`/api/runs`,
+  `/api/peg/overview`) failed with 500/503 and the app stopped answering
+  until it was restarted. The mirror now opens its own connection per
+  pull (`_connect_with_retry()`) and closes it; request threads keep the
+  cached one. Pre-existing since the mirror went PG-direct; a restart is
+  what exposes it. Regression test in `tests/test_pg_mirror_incremental.py`.
+
 ## [1.2.4] — 2026-09-29
 
 ### Changed

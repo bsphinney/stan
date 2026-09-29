@@ -153,9 +153,19 @@ def mirror_db(tmp_path):
 
 
 def _patch_connect(monkeypatch, conn):
-    """pull_from_pg imports _connect at call time, so patch the module attr."""
+    """pull_from_pg opens its own connection (v1.2.5), not the shared cached one.
+
+    It imports ``_connect_with_retry`` at call time, so patch the module
+    attr; ``_connect`` is made to fail so a regression back to the shared
+    connection shows up here too.
+    """
     import stan.db_pg as db_pg
-    monkeypatch.setattr(db_pg, "_connect", lambda: conn)
+
+    def shared_forbidden():
+        raise AssertionError("pull_from_pg must not use the shared _connect() connection")
+
+    monkeypatch.setattr(db_pg, "_connect_with_retry", lambda: conn)
+    monkeypatch.setattr(db_pg, "_connect", shared_forbidden)
     return conn
 
 
@@ -178,7 +188,11 @@ def test_pull_from_pg_leaves_connection_idle(monkeypatch, mirror_db):
         f"idle-in-transaction leak. Statements: {conn.statements}"
     )
     assert written["runs"] == len(_RUN_ROWS)
-    assert conn.events and conn.events[-1] in ("commit", "rollback")
+    # v1.2.5: the mirror's connection is its own, so it ends the transaction
+    # and then closes it; the shared request connection is never touched.
+    txn_events = [e for e in conn.events if e != "close"]
+    assert txn_events and txn_events[-1] in ("commit", "rollback")
+    assert conn.events[-1] == "close"
 
 
 def test_pull_from_pg_leaves_connection_idle_on_failure(monkeypatch, mirror_db):

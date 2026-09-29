@@ -479,3 +479,46 @@ def test_pgsource_sql_shapes():
     assert 'WHERE "id" IN %s' in sql and params == (("r1", "r2"),)
 
     assert cur.commits == len(cur.calls), "every read must end its transaction"
+
+
+def test_pull_uses_its_own_connection_not_the_shared_one(tmp_path, monkeypatch):
+    """The mirror must never hold the request threads' cached connection.
+
+    2026-09-29: after a restart the first (full) pull held ``_connect()``'s
+    shared connection for minutes, and every PG-direct request on Azure hit
+    psycopg2's "the connection cannot be re-entered recursively" (500/503)
+    until the dashboard stopped answering.
+    """
+    import stan.db_pg as db_pg
+    import stan.sync.pg_to_sqlite as m
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class _Conn:
+        closed_calls = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def cursor(self):
+            return _Cur()
+
+        def close(self):
+            _Conn.closed_calls += 1
+
+    def shared_connection_forbidden():
+        raise AssertionError("pull_from_pg must not use the shared _connect() connection")
+
+    monkeypatch.setattr(db_pg, "_connect", shared_connection_forbidden)
+    monkeypatch.setattr(db_pg, "_connect_with_retry", lambda: _Conn())
+    monkeypatch.setattr(m, "_pull", lambda local, src, since="": {"runs": 0})
+    assert m.pull_from_pg(tmp_path / "mirror.db") == {"runs": 0}
+    assert _Conn.closed_calls == 1
