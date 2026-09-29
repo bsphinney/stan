@@ -11,6 +11,20 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.3] — 2026-09-29
+
+### Fixed
+- **Every Bruker `analysis.tdf` is opened read-only and immutable.**
+  Merges Brett's `fix/tdf-immutable-opens` (e328906, written 2026-09-21):
+  12 of 18 production opens were read-write, and a read-write open of a
+  `.d` copied off the instrument with a stale, mid-acquisition
+  `analysis.tdf-wal` checkpoints that WAL into the finished file and
+  truncates its frame index, making the run unrecoverable (350 damaged
+  `.d` on the cluster, 63 of them in 77 minutes on 2026-04-27).
+  `stan.tdf.connect_tdf()` is now the only way in, and
+  `tests/test_tdf_immutable_guard.py` fails on any other open, including
+  the PEG Watch code added since.
+
 ## [1.2.2] — 2026-09-29
 
 ### Fixed
