@@ -49,8 +49,8 @@ These come from Brett's feedback this session and are also in memory.
 | 5 | Filenames (D4): API and hovers | Approved with #1 | Remove from `/api/leaderboard`, `/api/cohorts` and hovers; keep them on the server only |
 | 5b | Filenames (D4): scrub the published parquet history | **Gated: data rewrite** | Brett's explicit go, with a backup first (`wipe_v1.py --backup`) |
 | 6 | IPS family→reference key fix, then recompute stored `ips_score` | **Gated: data rewrite** | Show Brett the before/after first. Decide on Exploris recalibration after that |
-| 7 | Footer license wording | Recommended text, Brett to confirm | "Code: STAN Academic License (free for academic and non-profit use; commercial use by written permission)", linked to LICENSE. UC tech-transfer ownership is still open |
-| 8 | One-facility disclosure wording | Recommended text, Brett to confirm | The mockup's line, see D2 below |
+| 7 | Footer license wording | **Approved 2026-09-29** (Brett: "those two decisions are fine") | "Code: STAN Academic License (free for academic and non-profit use; commercial use by written permission)", linked to LICENSE. UC tech-transfer ownership is still open |
+| 8 | One-facility disclosure wording | **Approved 2026-09-29** | The mockup's line, see D2 below |
 | 9 | Engine-calibration panel compute on Hive (Part B) | **One go/no-go**, required by the pipeline skill | See §B.5 |
 | 10 | Spectronaut arm of the panel | **Brett runs it** on the licensed machine | See §B.5 |
 
