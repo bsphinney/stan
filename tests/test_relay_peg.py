@@ -877,6 +877,13 @@ def test_api_submit_commits_byte_for_byte_what_the_base_relay_did(hub, monkeypat
         pytest.skip("base relay (sha256 d89ea3fd...) not reachable in git history")
     base_path = tmp_path / "relay_base.py"
     base_path.write_text(source)
+    # The 1.1.0 relay imports CommitOperationAdd from huggingface_hub.hf_api,
+    # a re-export huggingface_hub 2.0 dropped (it cannot even import there,
+    # which is what the live Space would hit on its next rebuild). Restore
+    # the old path so the comparison still runs; the class is the same.
+    import huggingface_hub
+    import huggingface_hub.hf_api as hf_api_mod
+    monkeypatch.setattr(hf_api_mod, "CommitOperationAdd", huggingface_hub.CommitOperationAdd, raising=False)
     results = []
     for path in (base_path, APP_PATH):
         name = f"relay_cmp_{uuid.uuid4().hex[:8]}"
@@ -1285,9 +1292,15 @@ def test_strict_claims_load_never_falls_back_to_a_stale_cached_copy(client, rela
     monkeypatch.setattr(constants, "HF_HUB_CACHE", str(cache))
     monkeypatch.setattr(file_download, "get_hf_file_metadata", head_times_out)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", file_download.hf_hub_download)
-    # Control: this is the fallback being guarded against.
-    cached = file_download.hf_hub_download(relay.HF_DATASET_REPO, CLAIMS, repo_type="dataset")
-    assert Path(cached).read_text() == stale.read_text()
+    # Control: this is the fallback being guarded against. huggingface_hub
+    # 1.x serves the refs/main copy when the HEAD fails; 2.0 raises instead,
+    # so there the hazard is absent and only the relay's behaviour matters.
+    try:
+        cached = file_download.hf_hub_download(relay.HF_DATASET_REPO, CLAIMS, repo_type="dataset")
+    except httpx.ConnectTimeout:
+        assert int(huggingface_hub.__version__.split(".")[0]) >= 2
+    else:
+        assert Path(cached).read_text() == stale.read_text()
 
     with pytest.raises(Exception):
         relay._load_claims(strict=True)
@@ -1375,6 +1388,8 @@ def test_dockerfile_still_installs_no_numpy():
 
 BASE_TEXT = 'SPACE_VERSION = "1.1.0"\nprint("base")\n'
 LOCAL_TEXT = 'SPACE_VERSION = "1.2.0"\nprint("base")\nprint("peg")\n'
+DOCKER_BASE = "RUN pip install huggingface_hub\n"
+DOCKER_LOCAL = "RUN pip install huggingface_hub==2.0.0\n"
 
 
 def _sha(text: str) -> str:
@@ -1394,11 +1409,20 @@ def deploy(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "LOCAL_APP", local)
     monkeypatch.setattr(mod, "SCRIPT_PATH", script_copy)
     monkeypatch.setattr(mod, "RECORDED_BASE_SHA256", _sha(BASE_TEXT))
+    dockerfile = local.parent / "Dockerfile"
+    dockerfile.write_text(DOCKER_LOCAL)
+    monkeypatch.setattr(mod, "LOCAL_DOCKERFILE", dockerfile)
+    monkeypatch.setattr(mod, "RECORDED_DOCKERFILE_SHA256", _sha(DOCKER_BASE))
+    # Default: the Space already has the local Dockerfile, so only app.py moves.
+    monkeypatch.setattr(mod, "fetch_live_file", lambda repo_id, commit, name: DOCKER_LOCAL.encode())
     monkeypatch.setattr(mod, "in_sync_window", lambda now: False)
     calls: dict[str, list] = {"upload": [], "wait": []}
 
-    def fake_upload(local_path, repo_id, parent_commit, version):
-        calls["upload"].append({"path": local_path, "parent": parent_commit, "version": version})
+    def fake_upload(local_path, repo_id, parent_commit, version, extra=None):
+        call = {"path": local_path, "parent": parent_commit, "version": version}
+        if extra:
+            call["extra"] = extra
+        calls["upload"].append(call)
         return "https://huggingface.co/spaces/brettsp/stan/commit/new"
 
     def fake_wait(url, expected, timeout_sec, interval_sec=15.0):
@@ -1474,6 +1498,42 @@ def test_deploy_reports_a_space_that_never_comes_up(deploy, monkeypatch):
     monkeypatch.setattr(deploy, "wait_for_version", lambda *a, **k: False)
     assert deploy.main(["--yes", "--record-base"]) == 6
     assert _sha(LOCAL_TEXT) not in deploy.script_copy.read_text(), "an unverified deploy is not recorded"
+
+
+def _live_dockerfile(deploy, monkeypatch, text: str) -> None:
+    monkeypatch.setattr(deploy, "fetch_live_file", lambda repo_id, commit, name: text.encode())
+
+
+def test_deploy_ships_the_pinned_dockerfile_in_the_same_commit(deploy, monkeypatch):
+    """The unpinned base Dockerfile would rebuild with huggingface_hub 2.0 and crash the relay."""
+    _live(deploy, monkeypatch, BASE_TEXT)
+    _live_dockerfile(deploy, monkeypatch, DOCKER_BASE)
+    assert deploy.main(["--yes"]) == 0
+    assert deploy.calls["upload"] == [{"path": deploy.LOCAL_APP, "parent": "d041ef68aa", "version": "1.2.0",
+                                       "extra": {"Dockerfile": deploy.LOCAL_DOCKERFILE}}]
+
+
+def test_deploy_refuses_a_dockerfile_edited_in_the_space(deploy, monkeypatch):
+    _live(deploy, monkeypatch, BASE_TEXT)
+    _live_dockerfile(deploy, monkeypatch, DOCKER_BASE + "RUN pip install numpy\n")
+    assert deploy.main(["--yes"]) == 3
+    assert deploy.calls["upload"] == []
+
+
+def test_deploy_record_base_records_the_dockerfile_too(deploy, monkeypatch):
+    _live(deploy, monkeypatch, BASE_TEXT)
+    _live_dockerfile(deploy, monkeypatch, DOCKER_BASE)
+    assert deploy.main(["--yes", "--record-base"]) == 0
+    text = deploy.script_copy.read_text()
+    assert re.findall(r'^RECORDED_BASE_SHA256 = "([0-9a-f]{64})"$', text, re.MULTILINE) == [_sha(LOCAL_TEXT)]
+    assert re.findall(r'^RECORDED_DOCKERFILE_SHA256 = "([0-9a-f]{64})"$', text, re.MULTILINE) == [_sha(DOCKER_LOCAL)]
+
+
+def test_vendored_dockerfile_pins_every_package():
+    """An unpinned install is how a new huggingface_hub release could take the relay down."""
+    text = (REPO / "hf_space" / "Dockerfile").read_text()
+    pkgs = re.findall(r"^\s+([A-Za-z_\[\]]+(?:==[0-9][^\s\\]*)?)\s*\\?$", text, re.MULTILINE)
+    assert pkgs and all("==" in p for p in pkgs), pkgs
 
 
 def test_deploy_helpers(deploy, tmp_path):

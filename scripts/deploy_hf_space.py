@@ -15,10 +15,19 @@ Usage::
     python scripts/deploy_hf_space.py --yes           # upload hf_space/app.py
     python scripts/deploy_hf_space.py --yes --record-base
 
-Only ``app.py`` is uploaded; the Space's Dockerfile, README and static/ are
-left alone. The upload names the Space commit it was checked against as its
-parent, so an edit that lands between the check and the upload makes the
-commit fail instead of being overwritten.
+``app.py`` is uploaded, and ``Dockerfile`` with it when the local copy
+differs (same guard: the live Dockerfile must still be the recorded base).
+The Space's README and static/ are left alone. The upload names the Space
+commit it was checked against as its parent, so an edit that lands between
+the check and the upload makes the commit fail instead of being overwritten.
+
+Why the Dockerfile ships too: it used to ``pip install`` every package
+unpinned, so each rebuild took whatever was newest. huggingface_hub 2.0
+dropped the ``huggingface_hub.hf_api.CommitOperationAdd`` re-export the relay
+imported, and GitHub CI caught it (2026-09-29): the next rebuild of the live
+Space, for any reason, would have crashed at import and taken the public
+site down. The pinned versions are the ones tests/test_relay_peg.py passes
+against.
 
 After an upload the script polls ``/api/version`` until the rebuilt Space
 reports the new ``SPACE_VERSION``, then prints ``/api/health``. A redeploy
@@ -56,12 +65,15 @@ SPACE_REPO = "brettsp/stan"
 SPACE_URL = "https://brettsp-stan.hf.space"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_APP = REPO_ROOT / "hf_space" / "app.py"
+LOCAL_DOCKERFILE = REPO_ROOT / "hf_space" / "Dockerfile"
 SCRIPT_PATH = Path(__file__).resolve()
 
 # sha256 of the Space's app.py that hf_space/app.py was last synced from:
 # Space commit d041ef68, SPACE_VERSION 1.1.0, vendored 2026-09-28.
 # `--record-base` rewrites this line after a verified deploy.
 RECORDED_BASE_SHA256 = "d89ea3fd5bcb63b393c702e932af32f15643a45298ee7152d20c6b9def83b4c3"
+# The same for the Space's Dockerfile (unpinned pip installs at d041ef68).
+RECORDED_DOCKERFILE_SHA256 = "740bdbc2b794b8fa2646d082f1b289fb2a17f5387c88ef511551043c70cfaea6"
 
 # Hive's crontab runs cron_community_sync.sh at "25 */6 * * *" in the
 # system zone, America/Los_Angeles (no CRON_TZ), so it submits at about :27
@@ -75,6 +87,7 @@ SYNC_GUARD_MINUTES = (15, 45)
 _SYNC_FALLBACK_OFFSETS = (timezone(timedelta(hours=-7)), timezone(timedelta(hours=-8)))
 
 _BASE_LINE_RE = re.compile(r'^RECORDED_BASE_SHA256 = "[0-9a-f]{64}"$', re.MULTILINE)
+_DOCKERFILE_LINE_RE = re.compile(r'^RECORDED_DOCKERFILE_SHA256 = "[0-9a-f]{64}"$', re.MULTILINE)
 _VERSION_RE = re.compile(r'^SPACE_VERSION = "([^"]+)"', re.MULTILINE)
 
 
@@ -135,8 +148,8 @@ def in_sync_window(now: datetime) -> bool:
     )
 
 
-def rewrite_recorded_base(script_path: Path, new_sha: str) -> None:
-    """Point RECORDED_BASE_SHA256 in ``script_path`` at ``new_sha``.
+def rewrite_recorded_base(script_path: Path, new_sha: str, constant: str = "RECORDED_BASE_SHA256") -> None:
+    """Point the recorded-base ``constant`` in ``script_path`` at ``new_sha``.
 
     Raises:
         ValueError: ``new_sha`` is not a sha256, or the constant line is not
@@ -144,36 +157,52 @@ def rewrite_recorded_base(script_path: Path, new_sha: str) -> None:
     """
     if not re.fullmatch(r"[0-9a-f]{64}", new_sha):
         raise ValueError(f"not a sha256: {new_sha!r}")
+    pattern = {"RECORDED_BASE_SHA256": _BASE_LINE_RE, "RECORDED_DOCKERFILE_SHA256": _DOCKERFILE_LINE_RE}[constant]
     text = script_path.read_text()
-    new_text, n = _BASE_LINE_RE.subn(f'RECORDED_BASE_SHA256 = "{new_sha}"', text)
+    new_text, n = pattern.subn(f'{constant} = "{new_sha}"', text)
     if n != 1:
-        raise ValueError(f"expected one RECORDED_BASE_SHA256 line in {script_path}, found {n}")
+        raise ValueError(f"expected one {constant} line in {script_path}, found {n}")
     script_path.write_text(new_text)
 
 
 def fetch_live(repo_id: str = SPACE_REPO) -> tuple[str, bytes]:
     """(Space commit sha, app.py bytes at that commit), bypassing any local cache."""
-    from huggingface_hub import HfApi, hf_hub_download
-
-    commit = HfApi().space_info(repo_id).sha
-    with tempfile.TemporaryDirectory(prefix="stan_space_") as tmp:
-        path = hf_hub_download(
-            repo_id, "app.py", repo_type="space", revision=commit,
-            cache_dir=tmp, force_download=True,
-        )
-        return commit, Path(path).read_bytes()
-
-
-def upload(local_path: Path, repo_id: str, parent_commit: str, version: str) -> str:
-    """Upload ``local_path`` as the Space's app.py; returns the new commit URL."""
     from huggingface_hub import HfApi
 
-    info = HfApi().upload_file(
-        path_or_fileobj=str(local_path),
-        path_in_repo="app.py",
+    commit = HfApi().space_info(repo_id).sha
+    return commit, fetch_live_file(repo_id, commit, "app.py")
+
+
+def fetch_live_file(repo_id: str, commit: str, filename: str) -> bytes:
+    """Bytes of ``filename`` in the Space at ``commit``, bypassing any local cache."""
+    from huggingface_hub import hf_hub_download
+
+    with tempfile.TemporaryDirectory(prefix="stan_space_") as tmp:
+        path = hf_hub_download(
+            repo_id, filename, repo_type="space", revision=commit,
+            cache_dir=tmp, force_download=True,
+        )
+        return Path(path).read_bytes()
+
+
+def upload(local_path: Path, repo_id: str, parent_commit: str, version: str,
+           extra: dict[str, Path] | None = None) -> str:
+    """Upload ``local_path`` as the Space's app.py, plus ``extra`` files, in one commit.
+
+    ``extra`` maps a path in the Space to a local file (the Dockerfile). One
+    commit, so the Space never rebuilds with a new app.py on old pins or the
+    reverse. Returns the new commit URL.
+    """
+    from huggingface_hub import CommitOperationAdd, HfApi
+
+    ops = [CommitOperationAdd(path_in_repo="app.py", path_or_fileobj=str(local_path))]
+    ops += [CommitOperationAdd(path_in_repo=k, path_or_fileobj=str(v)) for k, v in (extra or {}).items()]
+    names = " + ".join(["hf_space/app.py"] + [f"hf_space/{k}" for k in (extra or {})])
+    info = HfApi().create_commit(
         repo_id=repo_id,
         repo_type="space",
-        commit_message=f"relay {version}: deploy hf_space/app.py from the STAN repo",
+        operations=ops,
+        commit_message=f"relay {version}: deploy {names} from the STAN repo",
         parent_commit=parent_commit,
     )
     return str(getattr(info, "commit_url", info))
@@ -249,6 +278,19 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("recorded base: sha256 %s", RECORDED_BASE_SHA256[:16])
     logger.info("diff live -> local: +%d -%d lines in %d hunks", added, removed, hunks)
 
+    local_docker = LOCAL_DOCKERFILE.read_bytes()
+    live_docker = fetch_live_file(SPACE_REPO, commit, "Dockerfile")
+    docker_state = classify(sha256_bytes(live_docker), sha256_bytes(local_docker), RECORDED_DOCKERFILE_SHA256)
+    logger.info("Dockerfile: live sha256 %s, local %s -> %s",
+                sha256_bytes(live_docker)[:16], sha256_bytes(local_docker)[:16], docker_state)
+    if docker_state == "drift":
+        logger.error(
+            "REFUSING: the Space's Dockerfile matches neither the recorded base nor "
+            "hf_space/Dockerfile, so it was edited in the Space. Merge that edit first."
+        )
+        return 3
+    extra = {"Dockerfile": LOCAL_DOCKERFILE} if docker_state == "base" else {}
+
     if state == "drift":
         logger.error(
             "REFUSING: the Space's app.py matches neither the recorded base nor the local "
@@ -259,6 +301,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if state == "deployed":
         logger.info("The Space already serves hf_space/app.py; nothing to upload.")
+        if extra:
+            logger.warning("hf_space/Dockerfile differs from the Space's; it ships with the next "
+                           "app.py deploy (bump SPACE_VERSION to make one).")
         if args.record_base and RECORDED_BASE_SHA256 != live_sha:
             rewrite_recorded_base(SCRIPT_PATH, live_sha)
             logger.info("Recorded base updated to %s", live_sha[:16])
@@ -278,8 +323,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.record_base:
             logger.error("--record-base needs a deploy (--yes) or an already-deployed Space.")
             return 2
-        logger.info("Dry run: would upload hf_space/app.py (%s -> %s). Re-run with --yes.",
-                    live_version, local_version)
+        logger.info("Dry run: would upload hf_space/app.py%s (%s -> %s). Re-run with --yes.",
+                    " + Dockerfile" if extra else "", live_version, local_version)
         return 0
     now = datetime.now(timezone.utc)
     if in_sync_window(now) and not args.ignore_sync_window:
@@ -291,7 +336,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 5
 
-    url = upload(LOCAL_APP, SPACE_REPO, parent_commit=commit, version=local_version)
+    url = upload(LOCAL_APP, SPACE_REPO, parent_commit=commit, version=local_version, extra=extra)
     logger.info("Uploaded: %s", url)
     logger.info("Waiting up to %.0f s for the Space to report %s ...", args.timeout, local_version)
     ok = wait_for_version(SPACE_URL, local_version, args.timeout)
@@ -304,6 +349,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.record_base:
         rewrite_recorded_base(SCRIPT_PATH, local_sha)
         logger.info("Recorded base updated to %s", local_sha[:16])
+        if extra:
+            rewrite_recorded_base(SCRIPT_PATH, sha256_bytes(local_docker), "RECORDED_DOCKERFILE_SHA256")
+            logger.info("Recorded Dockerfile base updated to %s", sha256_bytes(local_docker)[:16])
     return 0
 
 

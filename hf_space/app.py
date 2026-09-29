@@ -189,7 +189,10 @@ def _invalidate_submissions_cache() -> None:
 # instead of competing with it.
 
 import queue
-from huggingface_hub.hf_api import CommitOperationAdd
+# The public top-level export: huggingface_hub 2.0 dropped the
+# huggingface_hub.hf_api re-export the relay imported until v1.2.0, and the
+# Space's Docker build installs whatever release is current.
+from huggingface_hub import CommitOperationAdd
 
 
 @dataclass(frozen=True)

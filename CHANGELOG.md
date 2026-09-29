@@ -49,6 +49,13 @@ history and a community board. Reference: `docs/PEG_WATCH.md`; design:
   the Space, avoids the sync window, and waits for the new version.
 
 ### Fixed
+- **The relay would not have survived its next rebuild.** Its Dockerfile
+  installed every package unpinned, and huggingface_hub 2.0 dropped the
+  `huggingface_hub.hf_api.CommitOperationAdd` re-export `app.py` imported
+  (the live 1.1.0 relay too). CI caught it on 2026-09-29. `app.py` now
+  imports the public top-level name, `hf_space/Dockerfile` pins the
+  versions the relay tests pass against, and `deploy_hf_space.py` ships
+  the Dockerfile with `app.py` in one guarded commit.
 - **Duplicate ingests counted twice.** PG held 1,674 timsTOF rows for
   1,404 acquisitions, and copies disagreed on PEG in 168 of 241 groups.
   Every PEG reader keeps one row per `(instrument, basename, UTC second)`:

@@ -712,11 +712,14 @@ Nothing is lost while that lasts — the clients retry next tick.
   the benchmark client drops the header); `/api/update` accepts any
   non-empty `X-STAN-Auth`; the admin endpoints are open when
   `ADMIN_SECRET` is unset.
-- **Unpinned `huggingface_hub`** in `hf_space/Dockerfile`. The claims
-  code relies on `hf_hub_download(force_download=True)` raising on a
-  failed HEAD rather than serving a cached copy (checked on 1.8.0). The
-  deploy script uploads only `app.py`, so pinning there needs a separate
-  Dockerfile upload.
+- **Space dependencies are pinned** in `hf_space/Dockerfile` (fixed in
+  the same release): they used to be unpinned, and huggingface_hub 2.0
+  dropped the `huggingface_hub.hf_api.CommitOperationAdd` re-export the
+  relay imported, so any rebuild of the live Space would have crashed it
+  at import. GitHub CI caught it on 2026-09-29. `deploy_hf_space.py` ships
+  the Dockerfile with `app.py` in one commit, under the same recorded-base
+  guard. Move a pin only together with a run of `tests/test_relay_peg.py`
+  on the new version (it passes on huggingface_hub 1.8 and 2.0).
 - **`fisher_py` vs ThermoRawFileParser** read the same FTMS centroid
   stream by both readers' source, but no one file has been scored both
   ways to confirm the numbers match.
