@@ -696,6 +696,14 @@ Nothing is lost while that lasts — the clients retry next tick.
 
 ## Known limitations and follow-ups
 
+- **timsTOF PEG from 2026-05-07 to v1.2.2 is ~15–26 % high.** pandas 3.0.2
+  in the Hive venv made alphatims 1.0.8 read every frame window ~30k events
+  early (into the preceding MS2 frames). v1.2.2 pins `pandas<3`, the Hive
+  venv is back on pandas 2.2.3, and `stan.metrics.alphatims_guard` refuses a
+  shifted frame table (PEG NULL, drift unknown) whatever is installed.
+  Rows computed in that window are re-scored only after the before/after
+  is reviewed; until then the timeline shows a step at 2026-05-07.
+
 - **The measurement is not comparable across instrument families, and the
   classes least of all** (found 2026-09-29, from PG). All three UC Davis
   instruments show the same ladder (PEG8–13, mostly [M+NH₄]⁺); the

@@ -11,6 +11,30 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.2] — 2026-09-29
+
+### Fixed
+- **timsTOF PEG and window drift read shifted frames since 2026-05-07.**
+  The Hive venv got pandas 3.0.2 that evening (with alphatims 1.0.8).
+  Under pandas 3's Copy-on-Write, alphatims' chained assignments that zero
+  its dummy frame 0 do nothing, so the dummy keeps frame 1's values and
+  every `TimsTOF[fid]` window starts NumPeaks(frame 1) (~30,000) events
+  early: an "MS1 frame" was the tail of the preceding diaPASEF MS2 frames
+  plus most of the MS1 frame, minus its own last events. Proven
+  event-for-event against `analysis.tdf_bin` (Hive jobs 24190826,
+  24191566): a heavy HeLa QC read 19.51 % PEG share under pandas 3 and
+  16.38 % with the true frame; stored timsTOF PEG since May 7 is biased
+  +15–26 % relative. `window_drift` reads the same windows.
+  - `stan[peg]` / `stan[full]` pin `pandas<3`.
+  - New `stan.metrics.alphatims_guard.frame_table_problem`: after
+    alphatims loads a `.d`, frame 0 must be the zeroed dummy. If it is
+    not (any pandas/alphatims combination), the PEG reader raises
+    `PegReaderUnavailable` (PEG stays NULL) and window drift returns
+    `unknown`, so a shifted read never becomes a number.
+  - Hive venv downgraded to pandas 2.2.3 (see docs/PEG_WATCH.md); the
+    affected timsTOF rows are re-scored only after Brett reviews the
+    before/after.
+
 ## [1.2.1] — 2026-09-29
 
 ### Fixed

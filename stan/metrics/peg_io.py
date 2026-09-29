@@ -66,6 +66,14 @@ def read_ms1_bruker(
         ) from e
 
     data = TimsTOF(str(d_path), use_hdf_if_available=True)
+    # pandas 3 leaves alphatims' dummy frame un-zeroed and shifts every
+    # frame window into the preceding MS2 frames; a shifted read is wrong,
+    # so it is "unavailable" (PEG stays NULL), never a number.
+    from stan.metrics.alphatims_guard import frame_table_problem
+
+    problem = frame_table_problem(data)
+    if problem:
+        raise PegReaderUnavailable(f"{d_path.name}: {problem}")
     ms1_frame_ids = [
         int(fid) for fid, msms in zip(data.frames.Id, data.frames.MsMsType)
         if msms == 0

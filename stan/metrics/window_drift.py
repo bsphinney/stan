@@ -385,6 +385,15 @@ def detect_window_drift(
         )
         return DriftResult(drift_class="unknown")
 
+    # Same pandas-3 frame shift as the PEG reader: the windows below would
+    # mix in the preceding MS2 frames, so report "unknown", not a drift.
+    from stan.metrics.alphatims_guard import frame_table_problem
+
+    problem = frame_table_problem(data)
+    if problem:
+        logger.warning("%s: %s — drift unknown.", d_path.name, problem)
+        return DriftResult(drift_class="unknown")
+
     # Calibrated scan → 1/K0 mapping from alphatims. Essential —
     # without this the window positions are ~0.05 /K0 off from reality.
     scan_to_mobility = None
