@@ -481,7 +481,7 @@ What ships today vs. what's still planned.
 | Fleet sync (SMB / HF Space / none) | Done | `~/.stan/fleet.yml`, configured by `stan/fleet_setup.py`. |
 | STAN Godmode (multi-instrument view) | Done | `STAN_DB_PATH=<global stan.db> stan dashboard` serves a fleet-wide view across instruments (honored in `stan/db.py` + `stan/dashboard/server.py`); pairs with Tailscale for remote phone access. See `docs/user_guide.md` → "STAN Godmode". |
 | Fleet command queue | Done | 12 whitelisted actions (`ping`, `status`, `tail_log`, `export_db_snapshot`, `watcher_debug`, `qc_filter_report`, `apply_config`, `update_stan`, `restart_watcher`, `cleanup_excluded`, `fix_instrument_names`, `v1_prep`). |
-| Email reports | Done | Daily 07:00 + optional Monday weekly. Resend API. |
+| Email reports | Done | Daily 07:00 + optional Monday weekly, via Resend with the lab's own key (`resend_api_key` in community.yml or `RESEND_API_KEY`; since 1.2.7). |
 | Slack alerts | Done | Webhook in `community.yml`. `stan test-alert` to verify. |
 | Error telemetry (opt-in) | Done | Off unless `error_telemetry: true` is set in `community.yml` (off by default since v1.2.6). A report carries the error message, which can include file paths, a traceback stripped to file names, the raw file's name and the STAN, Python and OS versions. Local log at `~/.stan/error_log.json` either way. |
 | Front-page view selector | Done | Gauges / Weekly table / Metric matrix on This Week's QCs. |

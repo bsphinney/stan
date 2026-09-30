@@ -424,7 +424,10 @@ declined.
   It sends no data. If the host is blocked, the watcher logs a warning and
   carries on.
 - **Email reports** (`stan setup` question 5) send QC summaries to the
-  address given, through Resend (`api.resend.com`).
+  address given, through Resend (`api.resend.com`). Since 1.2.7 they need the
+  lab's own Resend API key: `resend_api_key:` in `community.yml` or the
+  `RESEND_API_KEY` environment variable. Without one, sending fails with
+  "No Resend API key configured"; STAN no longer ships a built-in key.
 - **The `Y:\STAN` mirror.** If a `Y:\STAN` folder exists (the UC Davis
   share convention), STAN copies `stan.db`, its config files (secrets
   redacted), logs and baseline reports into `Y:\STAN\<hostname>\`.

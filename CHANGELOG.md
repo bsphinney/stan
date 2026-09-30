@@ -11,6 +11,18 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.7] — 2026-09-29
+
+### Security
+- **Removed the built-in Resend API key.** `stan/reports/daily_email.py`
+  fell back to a live key hardcoded in the (public) repository since
+  April 2026, so every install sent report and alert email on one account.
+  Email now needs the lab's own key: `resend_api_key` in community.yml or
+  `RESEND_API_KEY`. Without one, sending fails with "No Resend API key
+  configured" (`stan email-report` prints it; the Hive HT alert logs it and
+  retries). The old key is being rotated; the relay's `RESEND_API_KEY`
+  secret is set separately. Regression test: `tests/test_email_resend_key.py`.
+
 ## [1.2.6] — 2026-09-29
 
 Installer and setup fixes found by the agent-install-docs audit, with the

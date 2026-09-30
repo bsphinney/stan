@@ -30,24 +30,26 @@ RESEND_API_URL = "https://api.resend.com/emails"
 FROM_ADDRESS = "STAN QC Reports <noreply@stan-proteomics.org>"
 COMMUNITY_API = "https://brettsp-stan.hf.space/api/cohorts"
 
-_HARDCODED_RESEND_KEY = "re_Ld72v6Ru_FnAKT9hYz2XDSP2QPEL16Lr4"
 
 
 # ── Config helpers ───────────────────────────────────────────────
 
 
 def _get_resend_api_key() -> str:
-    """Resolve Resend API key from community.yml, env var, or hardcoded fallback."""
-    comm = load_community()
-    key = comm.get("resend_api_key")
-    if key:
-        return key
+    """The Resend API key: ``resend_api_key`` in community.yml, else $RESEND_API_KEY.
 
-    key = os.environ.get("RESEND_API_KEY")
+    Returns "" when neither is set. There is deliberately no built-in key:
+    one shipped in this file from April to September 2026, which put a live
+    credential in a public repository and had every install send mail on one
+    account. A lab that wants email reports sets its own key.
+    """
+    try:
+        key = (load_community() or {}).get("resend_api_key")
+    except FileNotFoundError:
+        key = None
     if key:
-        return key
-
-    return _HARDCODED_RESEND_KEY
+        return str(key).strip()
+    return os.environ.get("RESEND_API_KEY", "").strip()
 
 
 def get_email_config() -> dict:
@@ -759,6 +761,11 @@ def _send_email(to: str, subject: str, html: str) -> dict:
         RuntimeError: If the Resend API returns an error.
     """
     api_key = _get_resend_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "No Resend API key configured: set resend_api_key in community.yml "
+            "or the RESEND_API_KEY environment variable to send email reports."
+        )
 
     payload = json.dumps({
         "from": FROM_ADDRESS,
