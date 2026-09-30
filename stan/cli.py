@@ -5381,7 +5381,7 @@ def submit_all(
     ineligible = 0   # never sendable (hard gates, DIA-NN version)
     already = 0      # the relay already had them; recorded as submitted
 
-    from stan.community.submit import DuplicateSubmission, submission_readiness
+    from stan.community.submit import DuplicateSubmission, attach_tic, submission_readiness
 
     def _mark(run: dict, sid: str | None) -> None:
         if backend_l == "pg":
@@ -5430,7 +5430,11 @@ def submit_all(
 
         # Same rule as the dashboard's Sync button: send only what the relay
         # would accept; count the rest instead of failing them every night.
-        state, why = submission_readiness(run)
+        try:
+            attach_tic(run)
+            state, why = submission_readiness(run)
+        except Exception as e:  # noqa: BLE001 - one odd row must not stop the run
+            state, why = "ineligible", f"readiness check failed: {e}"
         if state != "ready":
             if state == "needs_metrics":
                 waiting += 1
@@ -5475,7 +5479,10 @@ def submit_all(
         except DuplicateSubmission as e:
             # The relay already has this run: record it as submitted (with the
             # relay's id when it says) so it stops counting as pending.
-            _mark(run, e.existing_submission_id)
+            try:
+                _mark(run, e.existing_submission_id)
+            except Exception:  # noqa: BLE001 - keep going; logged below
+                logger.warning("could not mark %s submitted", run_id, exc_info=True)
             already += 1
             _log({"event": "already_submitted", "run_id": run_id, "run_name": name,
                   "submission_id": e.existing_submission_id or ""})

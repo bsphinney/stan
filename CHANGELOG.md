@@ -28,6 +28,11 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
   it as failed and re-sending it on every sync. With Brett's approval the 346
   UC Davis duplicates were marked in PG on 2026-09-29, each matched to its
   community row (backup `logs/mark_duplicates_20260929_192250.json`).
+- **The dashboard's Sync sent DIA runs without their TIC trace.** Rows from
+  `get_runs` never carry it (SQLite keeps it in `tic_traces`; PG-direct
+  listings drop it), so every DIA run was rejected as incomplete.
+  `attach_tic()` loads it before submitting, and the count asks once which
+  runs have one (`run_ids_with_tic`) instead of fetching every trace.
 - **Fleet tab** no longer tells the central dashboard to "mount the share":
   the per-host mirror card is shown only where instrument PCs run STAN.
 - **Community tab** drops the stale "967 QC runs … run `stan baseline`" text.

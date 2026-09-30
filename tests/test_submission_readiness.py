@@ -47,9 +47,23 @@ def test_unknown_diann_version_is_ineligible():
     assert submission_readiness(dict(READY_DIA, diann_version="unknown"))[0] == "ineligible"
 
 
+DDA = {"mode": "ddaPASEF", "n_psms": 30000, "n_peptides_dda": 20000,
+       "n_peptides": 20000, "n_proteins": 4000, "ms2_scan_rate": 50.0}
+
+
 def test_dda_does_not_need_dia_metrics():
-    run = {"mode": "ddaPASEF", "n_psms": 30000, "n_peptides_dda": 20000,
-           "n_peptides": 20000, "n_proteins": 4000, "ms2_scan_rate": 50.0}
+    assert submission_readiness(dict(DDA, diann_version="2.3.0")) == ("ready", "")
+
+
+def test_dda_without_a_diann_version_is_ineligible():
+    """Review of 1.2.10: submit_to_benchmark checks the version for DDA too and
+    fails 'unknown'; these 18 rows were counted ready and failed every sync."""
+    assert submission_readiness(dict(DDA))[0] == "ineligible"
+
+
+def test_tic_known_from_the_side_table_counts():
+    """Rows from get_runs carry no TIC arrays; the backlog marks _has_tic instead."""
+    run = dict(READY_DIA, tic_rt_bins=None, tic_intensity=None, _has_tic=True)
     assert submission_readiness(run) == ("ready", "")
 
 

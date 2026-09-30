@@ -7878,10 +7878,10 @@ function BFailTable({ rows }) {
               width and unmissable rather than a button among buttons. It is
               disabled when there is nothing to send, so the label always
               states what pressing it would actually do. */}
-          <button onClick={doSync} disabled={busy || pending === 0}
+          <button onClick={doSync} disabled={busy || !(pending > 0)}
                   style={{width:'100%', padding:'0.95rem 1rem',
                           fontSize:'1.05rem', fontWeight:600,
-                          borderRadius:'0.5rem', cursor: (busy || pending === 0) ? 'default' : 'pointer',
+                          borderRadius:'0.5rem', cursor: (busy || !(pending > 0)) ? 'default' : 'pointer',
                           border:'none', letterSpacing:'0.01em',
                           color: pending > 0 && !busy ? '#04180f' : 'var(--muted)',
                           background: busy ? 'var(--border)'
@@ -7890,6 +7890,7 @@ function BFailTable({ rows }) {
             {busy ? 'Syncing to public STAN…'
                   : pending > 0
                     ? `Sync ${pending} run${pending === 1 ? '' : 's'} to public STAN`
+                    : pending < 0 ? "Couldn't count runs to sync (see the dashboard log)"
                     : 'Nothing new to sync'}
           </button>
           {result && (
@@ -7909,7 +7910,7 @@ function BFailTable({ rows }) {
             <p style={{color:'var(--muted)', fontSize:'0.8rem', marginTop:'0.6rem'}}>
               {waiting} more QC run{waiting === 1 ? ' is' : 's are'} waiting for metrics the
               community site requires (for example the TIC trace or peak capacity) and
-              will be sent once those are filled in.
+              will be sent once STAN has computed them.
             </p>
           )}
           <p style={{color:'var(--muted)', fontSize:'0.75rem', marginTop:'0.6rem'}}>

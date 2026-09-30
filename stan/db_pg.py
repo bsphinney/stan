@@ -1385,6 +1385,19 @@ def get_trends_pg(
         return _rows(cur)
 
 
+def run_ids_with_tic_pg(run_ids: list[str]) -> set[str]:
+    """Ids among ``run_ids`` whose row carries a TIC trace (ids only, no arrays)."""
+    if not run_ids:
+        return set()
+    with _connect() as pg, pg.cursor() as cur:
+        cur.execute(
+            "SELECT id::text FROM runs WHERE id::text = ANY(%s) "
+            "AND tic_rt_bins IS NOT NULL AND tic_rt_bins::text NOT IN ('', '[]', 'null')",
+            (list(run_ids),),
+        )
+        return {r[0] for r in cur.fetchall()}
+
+
 def get_tic_trace_pg(run_id: str) -> dict | None:
     """Project PG's inline TIC columns into SQLite's ``tic_traces`` shape.
 

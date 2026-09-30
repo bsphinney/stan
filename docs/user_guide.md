@@ -326,8 +326,10 @@ actually be pushed. Washes, blanks, runs with zero identifications, runs below
 the community hard gates (too few IDs) and DIA runs with an unknown or
 incompatible DIA-NN version are excluded. QC runs still missing a metric the
 community site requires (the TIC trace, peak capacity, peak width, …) are
-listed under the button as *waiting for metrics* and go out once a backfill
-fills them in. A run the site already holds is recorded as submitted instead
+listed under the button as *waiting for metrics* and go out once STAN has
+computed them (on Hive, a backfill job; the TIC is read from where STAN stores
+it, so a trace in `tic_traces` counts). DDA runs need a recorded DIA-NN 2.3.x
+version, like DIA runs, because `submit_to_benchmark` checks it for both. A run the site already holds is recorded as submitted instead
 of failing on every sync. Pressing the button sets `community_submit: true` in
 `community.yml`.
 

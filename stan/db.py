@@ -2430,6 +2430,30 @@ def insert_health_tic_trace(
         )
 
 
+def run_ids_with_tic(run_ids: list[str], db_path: Path | None = None) -> set[str]:
+    """Which of ``run_ids`` have a stored TIC trace, in one query.
+
+    The trace is not on the rows ``get_runs`` returns (SQLite keeps it in
+    ``tic_traces``; PG-direct listings drop the heavy columns), so readiness
+    checks ask here instead of fetching every trace.
+    """
+    ids = [str(i) for i in run_ids if i is not None]
+    if not ids:
+        return set()
+    from stan.db_pg import run_ids_with_tic_pg, use_pg
+    if use_pg():
+        return run_ids_with_tic_pg(ids)
+    if db_path is None:
+        db_path = get_db_path()
+    found: set[str] = set()
+    with connect(db_path) as con:
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            q = "SELECT DISTINCT run_id FROM tic_traces WHERE run_id IN (%s)" % ",".join("?" * len(chunk))
+            found.update(str(r[0]) for r in con.execute(q, chunk).fetchall())
+    return found
+
+
 def get_tic_trace(run_id: str, db_path: Path | None = None) -> dict | None:
     """Fetch a TIC trace for a single run."""
     if db_path is None:
@@ -2786,7 +2810,7 @@ def mark_submitted(run_id: str, submission_id: str | None, db_path: Path | None 
                 "submission_id = COALESCE(?, submission_id) WHERE id = ?",
                 (submission_id, run_id),
             )
-    logger.info("Run %s marked as submitted (submission %s)", run_id[:8], submission_id[:8])
+    logger.info("Run %s marked as submitted (submission %s)", run_id[:8], (submission_id or '')[:8])
 
 
 # ── High-throughput searches ───────────────────────────────────────

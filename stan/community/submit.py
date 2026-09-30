@@ -67,6 +67,30 @@ def _has_list(value: object) -> bool:
     return value is not None
 
 
+def attach_tic(run: dict) -> dict:
+    """Put the run's TIC trace on the row when the row doesn't carry it.
+
+    SQLite keeps traces in ``tic_traces`` and PG-direct run listings drop the
+    heavy columns, so a row from ``get_runs`` usually has no TIC even though
+    one is stored. The relay requires it for DIA; without this every DIA run
+    from the dashboard's Sync was rejected as "incomplete v1 schema".
+    """
+    mode = str(run.get("mode") or run.get("acquisition_mode") or "").lower()
+    if "dda" in mode or all(_has_list(run.get(k)) for k in DIA_ROW_LISTS_REQUIRED):
+        return run
+    try:
+        from stan.db import get_tic_trace
+
+        tic = get_tic_trace(str(run.get("id")))
+    except Exception:  # noqa: BLE001 - a missing trace is reported by readiness
+        logger.debug("no TIC trace for %s", run.get("id"), exc_info=True)
+        tic = None
+    if tic and tic.get("rt_min") and tic.get("intensity"):
+        run["tic_rt_bins"] = tic["rt_min"]
+        run["tic_intensity"] = tic["intensity"]
+    return run
+
+
 def submission_readiness(run: dict) -> tuple[str, str]:
     """Would this run be accepted by the relay right now?
 
@@ -83,12 +107,20 @@ def submission_readiness(run: dict) -> tuple[str, str]:
     validation = validate_submission(dict(run), "dda" if is_dda else "dia")
     if validation.rejected_gates:
         return "ineligible", "; ".join(validation.rejected_gates)
+    # submit_to_benchmark checks the DIA-NN version for EVERY mode (DDA rows
+    # included) and, when the row has none, falls back to the `diann` on this
+    # host's PATH. That fallback is not taken here: it answers "unknown" on the
+    # Hive login node and on Azure, which is where these counts are made, and
+    # a DDA row from Sage never records one (review of 1.2.10: all 18 "ready"
+    # rows were DDA without a version and every one failed).
+    ok, msg = check_diann_version_compatible(str(run.get("diann_version") or ""))
+    if not ok:
+        return "ineligible", msg or "DIA-NN version not recorded"
     if not is_dda:
-        ok, msg = check_diann_version_compatible(str(run.get("diann_version") or ""))
-        if not ok:
-            return "ineligible", msg
         missing = [k for k in DIA_ROW_METRICS_REQUIRED if run.get(k) is None]
-        missing += [k for k in DIA_ROW_LISTS_REQUIRED if not _has_list(run.get(k))]
+        has_tic = run.get("_has_tic") or all(_has_list(run.get(k)) for k in DIA_ROW_LISTS_REQUIRED)
+        if not has_tic:
+            missing += list(DIA_ROW_LISTS_REQUIRED)
         if missing:
             return "needs_metrics", ", ".join(missing)
     if validation.errors:

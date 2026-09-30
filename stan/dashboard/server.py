@@ -2443,7 +2443,7 @@ async def api_community_sync_status(request: Request) -> dict:
         waiting = len(backlog["needs_metrics"])
         published_before = any(r.get("submitted_to_benchmark") for r in rows)
     except Exception:
-        logger.debug("sync-status count failed", exc_info=True)
+        logger.warning("sync-status count failed", exc_info=True)
         pending = -1
 
     # Only invent a pseudonym for a genuinely new install. Offering one to a
@@ -2517,10 +2517,24 @@ def _community_backlog(rows: list[dict]) -> dict[str, list[dict]]:
     counts only what a sync would actually send.
     """
     from stan.community.submit import submission_readiness
+    from stan.db import run_ids_with_tic
 
+    pending = _pending_community_runs(rows)
+    # The TIC is not on these rows (SQLite side table; PG-direct listings drop
+    # it), so ask once which runs have one instead of fetching every trace.
+    try:
+        with_tic = run_ids_with_tic([r.get("id") for r in pending])
+    except Exception:  # noqa: BLE001
+        logger.warning("could not check which runs have a TIC trace", exc_info=True)
+        with_tic = set()
     out: dict[str, list[dict]] = {"ready": [], "needs_metrics": [], "ineligible": []}
-    for r in _pending_community_runs(rows):
-        state, _why = submission_readiness(r)
+    for r in pending:
+        row = dict(r, _has_tic=str(r.get("id")) in with_tic)
+        try:
+            state, _why = submission_readiness(row)
+        except Exception:  # noqa: BLE001 - one odd row must not zero the count
+            logger.warning("readiness check failed for run %s", r.get("id"), exc_info=True)
+            state = "ineligible"
         out[state].append(r)
     return out
 
@@ -2561,7 +2575,7 @@ async def api_community_sync(body: dict | None = None) -> dict:
         except Exception:
             logger.warning("could not persist community.yml", exc_info=True)
 
-        from stan.community.submit import DuplicateSubmission
+        from stan.community.submit import DuplicateSubmission, attach_tic
         from stan.db import mark_submitted
 
         runs = _community_backlog(get_runs(limit=100000))["ready"]
@@ -2569,6 +2583,7 @@ async def api_community_sync(body: dict | None = None) -> dict:
         errors: list[str] = []
         for run in runs:
             try:
+                attach_tic(run)
                 submit_to_benchmark(
                     run,
                     spd=run.get("spd"),
