@@ -1621,6 +1621,38 @@ _UPDATABLE_FIELDS = {
 }
 
 
+
+def _update_owner_check(is_admin: bool, auth_token: str, row_name: str | None, patch: dict) -> None:
+    """Refuse /api/update unless the caller is the admin or owns the row.
+
+    Ownership means: the row's display_name is a claimed lab name and
+    ``auth_token`` is that claim's token (the check /api/peg/submit uses).
+    A rename must also be to a name the same token owns. Before 1.2.2 any
+    non-empty X-STAN-Auth was accepted and never checked, so anyone could
+    rewrite any row (review 2026-09-29). Unclaimed names, including the
+    default 'Anonymous Lab', can only be patched by the admin.
+
+    Raises:
+        HTTPException: 403 when ownership is not proven.
+    """
+    if is_admin:
+        return
+    names = {_clean_text(n) for n in (row_name, patch.get("display_name")) if n}
+    if not auth_token or not names:
+        raise HTTPException(status_code=403, detail="Update requires the lab's token (stan community-claim).")
+    for name in names:
+        try:
+            owned = _peg_identity(name, auth_token) is True
+        except HTTPException as e:
+            if e.status_code >= 500:
+                raise  # registry unreadable: "try again", not "not yours"
+            owned = False
+        if not owned:
+            raise HTTPException(
+                status_code=403,
+                detail=f"This token does not own the lab name {name!r}. Run `stan community-claim`.",
+            )
+
 @app.post("/api/update/{submission_id}")
 async def update_submission(submission_id: str, request: Request) -> dict:
     """Patch fields on an existing submission parquet in place.
@@ -1648,6 +1680,8 @@ async def update_submission(submission_id: str, request: Request) -> dict:
         )
     if admin_secret and provided and provided != admin_secret:
         raise HTTPException(status_code=403, detail="Invalid admin secret.")
+    # Admin, or development mode (no ADMIN_SECRET set on the Space).
+    is_admin = (not admin_secret) or (provided == admin_secret)
 
     try:
         patch = await request.json()
@@ -1724,6 +1758,10 @@ async def update_submission(submission_id: str, request: Request) -> dict:
             df = pl.read_parquet(individual_path)
             if df.is_empty():
                 raise HTTPException(status_code=404, detail="Individual parquet is empty")
+            _update_owner_check(
+                is_admin, auth_token,
+                df["display_name"][0] if "display_name" in df.columns else None, patch,
+            )
             df = _apply_patch_to_df(df)
             buf = io.BytesIO()
             df.write_parquet(buf)
@@ -1793,6 +1831,13 @@ async def update_submission(submission_id: str, request: Request) -> dict:
             target_seed = seed_name
             target_df = sdf
             break
+
+        if target_df is not None:
+            _row = target_df.filter(pl.col("submission_id") == submission_id)
+            _update_owner_check(
+                is_admin, auth_token,
+                _row["display_name"][0] if "display_name" in _row.columns else None, patch,
+            )
 
         if target_seed is None or target_df is None:
             logger.warning(
@@ -3872,10 +3917,12 @@ async function loadData() {
 }
 
 function updateStats() {
-    // The header banner and the Submissions tile count the same array (D2).
+    // The Submissions tile follows the QC-standard filter; the header banner
+    // describes the whole seed, so it counts every standard (it read
+    // "Seeded with 0" under E. coli). Both come from the loaded rows (D2).
     document.getElementById('stat-submissions').textContent = allData.length.toLocaleString();
     const bannerRuns = document.getElementById('banner-runs');
-    if (bannerRuns) bannerRuns.textContent = allData.length.toLocaleString();
+    if (bannerRuns) bannerRuns.textContent = allDataRaw.filter(s => !s.is_flagged).length.toLocaleString();
     document.getElementById('stat-labs').textContent = labCount(allData);
     document.getElementById('stat-instruments').textContent = new Set(allData.map(s=>s.instrument_model)).size;
     const nFailed = allDataRaw.filter(s => s.is_flagged).length;
@@ -4270,6 +4317,9 @@ function renderCommunityTIC() {
 
     const withTIC = allData.filter(s => s.tic_rt_bins && s.tic_intensity);
     if (withTIC.length === 0) {
+        // Clear the menu too, or the previous QC standard's SPDs stay listed.
+        clearMenu();
+        setControls(false);
         say(ticLoaded ? 'No TIC traces for this QC standard yet.' : 'Loading TIC traces…');
         return;
     }
@@ -5036,11 +5086,11 @@ function _configTableHtml(track, withHeading) {
                 spd: _configSpdTier(s.spd),
                 amount: _configAmountBucket(s.amount_ng),
                 vals: { precursors:[], peptides:[], proteins:[], psms:[], ms1ppm:[] },
-                labs: new Set(),
+                rows: [],
             };
         }
         const c = cohorts[key];
-        if (s.display_name) c.labs.add(s.display_name);
+        c.rows.push(s);
         if (s.n_precursors > 0) c.vals.precursors.push(s.n_precursors);
         if (s.n_peptides   > 0) c.vals.peptides.push(s.n_peptides);
         if (s.n_proteins   > 0) c.vals.proteins.push(s.n_proteins);
@@ -5054,7 +5104,7 @@ function _configTableHtml(track, withHeading) {
         .map(c => ({
             model: c.model, spd: c.spd, amount: c.amount,
             n: c.vals[pm].length,
-            labs: c.labs.size,
+            labs: labCount(c.rows),  // same rule as every other panel
             precursors: _median(c.vals.precursors),
             peptides:   _median(c.vals.peptides),
             proteins:   _median(c.vals.proteins),
@@ -5721,9 +5771,17 @@ function renderTable() {
         cohortVals[ck].push(rankVal(s));
     });
 
-    // Sort
+    // Sort. Under "All" the depth column never ranks PSMs against
+    // precursors: DIA rows come first, then DDA, each by its own metric (D1).
     const sortKey = tableSortCol;
-    if (sortKey) {
+    const byTrackThenPrimary = (a, b) => {
+        const ta = trackOf(a), tb = trackOf(b);
+        if (ta !== tb) return ta === 'DIA' ? -1 : 1;
+        return tableSortAsc && sortKey ? primaryVal(a) - primaryVal(b) : primaryVal(b) - primaryVal(a);
+    };
+    if (isAll && (!sortKey || sortKey === pKey)) {
+        filtered.sort(byTrackThenPrimary);
+    } else if (sortKey) {
         filtered.sort((a,b) => {
             let va, vb;
             if (sortKey === 'run_date') {
@@ -5790,8 +5848,9 @@ function renderTable() {
         const p = pctile(rankVal(s), cohortVals[cohortOf(s)]||[]);
         h += '<tr>';
         h += `<td>${pctileBadge(p)}</td>`;
-        h += `<td>${s.instrument_model}</td>`;
-        h += `<td>${modeBadge(s.acquisition_mode)}</td>`;
+        // Submitter-supplied strings: escape (stored XSS, review 2026-09-29).
+        h += `<td>${esc(s.instrument_model)}</td>`;
+        h += `<td>${modeBadge(s.acquisition_mode||'')}</td>`;
         h += `<td><strong>${primaryVal(s).toLocaleString()}</strong></td>`;
         h += `<td>${(s.n_peptides||0).toLocaleString()}</td>`;
         h += `<td>${(s.n_proteins||0).toLocaleString()}</td>`;
@@ -5803,9 +5862,9 @@ function renderTable() {
             h += `<td style="color:var(--text-muted)">--</td>`;
         }
         const col = s.column_model ? `${s.column_vendor||''} ${s.column_model}`.trim() : '';
-        h += `<td style="font-size:0.8rem;color:var(--text-muted)">${col||'--'}</td>`;
-        h += `<td>${s.spd||'-'}</td>`;
-        h += `<td>${s.amount_ng||50}ng</td>`;
+        h += `<td style="font-size:0.8rem;color:var(--text-muted)">${esc(col||'--')}</td>`;
+        h += `<td>${esc(s.spd||'-')}</td>`;
+        h += `<td>${esc(s.amount_ng||50)}ng</td>`;
         // Show acquisition date (run_date) not submission date
         const rd = runDate(s);
         let dt = '--';
@@ -5834,10 +5893,12 @@ function exportCSV() {
     if (!data.length) return;
 
     const isDDA = currentTab==='dda';
-    const pKey = isDDA ? 'n_psms' : 'n_precursors';
+    const isAll = currentTab==='all';
+    // Under "All" export both depth columns, so DDA rows keep their PSMs (D1).
+    const depthCols = isAll ? ['n_precursors', 'n_psms'] : [isDDA ? 'n_psms' : 'n_precursors'];
 
     const headers = ['instrument_model','instrument_family','acquisition_mode',
-        pKey,'n_peptides','n_proteins','median_points_across_peak',
+        ...depthCols,'n_peptides','n_proteins','median_points_across_peak',
         'column_vendor','column_model','spd','amount_ng',
         'median_cv_precursor','missed_cleavage_rate','median_peak_width_sec','cohort_id'];
 
@@ -6428,7 +6489,17 @@ async def error_report(body: ErrorReport, request: Request) -> dict:
 
 
 @app.get("/api/error-reports")
-async def get_error_reports(limit: int = 50) -> dict:
+async def get_error_reports(request: Request, limit: int = 50) -> dict:
+    """Stored client error reports, for the admin only.
+
+    Reports carry the raw file's name and an unsanitised error message (a
+    failed search's message is its full command line), so this is not a
+    public endpoint (review 2026-09-29, D4).
+    """
+    admin_secret = os.environ.get("ADMIN_SECRET", "")
+    if not admin_secret or request.headers.get("X-STAN-Admin", "") != admin_secret:
+        raise HTTPException(status_code=403, detail="Admin only.")
+    limit = max(1, min(int(limit), 500))
     if not _ERROR_REPORTS_PATH.exists():
         return {"reports": [], "count": 0}
     try:

@@ -570,13 +570,15 @@ def test_tic_dda_says_none_submitted_and_turns_its_controls_off(client, tmp_path
 
 
 @needs_node
-def test_banner_and_stats_count_the_same_rows(client, tmp_path):
+def test_banner_counts_the_whole_seed_and_the_tile_follows_the_filter(client, tmp_path):
+    """No hard-coded "3,800+" (D2), and no "Seeded with 0" under a QC standard
+    with no runs: the banner counts every standard, the tile the filtered set."""
     rows = [_row(i) for i in range(3)] + [_row(10 + i, sample_type="yeast") for i in range(2)]
     scenario = f"""(() => {{
         allDataRaw = {json.dumps(rows)}; applyFilters(); updateStats();
         return [els['banner-runs'].textContent, els['stat-submissions'].textContent];
     }})()"""
-    assert _run(client, tmp_path, scenario) == ["3", "3"]
+    assert _run(client, tmp_path, scenario) == ["5", "3"]
 
 
 @needs_node
@@ -590,3 +592,90 @@ def test_default_lab_name_is_not_a_second_lab(client, tmp_path):
       labCount([])
     ]"""
     assert _run(client, tmp_path, scenario) == [1, 1, 2, 0]
+
+
+@needs_node
+def test_best_configurations_default_name_is_not_a_second_lab(client, tmp_path):
+    """Review finding 1: 'Clogged PeakTail' + 'Anonymous Lab' (both UC Davis) read
+    "2 labs" and unlocked a "best accuracy" badge under the one-facility banner."""
+    rows = []
+    for i in range(6):
+        for name in ("Clogged PeakTail", "Anonymous Lab"):
+            rows.append(_row(len(rows), display_name=name, instrument_family="Exploris",
+                             instrument_model="Orbitrap Exploris 480", spd=38,
+                             median_mass_acc_ms1_ppm=0.4 + 0.01 * i))
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; currentTab = 'dia'; renderConfigLeaderboard(); els['config-leaderboard'].innerHTML")
+    assert "single-lab reference" in html
+    assert "best depth" not in html and "best accuracy" not in html
+
+
+# ── Review fixes before the P1 deploy (2026-09-29) ────────────────────
+
+
+def test_error_reports_are_admin_only(client, monkeypatch):
+    """Error reports carry raw file names and full command lines (D4)."""
+    monkeypatch.setenv("ADMIN_SECRET", "s3cret")
+    assert client.get("/api/error-reports").status_code == 403
+    assert client.get("/api/error-reports", headers={"X-STAN-Admin": "nope"}).status_code == 403
+    r = client.get("/api/error-reports", headers={"X-STAN-Admin": "s3cret"}, params={"limit": 10_000})
+    assert r.status_code == 200
+
+
+def test_error_reports_closed_without_an_admin_secret(client, monkeypatch):
+    monkeypatch.delenv("ADMIN_SECRET", raising=False)
+    assert client.get("/api/error-reports").status_code == 403
+
+
+def test_update_owner_check(relay, monkeypatch):
+    """Before this, any non-empty X-STAN-Auth could rewrite any row."""
+    HTTPException = relay.HTTPException
+    owners = {("Clogged PeakTail", "good-token"), ("Nimble Edman", "good-token")}
+
+    def fake_identity(name, token):
+        if (name, token) in owners:
+            return True
+        if name in {"Clogged PeakTail", "Nimble Edman"}:
+            raise HTTPException(status_code=403, detail="claimed")
+        return False  # unclaimed: accepted-but-unverified for PEG, not ownership
+
+    monkeypatch.setattr(relay, "_peg_identity", fake_identity)
+    check = relay._update_owner_check
+    check(True, "", "Anyone", {"spd": 60})                      # admin
+    check(False, "good-token", "Clogged PeakTail", {"spd": 60})  # owner
+    check(False, "good-token", "Clogged PeakTail", {"display_name": "Nimble Edman"})
+    for args in [
+        (False, "", "Clogged PeakTail", {"spd": 60}),             # no token
+        (False, "bad-token", "Clogged PeakTail", {"spd": 60}),    # wrong token
+        (False, "good-token", "Anonymous Lab", {"spd": 60}),      # unclaimed row
+        (False, "good-token", "Clogged PeakTail", {"display_name": "Someone Else"}),
+    ]:
+        with pytest.raises(HTTPException) as e:
+            check(*args)
+        assert e.value.status_code == 403
+
+    def outage(name, token):
+        raise HTTPException(status_code=503, detail="registry down")
+
+    monkeypatch.setattr(relay, "_peg_identity", outage)
+    with pytest.raises(HTTPException) as e:
+        check(False, "good-token", "Clogged PeakTail", {"spd": 60})
+    assert e.value.status_code == 503
+
+
+@needs_node
+def test_submissions_table_escapes_submitter_strings(client, tmp_path):
+    rows = [_row(1, instrument_model='<img src=x onerror=alert(1)>',
+                 column_vendor='<b>v</b>', column_model='<script>x</script>', spd='<i>60</i>')]
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; currentTab = 'all'; renderTable(); els['table-container'].innerHTML")
+    assert "<img" not in html and "<script>" not in html and "<i>60" not in html
+    assert "&lt;img" in html
+
+
+@needs_node
+def test_all_tab_never_ranks_psms_against_precursors(client, tmp_path):
+    rows = [_row(i) for i in range(3)] + [_dda(10 + i, n_psms=90000 + i) for i in range(3)]
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; currentTab = 'all'; tableSortCol = null; renderTable(); els['table-container'].innerHTML")
+    body = html.split("<tbody>")[1]
+    first_dda = body.find("badge-dda")
+    last_dia = body.rfind("badge-dia")
+    assert 0 <= last_dia < first_dda, "DIA rows must all come before DDA rows under All"

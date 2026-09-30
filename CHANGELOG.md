@@ -90,6 +90,29 @@ every chart are kept, except the two Brett dropped (decisions 3 and 4).
   carries the track.
 
 ---
+### Security (independent review before the P1 deploy)
+- **`/api/update` checked nothing but a non-empty token.** Any
+  `X-STAN-Auth` value could rewrite any submission's metadata (display
+  name, flags, counts). The relay now requires the admin secret, or the
+  token of the claimed lab that owns the row (and of the new name, on a
+  rename); unclaimed rows, including 'Anonymous Lab', are admin-only.
+- **`/api/error-reports` was public.** Reports carry the raw file's name and
+  unsanitised error messages (full search command lines); now admin-only,
+  with `limit` capped at 500.
+- **Stored XSS in the submissions table.** Instrument, column, SPD and
+  amount values from `/api/submit` were written into the page unescaped;
+  they are escaped now, like the cards and Best Configurations.
+
+### Fixed (same review)
+- Best Configurations counted "Clogged PeakTail" + "Anonymous Lab" as two
+  labs and showed a "best accuracy" badge under the one-facility banner; it
+  now uses the same `labCount()` as every other panel.
+- Under "All", the submissions table lists DIA then DDA, each by its own
+  metric, and the CSV export carries both `n_precursors` and `n_psms`.
+- The TIC menu is cleared for a QC standard with no traces; the header
+  banner counts every standard ("Seeded with 0" under E. coli).
+- The Space card (`hf_space/README.md`) declares the STAN Academic License.
+
 ## [1.2.8] — 2026-09-29
 
 ### Fixed
