@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.2.2"
+SPACE_VERSION = "1.2.3"
 
 # Fields a submission row keeps on the server but that no public response
 # may carry (community redesign D4, decision 5). run_name is the raw file
@@ -1444,10 +1444,18 @@ async def submit(sub: BenchmarkSubmission, request: Request) -> dict:
                 and "fingerprint" in existing.columns
                 and sub.fingerprint in existing["fingerprint"].to_list()
             ):
+                # Name the existing row so the client can record the run as
+                # submitted with its real id instead of re-sending it on every
+                # sync (Space 1.2.3). submission_id is public anyway.
+                prior = ""
+                if "submission_id" in existing.columns:
+                    ids = existing.filter(pl.col("fingerprint") == sub.fingerprint)["submission_id"].to_list()
+                    prior = str(ids[-1]) if ids else ""
                 raise HTTPException(
                     status_code=409,
                     detail=f"Duplicate submission: fingerprint {sub.fingerprint} already exists. "
-                           f"This run appears to have been submitted before from the same lab.",
+                           f"This run appears to have been submitted before from the same lab."
+                           + (f" Existing submission_id: {prior}." if prior else ""),
                 )
         except HTTPException:
             raise

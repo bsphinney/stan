@@ -44,8 +44,8 @@ SECRET_PRINT = "feedfacecafebeef"
 # ── server: SPACE_VERSION ────────────────────────────────────────────
 
 def test_space_version_is_1_2_2(client):
-    assert client.get("/api/version").json()["version"] == "1.2.2"
-    assert "community site v1.2.2" in _page(client)
+    assert client.get("/api/version").json()["version"] == "1.2.3"
+    assert "community site v1.2.3" in _page(client)
 
 
 # ── server: D4, no file names in public responses ────────────────────
@@ -679,3 +679,16 @@ def test_all_tab_never_ranks_psms_against_precursors(client, tmp_path):
     first_dda = body.find("badge-dda")
     last_dia = body.rfind("badge-dia")
     assert 0 <= last_dia < first_dda, "DIA rows must all come before DDA rows under All"
+
+
+def test_duplicate_reply_names_the_existing_submission(client, relay, monkeypatch):
+    """Space 1.2.3: the 409 names the row the relay already has, so the client
+    records the run as submitted with that id instead of re-sending it."""
+    import polars as pl
+
+    sid = "0f3c2a4e-1111-2222-3333-444455556666"
+    existing = pl.DataFrame({"fingerprint": [V1_DIA["fingerprint"]], "submission_id": [sid]})
+    monkeypatch.setattr(relay, "_load_all_submissions", lambda *a, **k: existing)
+    again = client.post("/api/submit", json=V1_DIA)
+    assert again.status_code == 409
+    assert f"Existing submission_id: {sid}." in again.json()["detail"]

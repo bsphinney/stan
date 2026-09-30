@@ -240,7 +240,7 @@ def quartiles(values: list[float]) -> list[float]:
 # ── identity (spec §4.5, D3) ─────────────────────────────────────────
 
 def test_space_version_is_1_2_2(client):
-    assert client.get("/api/version").json()["version"] == "1.2.2"
+    assert client.get("/api/version").json()["version"] == "1.2.3"
 
 
 def test_unclaimed_name_is_accepted_but_unverified(client, relay):
@@ -1638,7 +1638,7 @@ def run_page_js(tmp_path: Path, html: str, calls: list) -> list:
 
 def test_page_has_the_peg_section_linked_from_the_header(client):
     html = _page(client)
-    assert "community site v1.2.2" in html
+    assert "community site v1.2.3" in html
     assert '<a href="#peg">PEG Watch</a>' in html
     assert html.count('id="peg"') == 1
     for endpoint in ("/api/peg/leaderboard", "/api/peg/trend", "/api/peg/lc-compare"):

@@ -5377,6 +5377,30 @@ def submit_all(
     submitted = 0
     skipped = 0
     failed = 0
+    waiting = 0      # QC runs a metric backfill would make sendable
+    ineligible = 0   # never sendable (hard gates, DIA-NN version)
+    already = 0      # the relay already had them; recorded as submitted
+
+    from stan.community.submit import DuplicateSubmission, submission_readiness
+
+    def _mark(run: dict, sid: str | None) -> None:
+        if backend_l == "pg":
+            from stan.db_pg import _connect as _pg_connect
+            with _pg_connect() as pg, pg.cursor() as cur:
+                cur.execute(
+                    "UPDATE runs SET submitted_to_benchmark = 1, "
+                    "submission_id = COALESCE(%s, submission_id) "
+                    "WHERE host_origin = %s AND id = %s",
+                    (sid, run.get("host_origin"), run["id"]),
+                )
+                pg.commit()
+        else:
+            with sqlite3.connect(str(db_path)) as con:
+                con.execute(
+                    "UPDATE runs SET submitted_to_benchmark = 1, "
+                    "submission_id = COALESCE(?, submission_id) WHERE id = ?",
+                    (sid, run["id"]),
+                )
 
     for row in candidates:
         run = dict(row)
@@ -5404,6 +5428,17 @@ def submit_all(
             _log({"event": "skip", "run_id": run_id, "run_name": name, "reason": "zero_ids"})
             continue
 
+        # Same rule as the dashboard's Sync button: send only what the relay
+        # would accept; count the rest instead of failing them every night.
+        state, why = submission_readiness(run)
+        if state != "ready":
+            if state == "needs_metrics":
+                waiting += 1
+            else:
+                ineligible += 1
+            _log({"event": state, "run_id": run_id, "run_name": name, "reason": why})
+            continue
+
         if dry_run:
             if submitted < 10:
                 console.print(f"  [dim]Would submit: {name[:60]}[/dim]")
@@ -5421,22 +5456,7 @@ def submit_all(
             )
             sid = result.get("submission_id", "")
             # Mark as submitted in whichever DB we read from.
-            if backend_l == "pg":
-                from stan.db_pg import _connect as _pg_connect
-                with _pg_connect() as pg, pg.cursor() as cur:
-                    cur.execute(
-                        "UPDATE runs SET submitted_to_benchmark = 1, "
-                        "submission_id = %s WHERE host_origin = %s AND id = %s",
-                        (sid, run.get("host_origin"), run["id"]),
-                    )
-                    pg.commit()
-            else:
-                with sqlite3.connect(str(db_path)) as con:
-                    con.execute(
-                        "UPDATE runs SET submitted_to_benchmark = 1, "
-                        "submission_id = ? WHERE id = ?",
-                        (sid, run["id"]),
-                    )
+            _mark(run, sid or None)
             submitted += 1
             _log({
                 "event": "submitted",
@@ -5452,6 +5472,13 @@ def submit_all(
                     f"  [dim]{submitted} submitted, {skipped} skipped, "
                     f"{failed} failed[/dim]"
                 )
+        except DuplicateSubmission as e:
+            # The relay already has this run: record it as submitted (with the
+            # relay's id when it says) so it stops counting as pending.
+            _mark(run, e.existing_submission_id)
+            already += 1
+            _log({"event": "already_submitted", "run_id": run_id, "run_name": name,
+                  "submission_id": e.existing_submission_id or ""})
         except ValueError as e:
             # Validation rejection (version mismatch, hard gates, etc.)
             if failed < 5:
@@ -5481,13 +5508,17 @@ def submit_all(
     console.print(
         f"[bold]{action} {submitted} runs[/bold] "
         f"(skipped {skipped} non-QC/blank/empty, "
-        f"failed {failed} validation)"
+        f"{already} already on the site, {waiting} waiting for metrics, "
+        f"{ineligible} ineligible, failed {failed})"
     )
 
     _log({
         "event": "end",
         "submitted": submitted,
         "skipped": skipped,
+        "already_submitted": already,
+        "waiting_metrics": waiting,
+        "ineligible": ineligible,
         "failed": failed,
     })
     log_fh.close()

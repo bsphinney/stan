@@ -320,10 +320,16 @@ The community benchmark lets you see how your instrument compares to instruments
 **Or use the Sync button.** The dashboard's Community tab has a *Community
 sync* panel that does steps 3 and 4 without the terminal. It shows how many
 runs are eligible, lets you set the lab name, and pushes them on one click.
-The count on the button applies the same rules as `stan submit-all`, so it is
-what would actually be pushed — washes, blanks, and runs with zero
-identifications are already excluded. Pressing it sets `community_submit: true`
-in `community.yml`.
+The count on the button applies the same rules as `stan submit-all`
+(`submission_readiness` in `stan/community/submit.py`), so it is what would
+actually be pushed. Washes, blanks, runs with zero identifications, runs below
+the community hard gates (too few IDs) and DIA runs with an unknown or
+incompatible DIA-NN version are excluded. QC runs still missing a metric the
+community site requires (the TIC trace, peak capacity, peak width, …) are
+listed under the button as *waiting for metrics* and go out once a backfill
+fills them in. A run the site already holds is recorded as submitted instead
+of failing on every sync. Pressing the button sets `community_submit: true` in
+`community.yml`.
 
 If you have not set a pseudonym, the panel generates one for you (e.g.
 *Oxidized Cottrell*) and pre-fills it; edit it to whatever you like before

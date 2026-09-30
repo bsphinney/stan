@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 import urllib.request
 import urllib.error
@@ -28,6 +29,71 @@ logger = logging.getLogger(__name__)
 
 RELAY_URL = "https://brettsp-stan.hf.space"
 
+
+
+class DuplicateSubmission(RuntimeError):
+    """The relay already holds this run (same fingerprint: lab, model, file, amount, SPD).
+
+    ``existing_submission_id`` is the relay's id for it when the relay says
+    (Space 1.2.3+), else None. Callers record the run as submitted either
+    way; before 1.2.10 they counted it as failed and re-sent it on every
+    sync, which is what inflated the dashboard's "Sync 699 runs" button
+    (346 of those were already on the site).
+    """
+
+    def __init__(self, detail: str, existing_submission_id: str | None) -> None:
+        super().__init__(f"Community relay rejected submission: {detail}")
+        self.existing_submission_id = existing_submission_id
+
+
+# Metrics the relay requires for a v1 DIA row (hf_space/app.py
+# V1_REQUIRED_DIA_NUM / _LIST) that submit_to_benchmark copies straight from
+# the run row. A row missing any of them is rejected as "incomplete v1
+# schema", so it is waiting for a backfill, not ready to send.
+DIA_ROW_METRICS_REQUIRED: tuple[str, ...] = (
+    "ms1_signal", "ms2_signal", "fwhm_rt_min",
+    "median_mass_acc_ms1_ppm", "median_mass_acc_ms2_ppm",
+    "peak_capacity", "dynamic_range_log10",
+    "median_points_across_peak", "median_peak_width_sec",
+)
+DIA_ROW_LISTS_REQUIRED: tuple[str, ...] = ("tic_rt_bins", "tic_intensity")
+
+
+def _has_list(value: object) -> bool:
+    if isinstance(value, (list, tuple)):
+        return len(value) > 0
+    if isinstance(value, str):
+        return value.strip() not in ("", "[]", "null")
+    return value is not None
+
+
+def submission_readiness(run: dict) -> tuple[str, str]:
+    """Would this run be accepted by the relay right now?
+
+    One rule for both ``stan submit-all`` and the dashboard's Sync button, so
+    the count on the button is what a sync would actually send.
+
+    Returns:
+        ``("ready", "")``, ``("needs_metrics", what)`` when a backfill would
+        make it sendable, or ``("ineligible", why)`` when it never will be
+        (hard gates such as too few IDs, or an incompatible DIA-NN version).
+    """
+    mode = str(run.get("mode") or run.get("acquisition_mode") or "").lower()
+    is_dda = "dda" in mode
+    validation = validate_submission(dict(run), "dda" if is_dda else "dia")
+    if validation.rejected_gates:
+        return "ineligible", "; ".join(validation.rejected_gates)
+    if not is_dda:
+        ok, msg = check_diann_version_compatible(str(run.get("diann_version") or ""))
+        if not ok:
+            return "ineligible", msg
+        missing = [k for k in DIA_ROW_METRICS_REQUIRED if run.get(k) is None]
+        missing += [k for k in DIA_ROW_LISTS_REQUIRED if not _has_list(run.get(k))]
+        if missing:
+            return "needs_metrics", ", ".join(missing)
+    if validation.errors:
+        return "needs_metrics", "; ".join(validation.errors)
+    return "ready", ""
 
 def _detect_sample_type(run_name: str) -> str:
     """Detect QC standard from the run filename.
@@ -370,6 +436,9 @@ def submit_to_benchmark(
             detail = json.loads(body).get("detail", body)
         except Exception:
             detail = body
+        if e.code == 409 and "Duplicate submission" in str(detail):
+            m = re.search(r"Existing submission_id: ([0-9a-fA-F-]{36})", str(detail))
+            raise DuplicateSubmission(str(detail), m.group(1) if m else None) from e
         raise RuntimeError(f"Community relay rejected submission: {detail}") from e
 
     # Get submission_id from relay response

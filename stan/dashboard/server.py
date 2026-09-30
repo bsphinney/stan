@@ -2434,10 +2434,13 @@ async def api_community_sync_status(request: Request) -> dict:
     # One read serves both the pending count and the "has this lab published
     # before?" question, so the status endpoint stays a single query.
     published_before = True
+    waiting = 0
     try:
         from stan.db import get_runs
         rows = get_runs(limit=100000)
-        pending = len(_pending_community_runs(rows))
+        backlog = _community_backlog(rows)
+        pending = len(backlog["ready"])
+        waiting = len(backlog["needs_metrics"])
         published_before = any(r.get("submitted_to_benchmark") for r in rows)
     except Exception:
         logger.debug("sync-status count failed", exc_info=True)
@@ -2456,6 +2459,9 @@ async def api_community_sync_status(request: Request) -> dict:
         "display_name": name or None,
         "suggested_name": suggested or None,
         "pending": pending,
+        # QC runs that a metric backfill would make sendable; shown beside
+        # the button so a lab sees why they are not in the count.
+        "waiting_metrics": waiting,
         # False here means "this caller may sync", which on the hosted
         # dashboard is true only for a signed-in, allow-listed operator.
         "readonly": False,
@@ -2501,6 +2507,24 @@ def _pending_community_runs(rows: list[dict]) -> list[dict]:
     return out
 
 
+def _community_backlog(rows: list[dict]) -> dict[str, list[dict]]:
+    """Split the QC runs not yet submitted by what a sync would do with them.
+
+    ``ready`` would be accepted now; ``needs_metrics`` would be once a
+    backfill fills in the missing metrics (TIC, peak capacity, …);
+    ``ineligible`` never will (too few IDs, DIA-NN version). Same rule as
+    ``stan submit-all`` (``submission_readiness``), so the Sync button
+    counts only what a sync would actually send.
+    """
+    from stan.community.submit import submission_readiness
+
+    out: dict[str, list[dict]] = {"ready": [], "needs_metrics": [], "ineligible": []}
+    for r in _pending_community_runs(rows):
+        state, _why = submission_readiness(r)
+        out[state].append(r)
+    return out
+
+
 @app.post("/api/community/sync")
 async def api_community_sync(body: dict | None = None) -> dict:
     """Submit un-submitted QC runs to the community benchmark.
@@ -2537,8 +2561,11 @@ async def api_community_sync(body: dict | None = None) -> dict:
         except Exception:
             logger.warning("could not persist community.yml", exc_info=True)
 
-        runs = _pending_community_runs(get_runs(limit=100000))
-        sent = failed = 0
+        from stan.community.submit import DuplicateSubmission
+        from stan.db import mark_submitted
+
+        runs = _community_backlog(get_runs(limit=100000))["ready"]
+        sent = failed = already = 0
         errors: list[str] = []
         for run in runs:
             try:
@@ -2550,11 +2577,18 @@ async def api_community_sync(body: dict | None = None) -> dict:
                     diann_version=run.get("diann_version"),
                 )
                 sent += 1
+            except DuplicateSubmission as e:
+                # Already on the site: record it, don't count it as failed.
+                try:
+                    mark_submitted(run.get("id"), e.existing_submission_id)
+                except Exception:  # noqa: BLE001
+                    logger.warning("could not mark %s submitted", run.get("id"), exc_info=True)
+                already += 1
             except Exception as e:  # noqa: BLE001 - one bad run must not stop the rest
                 failed += 1
                 if len(errors) < 5:
                     errors.append(f"{str(run.get('run_name'))[:40]}: {str(e)[:90]}")
-        return {"submitted": sent, "failed": failed,
+        return {"submitted": sent, "failed": failed, "already_submitted": already,
                 "display_name": cfg.get("display_name"), "errors": errors}
 
     try:

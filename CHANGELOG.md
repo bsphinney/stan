@@ -11,6 +11,27 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.10] — 2026-09-29
+
+### Fixed
+- **The dashboard's "Sync N runs" button offered runs that could not be
+  sent.** On UC Davis it read 699: 346 were already on the community site
+  (the relay answered "duplicate" every night and nothing recorded it), 215
+  lacked a metric the site requires (TIC trace, peak capacity, peak width),
+  121 were below the hard gates and 18 had an unknown DIA-NN version. One rule,
+  `submission_readiness()` in `stan/community/submit.py`, now decides for
+  both `stan submit-all` and the button: *ready*, *waiting for metrics*
+  (shown under the button), or *ineligible* (not counted).
+- **A duplicate is recorded as submitted.** The relay (Space 1.2.3) names the
+  existing `submission_id` in its 409 reply; the client raises
+  `DuplicateSubmission` and marks the run with that id, instead of counting
+  it as failed and re-sending it on every sync. With Brett's approval the 346
+  UC Davis duplicates were marked in PG on 2026-09-29, each matched to its
+  community row (backup `logs/mark_duplicates_20260929_192250.json`).
+- **Fleet tab** no longer tells the central dashboard to "mount the share":
+  the per-host mirror card is shown only where instrument PCs run STAN.
+- **Community tab** drops the stale "967 QC runs … run `stan baseline`" text.
+
 ## [1.2.9] — 2026-09-29
 
 Community site redesign, phase P1 ("correctness"), in the relay

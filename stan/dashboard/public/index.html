@@ -7845,6 +7845,7 @@ function BFailTable({ rows }) {
       }
 
       const pending = status.pending;
+      const waiting = status.waiting_metrics || 0;
       const doSync = () => {
         setBusy(true); setResult(null);
         fetch(API + '/api/community/sync', {
@@ -7895,7 +7896,7 @@ function BFailTable({ rows }) {
             <div style={{marginTop:'0.7rem', fontSize:'0.85rem',
                          color: result.ok ? '#4ade80' : '#f87171'}}>
               {result.ok
-                ? `Submitted ${result.submitted}${result.failed ? `, ${result.failed} failed` : ''} as ${result.display_name}.`
+                ? `Submitted ${result.submitted}${result.already_submitted ? ` (${result.already_submitted} were already on the site)` : ''}${result.failed ? `, ${result.failed} failed` : ''} as ${result.display_name}.`
                 : `Sync failed: ${String(result.error || '').slice(0, 160)}`}
               {result.ok && result.errors && result.errors.length > 0 && (
                 <ul style={{marginTop:'0.4rem', color:'var(--muted)', fontSize:'0.78rem'}}>
@@ -7903,6 +7904,13 @@ function BFailTable({ rows }) {
                 </ul>
               )}
             </div>
+          )}
+          {waiting > 0 && (
+            <p style={{color:'var(--muted)', fontSize:'0.8rem', marginTop:'0.6rem'}}>
+              {waiting} more QC run{waiting === 1 ? ' is' : 's are'} waiting for metrics the
+              community site requires (for example the TIC trace or peak capacity) and
+              will be sent once those are filled in.
+            </p>
           )}
           <p style={{color:'var(--muted)', fontSize:'0.75rem', marginTop:'0.6rem'}}>
             Runs appear on the public site after the nightly consolidation.
@@ -7928,8 +7936,7 @@ function BFailTable({ rows }) {
               community.stan-proteomics.org
             </a>
             <p style={{color:'var(--muted)', fontSize:'0.85rem', marginTop:'0.5rem'}}>
-              967 QC runs across Fusion Lumos, timsTOF HT, and Exploris 480.
-              Your data will appear here after running <code style={{color:'var(--accent)'}}>stan baseline</code>.
+              Runs you sync appear there after the nightly consolidation.
             </p>
           </div>
           <div className="card" style={{marginBottom:'1rem'}}>
@@ -8240,6 +8247,7 @@ function BFailTable({ rows }) {
 
     function FleetPanel() {
       const { data, loading, error, reload } = useFetch('/api/fleet/hosts');
+      const { data: caps } = useFetch('/api/capabilities', []);
       const [expanded, setExpanded] = useState(null);
       const [pending, setPending] = useState({});   // {host: cmd_id}
       const [results, setResults] = useState({});   // {host: payload}
@@ -8299,6 +8307,12 @@ function BFailTable({ rows }) {
           <InstrumentOverview />
           <IngestFreshness />
           <InstrumentComparison />
+          {/* The per-host table reads status.json that STAN on each
+              instrument PC writes to the shared mirror. On the central,
+              PG-backed dashboard (ucd.stan-proteomics.org) the instrument PCs
+              do not run STAN and nothing writes that mirror, so the card
+              would only ever tell the reader to mount a share they cannot. */}
+          {!(caps && (caps.central_mode || caps.pg_direct)) && (
           <div className="card">
             <p><strong>No Hive mirror mounted on this machine.</strong></p>
             <p style={{ color: '#666', fontSize: '0.9rem' }}>
@@ -8308,6 +8322,7 @@ function BFailTable({ rows }) {
               The panels above read the database and are unaffected.
             </p>
           </div>
+          )}
           </>
         );
       }

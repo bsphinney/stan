@@ -2772,7 +2772,7 @@ def set_run_hidden(
         return cur.rowcount > 0
 
 
-def mark_submitted(run_id: str, submission_id: str, db_path: Path | None = None) -> None:
+def mark_submitted(run_id: str, submission_id: str | None, db_path: Path | None = None) -> None:
     """Mark a run as submitted to the community benchmark."""
     if db_path is None:
         db_path = get_db_path()
@@ -2782,7 +2782,8 @@ def mark_submitted(run_id: str, submission_id: str, db_path: Path | None = None)
     else:
         with connect(db_path) as con:
             con.execute(
-                "UPDATE runs SET submitted_to_benchmark = 1, submission_id = ? WHERE id = ?",
+                "UPDATE runs SET submitted_to_benchmark = 1, "
+                "submission_id = COALESCE(?, submission_id) WHERE id = ?",
                 (submission_id, run_id),
             )
     logger.info("Run %s marked as submitted (submission %s)", run_id[:8], submission_id[:8])

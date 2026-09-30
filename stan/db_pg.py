@@ -1908,7 +1908,7 @@ def set_run_hidden_pg(run_id: str, hidden: bool, reason: str = "") -> bool:
     return n > 0
 
 
-def mark_submitted_pg(run_id: str, submission_id: str) -> bool:
+def mark_submitted_pg(run_id: str, submission_id: str | None) -> bool:
     """Flag a run as submitted to the community benchmark in PG.
 
     ``stan submit-all --backend pg`` pushes rows read from PG, so the
@@ -1918,8 +1918,8 @@ def mark_submitted_pg(run_id: str, submission_id: str) -> bool:
     """
     with _connect() as pg, pg.cursor() as cur:
         cur.execute(
-            "UPDATE runs SET submitted_to_benchmark = 1, submission_id = %s "
-            "WHERE id = %s",
+            "UPDATE runs SET submitted_to_benchmark = 1, "
+            "submission_id = COALESCE(%s, submission_id) WHERE id = %s",
             (submission_id, run_id),
         )
         n = cur.rowcount
