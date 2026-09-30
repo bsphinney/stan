@@ -10278,9 +10278,15 @@ function BFailTable({ rows }) {
       const tiles = last.map(r => {
         const k = r.spd == null ? 'x' : r.spd;
         const hist = bySpd.get(k) || [];
-        let lo = 0, hi = hist.length;
-        while (lo < hi) { const m = (lo + hi) >> 1; if (hist[m] < r.pct) lo = m + 1; else hi = m; }
-        return { ...r, pctile: hist.length ? Math.round(100 * lo / hist.length) : null,
+        const bis = (strict) => {
+          let lo = 0, hi = hist.length;
+          while (lo < hi) { const m = (lo + hi) >> 1; if (strict ? hist[m] < r.pct : hist[m] <= r.pct) lo = m + 1; else hi = m; }
+          return lo;
+        };
+        // Mid-rank: ties share the middle, so identical runs read ~50th, not 0th.
+        const below = bis(true), ties = bis(false) - below;
+        const pc = hist.length ? Math.min(99, Math.round(100 * (below + ties / 2) / hist.length)) : null;
+        return { ...r, pctile: pc,
                  nSpd: hist.length, spdYear: pegMedian(yearBySpd.get(k) || []) };
       });
       const s = ov.summary || {};
@@ -10302,6 +10308,7 @@ function BFailTable({ rows }) {
       const S = useMemo(() => pegLatestStats(ov, runs, asOfT), [ov, runs, asOfT]);
       if (!S.tiles.length) return null;
       const ratio = S.m365 ? S.last / S.m365 : null;
+      const nT = S.tiles.length, runsW = (n) => `${pegFmtN(n)} run${n === 1 ? '' : 's'}`;
       const word = ratio == null ? 'compared with'
         : ratio >= 1.5 ? 'higher than' : ratio <= 0.67 ? 'lower than' : 'in line with';
       const B = S.best, b = B ? B.median_pct : null;
@@ -10309,7 +10316,9 @@ function BFailTable({ rows }) {
       if (b != null) {
         const far = S.last > 3 * Math.max(b, 0.01) && S.last - b >= 0.5;
         const near = S.last <= Math.max(2 * b, b + 0.05);
-        tail = <>, {far ? 'but well above' : near ? 'and close to' : 'and above'} your cleanest 90 days (<b>{pegFmtPct(b)}</b>)</>;
+        tail = S.m365 != null
+          ? <>, {far ? 'but well above' : near ? 'and close to' : 'and above'} your cleanest 90 days (<b>{pegFmtPct(b)}</b>)</>
+          : <>, {far ? 'well above' : near ? 'close to' : 'above'} your cleanest 90 days (<b>{pegFmtPct(b)}</b>)</>;
       }
       const newest = S.tiles[S.tiles.length - 1];
       /* Classes are calibrated on timsTOF (PEG_CAL_NOTE), so only there does
@@ -10328,7 +10337,7 @@ function BFailTable({ rows }) {
       ].filter(m => m[1] != null);
       const range = (B && B.start && B.end) ? pegFmtRange(B.start, B.end) : null;
       const rows = [
-        ['me', 'var(--accent-hi)', `Last ${S.tiles.length} runs (median)`, S.last, `${S.tiles.length} runs`],
+        ['me', 'var(--accent-hi)', nT === 1 ? 'Latest run' : `Last ${nT} runs (median)`, S.last, runsW(nT)],
         ['', 'var(--accent)', 'Last 30 days', S.m30, S.n30 != null ? `${pegFmtN(S.n30)} runs` : ''],
         ['', 'var(--text)', 'Last year', S.m365, `${pegFmtN(S.n365)} runs`],
         ['', 'var(--pass)', range ? `Best 90 days (${range})` : 'Best 90 days', b, B && B.n ? `${pegFmtN(B.n)} runs` : ''],
@@ -10338,14 +10347,17 @@ function BFailTable({ rows }) {
         <section className="card peg-latest" aria-labelledby="peg-lt-h">
           <div className="peg-lt-head">
             <div>
-              <h3 id="peg-lt-h">Your last {S.tiles.length} QC runs</h3>
-              <p className="peg-sub">{ov.instrument} · {pegFmtD(S.tiles[0].t, false)} to {pegFmtD(newest.t)} · PEG share of MS1</p>
+              <h3 id="peg-lt-h">{nT === 1 ? 'Your latest QC run' : `Your last ${nT} QC runs`}</h3>
+              <p className="peg-sub">{ov.instrument} · {pegFmtD(S.tiles[0].t) === pegFmtD(newest.t)
+                ? pegFmtD(newest.t) : `${pegFmtD(S.tiles[0].t, false)} to ${pegFmtD(newest.t)}`} · PEG share of MS1</p>
             </div>
             <div className="peg-chips"><PegInstrumentPicker ov={ov} onInstrument={onInstrument} pick={pick} /></div>
           </div>
           <p className="peg-lt-verdict">
-            Median PEG share of the last {S.tiles.length} runs is <b>{pegFmtPct(S.last)}</b>, {word} this
-            instrument's last year (<b>{pegFmtPct(S.m365)}</b>){tail}.{clsNote}
+            {nT === 1 ? 'PEG share of the latest run is ' : `Median PEG share of the last ${nT} runs is `}
+            <b>{pegFmtPct(S.last)}</b>
+            {S.m365 != null ? <>, {word} this instrument's last year, all SPDs (<b>{pegFmtPct(S.m365)}</b>)</> : null}
+            {tail}.{clsNote}
           </p>
           <div className="peg-lt-tiles">
             {S.tiles.map((t, i) => {
@@ -10370,7 +10382,7 @@ function BFailTable({ rows }) {
                   )}
                   {t.pctile != null && (
                     <>
-                      <div className="peg-lt-pc">{pegOrd(t.pctile)} percentile of {pegFmtN(t.nSpd)} runs{t.spd != null ? ` at ${t.spd} SPD` : ''}</div>
+                      <div className="peg-lt-pc">{pegOrd(t.pctile)} percentile of {runsW(t.nSpd)}{t.spd != null ? ` at ${t.spd} SPD` : ''}</div>
                       <div className="peg-lt-meter" aria-hidden="true"><i style={{left: `calc(${t.pctile}% - 1.5px)`}} /></div>
                     </>
                   )}
@@ -10393,8 +10405,16 @@ function BFailTable({ rows }) {
                 <circle key={`r${i}`} cx={X(r.pct)} cy={yLine + ((i * 37) % 17) - 8} r={1.8}
                         style={{fill: PEG_LT_CLR[r.cls], fillOpacity: 0.35}} />
               ))}
-              {marks.map(([lab, v, c], i) => {
-                const x = X(v), y = 18 + (i % 2) * 12;
+              {(() => {
+                const rowsX = [[], [], [], []];
+                return marks.map(([lab, v, c]) => [lab, v, c, X(v)]).sort((a, b) => a[3] - b[3]).map(([lab, v, c, x]) => {
+                  const k = rowsX.findIndex(r => !r.length || x - r[r.length - 1] > 78);
+                  const row = k < 0 ? 3 : k;
+                  rowsX[row].push(x);
+                  return [lab, v, c, row];
+                });
+              })().map(([lab, v, c, row]) => {
+                const x = X(v), y = 14 + row * 11;
                 const anchor = x < x0 + 60 ? 'start' : x > x1 - 60 ? 'end' : 'middle';
                 return (
                   <g key={lab}>
