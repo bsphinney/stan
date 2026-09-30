@@ -54,6 +54,8 @@ These come from Brett's feedback this session and are also in memory.
 | 9 | Engine-calibration panel compute on Hive (Part B) | **One go/no-go**, required by the pipeline skill | See §B.5 |
 | 10 | Spectronaut arm of the panel | **Brett runs it** on the licensed machine | See §B.5 |
 | 11 | **Which library defines STAN's reference count** (research finding M2, §B.10) | **Decided 2026-09-29: frozen community library** for cohorts and S; re-search cohort rows, before/after to Brett before any PG write | Recommended: the frozen community library for both cohorts and S; re-search the cohort rows (0.2–1 core-h each). Today timsTOF and Exploris cohorts use per-instrument subset libraries that no outside lab can reproduce |
+| 12 | **nanoLC cohort key: gradient bands + LC model + flow regime** (§A.3 B2, §A.5) | **Approved 2026-09-29** (Brett: "we should make it so others using non-Evosep LCs can eventually be ranked") | Fixed gradient bands; LC model and flow regime join the key; LC detected at submit time. Ships with the P3 schema changes |
+| 13 | **Header link to the Instrument Health Explorer** (§A.1) | **Approved 2026-09-29** (Brett) | Section keeps its live name; linked from the header nav |
 
 ---
 
@@ -65,14 +67,14 @@ The live page is one HTML/JS string inside `hf_space/app.py`, served by the rela
 
 This is REVIEW §6, amended so that no chart is dropped.
 
-1. **Header.** Purpose line: "Compare your QC HeLa against reference ranges from labs running the same frozen search." Then the one-facility disclosure (D2). Nav order: Join · Where do I stand · Methods · PEG Watch · Dataset · API · GitHub · Museum · Arcade.
+1. **Header.** Purpose line: "Compare your QC HeLa against reference ranges from labs running the same frozen search." Then the one-facility disclosure (D2). Nav order: Join · Where do I stand · Instrument Health Explorer · Methods · PEG Watch · Dataset · API · GitHub · Museum · Arcade. (Brett asked for the Instrument Health Explorer link, 2026-09-29.)
 2. **Stats row.** Runs · labs (counted as facilities) · instruments · latest run. A Join tile replaces the inert "Hide failed runs · 0 flagged" card. A three-line glossary (SPD, IQR, IPS) sits below.
 3. **Sticky filter bar.** QC standard · DIA/DDA · amount. Every panel follows it and prints what it follows in its badge. A panel that deliberately ignores a filter says so ("all amounts").
 4. **Where does my run sit?** The lookup (B1, with the Part B engine fields).
 5. **Reference ranges.** Grouped by instrument model. The primary metric is large, each card shows "n runs · n labs", and sparse cohorts are folded (D5).
 6. **Join the benchmark** (D6).
 7. **How the numbers are made** (D7 + D3).
-8. **Explore.** Every chart in §A.2, open by default at desktop width. On phones each is a `<details>` with a one-line takeaway. The TIC overlay, Depth by Throughput and Throughput vs. Quantitation Quality are open at every width.
+8. **Instrument Health Explorer** (the live section name, linked from the header). Every chart in §A.2, open by default at desktop width. On phones each is a `<details>` with a one-line takeaway. The TIC overlay, Depth by Throughput and Throughput vs. Quantitation Quality are open at every width.
 9. **LC / instrument health (ID-free).** Mass accuracy, MS1 signal, dynamic range and points across peak, **visible**, drawn one line per instrument, with the detector-family note.
 10. **Lab trend vs. reference** (B3).
 11. **Evosep PEG Watch.** Unchanged.
@@ -157,10 +159,17 @@ Full problem statements and evidence are in `docs/community-redesign/REVIEW.md`;
 - **B2 One cohort key.**
   - The key is model × mode × gradient × amount bucket.
   - Evosep runs are named only by real Evosep methods; other Evosep SPDs read "SPD unverified".
-  - nanoLC is named by the **stored** `gradient_length_min` plus the derived SPD ("44 min run (~38 SPD)").
+  - nanoLC is named by the **stored** `gradient_length_min` plus the derived SPD ("44 min run (~38 SPD)"). **Amended 2026-09-29, decision 12:** see the nanoLC key below.
   - A run with no LC recorded at an Evosep-method SPD is "LC not recorded", never inferred.
   - Reference: `lc_class()` in `build_mockup.py`.
   - The sticky filter bar drives every panel.
+  - **nanoLC cohort key (decision 12, 2026-09-29).** Goal: other labs' non-Evosep runs can be ranked against each other, not only against their own history. Today a nanoLC cohort is keyed by the exact run length, so a lab at 45 min and one at 44 min never share a cohort, and "custom" lumps every non-Evosep LC together.
+    - **Gradient band** replaces the exact length. Fixed bands on `gradient_length_min`: ≤20 → 15 min, 21–37 → 30, 38–52 → 45, 53–75 → 60, 76–105 → 90, 106–150 → 120, >150 → 180. Fixed bands keep cohort names stable as runs arrive; a ±% rule would move boundaries. Title: "nanoLC · Vanquish Neo · nanoflow · 45 min band (~38 SPD)".
+    - **LC model** joins the key. STAN already reads it from raw files (`stan/tools/trfp.py` `_extract_lc_from_raw_binary`: "Thermo Vanquish Neo", "Dionex UltiMate 3000", …; Bruker via the HyStar method in `stan/metrics/scoring.py` `detect_lc_system`) but `detect_lc_system` collapses it to evosep/custom. Keep the model string; add `lc_model` to the submission.
+    - **Flow regime** joins the key: nanoflow (<1 µL/min) · capillary (1–10) · microflow (>10). It is the biggest driver of depth and is not reliably in raw files, so it comes from `stan setup` / `add-watch` (per instrument, like the column) and is submitted as `lc_flow`.
+    - **LC detected at submit time** for every run, so "LC not recorded" becomes rare; a run whose LC still cannot be read is matched on band only and says so.
+    - Matching falls back gracefully: band + model + flow when all are recorded; band only (labelled "LC model/flow not recorded") otherwise. Today's UC Davis Orbitrap cohorts have neither recorded until backfilled from their raws (Hive `trfp.sif` can read Thermo LC metadata).
+    - Open: `gradient_length_min` is sometimes the active gradient and sometimes the full run (the Exploris 38 SPD cohort stores 44 min while its TIC ends at 30 min). Define it as the active gradient in `stan setup` and the docs, and check the extractor before banding.
 - **B3 Lab trend vs. reference.**
   - The reference is the same cohort **without** the selected lab, drawn as p10/p25/p75/p90 bands.
   - Add a drift overlay from the lab's own baseline (median ± 3·MAD).
@@ -217,6 +226,7 @@ Verification details: `~/stan-handoff-2026-09-29/tic_verification.json`.
 These cross the client, relay and dashboard in the same change, per CLAUDE.md.
 
 - `amount_source` (declared | parsed | assumed) and `faims` (bool) on submissions (B4).
+- `lc_model` (string, from the raw file) and `lc_flow` (nano | capillary | micro, from setup) on submissions; `gradient_band` derived server-side (B2 amendment, decision 12).
 - `run_name` optional at submit; never in public responses (D4).
 - A **facility id**, so labs are counted as facilities. Two pseudonyms of one facility (Clogged PeakTail and Anonymous Lab are both UC Davis) must count as one. Proposal: attach it to the verified `community-claim` record.
 - TIC summary endpoint (§A.4).
@@ -233,7 +243,7 @@ Each phase ships on its own, verified and deployed without asking, except the ga
   - Republish to the same artifact URL for Brett.
 - **P1: correctness** (the one-day list): D1, D2, D3 (IPS badges off), D4 API and hovers, bugs 6, 10, 11, 12, 19, and the TIC wording (§A.4 item 1).
 - **P2: layout.** Page order, the B2 cohort key and sticky bar, B1 (standard-search only), D5, D6, D7, B5 (TIC summaries, `<details>` on phone), B6, B3.
-- **P3: schema.** B4, the facility id, optional run_name.
+- **P3: schema.** B4, the facility id, optional run_name, and the nanoLC key (`lc_model`, `lc_flow`, gradient bands; decision 12), with a Hive backfill of `lc_model` from UC Davis raws.
 - **P4: gated data work.** Each item needs Brett's go after a before/after:
   - the D4 parquet scrub;
   - D8 dedupe and `is_flagged` written to storage;
