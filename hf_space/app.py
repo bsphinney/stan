@@ -47,7 +47,14 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.2.1"
+SPACE_VERSION = "1.2.2"
+
+# Fields a submission row keeps on the server but that no public response
+# may carry (community redesign D4, decision 5). run_name is the raw file
+# name, which can hold operator initials and customer or project ids;
+# fingerprint is a hash of it. Both stay in the stored rows for de-duplication
+# and /api/update. The page shows instrument, date and SPD instead.
+PRIVATE_SUBMISSION_FIELDS = ("run_name", "fingerprint")
 
 app = FastAPI(title="STAN Community Benchmark", version=SPACE_VERSION)
 
@@ -985,10 +992,12 @@ HARD_GATES = {
 # (median_mass_acc_ms1_ppm could be 0.0 ppm on a perfectly-calibrated
 # instrument; spd=0 is "unknown" but enforced separately by the
 # hard gates).
+# run_name is optional (Space 1.2.2): no panel needs the file name, and the
+# client's STAN_STRIP_RUN_NAME opt-out sends it empty. It is stored when sent.
 V1_REQUIRED_DIA_STR = {
     "fasta_md5", "speclib_md5",
     "column_vendor", "column_model",
-    "run_date", "run_name",
+    "run_date",
     "cohort_id",
 }
 V1_REQUIRED_DIA_NUM = {
@@ -1007,7 +1016,7 @@ V1_REQUIRED_DIA_LIST = {
 V1_REQUIRED_DDA_STR = {
     "fasta_md5",
     "column_vendor", "column_model",
-    "run_date", "run_name",
+    "run_date",
     "cohort_id",
 }
 V1_REQUIRED_DDA_NUM = {
@@ -1863,7 +1872,9 @@ async def leaderboard(refresh: int = 0) -> dict:
             df = df.sort("n_precursors", descending=True, nulls_last=True)
         # TIC traces (~10MB across all rows) are fetched lazily via
         # /api/tic-overlay so the initial leaderboard load stays light.
-        slim = df.drop([c for c in ("tic_rt_bins", "tic_intensity") if c in df.columns])
+        # File names and their hash never leave the server (D4).
+        dropped = ("tic_rt_bins", "tic_intensity") + PRIVATE_SUBMISSION_FIELDS
+        slim = df.drop([c for c in dropped if c in df.columns])
         return {"submissions": slim.to_dicts(), "count": slim.height}
     except Exception:
         logger.exception("Failed to fetch leaderboard")
@@ -1892,6 +1903,16 @@ async def tic_overlay(refresh: int = 0) -> dict:
         return {"traces": [], "count": 0, "error": "Failed to fetch data"}
 
 
+def _strip_private_fields(obj: Any) -> Any:
+    """Copy of a JSON value with every PRIVATE_SUBMISSION_FIELDS key removed, at any depth."""
+    if isinstance(obj, dict):
+        return {k: _strip_private_fields(v) for k, v in obj.items()
+                if k not in PRIVATE_SUBMISSION_FIELDS}
+    if isinstance(obj, list):
+        return [_strip_private_fields(v) for v in obj]
+    return obj
+
+
 @app.get("/api/cohorts")
 async def cohorts() -> dict:
     try:
@@ -1902,7 +1923,9 @@ async def cohorts() -> dict:
             repo_type="dataset", token=HF_TOKEN,
         )
         with open(path) as f:
-            return json.load(f)
+            # The file is written by the nightly consolidation, outside this
+            # relay; strip file names here too, whatever it comes to hold.
+            return _strip_private_fields(json.load(f))
     except Exception:
         return {"cohorts": {}, "note": "No cohort data yet"}
 
@@ -2998,6 +3021,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
         .links { margin-top: 1rem; }
         .links a { color: var(--ucd-gold); text-decoration: none; margin: 0 0.75rem; font-weight: 500; }
         .links a:hover { text-decoration: underline; color: #ffe066; }
+        /* One-facility disclosure (community redesign D2, decision 8). */
+        .disclose { margin: 1rem auto 0; max-width: 900px; border: 1px solid var(--ucd-gold-border); background: rgba(255,191,0,0.07); border-radius: 10px; padding: 0.6rem 1rem; color: var(--text-primary); font-size: 0.9rem; line-height: 1.5; text-align: left; display: grid; grid-template-columns: auto minmax(0,1fr); gap: 0.6rem; align-items: start; }
+        .disclose::before { content: 'i'; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--ucd-gold); color: var(--ucd-gold); display: grid; place-items: center; font-weight: 800; font-size: 0.75rem; font-style: italic; margin-top: 1px; }
+        /* A cohort whose runs all come from one lab (D2). */
+        .tag1 { display: inline-block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 999px; border: 1px dashed var(--text-secondary); color: var(--text-secondary); white-space: nowrap; vertical-align: 1px; }
+        .ref-n { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.3rem 0.6rem; align-items: center; }
+        .ref-vals { font-size: 0.78rem; text-align: right; max-width: 65%; overflow-wrap: anywhere; }
 
         /* Stats */
         .stats-row { display: flex; gap: 1.5rem; justify-content: center; flex-wrap: wrap; margin-bottom: 2.5rem; }
@@ -3186,8 +3216,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <p class="tagline">Know your instrument. Community reference ranges for mass spectrometer QC.</p>
     <div class="ucd-badge">UC Davis Proteomics Core</div>
     <div style="margin-top:0.4rem;font-size:0.78rem;opacity:0.65">community site v__SPACE_VERSION__</div>
+    <div class="disclose"><span id="disclose-text">Today essentially every run here comes from one facility, the UC Davis Proteomics Core (timsTOF HT, Exploris 480, Fusion Lumos). The ranges below are that facility's longitudinal ranges until more labs join.</span></div>
     <div style="margin-top:1rem;padding:0.5rem 1.25rem;background:rgba(255,191,0,0.1);border:1px solid var(--ucd-gold-border);border-radius:8px;display:inline-block;font-size:0.85rem;color:var(--ucd-gold-dark)">
-        Seeded with 3,800+ longitudinal QC runs from UC Davis across timsTOF HT, Exploris 480, and Fusion Lumos.
+        <!-- Same array as the Submissions tile in the stats row (updateStats). -->
+        Seeded with <span id="banner-runs">--</span> longitudinal QC runs from UC Davis across timsTOF HT, Exploris 480, and Fusion Lumos.
         <a href="https://github.com/bsphinney/stan" style="color:var(--ucd-gold);margin-left:0.5rem">Install STAN to contribute your own.</a>
     </div>
     <div class="links">
@@ -3233,8 +3265,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="section">
     <h2>Community Reference Ranges</h2>
     <p class="description">
-        Expected performance ranges established by the community. Use the filters below to
-        find your instrument and method. Ranges update automatically as more labs contribute.
+        Longitudinal performance ranges from the runs submitted so far. Use the filters below to
+        find your instrument and method. Each card is one instrument model, acquisition mode,
+        throughput and load, and says how many runs and labs it holds; a card built from one lab's
+        runs is marked <span class="tag1">single-lab reference</span>. Below 10 runs a card lists the
+        values instead of a range. Ranges update automatically as more labs contribute.
     </p>
     <div id="ref-filters" style="margin-bottom:1rem; display:flex; flex-wrap:wrap; gap:1.5rem; align-items:flex-start;"></div>
     <div id="ref-ranges-container" class="ref-grid">
@@ -3248,9 +3283,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="section">
     <h2>Best Configurations <span id="config-leaderboard-badge" style="font-size:0.75rem; padding:0.15rem 0.5rem; border-radius:4px; background:rgba(56,189,248,0.2); color:var(--accent); margin-left:0.5rem"></span></h2>
     <p class="description">
-        Top instrument × throughput × amount-loaded combinations from community data.
-        Each row is one cohort (≥3 submissions). Click any column header to re-rank — pick
-        your priority (depth or accuracy) and read the row.
+        Top instrument × throughput × amount-loaded combinations from the submitted runs.
+        Each row is one cohort (≥3 runs); DIA and DDA are ranked in separate tables, by precursors
+        and by PSMs. Click any column header to re-rank — pick your priority (depth or accuracy)
+        and read the row. A "best" badge appears only on a row with runs from two or more labs.
     </p>
     <div class="chart-card chart-full">
         <div id="config-leaderboard" style="overflow-x:auto"></div>
@@ -3307,13 +3343,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <div id="chart-spd-depth"></div>
         </div>
     </div>
-    <div class="chart-row">
-        <div class="chart-card chart-full">
-            <h3>Identification Depth vs. IPS</h3>
-            <div class="chart-desc">Cohort-normalized depth score (IPS) vs. precursor count. IPS is a <b>depth</b> score — not an LC-health metric. Shape: ● timsTOF HT · ◆ Astral · ■ Exploris 480 · ▲ Lumos. Color = SPD. Size ∝ peptide count.</div>
-            <div id="chart-ips"></div>
-        </div>
-    </div>
     <div class="chart-row" id="row-column-compare">
         <div class="chart-card chart-full">
             <h3>Column Comparison (same instrument, SPD, and amount)</h3>
@@ -3324,14 +3353,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="chart-row">
         <div class="chart-card chart-full">
             <h3>Throughput vs. Quantitation Quality (Matthews &amp; Hayes 1976)</h3>
-            <div class="chart-desc">SPD vs. data points across peak. Below 6 points, quantitation error exceeds 1%. Shape = LC column. Color = instrument family.</div>
+            <div class="chart-desc">SPD vs. data points across peak. STAN's guideline: below 6 points quantitation error grows quickly, and 12 or more is recommended (after <a href="https://doi.org/10.1021/ac50003a028" style="color:var(--ucd-gold)">Matthews &amp; Hayes 1976</a>). Shape = LC column. Color = instrument family.</div>
             <div id="chart-points-peak"></div>
         </div>
     </div>
     <!-- ── Real LC-health metrics from the 2024 literature survey ── -->
     <div class="section-header" style="margin-top:2rem">
         <h2 style="color:var(--accent)">LC / Instrument Health (ID-free metrics)</h2>
-        <p class="section-desc">These are the metrics the 2024 proteomics QC literature (NIST MSQC, QCloud2, CPTAC, PTXQC) considers the real LC-health signals — they catch failures BEFORE identifications collapse. Unlike IPS (which is a depth rank), these don't depend on how many peptides you identified.</p>
+        <p class="section-desc">These are the metrics the 2024 proteomics QC literature (NIST MSQC, QCloud2, CPTAC, PTXQC) considers the real LC-health signals — they catch failures BEFORE identifications collapse. Unlike identification counts, these don't depend on how many peptides you identified.</p>
     </div>
     <div class="chart-row">
         <div class="chart-card">
@@ -3348,28 +3377,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
         </div>
         <div class="chart-card">
             <h3>Dynamic Range</h3>
-            <div class="chart-desc">log<sub>10</sub>(p99 / p01) of precursor intensity. Compresses when the ion source is dirty or the LC is losing pressure. <em>Populated going forward by the STAN watcher.</em></div>
+            <div class="chart-desc">log<sub>10</sub>(p99 / p01) of precursor intensity. Compresses when the ion source is dirty or the LC is losing pressure.</div>
             <div id="chart-dyn-range"></div>
         </div>
     </div>
     <div class="chart-row">
         <div class="chart-card">
             <h3>Points Across Peak</h3>
-            <div class="chart-desc">Datapoints per chromatographic peak (per <a href="https://doi.org/10.1021/ac50005a009" style="color:var(--ucd-gold)">Matthews &amp; Hayes 1976</a>). A <strong>rising trend</strong> at constant SPD signals column degradation (peaks broadening). Validated against Spectronaut (median 9 on timsTOF 100 SPD).</div>
+            <div class="chart-desc">Datapoints per chromatographic peak (after <a href="https://doi.org/10.1021/ac50003a028" style="color:var(--ucd-gold)">Matthews &amp; Hayes 1976</a>). A <strong>rising trend</strong> at constant SPD signals column degradation (peaks broadening). Validated against Spectronaut (median 9 on timsTOF 100 SPD).</div>
             <div id="chart-pts-peak"></div>
         </div>
     </div>
     <div class="chart-row">
         <div class="chart-card chart-full">
-            <h3>Instrument Health Fingerprint</h3>
-            <div class="chart-desc">Each polygon is one (instrument&nbsp;model × SPD&nbsp;tier) cohort with ≥3 DIA submissions, plotting the median across that cohort. Axes: 3 depth metrics + MS1 mass accuracy (lower&nbsp;ppm → better → outer ring). Normalization is relative to the cohort-median range, so the smallest cohort pins to the center and the largest to the edge.</div>
-            <div id="chart-radar"></div>
-        </div>
-    </div>
-    <div class="chart-row">
-        <div class="chart-card chart-full">
             <h3>Community TIC Overlay by SPD</h3>
-            <div class="chart-desc">Identified (DIA) or raw (DDA) TIC chromatograms grouped by throughput + LC system + acquisition mode. For Evosep users the gradient is standardized &mdash; shape differences reveal instrument-specific issues. Thick dashed line = community median. <strong>Always pick one acquisition mode</strong> &mdash; DIA and DDA have different cycle times and their shapes should not be averaged together. <em>First-of-its-kind cross-lab TIC comparison.</em></div>
+            <div class="chart-desc">MS1 total-ion chromatograms read from the raw file, grouped by throughput + LC system + acquisition mode. Each run is scaled to its own peak, so the chart compares shape, not signal. For Evosep users the gradient is standardized &mdash; shape differences reveal instrument-specific issues. Thick dashed line = median of the runs shown, with bands from 5 or more runs; below 5, each run is drawn on its own. A few older submissions carry an identified-ion trace instead, which starts at the first identification; those are kept out of the median. <strong>Always pick one acquisition mode</strong> &mdash; DIA and DDA have different cycle times and their shapes should not be averaged together.</div>
             <div style="margin-bottom:0.5rem;">
                 <select id="tic-spd-select" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:0.3rem;padding:0.3rem 0.6rem;font-size:0.85rem;"></select>
                 <select id="tic-lc-select" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:0.3rem;padding:0.3rem 0.6rem;font-size:0.85rem;margin-left:0.4rem;">
@@ -3416,7 +3438,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
                 <option value="n_proteins">Proteins</option>
                 <option value="median_mass_acc_ms1_ppm">MS1 mass accuracy (ppm)</option>
                 <option value="ms1_signal">MS1 signal (TIC)</option>
-                <option value="ips_score">IPS score</option>
             </select>
         </label>
         <label style="color:var(--text-muted); font-size:0.85rem">Amount:
@@ -3536,55 +3557,53 @@ INDEX_HTML = r"""<!DOCTYPE html>
                 <a href="https://www.thermofisher.com/order/catalog/product/88329" style="color:var(--ucd-gold)">Buy 5 x 20 &mu;g (88329)</a>
             </p>
         </div>
-        <div class="info-card">
+        <div class="info-card" id="ips-card">
             <h3>IPS: Instrument Performance Score (0-100)</h3>
             <p>
-                A composite score computed entirely from search output — no reference
-                run, no blanks, works from the very first QC injection.<br><br>
-                <strong>DIA:</strong>
-                <strong style="color: var(--ucd-gold)">30%</strong> precursor depth &middot;
-                <strong style="color: var(--ucd-gold)">25%</strong> spectral quality (frags/precursor) &middot;
-                <strong style="color: var(--ucd-gold)">20%</strong> sampling (pts/peak) &middot;
-                <strong style="color: var(--ucd-gold)">15%</strong> quant coverage &middot;
-                <strong style="color: var(--ucd-gold)">10%</strong> digestion<br>
-                <strong>DDA:</strong>
-                <strong style="color: var(--ucd-gold)">30%</strong> PSM depth &middot;
-                <strong style="color: var(--ucd-gold)">25%</strong> mass accuracy &middot;
-                <strong style="color: var(--ucd-gold)">20%</strong> sampling (pts/peak) &middot;
-                <strong style="color: var(--ucd-gold)">15%</strong> hyperscore &middot;
-                <strong style="color: var(--ucd-gold)">10%</strong> digestion<br><br>
-                <span class="badge badge-ips-high">90-100 Excellent</span>
-                <span class="badge" style="background:rgba(6,78,59,0.4);color:#6ee7b7;border:1px solid rgba(110,231,183,0.3)">80-89 Good</span>
-                <span class="badge badge-ips-mid">60-79 Marginal</span>
-                <span class="badge badge-ips-low">&lt;60 Investigate</span>
+                IPS places a run's identification depth against a fixed calibration set for
+                its instrument and SPD: 60 is the median calibration run and 90 its 90th
+                percentile. It weights
+                <strong style="color: var(--ucd-gold)">50%</strong> precursors (PSMs for DDA),
+                <strong style="color: var(--ucd-gold)">30%</strong> peptides and
+                <strong style="color: var(--ucd-gold)">20%</strong> proteins. The calibration
+                set is 359 UC Davis HeLa QC runs from April 2026.<br><br>
+                <strong>IPS is not shown on this page yet.</strong> A reference-lookup error
+                scores Exploris and timsTOF runs against a pooled all-instrument reference
+                instead of their own, so a typical Exploris or timsTOF run does not sit at 60:
+                Exploris scores read too low and timsTOF scores too high. Scores return here
+                once they are recomputed.
             </p>
         </div>
         <div class="info-card">
             <h3>Why This Benchmark Works</h3>
             <p>
                 Every community submission searches the exact same frozen, hash-verified
-                human UniProt FASTA and predicted spectral library. Identical upstream
-                parameters mean differences in output reflect instrument performance,
-                not search configuration.<br><br>
+                human UniProt FASTA and
+                empirical HeLa libraries, one per vendor (timsTOF ~54k, Orbitrap ~170k precursors).
+                Within a vendor, identical upstream parameters mean
+                differences in output reflect instrument performance, not search configuration;
+                across vendors the libraries differ, so compare counts within a vendor.<br><br>
                 <strong style="color: var(--ucd-gold)">Primary:</strong> Precursors (DIA) / PSMs (DDA) &mdash; purest instrument signal<br>
                 <strong style="color: var(--ucd-gold)">Secondary:</strong> Peptides &mdash; slight sensitivity to search settings<br>
-                <strong style="color: var(--ucd-gold)">Context:</strong> Proteins &mdash; shown for reference, not used for ranking (still affected by inference algorithm)<br>
-                <strong style="color: var(--ucd-gold)">Health:</strong> IPS, missed cleavages, charge distribution
+                <strong style="color: var(--ucd-gold)">Context:</strong> Proteins &mdash; context only; not used for leaderboards; 20% of IPS<br>
+                <strong style="color: var(--ucd-gold)">Health:</strong> the ID-free charts above: MS1 mass accuracy, MS1 signal, dynamic range and points across peak
             </p>
         </div>
         <div class="info-card">
             <h3>Points Across Peak</h3>
             <p>
-                The number of MS2 scans sampling each precursor's elution profile directly
-                determines quantitation accuracy
-                (<a href="https://doi.org/10.1021/ac50012a005" style="color:var(--ucd-gold)">Matthews &amp; Hayes, 1976</a>).<br><br>
+                The number of MS2 scans sampling each precursor's elution profile limits how
+                accurately it can be quantified. STAN's guidelines:<br><br>
                 <span style="color:var(--green)">12+ points:</span> reliable quantitation<br>
-                <span style="color:var(--yellow)">6-12 points:</span> minimum for acceptable accuracy (depends on peak shape)<br>
-                <span style="color:var(--red)">&lt;6 points:</span> systematic quantitation error increases rapidly<br><br>
+                <span style="color:var(--yellow)">6-12 points:</span> acceptable, depending on peak shape<br>
+                <span style="color:var(--red)">&lt;6 points:</span> quantitation error grows quickly<br><br>
                 At high SPD with short columns, cycle time can exceed peak width.
                 These are guidelines — actual error depends on peak symmetry and
                 integration method. Track this metric to find the throughput limit
-                for your setup.
+                for your setup.<br><br>
+                Background: Matthews &amp; Hayes, <i>Anal. Chem.</i> 1976, 48, 1375&ndash;1382,
+                on how few sampling points bias GC-MS ratio measurements
+                (<a href="https://doi.org/10.1021/ac50003a028" style="color:var(--ucd-gold)">doi:10.1021/ac50003a028</a>).
             </p>
         </div>
     </div>
@@ -3626,7 +3645,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <div class="footer">
     <p>STAN Community Benchmark &mdash; <a href="https://github.com/bsphinney/stan">open source</a>, built at the <a href="https://proteomics.ucdavis.edu">UC Davis Proteomics Core</a></p>
-    <p style="margin-top: 0.25rem;">Data: <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a> &middot; Code: <a href="https://opensource.org/licenses/MIT">MIT</a> &middot; Raw files are never uploaded &middot; Anonymous by default &middot; Emails are NEVER stored (only one-way hashes for verification)</p>
+    <p style="margin-top: 0.25rem;">Data: <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a> &middot; Code: <a href="https://github.com/bsphinney/stan/blob/main/LICENSE">STAN Academic License</a> (free for academic and non-profit use; commercial use by written permission) &middot; Raw files are never uploaded &middot; Anonymous by default &middot; Emails are NEVER stored (only one-way hashes for verification)</p>
 </div>
 
 <script id="stan-esc">
@@ -3664,11 +3683,40 @@ const FC = {
 };
 function fc(f) { return FC[f] || '#6b82a0'; }
 
+// ── Shared cohort helpers (community redesign P1) ──────────────────
+// DIA and DDA are separate benchmark tracks: they never share a cohort, a
+// median or a ranking, and each cohort's primary metric follows its own
+// track (D1).
+function trackOf(s) { return (s.acquisition_mode || '').toLowerCase().includes('dda') ? 'DDA' : 'DIA'; }
+function primaryOf(s) { return trackOf(s) === 'DDA' ? (s.n_psms || 0) : (s.n_precursors || 0); }
+// Labs are counted by pseudonym until submissions carry a facility id; the
+// header disclosure says that today nearly every run is one facility's (D2).
+function labCount(rows) { return new Set(rows.map(s => s.display_name).filter(Boolean)).size; }
+function runsLabsText(nRuns, nLabs) {
+    return `${nRuns.toLocaleString()} run${nRuns === 1 ? '' : 's'} · ${nLabs} lab${nLabs === 1 ? '' : 's'}`;
+}
+function singleLabTag(nLabs) { return nLabs < 2 ? '<span class="tag1">single-lab reference</span>' : ''; }
+// 1st 2nd 3rd 4th ... 11th 12th 13th ... 21st 22nd 23rd (bug 12).
+function ordinal(n) {
+    const v = n % 100;
+    if (v >= 11 && v <= 13) return n + 'th';
+    return n + ({ 1: 'st', 2: 'nd', 3: 'rd' }[n % 10] || 'th');
+}
+// Plotly.newPlot keeps any other children of its div, so an empty-state box
+// written by an earlier render stayed on screen under the next plot (bug 10).
+// Every renderer that can write one clears its div first.
+function _resetChart(el) {
+    if (!el) return;
+    try { if (window.Plotly && Plotly.purge) Plotly.purge(el); } catch (e) {}
+    el.innerHTML = '';
+}
+
 let allDataRaw = [];  // unfiltered — includes flagged/failed runs
 let allData = [];     // filtered — what charts and stats use
 let currentTab = 'dia';
 let hideFailed = true; // default: exclude flagged runs from charts + averages
 let currentSampleType = 'hela'; // default: show HeLa only
+let ticLoaded = false;  // /api/tic-overlay answered (or failed); until then the TIC chart says "Loading"
 
 function applyFilters() {
     let data = allDataRaw;
@@ -3795,7 +3843,8 @@ async function loadData() {
     // Lazy-load heavy TIC traces AFTER the initial render, then merge into
     // allDataRaw by submission_id and re-render the community TIC overlay.
     fetch('/api/tic-overlay').then(r => r.ok ? r.json() : null).then(t => {
-        if (!t || !t.traces) return;
+        ticLoaded = true;
+        if (!t || !t.traces) { try { renderCommunityTIC(); } catch (e) {} return; }
         const byId = {};
         t.traces.forEach(x => { byId[x.submission_id] = x; });
         allDataRaw.forEach(s => {
@@ -3804,11 +3853,18 @@ async function loadData() {
         });
         applyFilters();
         try { renderCommunityTIC(); } catch(e) { console.error('[tic-overlay merge]', e); }
-    }).catch(e => console.error('[tic-overlay fetch]', e));
+    }).catch(e => {
+        ticLoaded = true;
+        console.error('[tic-overlay fetch]', e);
+        try { renderCommunityTIC(); } catch (e2) {}
+    });
 }
 
 function updateStats() {
-    document.getElementById('stat-submissions').textContent = allData.length;
+    // The header banner and the Submissions tile count the same array (D2).
+    document.getElementById('stat-submissions').textContent = allData.length.toLocaleString();
+    const bannerRuns = document.getElementById('banner-runs');
+    if (bannerRuns) bannerRuns.textContent = allData.length.toLocaleString();
     document.getElementById('stat-labs').textContent = new Set(allData.map(s=>s.display_name)).size;
     document.getElementById('stat-instruments').textContent = new Set(allData.map(s=>s.instrument_model)).size;
     const nFailed = allDataRaw.filter(s => s.is_flagged).length;
@@ -3848,7 +3904,7 @@ let refFilters = { families: new Set(), modes: new Set() };
 
 function buildRefFilters() {
     const families = [...new Set(allData.map(s=>s.instrument_family))].sort();
-    const modes = [...new Set(allData.map(s=>s.acquisition_mode.toLowerCase().includes('dia')?'DIA':'DDA'))].sort();
+    const modes = [...new Set(allData.map(trackOf))].sort();
 
     // Initialize: all selected
     if (refFilters.families.size === 0) families.forEach(f => refFilters.families.add(f));
@@ -3895,7 +3951,21 @@ function readableCohort(bid) {
     const fam = parts[0] || '';
     const spd = SPD_LABELS[parts[1]] || parts[1] || '';
     const amt = AMOUNT_LABELS[parts[2]] || parts[2] || '';
-    return `${fam} · ${spd} · ${amt}`;
+    const track = parts[3] ? ` · ${parts[3]}` : '';  // DIA / DDA, from cohortKey()
+    return `${fam} · ${spd} · ${amt}${track}`;
+}
+
+// Cohort key of the reference cards and the column comparison:
+// model_spd_amount_track. cohort_id is built from instrument_family
+// ("timsTOF"), so the model is substituted to keep timsTOF HT / Pro 2 / Pro /
+// SCP / Ultra apart (falls back to family for legacy rows without a model).
+// The track keeps DIA and DDA runs out of each other's cohorts: without it,
+// DDA rows sat in DIA cohorts with 0 precursors and cards read "0 - 37,360" (D1).
+function cohortKey(s) {
+    const parts = (s.cohort_id || '').split('_');
+    const tail = parts.slice(1, 3).join('_');  // spd_amount
+    const model = (s.instrument_model || s.instrument_family || 'Unknown').trim();
+    return `${model}_${tail}_${trackOf(s)}`;
 }
 
 function renderRefRanges() {
@@ -3903,24 +3973,14 @@ function renderRefRanges() {
 
     // Filter data by selected filters
     const filtered = allData.filter(s => {
-        const mode = s.acquisition_mode.toLowerCase().includes('dia') ? 'DIA' : 'DDA';
+        const mode = trackOf(s);
         return refFilters.families.has(s.instrument_family) && refFilters.modes.has(mode);
     });
 
     // Hierarchical cohorts: column-specific when available, broad fallback
     const MIN_FOR_COLUMN = 3;
 
-    function broadId(s) {
-        // Reference cards must split timsTOF HT / Pro 2 / Pro / SCP / Ultra
-        // — they're meaningfully different instruments. cohort_id was
-        // built from instrument_family ("timsTOF") so we substitute the
-        // model here. Falls back to family when instrument_model is
-        // empty (legacy submissions).
-        const parts = (s.cohort_id || '').split('_');
-        const tail = parts.slice(1, 3).join('_');  // spd_amount
-        const model = (s.instrument_model || s.instrument_family || 'Unknown').trim();
-        return `${model}_${tail}`;
-    }
+    const broadId = cohortKey;  // model_spd_amount_track, shared with renderColumnComparison
     function colKey(s) {
         return (s.column_model || '').trim().toLowerCase() || '';
     }
@@ -3943,13 +4003,24 @@ function renderRefRanges() {
         const s = arr.slice().sort((a,b)=>a-b);
         return s[Math.floor(s.length/2)] || 0;
     }
+    // Below 10 runs a quartile is one of a handful of values, so the card
+    // lists them all rather than print a range such as "41,555 - 41,555" (D2).
+    const MIN_FOR_IQR = 10;
+    function spread(arr) {
+        if (arr.length >= MIN_FOR_IQR) return iqr(arr);
+        return arr.slice().sort((a,b)=>a-b).map(v => (v || 0).toLocaleString()).join(' · ');
+    }
     function refCardHtml(title, subtitle, subs, highlight) {
-        const isDIA = subs[0].acquisition_mode.toLowerCase().includes('dia');
+        // Every run in a cohort shares one track (cohortKey), so the first
+        // row's track is the cohort's.
+        const isDIA = trackOf(subs[0]) === 'DIA';
         const primary = isDIA ? subs.map(s=>s.n_precursors) : subs.map(s=>s.n_psms);
         const peps = subs.map(s=>s.n_peptides);
         const prots = subs.map(s=>s.n_proteins);
-        const ips = subs.map(s=>s.ips_score);
         const pts = subs.map(s=>s.median_points_across_peak||0).filter(v=>v>0);
+        const nLabs = labCount(subs);
+        const few = subs.length < MIN_FOR_IQR;
+        const how = few ? 'values' : 'IQR';
 
         // Build readable description from actual submission data
         const amounts = [...new Set(subs.map(s=>s.amount_ng||50))];
@@ -3959,13 +4030,14 @@ function renderRefRanges() {
         const mode = isDIA ? 'DIA' : 'DDA';
 
         let h = `<div class="ref-card" style="${highlight?'border-color:var(--ucd-gold-border);':''}">`;
-        h += `<h4>${title} <span style="color:var(--text-muted);font-weight:400">(n=${subs.length})</span></h4>`;
-        h += `<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.5rem">${mode} &middot; ${spdStr} &middot; ${amtStr}</div>`;
-        if (subtitle) h += `<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem">${subtitle}</div>`;
-        h += `<div class="ref-row"><span class="ref-metric">${isDIA?'Precursors':'PSMs'} (IQR)</span><span class="ref-range">${iqr(primary)}</span></div>`;
-        h += `<div class="ref-row"><span class="ref-metric">Peptides (IQR)</span><span class="ref-range">${iqr(peps)}</span></div>`;
-        h += `<div class="ref-row"><span class="ref-metric">Proteins (IQR)</span><span class="ref-range">${iqr(prots)}</span></div>`;
-        h += `<div class="ref-row"><span class="ref-metric">IPS median</span><span class="ref-range">${med(ips)}</span></div>`;
+        h += `<h4>${esc(title)}</h4>`;
+        h += `<div class="ref-n"><span><b>${runsLabsText(subs.length, nLabs)}</b></span>${singleLabTag(nLabs)}</div>`;
+        h += `<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.5rem">${mode} &middot; ${esc(spdStr)} &middot; ${esc(amtStr)}</div>`;
+        if (subtitle) h += `<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem">${esc(subtitle)}</div>`;
+        const valCls = few ? 'ref-range ref-vals' : 'ref-range';
+        h += `<div class="ref-row"><span class="ref-metric">${isDIA?'Precursors':'PSMs'} (${how})</span><span class="${valCls}">${spread(primary)}</span></div>`;
+        h += `<div class="ref-row"><span class="ref-metric">Peptides (${how})</span><span class="${valCls}">${spread(peps)}</span></div>`;
+        h += `<div class="ref-row"><span class="ref-metric">Proteins (${how})</span><span class="${valCls}">${spread(prots)}</span></div>`;
         if (pts.length > 0) {
             h += `<div class="ref-row"><span class="ref-metric">Points/peak median</span><span class="ref-range">${med(pts).toFixed(1)}</span></div>`;
         }
@@ -4037,14 +4109,12 @@ function renderCharts() {
         ['amount-depth',   renderAmountDepth],
         ['violin',         renderViolin],
         ['spd-depth',      renderSpdDepth],
-        ['grs',            renderGrs],
         ['mass-acc',       renderMassAccuracy],
         ['ms1-signal',     renderMs1Signal],
         ['dyn-range',      renderDynamicRange],
         ['pts-peak',       renderPtsPerPeak],
         ['column-compare', renderColumnComparison],
         ['points-peak',    renderPointsAcrossPeak],
-        ['radar',          renderRadar],
         ['community-tic',  renderCommunityTIC],
         ['lab-trend',       renderLabVsCommunity],
     ];
@@ -4062,6 +4132,7 @@ function _lcScatterByFamily(divId, field, yTitle, transform, layoutOverrides) {
     // Generic helper: scatter of submitted_at vs `field`, colored by family.
     const el = document.getElementById(divId);
     if (!el) return;
+    _resetChart(el);
     // Drop only null/undefined — 0 is a legitimate measurement for
     // some metrics (median_mass_acc_ms1_ppm = 0.0 ppm = perfectly
     // calibrated). For metrics where 0 means "failed run" the
@@ -4083,7 +4154,8 @@ function _lcScatterByFamily(divId, field, yTitle, transform, layoutOverrides) {
             x: sub.map(s => runDate(s).toISOString().slice(0,10)),
             y: sub.map(s => transform ? transform(s[field]) : s[field]),
             marker: { color: fc(fam), size: 7, opacity: 0.8, line: {color:'#fff',width:0.3} },
-            text: sub.map(s => `${s.instrument_model}<br>${s.run_name || ''}<br>${s.spd||'?'} SPD`),
+            // Instrument, date and SPD: file names never reach the page (D4).
+            text: sub.map(s => `${esc(s.instrument_model)}<br>${runDay(s)}<br>${s.spd||'?'} SPD`),
             hovertemplate: `%{text}<br>${yTitle}: %{y:.2f}<extra></extra>`,
         };
     });
@@ -4139,151 +4211,210 @@ function inferLcSystem(s) {
     return 'custom';
 }
 
+// The traces are the raw MS1 total-ion chromatogram, read from the raw file
+// by STAN's pipeline (extract_tic_bruker / extract_tic_thermo). A few older
+// submissions carry an identified-ion trace instead, which starts at the first
+// identification: its first bin begins minutes into the run, where a raw trace
+// begins within seconds. Those never feed the median (spec §A.4 item 1).
+const TIC_IDION_START_MIN = 0.1;
+// Percentile bands from fewer runs than this are noise, so below it every run
+// is drawn on its own instead (bug 11).
+const TIC_MIN_FOR_BANDS = 5;
+
+// A row's TIC parsed once and kept on the row: {rt, y, idion}, or null.
+function ticOf(s) {
+    if (s._tic !== undefined) return s._tic;
+    let out = null;
+    try {
+        const rt = typeof s.tic_rt_bins === 'string' ? JSON.parse(s.tic_rt_bins) : s.tic_rt_bins;
+        const y = typeof s.tic_intensity === 'string' ? JSON.parse(s.tic_intensity) : s.tic_intensity;
+        if (Array.isArray(rt) && Array.isArray(y) && rt.length >= 2 && rt.length === y.length) {
+            const start = rt[0] - (rt[1] - rt[0]) / 2;
+            out = { rt, y, idion: start > TIC_IDION_START_MIN };
+        }
+    } catch (e) { out = null; }
+    s._tic = out;
+    return out;
+}
+
 function renderCommunityTIC() {
     const el = document.getElementById('chart-community-tic');
     const sel = document.getElementById('tic-spd-select');
     const lcSel = document.getElementById('tic-lc-select');
     const modeSel = document.getElementById('tic-mode-select');
+    const allCb = document.getElementById('tic-show-all');
     const countEl = document.getElementById('tic-count');
     if (!el || !sel) return;
+    if (!sel.onchange) sel.onchange = () => renderCommunityTIC();
+    if (lcSel && !lcSel.onchange) lcSel.onchange = () => renderCommunityTIC();
+    if (modeSel && !modeSel.onchange) modeSel.onchange = () => renderCommunityTIC();
 
-    // Group submissions by SPD that have TIC data
+    const say = (msg) => {
+        _resetChart(el);
+        el.innerHTML = `<p style="color:var(--text-muted)">${msg}</p>`;
+        if (countEl) countEl.innerHTML = '';
+    };
+    const clearMenu = () => { sel.innerHTML = '<option>none</option>'; sel.dataset.opts = ''; sel.disabled = true; };
+    const setControls = (on) => { [sel, lcSel, allCb].forEach(c => { if (c) c.disabled = !on; }); };
+
     const withTIC = allData.filter(s => s.tic_rt_bins && s.tic_intensity);
     if (withTIC.length === 0) {
-        el.innerHTML = '<p style="color:var(--muted)">No TIC data available yet. Run STAN v0.2.40+ to submit TIC traces.</p>';
+        say(ticLoaded ? 'No TIC traces for this QC standard yet.' : 'Loading TIC traces…');
         return;
     }
 
-    // Apply LC system filter before computing SPD options so the dropdown
-    // only lists SPDs that actually have matching traces for that LC.
-    const lcFilter = (lcSel && lcSel.value) || 'all';
-    const lcOf = (s) => s.lc_system || inferLcSystem(s);
-    let lcFiltered = lcFilter === 'all'
-        ? withTIC
-        : withTIC.filter(s => lcOf(s) === lcFilter);
-
-    // Apply DIA/DDA acquisition-mode filter. DIA and DDA have very
-    // different scan rates and cycle times, so mixing them in a single
-    // community median produces meaningless shapes. Default to DIA.
+    // DIA and DDA have very different scan rates and cycle times, so mixing
+    // them in one median produces meaningless shapes. Default to DIA.
     const modeFilter = (modeSel && modeSel.value) || 'dia';
     const modeOf = (s) => (s.acquisition_mode || '').toLowerCase();
-    if (modeFilter !== 'all') {
-        lcFiltered = lcFiltered.filter(s => modeOf(s).includes(modeFilter));
+    const modeRows = modeFilter === 'all' ? withTIC : withTIC.filter(s => modeOf(s).includes(modeFilter));
+    if (!modeRows.length) {
+        // Nothing to choose (today: DDA), so the other controls are off and
+        // the message is said once.
+        clearMenu();
+        setControls(false);
+        if (allCb) allCb.checked = false;
+        const anyDda = allDataRaw.some(s => s.tic_rt_bins && modeOf(s).includes('dda'));
+        say(modeFilter === 'dda'
+            ? (anyDda ? 'No DDA TIC traces for this QC standard yet.' : 'No DDA TIC traces have been submitted yet.')
+            : 'No TIC traces for this acquisition mode yet.');
+        return;
     }
+    setControls(true);
 
-    // Get unique SPDs (from the LC-filtered set)
-    const spds = [...new Set(lcFiltered.map(s => s.spd || 0))].filter(s => s > 0).sort((a,b) => a-b);
-    if (spds.length === 0) {
-        el.innerHTML = '<p style="color:var(--muted)">No TIC traces for this LC system.</p>';
-        if (countEl) countEl.textContent = '';
+    // LC filter before the SPD menu, so the menu lists only SPDs that have
+    // traces for that LC.
+    const lcFilter = (lcSel && lcSel.value) || 'all';
+    const lcOf = (s) => s.lc_system || inferLcSystem(s);
+    const lcRows = lcFilter === 'all' ? modeRows : modeRows.filter(s => lcOf(s) === lcFilter);
+
+    // Per SPD: rows with a raw MS1 trace, and rows with an identified-ion trace.
+    const bySpd = new Map();
+    lcRows.forEach(s => {
+        const spd = s.spd || 0;
+        const t = spd > 0 ? ticOf(s) : null;
+        if (!t) return;
+        if (!bySpd.has(spd)) bySpd.set(spd, { raw: [], idt: [] });
+        bySpd.get(spd)[t.idion ? 'idt' : 'raw'].push(s);
+    });
+    const spds = [...bySpd.keys()].sort((a, b) => a - b);
+    if (!spds.length) {
+        clearMenu();
+        say('No TIC traces for this LC system.');
         return;
     }
 
-    // Repopulate SPD dropdown whenever the set of available SPDs changes
-    // (e.g. after switching LC filter). Preserve selection if still valid.
-    const prevSPD = sel.value;
-    const newOpts = spds.map(spd => {
-        const n = lcFiltered.filter(s => s.spd === spd).length;
-        return spd + '|' + n;
-    }).join(',');
-    if (sel.dataset.opts !== newOpts) {
-        sel.innerHTML = '';
-        spds.forEach(spd => {
-            const n = lcFiltered.filter(s => s.spd === spd).length;
-            const opt = document.createElement('option');
-            opt.value = spd;
-            opt.textContent = spd + ' SPD (' + n + ' runs)';
-            sel.appendChild(opt);
-        });
-        sel.dataset.opts = newOpts;
-        if (prevSPD && spds.includes(parseInt(prevSPD))) sel.value = prevSPD;
-        sel.onchange = () => renderCommunityTIC();
-    }
-    if (lcSel && !lcSel.onchange) {
-        lcSel.onchange = () => renderCommunityTIC();
-    }
-    if (modeSel && !modeSel.onchange) {
-        modeSel.onchange = () => renderCommunityTIC();
-    }
-
-    const selectedSPD = parseInt(sel.value) || spds[0];
-    const traces = lcFiltered.filter(s => s.spd === selectedSPD);
-    const lcLabel = lcFilter === 'evosep' ? ', Evosep'
-                  : lcFilter === 'custom' ? ', Custom LC'
-                  : '';
-    const modeLabel = modeFilter === 'dia' ? ', DIA'
-                    : modeFilter === 'dda' ? ', DDA'
-                    : ', DIA+DDA';
-    countEl.textContent = traces.length + ' traces (' + selectedSPD + ' SPD'
-                        + lcLabel + modeLabel + ')';
-
-    // Parse TIC JSON
-    const parsed = traces.map(s => {
-        try {
-            const rt = typeof s.tic_rt_bins === 'string' ? JSON.parse(s.tic_rt_bins) : s.tic_rt_bins;
-            const int_ = typeof s.tic_intensity === 'string' ? JSON.parse(s.tic_intensity) : s.tic_intensity;
-            return { rt, intensity: int_, name: s.display_name || 'Anonymous' };
-        } catch(e) { return null; }
-    }).filter(Boolean);
-
-    if (parsed.length === 0) {
-        el.innerHTML = '<p style="color:var(--muted)">Could not parse TIC data.</p>';
-        return;
-    }
-
-    // Median + shaded percentile bands instead of a 600+ trace hairball.
-    // The median shape + IQR/10-90 spread carry the real signal and read
-    // cleanly at any size. Raw traces are available via the "show all" toggle.
-    const nBins = parsed[0].rt.length;
-    const rtAxis = parsed[0].rt;
-    const norms = parsed
-        .filter(t => t.intensity.length === nBins)
-        .map(t => { const mx = Math.max(...t.intensity); return mx > 0 ? t.intensity.map(v => v / mx) : t.intensity; });
-
-    const pct = (sorted, q) => {
-        if (!sorted.length) return 0;
-        const idx = Math.min(sorted.length - 1, Math.max(0, Math.round((q / 100) * (sorted.length - 1))));
-        return sorted[idx];
+    const optLabel = (spd) => {
+        const g = bySpd.get(spd), n = g.raw.length;
+        if (!n) return `${spd} SPD (${g.idt.length} identified-ion only)`;
+        let label = `${spd} SPD (${n} run${n === 1 ? '' : 's'}`;
+        if (g.idt.length) label += ` + ${g.idt.length} identified-ion`;
+        if (n < TIC_MIN_FOR_BANDS) label += ', no bands';
+        return label + ')';
     };
-    const p10 = [], p25 = [], p50 = [], p75 = [], p90 = [];
-    for (let j = 0; j < nBins; j++) {
-        const col = norms.map(n => n[j] || 0).sort((a, b) => a - b);
-        p10.push(pct(col, 10)); p25.push(pct(col, 25)); p50.push(pct(col, 50));
-        p75.push(pct(col, 75)); p90.push(pct(col, 90));
+    // Opens on the SPD with the most runs, not on the lowest SPD (bug 11).
+    const biggest = spds.slice().sort((a, b) =>
+        (bySpd.get(b).raw.length - bySpd.get(a).raw.length)
+        || (bySpd.get(b).idt.length - bySpd.get(a).idt.length) || (a - b))[0];
+    const newOpts = spds.map(spd => `${spd}|${bySpd.get(spd).raw.length}|${bySpd.get(spd).idt.length}`).join(',');
+    if (sel.dataset.opts !== newOpts) {
+        // Keep the reader's SPD when it survives a filter change.
+        const prev = parseInt(sel.value);
+        sel.innerHTML = spds.map(spd => `<option value="${spd}">${esc(optLabel(spd))}</option>`).join('');
+        sel.dataset.opts = newOpts;
+        sel.value = String(spds.includes(prev) ? prev : biggest);
     }
+    sel.disabled = false;
+    const selectedSPD = spds.includes(parseInt(sel.value)) ? parseInt(sel.value) : biggest;
 
-    const band = (y, fill, fillcolor, name) => ({
-        x: rtAxis, y, type: 'scatter', mode: 'lines',
-        line: { width: 0, color: 'rgba(0,0,0,0)' },
-        fill: fill || undefined, fillcolor,
-        name: name || '', showlegend: !!name, hoverinfo: 'skip',
-    });
+    const g = bySpd.get(selectedSPD);
+    const withModel = (rows) => rows.map(s => ({ ...ticOf(s), model: s.instrument_model || s.instrument_family || 'Unknown' }));
+    const raw = withModel(g.raw), idt = withModel(g.idt);
+    const nLabs = labCount(g.raw.length ? g.raw : g.idt);
+    const labsTxt = `${nLabs} lab${nLabs === 1 ? '' : 's'}`;
 
+    // Bands need TIC_MIN_FOR_BANDS raw traces on one bin count.
+    const lenCount = {};
+    raw.forEach(t => { lenCount[t.y.length] = (lenCount[t.y.length] || 0) + 1; });
+    const nBins = raw.length ? +Object.keys(lenCount).sort((a, b) => lenCount[b] - lenCount[a])[0] : 0;
+    const same = raw.filter(t => t.y.length === nBins);
+    const bands = same.length >= TIC_MIN_FOR_BANDS;
+
+    const lcLabel = lcFilter === 'evosep' ? ', Evosep' : lcFilter === 'custom' ? ', Custom LC' : '';
+    const modeLabel = modeFilter === 'dia' ? ', DIA' : modeFilter === 'dda' ? ', DDA' : ', DIA+DDA';
+    let head;
+    if (bands) head = `<b>${runsLabsText(raw.length, nLabs)}</b>`;
+    else if (raw.length >= TIC_MIN_FOR_BANDS) head = `<b>${runsLabsText(raw.length, nLabs)}</b>, each drawn on its own (trace lengths differ, no bands)`;
+    else if (raw.length) head = `<b>${raw.length === 1 ? 'the one run' : `each of ${raw.length} runs`} (too few for a median) · ${labsTxt}</b>`;
+    else head = `<b>${idt.length} identified-ion trace${idt.length === 1 ? '' : 's'} only · ${labsTxt}</b>`;
+    const kept = raw.length && idt.length ? ` · ${idt.length} identified-ion trace${idt.length === 1 ? '' : 's'} kept out of the median` : '';
+    if (countEl) countEl.innerHTML = `${head} ${singleLabTag(nLabs)} (${selectedSPD} SPD${lcLabel}${modeLabel})${kept}`;
+
+    const norm = (y) => { const mx = Math.max(...y); return mx > 0 ? y.map(v => v / mx) : y; };
+    const seen = new Set();
+    const first = (k) => { if (seen.has(k)) return false; seen.add(k); return true; };
     const plotTraces = [];
-    const showAll = !!(document.getElementById('tic-show-all') || {}).checked;
-    if (showAll) {
-        const colors = ['rgba(100,180,255,0.12)', 'rgba(100,255,180,0.12)', 'rgba(255,180,100,0.12)', 'rgba(180,100,255,0.12)'];
-        parsed.forEach((t, i) => {
-            const mx = Math.max(...t.intensity);
-            const norm = mx > 0 ? t.intensity.map(v => v / mx) : t.intensity;
-            plotTraces.push({ x: t.rt, y: norm, type: 'scatter', mode: 'lines',
-                line: { width: 0.7, color: colors[i % colors.length] },
-                name: t.name, showlegend: false, hoverinfo: 'skip' });
-        });
-    }
-    // Order matters for 'tonexty' fills: each lower edge is pushed immediately
-    // before its upper edge so the fill anchors to the correct band floor.
-    plotTraces.push(band(p10, null, 'rgba(255,107,53,0)'));
-    plotTraces.push(band(p90, 'tonexty', 'rgba(255,107,53,0.12)', '10\u201390th pct'));
-    plotTraces.push(band(p25, null, 'rgba(255,107,53,0)'));
-    plotTraces.push(band(p75, 'tonexty', 'rgba(255,107,53,0.28)', '25\u201375th pct (IQR)'));
-    plotTraces.push({
-        x: rtAxis, y: p50, type: 'scatter', mode: 'lines',
-        line: { width: 3, color: '#ff6b35', dash: 'dash' },
-        name: 'Community median (' + norms.length + ' runs)', showlegend: true, hoverinfo: 'skip',
-    });
 
-    el.innerHTML = '';  // clear any stale 'No TIC data' message before plotting
+    if (bands) {
+        // Median + shaded percentile bands instead of a 600+ trace hairball.
+        // Raw traces are available via the "show all" toggle.
+        const rtAxis = same[0].rt;
+        const norms = same.map(t => norm(t.y));
+        const pct = (sorted, q) => {
+            if (!sorted.length) return 0;
+            const idx = Math.min(sorted.length - 1, Math.max(0, Math.round((q / 100) * (sorted.length - 1))));
+            return sorted[idx];
+        };
+        const p10 = [], p25 = [], p50 = [], p75 = [], p90 = [];
+        for (let j = 0; j < nBins; j++) {
+            const col = norms.map(n => n[j] || 0).sort((a, b) => a - b);
+            p10.push(pct(col, 10)); p25.push(pct(col, 25)); p50.push(pct(col, 50));
+            p75.push(pct(col, 75)); p90.push(pct(col, 90));
+        }
+        const band = (y, fill, fillcolor, name) => ({
+            x: rtAxis, y, type: 'scatter', mode: 'lines',
+            line: { width: 0, color: 'rgba(0,0,0,0)' },
+            fill: fill || undefined, fillcolor,
+            name: name || '', showlegend: !!name, hoverinfo: 'skip',
+        });
+        if (allCb && allCb.checked) {
+            const colors = ['rgba(100,180,255,0.12)', 'rgba(100,255,180,0.12)', 'rgba(255,180,100,0.12)', 'rgba(180,100,255,0.12)'];
+            raw.forEach((t, i) => {
+                plotTraces.push({ x: t.rt, y: norm(t.y), type: 'scatter', mode: 'lines',
+                    line: { width: 0.7, color: colors[i % colors.length] },
+                    name: t.model, showlegend: false, hoverinfo: 'skip' });
+            });
+        }
+        // Order matters for 'tonexty' fills: each lower edge is pushed immediately
+        // before its upper edge so the fill anchors to the correct band floor.
+        plotTraces.push(band(p10, null, 'rgba(255,107,53,0)'));
+        plotTraces.push(band(p90, 'tonexty', 'rgba(255,107,53,0.12)', '10–90th pct'));
+        plotTraces.push(band(p25, null, 'rgba(255,107,53,0)'));
+        plotTraces.push(band(p75, 'tonexty', 'rgba(255,107,53,0.28)', '25–75th pct (IQR)'));
+        plotTraces.push({
+            x: rtAxis, y: p50, type: 'scatter', mode: 'lines',
+            line: { width: 3, color: '#ff6b35', dash: 'dash' },
+            name: `Median (${runsLabsText(norms.length, nLabs)})`, showlegend: true, hoverinfo: 'skip',
+        });
+    } else {
+        // Too few for a median: each run on its own time axis, by instrument.
+        raw.forEach(t => plotTraces.push({
+            x: t.rt, y: norm(t.y), type: 'scatter', mode: 'lines',
+            line: { width: 1.6, color: fc(t.model) },
+            name: t.model, legendgroup: 'raw ' + t.model, showlegend: first('raw ' + t.model),
+            hovertemplate: `${esc(t.model)}<br>%{x:.1f} min · %{y:.2f}<extra></extra>`,
+        }));
+    }
+    // Identified-ion traces: their own series, hidden behind a legend entry
+    // when raw traces exist, drawn when they are all there is.
+    idt.forEach(t => plotTraces.push({
+        x: t.rt, y: norm(t.y), type: 'scatter', mode: 'lines',
+        line: { width: raw.length ? 1 : 1.6, color: raw.length ? 'rgba(203,213,225,0.8)' : fc(t.model), dash: 'dot' },
+        name: `Identified-ion traces (${idt.length})`, legendgroup: 'idion', showlegend: first('idion'),
+        visible: raw.length ? 'legendonly' : true, hoverinfo: 'skip',
+    }));
+
+    _resetChart(el);
     Plotly.newPlot(el, plotTraces, {
         xaxis: { title: 'Retention Time (min)', color: '#94a3b8', gridcolor: '#1e293b' },
         yaxis: { title: 'Normalized Signal', color: '#94a3b8', gridcolor: '#1e293b', range: [0, 1.05] },
@@ -4302,6 +4433,9 @@ function renderCommunityTIC() {
 function renderLabVsCommunity() {
     const el = document.getElementById('chart-lab-trend');
     if (!el) return;
+    // Clear whatever the last render left, including a "Not enough community
+    // data" box that used to stay under the next plot (bug 10).
+    _resetChart(el);
 
     // Amount filter
     const amtFilter = (document.getElementById('lab-amount') || {}).value || 'all';
@@ -4386,8 +4520,9 @@ function renderLabVsCommunity() {
         return '#5cb8ff';
     });
 
-    const hoverText = withDate.map(({ s, d }) =>
-        `${s.run_name || ''}<br>${d.toISOString().slice(0,10)}<br>${metricKey}: ${typeof s[metricKey] === 'number' ? s[metricKey].toLocaleString() : s[metricKey]}<br>${s.spd||'?'} SPD`
+    // Instrument, date and SPD: file names never reach the page (D4).
+    const hoverText = withDate.map(({ s }) =>
+        `${esc(s.instrument_model)}<br>${runDay(s)}<br>${metricKey}: ${typeof s[metricKey] === 'number' ? s[metricKey].toLocaleString() : s[metricKey]}<br>${s.spd||'?'} SPD`
     );
 
     // Community reference bands as filled areas
@@ -4432,77 +4567,28 @@ function renderLabVsCommunity() {
         legend: { font: { color: '#a0b4cc', size: 10 }, orientation: 'h', y: -0.18, yanchor: 'top' },
         annotations: [{
             x: 0.01, y: 0.98, xref: 'paper', yref: 'paper', showarrow: false, align: 'left',
-            text: `Your lab: n=${labWithMetric.length} &nbsp;·&nbsp; Community ${family}: n=${communityVals.length}, mean=${Math.round(cMean).toLocaleString()}, σ=${Math.round(cSd).toLocaleString()}`,
+            text: `Your lab: n=${labWithMetric.length} &nbsp;·&nbsp; Community ${esc(family)}: ${runsLabsText(communityVals.length, labCount(communityRuns))}, mean=${Math.round(cMean).toLocaleString()}, σ=${Math.round(cSd).toLocaleString()}`,
             font: { color: 'var(--text-muted)', size: 10 },
         }],
     }, PC);
 }
 
 // ── Longitudinal trends (Levey-Jennings / Moving Range / Pareto) ────
-// UCD run names follow "FLDDMMYY_..." or "ExDDMMYY_..." (European day-month-year,
-// e.g. FL030123 = 3 January 2023). Parse the first 6 digits after the 2-char
-// prefix and turn them into a JS Date. Returns null for filenames that don't
-// match (newer runs that only have submitted_at).
-function runDateFromName(name) {
-    // Parse real acquisition dates from UCD filename conventions:
-    //   Lumos/Exploris: FLDDMMYY_... or ExDDMMYY_...  (European day-month-year)
-    //   timsTOF:        DDmmmYYYY_... (e.g. 03jun2024_HeLa50ng_DIA...)
-    //   timsTOF alt:    DDMMYY_...    (e.g. 040823_HeLa50ng...)
-    if (!name) return null;
-
-    // Pattern 1: FL/Ex + 6 digits (DDMMYY)
-    let m = name.match(/^[A-Za-z]{2}(\d{2})(\d{2})(\d{2})_/);
-    if (m) {
-        const dd = parseInt(m[1], 10), mm = parseInt(m[2], 10);
-        let yy = parseInt(m[3], 10);
-        if (dd <= 31 && mm <= 12) {
-            yy = yy < 50 ? 2000 + yy : 1900 + yy;
-            const d = new Date(yy, mm - 1, dd);
-            if (!isNaN(d.getTime())) return d;
-        }
-    }
-
-    // Pattern 2: DDmmmYYYY (e.g. 03jun2024, 22mai25, 11iun25)
-    // Month names: English + Brett's French/Romanian abbreviations
-    const MONTHS = {
-        jan:1, feb:2, mar:3, apr:4, may:5, jun:6, jul:7, aug:8, sep:9, oct:10, nov:11, dec:12,
-        mai:5, iun:6, iul:7, noi:11, ian:1,  // Romanian/French variants Brett uses
-    };
-    m = name.match(/^(\d{1,2})([a-z]{3})(\d{2,4})_/i);
-    if (m) {
-        const dd = parseInt(m[1], 10);
-        const mon = MONTHS[m[2].toLowerCase()];
-        let yr = parseInt(m[3], 10);
-        if (mon && dd <= 31) {
-            if (yr < 100) yr = yr < 50 ? 2000 + yr : 1900 + yr;
-            const d = new Date(yr, mon - 1, dd);
-            if (!isNaN(d.getTime())) return d;
-        }
-    }
-
-    // Pattern 3: bare DDMMYY_ (e.g. 040823_HeLa...)
-    m = name.match(/^(\d{2})(\d{2})(\d{2})_/);
-    if (m) {
-        const dd = parseInt(m[1], 10), mm = parseInt(m[2], 10);
-        let yy = parseInt(m[3], 10);
-        if (dd <= 31 && mm <= 12) {
-            yy = yy < 50 ? 2000 + yy : 1900 + yy;
-            const d = new Date(yy, mm - 1, dd);
-            if (!isNaN(d.getTime())) return d;
-        }
-    }
-
-    return null;
-}
-
 function runDate(s) {
-    // Prefer explicit run_date from the client (acquisition date), then parse
-    // from run_name, then fall back to the submission timestamp.
+    // The acquisition date the client sent (every row carries one), else the
+    // submission time. The page no longer parses dates out of file names:
+    // /api/leaderboard does not return them (D4).
     if (s.run_date) {
         const d = new Date(s.run_date);
         if (!isNaN(d.getTime())) return d;
     }
-    return runDateFromName(s.run_name) || new Date(s.submitted_at || Date.now());
+    return new Date(s.submitted_at || Date.now());
+}
+
+// Acquisition day (YYYY-MM-DD) for hovers, or '?' when no date parses.
+function runDay(s) {
+    const d = runDate(s);
+    return (d && !isNaN(d.getTime())) ? d.toISOString().slice(0, 10) : '?';
 }
 
 function _stats(values) {
@@ -4575,10 +4661,10 @@ function renderLeveyJennings(runs, metric, instrument) {
         return '#5cb8ff';              // in control
     });
 
-    const hoverText = withDate.map(({ s, d }) => {
-        const run = s.run_name || '';
-        return `${run}<br>${d.toISOString().slice(0,10)}<br>${metric}: ${(s[metric]||0).toLocaleString()}<br>SPD: ${s.spd || '?'}`;
-    });
+    // Instrument, date and SPD: file names never reach the page (D4).
+    const hoverText = withDate.map(({ s }) =>
+        `${esc(s.instrument_model)}<br>${runDay(s)}<br>${metric}: ${(s[metric]||0).toLocaleString()}<br>SPD: ${s.spd || '?'}`
+    );
 
     const traces = [
         band( 0, '#6b82a0', 'solid'),
@@ -4726,6 +4812,7 @@ function renderParetoVariability(instrument) {
 function renderSpdDepth() {
     const el = document.getElementById('chart-spd-depth');
     if (!el) return;
+    _resetChart(el);
 
     // Amount filter from dropdown
     const amtFilter = (document.getElementById('spd-amount-filter') || {}).value || '50';
@@ -4856,12 +4943,22 @@ function renderSpdDepth() {
     Plotly.newPlot('chart-spd-depth', traces, layout, PC);
 }
 
-// Best Configurations leaderboard — single ranked table answering
-// "what instrument × SPD × amount loaded gives the best data?". Cohort
-// key is (instrument_model, SPD_tier, amount_bucket). Each row is one
-// cohort with n>=3 submissions. Click headers to re-sort.
-let configSortCol = 'precursors';
-let configSortAsc = false;
+// Best Configurations leaderboard — ranked tables answering "what instrument
+// × SPD × amount loaded gives the best data?". Cohort key is
+// (instrument_model, SPD_tier, amount_bucket) within one track: DIA cohorts
+// rank by precursors and DDA cohorts by PSMs, in separate tables (D1). Each
+// row is one cohort with n>=3 runs. Click headers to re-sort.
+const CONFIG_PRIMARY = { DIA: 'precursors', DDA: 'psms' };
+let configSort = {};
+// Every tab switch starts each table on its own primary metric: a DDA table
+// left sorted by the (empty) precursor column put "best depth" on the wrong row.
+function resetConfigSort() {
+    configSort = {
+        DIA: { col: CONFIG_PRIMARY.DIA, asc: false },
+        DDA: { col: CONFIG_PRIMARY.DDA, asc: false },
+    };
+}
+resetConfigSort();
 
 function _configSpdTier(spd) {
     if (!spd || spd <= 0) return '?';
@@ -4885,22 +4982,38 @@ function _median(arr) {
     return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
 }
 
-function sortConfigLeaderboard(col) {
-    if (configSortCol === col) configSortAsc = !configSortAsc;
-    else { configSortCol = col; configSortAsc = false; }
+function sortConfigLeaderboard(col, track) {
+    const st = configSort[track === 'DDA' ? 'DDA' : 'DIA'];
+    if (st.col === col) st.asc = !st.asc;
+    else { st.col = col; st.asc = false; }
     renderConfigLeaderboard();
 }
 
 function renderConfigLeaderboard() {
     const container = document.getElementById('config-leaderboard');
     if (!container) return;
+    // "All" shows both tracks, as two tables, never one mixed table.
+    const tracks = currentTab === 'dda' ? ['DDA'] : currentTab === 'dia' ? ['DIA'] : ['DIA', 'DDA'];
+    container.innerHTML = tracks.map(t => _configTableHtml(t, tracks.length > 1)).join('');
 
-    let data = allData;
-    if (currentTab === 'dia') data = data.filter(s => (s.acquisition_mode||'').toLowerCase().includes('dia'));
-    else if (currentTab === 'dda') data = data.filter(s => (s.acquisition_mode||'').toLowerCase().includes('dda'));
+    // Update the section badge with current filter context
+    const badge = document.getElementById('config-leaderboard-badge');
+    if (badge) {
+        const sampleLabel = (typeof currentSampleType !== 'undefined' && currentSampleType !== 'all')
+                            ? currentSampleType.toUpperCase() : 'all samples';
+        const sorted = tracks.map(t => (tracks.length > 1 ? `${t} ` : '') + configSort[t].col).join(', ');
+        const modeLabel = tracks.length > 1 ? 'DIA and DDA tables' : tracks[0];
+        badge.textContent = `${sampleLabel} · ${modeLabel} · sorted by ${sorted}`;
+    }
+}
 
-    const depthMet = currentTab === 'dda' ? 'n_psms' : 'n_precursors';
-    const depthLabel = currentTab === 'dda' ? 'PSMs' : 'Precursors';
+function _configTableHtml(track, withHeading) {
+    const pm = CONFIG_PRIMARY[track];
+    const pmLabel = track === 'DDA' ? 'PSMs' : 'Precursors';
+    const data = allData.filter(s => trackOf(s) === track);
+    const heading = withHeading
+        ? `<h4 style="color:var(--ucd-gold-dark); font-size:0.9rem; margin:${track === 'DIA' ? '0.25rem' : '1.25rem'} 0 0.5rem">${track} · ranked by ${pmLabel.toLowerCase()}</h4>`
+        : '';
 
     const modelOf = s => s.instrument_model || s.instrument_family || 'Unknown';
     const cohorts = {};
@@ -4912,9 +5025,11 @@ function renderConfigLeaderboard() {
                 spd: _configSpdTier(s.spd),
                 amount: _configAmountBucket(s.amount_ng),
                 vals: { precursors:[], peptides:[], proteins:[], psms:[], ms1ppm:[] },
+                labs: new Set(),
             };
         }
         const c = cohorts[key];
+        if (s.display_name) c.labs.add(s.display_name);
         if (s.n_precursors > 0) c.vals.precursors.push(s.n_precursors);
         if (s.n_peptides   > 0) c.vals.peptides.push(s.n_peptides);
         if (s.n_proteins   > 0) c.vals.proteins.push(s.n_proteins);
@@ -4923,11 +5038,12 @@ function renderConfigLeaderboard() {
     });
 
     const MIN_N = 3;
-    let rows = Object.values(cohorts)
-        .filter(c => c.vals[currentTab === 'dda' ? 'psms' : 'precursors'].length >= MIN_N)
+    const rows = Object.values(cohorts)
+        .filter(c => c.vals[pm].length >= MIN_N)
         .map(c => ({
             model: c.model, spd: c.spd, amount: c.amount,
-            n: c.vals[currentTab === 'dda' ? 'psms' : 'precursors'].length,
+            n: c.vals[pm].length,
+            labs: c.labs.size,
             precursors: _median(c.vals.precursors),
             peptides:   _median(c.vals.peptides),
             proteins:   _median(c.vals.proteins),
@@ -4936,74 +5052,75 @@ function renderConfigLeaderboard() {
         }));
 
     if (!rows.length) {
-        container.innerHTML = '<div class="empty-state" style="padding:1.5rem; text-align:center; color:var(--text-muted)">No cohorts with ≥3 submissions for this filter yet.</div>';
-        return;
+        return heading + `<div class="empty-state" style="padding:1.5rem; text-align:center; color:var(--text-muted)">No ${track} cohorts with ≥3 runs for this filter yet.</div>`;
     }
 
     // Sort. ms1ppm is "lower is better"; everything else "higher is better".
-    const lowerBetter = configSortCol === 'ms1ppm';
+    const st = configSort[track];
+    const lowerBetter = st.col === 'ms1ppm';
     rows.sort((a, b) => {
-        const av = a[configSortCol] ?? 0, bv = b[configSortCol] ?? 0;
+        const av = a[st.col] ?? 0, bv = b[st.col] ?? 0;
         if (av === bv) return 0;
-        const ascending = configSortAsc !== lowerBetter;  // toggling on header re-flips
+        if (typeof av === 'string' || typeof bv === 'string') {
+            const cmp = String(av).localeCompare(String(bv));
+            return st.asc ? cmp : -cmp;
+        }
+        const ascending = st.asc !== lowerBetter;  // toggling on header re-flips
         return ascending ? (av - bv) : (bv - av);
     });
 
-    // Identify "best" cells for badge highlighting.
-    const bestDepth   = rows[0]?.[depthMet === 'n_psms' ? 'psms' : 'precursors'] ?? 0;
-    const bestMs1     = Math.min(...rows.map(r => r.ms1ppm).filter(v => v > 0));
-
-    // Update the section badge with current filter context
-    const badge = document.getElementById('config-leaderboard-badge');
-    if (badge) {
-        const sampleLabel = (typeof currentSampleType !== 'undefined' && currentSampleType !== 'all')
-                            ? currentSampleType.toUpperCase() : 'all samples';
-        const modeLabel = currentTab === 'dia' ? 'DIA' : currentTab === 'dda' ? 'DDA' : 'all modes';
-        badge.textContent = `${sampleLabel} · ${modeLabel} · sorted by ${configSortCol}`;
-    }
+    // "Best" is the maximum of the track's primary metric whatever the sort,
+    // and a badge is only shown on a row holding runs from two or more labs:
+    // one lab's instruments are not a verdict on a platform (D2).
+    const bestDepth = Math.max(...rows.map(r => r[pm]));
+    const ppms = rows.map(r => r.ms1ppm).filter(v => v > 0);
+    const bestMs1 = ppms.length ? Math.min(...ppms) : null;
 
     const fmt = (v) => v ? Math.round(v).toLocaleString() : '—';
     const fmtPpm = (v) => v ? v.toFixed(2) : '—';
-    const arrow = (col) => col === configSortCol ? (configSortAsc ? ' ▲' : ' ▼') : '';
-    const th = (col, label) => `<th onclick="sortConfigLeaderboard('${col}')" style="cursor:pointer; user-select:none; padding:0.5rem 0.75rem; border-bottom:1px solid #1e3a5f; font-weight:600; color:#a0b4cc; text-align:right; white-space:nowrap">${label}${arrow(col)}</th>`;
-    const thLeft = (col, label) => `<th onclick="sortConfigLeaderboard('${col}')" style="cursor:pointer; user-select:none; padding:0.5rem 0.75rem; border-bottom:1px solid #1e3a5f; font-weight:600; color:#a0b4cc; text-align:left; white-space:nowrap">${label}${arrow(col)}</th>`;
+    const arrow = (col) => col === st.col ? (st.asc ? ' ▲' : ' ▼') : '';
+    const th = (col, label) => `<th onclick="sortConfigLeaderboard('${col}','${track}')" style="cursor:pointer; user-select:none; padding:0.5rem 0.75rem; border-bottom:1px solid #1e3a5f; font-weight:600; color:#a0b4cc; text-align:right; white-space:nowrap">${label}${arrow(col)}</th>`;
+    const thLeft = (col, label) => `<th onclick="sortConfigLeaderboard('${col}','${track}')" style="cursor:pointer; user-select:none; padding:0.5rem 0.75rem; border-bottom:1px solid #1e3a5f; font-weight:600; color:#a0b4cc; text-align:left; white-space:nowrap">${label}${arrow(col)}</th>`;
 
-    let html = '<table style="width:100%; border-collapse:collapse; font-size:0.9rem">';
+    let html = heading + '<table style="width:100%; border-collapse:collapse; font-size:0.9rem">';
     html += '<thead><tr>';
     html += '<th style="padding:0.5rem 0.75rem; text-align:right; color:#6b82a0">#</th>';
     html += thLeft('model',     'Instrument');
     html += thLeft('spd',       'SPD');
     html += thLeft('amount',    'Amount');
-    html += th('precursors', 'Precursors');
+    if (track === 'DIA') html += th('precursors', 'Precursors');
     html += th('peptides',   'Peptides');
     html += th('proteins',   'Proteins');
-    if (currentTab !== 'dia') html += th('psms', 'PSMs');
+    if (track === 'DDA') html += th('psms', 'PSMs');
     html += th('ms1ppm',     'MS1 ppm');
-    html += th('n',          'n');
+    html += th('n',          'Runs');
+    html += th('labs',       'Labs');
     html += '</tr></thead><tbody>';
 
     rows.forEach((r, i) => {
-        const isBestDepth = (currentTab === 'dda' ? r.psms : r.precursors) === bestDepth;
-        const isBestMs1   = r.ms1ppm > 0 && r.ms1ppm === bestMs1;
+        const multiLab = r.labs >= 2;
+        const isBestDepth = multiLab && r[pm] === bestDepth;
+        const isBestMs1   = multiLab && bestMs1 != null && r.ms1ppm > 0 && r.ms1ppm === bestMs1;
         const rowBg = i % 2 ? 'rgba(11,29,51,0.4)' : 'transparent';
         const badgeDepth = isBestDepth ? ' <span style="font-size:0.7rem; padding:0.1rem 0.35rem; border-radius:3px; background:rgba(56,189,248,0.25); color:var(--accent)">best depth</span>' : '';
         const badgeMs1   = isBestMs1   ? ' <span style="font-size:0.7rem; padding:0.1rem 0.35rem; border-radius:3px; background:rgba(16,185,129,0.25); color:#10b981">best accuracy</span>' : '';
         const cell = (v, right=true) => `<td style="padding:0.45rem 0.75rem; text-align:${right?'right':'left'}; border-bottom:1px solid rgba(30,58,95,0.4)">${v}</td>`;
         html += `<tr style="background:${rowBg}">`;
         html += cell(i+1);
-        html += cell(`<span style="color:${typeof fc==='function' ? fc(r.model) : '#a0b4cc'}; font-weight:600">${r.model}</span>${badgeDepth}${badgeMs1}`, false);
-        html += cell(r.spd, false);
-        html += cell(r.amount, false);
-        html += cell(fmt(r.precursors));
+        html += cell(`<span style="color:${typeof fc==='function' ? fc(r.model) : '#a0b4cc'}; font-weight:600">${esc(r.model)}</span>${badgeDepth}${badgeMs1}`, false);
+        html += cell(esc(r.spd), false);
+        html += cell(esc(r.amount), false);
+        if (track === 'DIA') html += cell(fmt(r.precursors));
         html += cell(fmt(r.peptides));
         html += cell(fmt(r.proteins));
-        if (currentTab !== 'dia') html += cell(fmt(r.psms));
+        if (track === 'DDA') html += cell(fmt(r.psms));
         html += cell(fmtPpm(r.ms1ppm));
-        html += cell(r.n);
+        html += cell(r.n.toLocaleString());
+        html += cell(`${r.labs}${r.labs < 2 ? ' ' + singleLabTag(r.labs) : ''}`);
         html += '</tr>';
     });
     html += '</tbody></table>';
-    container.innerHTML = html;
+    return html;
 }
 
 // Depth by Amount Loaded — companion to the platform violin. One violin
@@ -5025,6 +5142,7 @@ function _amountBucket(a) {
 }
 
 function renderAmountDepth() {
+    _resetChart(document.getElementById('chart-amount-depth'));
     let plotData = allData;
     if (currentTab === 'dia') plotData = plotData.filter(s=>s.acquisition_mode.toLowerCase().includes('dia'));
     else if (currentTab === 'dda') plotData = plotData.filter(s=>s.acquisition_mode.toLowerCase().includes('dda'));
@@ -5102,6 +5220,7 @@ function renderAmountDepth() {
 }
 
 function renderViolin() {
+    _resetChart(document.getElementById('chart-violin'));
     // Only show data matching the active tab to avoid mixing precursors and PSMs
     let plotData = allData;
     if (currentTab === 'dia') plotData = plotData.filter(s=>s.acquisition_mode.toLowerCase().includes('dia'));
@@ -5202,7 +5321,7 @@ function renderViolin() {
     // 2. Deterministic jitter (so points don't jump on re-render)
     const jitter = s => {
         let h = 0;
-        const id = s.submission_id || s.run_name || '';
+        const id = s.submission_id || '';
         for (let k = 0; k < id.length; k++) h = (((h << 5) - h) + id.charCodeAt(k)) | 0;
         return ((h % 1000) / 1000 - 0.5) * 0.5;  // [-0.25, 0.25]
     };
@@ -5285,63 +5404,6 @@ function renderViolin() {
     }, PC);
 }
 
-function renderGrs() {
-    const dia = allData.filter(s=>s.acquisition_mode.toLowerCase().includes('dia')&&s.n_precursors>0);
-    const FAMILY_SYMBOLS = {'timsTOF HT':'circle','Astral':'diamond','Exploris 480':'square','Lumos':'triangle-up'};
-    // Force numeric x. If ips_score arrives as a string from the relay JSON,
-    // Plotly treats the whole axis as categorical and renders ticks in
-    // data-insertion order (which looked like the axis was reversed).
-    const traces = [{
-        x: dia.map(s => Number(s.ips_score) || 0),
-        y: dia.map(s => Number(s.n_precursors) || 0),
-        text: dia.map(s => {
-            const col = s.column_model ? `<br>${s.column_vendor} ${s.column_model}` : '';
-            return `${s.instrument_model}<br>${s.spd} SPD, ${s.amount_ng||50} ng${col}`;
-        }),
-        mode:'markers', type:'scatter',
-        marker: {
-            // Color by SPD instead of amount_ng (amount is nearly constant
-            // across the seed cohort so color-by-amount was a dead channel)
-            color: dia.map(s=>s.spd||30),
-            colorscale: [[0,'#5cb8ff'],[0.3,'#34d399'],[0.6,'#FFBF00'],[1,'#f87171']],
-            cmin: 5, cmax: 200,
-            size: dia.map(s=>Math.max(9, Math.min(18, (s.n_peptides||10000)/1000))),
-            symbol: dia.map(s=>FAMILY_SYMBOLS[s.instrument_family]||'circle'),
-            opacity: 0.85,
-            colorbar: { title:'SPD', tickfont:{color:'#a0b4cc'}, titlefont:{color:'#DAAA00'}, len:0.6, thickness:10 },
-            line: {color:'#fff', width:1},
-        },
-        hovertemplate: '%{text}<br>IPS: %{x}<br>Precursors: %{y:,}<extra></extra>',
-        showlegend: false,
-    }];
-    Plotly.newPlot('chart-ips', traces, {
-        ...PL,
-        xaxis: {
-            ...PL.xaxis,
-            title: 'IPS Score (cohort depth rank) — higher = more IDs than median',
-            type: 'linear',
-            range: [0, 105],
-            autorange: false,
-            tickmode: 'linear', tick0: 0, dtick: 20,
-        },
-        yaxis:{...PL.yaxis,title:'Precursor Count'},
-        legend:{font:{color:'#a0b4cc'}}, height:380,
-        shapes: [
-            {type:'line',x0:70,x1:70,y0:0,y1:1,yref:'paper',line:{color:'rgba(255,191,0,0.2)',width:1,dash:'dot'}},
-        ],
-        annotations: [
-            // Left = bottom of cohort by depth. Right = top.
-            // NOT a signal for LC vs source vs calibration — use the
-            // dedicated LC charts for that. This axis is just "where do
-            // my IDs sit in the community distribution".
-            {x: 15, y: 0.95, xref:'x', yref:'paper', text:'← below cohort', showarrow:false,
-             font:{color:'rgba(248,113,113,0.75)', size:11}},
-            {x: 92, y: 0.95, xref:'x', yref:'paper', text:'above cohort →', showarrow:false,
-             font:{color:'rgba(52,211,153,0.75)', size:11}},
-        ],
-    }, PC);
-}
-
 function renderColumnComparison() {
     // The Column Comparison panel only makes sense when at least one
     // (instrument, SPD, amount) cohort has 2+ distinct columns. Until
@@ -5350,6 +5412,7 @@ function renderColumnComparison() {
     // rendering an empty-state placeholder.
     const row = document.getElementById('row-column-compare');
     const setVisible = on => { if (row) row.style.display = on ? '' : 'none'; };
+    _resetChart(document.getElementById('chart-column-compare'));
 
     // Group by broad cohort, then compare columns within each group
     const withCol = allData.filter(s => s.column_model && s.column_model.trim());
@@ -5358,18 +5421,9 @@ function renderColumnComparison() {
         return;
     }
 
-    // Build broad cohorts
-    function broadId(s) {
-        // Reference cards must split timsTOF HT / Pro 2 / Pro / SCP / Ultra
-        // — they're meaningfully different instruments. cohort_id was
-        // built from instrument_family ("timsTOF") so we substitute the
-        // model here. Falls back to family when instrument_model is
-        // empty (legacy submissions).
-        const parts = (s.cohort_id || '').split('_');
-        const tail = parts.slice(1, 3).join('_');  // spd_amount
-        const model = (s.instrument_model || s.instrument_family || 'Unknown').trim();
-        return `${model}_${tail}`;
-    }
+    // Build broad cohorts: the reference cards' key, track included, so a
+    // bar never averages DDA PSMs with DIA precursors (D1).
+    const broadId = cohortKey;
 
     const groups = {};
     withCol.forEach(s => {
@@ -5436,14 +5490,11 @@ function renderColumnComparison() {
         validGroups.forEach(([bid, cols]) => {
             const subs = cols[col] || [];
             if (subs.length > 0) {
-                const isDIA = subs[0].acquisition_mode.toLowerCase().includes('dia');
-                const vals = isDIA ? subs.map(s=>s.n_precursors) : subs.map(s=>s.n_psms);
+                const vals = subs.map(primaryOf);  // one track per cohort
                 const avg = vals.reduce((a,b)=>a+b, 0) / vals.length;
-                const amt = subs[0].amount_ng || 50;
-                const spd = subs[0].spd || '?';
                 x.push(`${readableCohort(bid)}`);
                 y.push(Math.round(avg));
-                texts.push(`${col}<br>n=${subs.length}, avg=${Math.round(avg).toLocaleString()}`);
+                texts.push(`${esc(col)}<br>${runsLabsText(subs.length, labCount(subs))}, avg=${Math.round(avg).toLocaleString()}`);
             } else {
                 x.push(`${readableCohort(bid)}`);
                 y.push(0);
@@ -5477,14 +5528,15 @@ function renderColumnComparison() {
 function renderPointsAcrossPeak() {
     // SPD vs points across peak — the quantitation quality cliff
     // Shape by column vendor, color by instrument family
+    _resetChart(document.getElementById('chart-points-peak'));
     const withPts = allData.filter(s => (s.median_points_across_peak || 0) > 0);
 
     if (!withPts.length) {
         document.getElementById('chart-points-peak').innerHTML =
             '<div class="empty-state" style="padding:2rem;text-align:center">' +
             '<p>Points-across-peak data will appear as labs submit new QC runs via <code>stan watch</code>.</p>' +
-            '<p style="margin-top:0.5rem;color:var(--text-muted)">This metric measures how many MS2 scans sample each chromatographic peak — ' +
-            'below 6 points, quantitation error exceeds 1% (Matthews &amp; Hayes, 1976).</p>' +
+            '<p style="margin-top:0.5rem;color:var(--text-muted)">This metric measures how many MS2 scans sample each chromatographic peak. ' +
+            'STAN\'s guideline: below 6 points quantitation error grows quickly (after Matthews &amp; Hayes, 1976).</p>' +
             '</div>';
         return;
     }
@@ -5512,10 +5564,12 @@ function renderPointsAcrossPeak() {
         };
     });
 
-    // Add the Matthews & Hayes threshold line at 6 points
+    // STAN guideline lines at 6 and 12 points. They cite Matthews & Hayes
+    // 1976 (doi:10.1021/ac50003a028), a GC-MS sampling study; the thresholds
+    // are STAN's, not numbers stated in the paper (bug 6).
     traces.push({
         x: [1, 500], y: [6, 6],
-        mode: 'lines', type: 'scatter', name: 'Min for <1% error',
+        mode: 'lines', type: 'scatter', name: 'STAN guideline: 6 points',
         line: {color: 'rgba(248,113,113,0.5)', width: 2, dash: 'dash'},
         hoverinfo: 'skip', showlegend: true,
     });
@@ -5523,7 +5577,7 @@ function renderPointsAcrossPeak() {
     // Add a "good" zone at 12 points
     traces.push({
         x: [1, 500], y: [12, 12],
-        mode: 'lines', type: 'scatter', name: 'Recommended (12+)',
+        mode: 'lines', type: 'scatter', name: 'STAN guideline: 12+ recommended',
         line: {color: 'rgba(52,211,153,0.4)', width: 1.5, dash: 'dot'},
         hoverinfo: 'skip', showlegend: true,
     });
@@ -5542,131 +5596,9 @@ function renderPointsAcrossPeak() {
         legend: {font:{color:'#a0b4cc', size:11}},
         height: 400,
         annotations: [
-            {x:0.02, y:0.08, xref:'paper', yref:'paper', text:'<1% quant error above dashed line (Matthews & Hayes 1976)',
+            {x:0.02, y:0.08, xref:'paper', yref:'paper', text:'Below the dashed line, quantitation error grows quickly (STAN guideline, after Matthews & Hayes 1976)',
              showarrow:false, font:{color:'rgba(248,113,113,0.7)',size:10}},
         ],
-    }, PC);
-}
-
-function renderRadar() {
-    const dia = allData.filter(s=>s.acquisition_mode.toLowerCase().includes('dia')&&s.n_precursors>0);
-    if (!dia.length) { document.getElementById('chart-radar').innerHTML='<div class="empty-state">No DIA data</div>'; return; }
-
-    // Axes: 3 depth metrics + 1 LC-health metric.
-    // IPS dropped — it's derived from the same depth stack so it duplicates
-    // the precursor/peptide/protein axes (circular). Replaced with median
-    // MS1 mass accuracy, INVERTED so "good calibration" pushes the polygon
-    // outward like the depth axes do.
-    const mets = ['n_precursors','n_peptides','n_proteins','median_mass_acc_ms1_ppm'];
-    const labs = ['Precursors','Peptides','Proteins','MS1 Mass Acc'];
-    // For each metric: true if higher is better, false if lower is better
-    const HIGHER_BETTER = [true, true, true, false];
-
-    const spdTier = spd => {
-        if (!spd || spd <= 0)   return '?';
-        if (spd >= 100)         return '100+ SPD';
-        if (spd >= 60)          return '60-100 SPD';
-        if (spd >= 30)          return '30-60 SPD';
-        return '<30 SPD';
-    };
-
-    // Cohort key now includes instrument_model (HT / Pro / Pro 2 / etc.)
-    // so the new Bruker hardware doesn't get pooled with timsTOF HT just
-    // because they share a family. Falls back to family for legacy rows.
-    const modelKey = s => s.instrument_model || s.instrument_family || 'Unknown';
-    const cohorts = {};
-    dia.forEach(s => {
-        const key = modelKey(s) + ' ' + spdTier(s.spd);
-        if (!cohorts[key]) cohorts[key] = { model: modelKey(s), vals: {} };
-        mets.forEach(m => {
-            const v = s[m];
-            if (v == null || v <= 0) return;
-            if (!cohorts[key].vals[m]) cohorts[key].vals[m] = [];
-            cohorts[key].vals[m].push(v);
-        });
-    });
-
-    const COHORT_MIN_N = 3;
-    Object.keys(cohorts).forEach(k => {
-        if ((cohorts[k].vals[mets[0]] || []).length < COHORT_MIN_N) {
-            delete cohorts[k];
-        }
-    });
-
-    function median(arr) {
-        if (!arr.length) return 0;
-        const sorted = [...arr].sort((a,b) => a - b);
-        const mid = Math.floor(sorted.length / 2);
-        return sorted.length % 2 ? sorted[mid] : (sorted[mid-1] + sorted[mid]) / 2;
-    }
-
-    // Normalize against the COHORT-MEDIAN range, not the all-submission range.
-    // Otherwise cohort medians always sit in the middle 20-50% of the radar
-    // (where most individual values cluster) and every polygon collapses
-    // into the same tiny diamond. With cohort-median range, the smallest
-    // cohort pins to 0 and the largest to 100 — full radial spread.
-    const cohortMedians = mets.map(m =>
-        Object.values(cohorts).map(c => median(c.vals[m] || [])).filter(v => v > 0)
-    );
-    const mins = cohortMedians.map(arr => arr.length ? Math.min(...arr) : 0);
-    const maxs = cohortMedians.map(arr => arr.length ? Math.max(...arr) : 1);
-    function norm(v, i) {
-        if (maxs[i] === mins[i]) return 50;
-        if (v == null || v <= 0) return 0;
-        const pct = ((v - mins[i]) / (maxs[i] - mins[i])) * 100;
-        // Invert axes where lower-is-better (mass acc, peak width)
-        return HIGHER_BETTER[i] ? pct : 100 - pct;
-    }
-
-    // Each cohort key (family + SPD bucket) gets its own color.
-    // Coloring by family alone makes a single-vendor lab's traces
-    // all look identical even when their SPD cohorts are clearly
-    // different.
-    const COHORT_COLORS = [
-        '#ffbf00', '#4ecdc4', '#ff6b6b', '#a78bfa',
-        '#45b7d1', '#fb923c', '#10b981', '#f43f5e',
-    ];
-    const traces = Object.entries(cohorts).map(([key, coh], i) => {
-        const medians = mets.map(m => median(coh.vals[m]));
-        const n = coh.vals[mets[0]].length;
-        const color = COHORT_COLORS[i % COHORT_COLORS.length];
-        // Hover shows the actual median value, not the normalized one —
-        // "MS1 Mass Acc 2.1 ppm" is meaningful, "47.3" is not.
-        const fmt = (v, j) => {
-            if (v == null) return 'n/a';
-            if (j === 3) return v.toFixed(2) + ' ppm';
-            return Math.round(v).toLocaleString();
-        };
-        const customdata = medians.map((v, j) => fmt(v, j));
-        return {
-            type: 'scatterpolar',
-            r: [...medians.map((v, j) => norm(v, j)), norm(medians[0], 0)],
-            theta: [...labs, labs[0]],
-            name: key + ' (n=' + n + ')',
-            fill: 'toself',
-            fillcolor: color + '20',
-            line: { color, width: 2.5 },
-            marker: { size: 5 },
-            customdata: [...customdata, customdata[0]],
-            hovertemplate:
-                `<b>${key}</b><br>%{theta}: %{customdata}<br>` +
-                `<i>radial position: %{r:.0f}/100 within cohort range</i>` +
-                `<extra></extra>`,
-        };
-    });
-
-    Plotly.newPlot('chart-radar', traces, {
-        ...PL,
-        polar: {
-            bgcolor: 'rgba(2,40,81,0.3)',
-            radialaxis: { visible: true, range: [0, 100], gridcolor: 'rgba(255,191,0,0.1)', tickfont: { color: '#6b82a0' } },
-            angularaxis: { gridcolor: 'rgba(255,191,0,0.15)', tickfont: { color: '#a0b4cc' } },
-        },
-        legend: (window.innerWidth < 768)
-            ? { font: { color: '#a0b4cc', size: 9 }, orientation: 'h', x: 0, y: -0.18, yanchor: 'top' }
-            : { font: { color: '#a0b4cc', size: 11 } },
-        height: (window.innerWidth < 768) ? 560 : 420,
-        margin: (window.innerWidth < 768) ? { t: 24, r: 12, b: 220, l: 12 } : { t: 40, r: 80, b: 40, l: 80 },
     }, PC);
 }
 
@@ -5681,6 +5613,7 @@ function showTab(tab) {
     currentTab = tab;
     tableSortCol = null;
     tablePage = 0;
+    resetConfigSort();  // each table starts on its own primary metric (D1)
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     event.target.classList.add('active');
     // Re-render every chart that splits by DIA/DDA. Previously only the
@@ -5707,17 +5640,13 @@ function pctile(val, arr) {
 }
 
 function pctileBadge(p) {
-    if (p >= 75) return `<span class="pctile-badge pctile-top">${p}th</span>`;
-    if (p >= 25) return `<span class="pctile-badge pctile-mid">${p}th</span>`;
-    return `<span class="pctile-badge pctile-low">${p}th</span>`;
+    if (p >= 75) return `<span class="pctile-badge pctile-top">${ordinal(p)}</span>`;
+    if (p >= 25) return `<span class="pctile-badge pctile-mid">${ordinal(p)}</span>`;
+    return `<span class="pctile-badge pctile-low">${ordinal(p)}</span>`;
 }
-
-function ipsBadge(s) {
-    if (s>=90) return `<span class="badge badge-ips-high">IPS ${s}</span>`;
-    if (s>=80) return `<span class="badge" style="background:rgba(6,78,59,0.4);color:#6ee7b7;border:1px solid rgba(110,231,183,0.3)">IPS ${s}</span>`;
-    if (s>=60) return `<span class="badge badge-ips-mid">IPS ${s}</span>`;
-    return `<span class="badge badge-ips-low">IPS ${s}</span>`;
-}
+// No IPS badge or column on the public page until the reference-key fix and
+// recompute ship (D3, decision 6): today Exploris and timsTOF are scored
+// against the pooled global reference, not their own.
 
 function modeBadge(m) {
     return m.toLowerCase().includes('dia') ? '<span class="badge badge-dia">DIA</span>' : '<span class="badge badge-dda">DDA</span>';
@@ -5750,28 +5679,35 @@ function renderTable() {
     }
 
     const isDDA = currentTab==='dda';
+    const isAll = currentTab==='all';
     const pKey = isDDA ? 'n_psms' : 'n_precursors';
-    const pLabel = isDDA ? 'PSMs' : 'Precursors';
+    const pLabel = isDDA ? 'PSMs' : isAll ? 'Precursors / PSMs' : 'Precursors';
+    // Under "All" the primary column is each row's own track's metric
+    // (precursors for DIA, PSMs for DDA), never a DDA row's empty precursors.
+    const primaryVal = s => isAll ? primaryOf(s) : (s[pKey] || 0);
 
     // The percentile badge is computed against whichever depth metric the
     // user is currently sorting by, so sort and pctile agree. If the sort
     // column isn't a rankable metric (e.g. instrument, date), fall back to
     // the primary depth metric (precursors for DIA, PSMs for DDA).
-    const RANKABLE = new Set([pKey, 'n_peptides', 'n_proteins', 'ips_score']);
+    const RANKABLE = new Set([pKey, 'n_peptides', 'n_proteins']);
     const pctileKey = (tableSortCol && RANKABLE.has(tableSortCol)) ? tableSortCol : pKey;
     const pctileLabel = {
-        n_precursors: 'Precursors',
+        n_precursors: isAll ? pLabel : 'Precursors',
         n_psms:       'PSMs',
         n_peptides:   'Peptides',
         n_proteins:   'Proteins',
-        ips_score:    'IPS',
     }[pctileKey] || pLabel;
+    const rankVal = s => pctileKey === pKey ? primaryVal(s) : (s[pctileKey] || 0);
+    // Percentile cohorts never pool DIA with DDA (D1).
+    const cohortOf = s => `${s.cohort_id}|${trackOf(s)}`;
 
     // Cohort percentiles against the active rank metric
     const cohortVals = {};
     filtered.forEach(s => {
-        if (!cohortVals[s.cohort_id]) cohortVals[s.cohort_id] = [];
-        cohortVals[s.cohort_id].push(s[pctileKey]||0);
+        const ck = cohortOf(s);
+        if (!cohortVals[ck]) cohortVals[ck] = [];
+        cohortVals[ck].push(rankVal(s));
     });
 
     // Sort
@@ -5794,7 +5730,7 @@ function renderTable() {
             return 0;
         });
     } else {
-        filtered.sort((a,b) => (b[pKey]||0) - (a[pKey]||0));
+        filtered.sort((a,b) => primaryVal(b) - primaryVal(a));
     }
 
     // Pagination
@@ -5816,7 +5752,6 @@ function renderTable() {
         {key:'n_peptides', label:'Peptides'},
         {key:'n_proteins', label:'Proteins'},
         {key:'median_points_across_peak', label:'Pts/Peak'},
-        {key:'ips_score', label:'IPS'},
         {key:'column_model', label:'Column'},
         {key:'spd', label:'SPD'},
         {key:'amount_ng', label:'Amount'},
@@ -5841,12 +5776,12 @@ function renderTable() {
     h += '</tr></thead><tbody>';
 
     pageRows.forEach(s => {
-        const p = pctile(s[pctileKey]||0, cohortVals[s.cohort_id]||[]);
+        const p = pctile(rankVal(s), cohortVals[cohortOf(s)]||[]);
         h += '<tr>';
         h += `<td>${pctileBadge(p)}</td>`;
         h += `<td>${s.instrument_model}</td>`;
         h += `<td>${modeBadge(s.acquisition_mode)}</td>`;
-        h += `<td><strong>${(s[pKey]||0).toLocaleString()}</strong></td>`;
+        h += `<td><strong>${primaryVal(s).toLocaleString()}</strong></td>`;
         h += `<td>${(s.n_peptides||0).toLocaleString()}</td>`;
         h += `<td>${(s.n_proteins||0).toLocaleString()}</td>`;
         const pts = s.median_points_across_peak;
@@ -5856,7 +5791,6 @@ function renderTable() {
         } else {
             h += `<td style="color:var(--text-muted)">--</td>`;
         }
-        h += `<td>${ipsBadge(s.ips_score||0)}</td>`;
         const col = s.column_model ? `${s.column_vendor||''} ${s.column_model}`.trim() : '';
         h += `<td style="font-size:0.8rem;color:var(--text-muted)">${col||'--'}</td>`;
         h += `<td>${s.spd||'-'}</td>`;
@@ -5893,7 +5827,7 @@ function exportCSV() {
 
     const headers = ['instrument_model','instrument_family','acquisition_mode',
         pKey,'n_peptides','n_proteins','median_points_across_peak',
-        'ips_score','column_vendor','column_model','spd','amount_ng',
+        'column_vendor','column_model','spd','amount_ng',
         'median_cv_precursor','missed_cleavage_rate','median_peak_width_sec','cohort_id'];
 
     let csv = headers.join(',') + '\n';

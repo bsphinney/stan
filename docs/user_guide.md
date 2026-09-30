@@ -298,7 +298,7 @@ The community benchmark lets you see how your instrument compares to instruments
 
 **Never sent:** raw files or spectra, the folder a raw file sits in, instrument serial numbers, or anything about your real samples. Only QC runs are sent; washes, blanks and runs with zero identifications are skipped.
 
-**Privacy note: file names are public.** The relay requires each row's file name (for example `HeLa_50ng_30min_001.raw`), stores it in the public dataset, and shows it in chart tooltips on the public dashboard. Before you opt in, make sure your QC file names carry no patient, customer or project identifiers. Setting the environment variable `STAN_STRIP_RUN_NAME=1` blanks the name, but the relay then refuses the row.
+**Privacy note: file names reach the public dataset.** From relay (Space) 1.2.2 the community page and the relay's API (`/api/leaderboard`, `/api/cohorts`) no longer show or return a row's file name (for example `HeLa_50ng_30min_001.raw`); chart tooltips show the instrument, date and SPD instead. The relay still stores the name with the row, where it catches duplicate submissions, and that row is written to the public Hugging Face dataset, whose history also holds every name sent so far (removing it there is a pending decision). Before you opt in, make sure your QC file names carry no patient, customer or project identifiers. Setting the environment variable `STAN_STRIP_RUN_NAME=1` blanks the name; relay 1.2.2 accepts such rows (1.2.1 and earlier refused them).
 
 **How to take part:**
 

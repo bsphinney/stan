@@ -354,11 +354,12 @@ boards are at <https://community.stan-proteomics.org>.
 **What is sent:** aggregate QC metrics and run metadata for each QC run.
 That includes the instrument, the SPD, the amount, the column, the DIA-NN
 version, a 128-bin TIC trace, the **raw file's name** and the acquisition
-date. No raw data and no sample metadata are sent. The client sends the file
-name because the relay's completeness check currently rejects rows without
-one (see the comment in `stan/community/submit.py`). Setting
-`STAN_STRIP_RUN_NAME=1` blanks it. Tell the human, and rename QC files if
-their names carry anything sensitive.
+date. No raw data and no sample metadata are sent. The relay keeps the file
+name to catch duplicate submissions; from relay 1.2.2 the community page and
+API no longer show it, but the public dataset parquet still carries it.
+Setting `STAN_STRIP_RUN_NAME=1` blanks it, and relay 1.2.2 accepts the blank
+row (1.2.1 refused it). Tell the human, and rename QC files if their names
+carry anything sensitive.
 
 1. **Claim a name.** Put `display_name: <the name the human chose>` in
    `community.yml`, then have the **human** run `stan community-claim`. It

@@ -185,12 +185,14 @@ def submit_to_benchmark(
         "column_vendor": run.get("column_vendor") or "Unknown",
         "column_model": column_model or "Unknown",
         "lc_system": run.get("lc_system") or "",
-        # 2026-05-20: the relay's v1.0 completeness check rejects
-        # rows with empty run_name, so we send it again until the
-        # relay schema is relaxed. The original v0.2.310 privacy
-        # stance (Brett 2026-05-05: "we don't need to ever know
-        # the file name") still applies in spirit — operators who
-        # need to strip the filename can override via the
+        # 2026-05-20: the relay's v1.0 completeness check rejected
+        # rows with empty run_name, so we send it again. Relay 1.2.2
+        # (2026-09-29) makes it optional and never returns it from
+        # its API or shows it on the page; the stored row, and so the
+        # public dataset parquet, still carries it. The original
+        # v0.2.310 privacy stance (Brett 2026-05-05: "we don't need to
+        # ever know the file name") still applies in spirit —
+        # operators who need to strip the filename set the
         # ``STAN_STRIP_RUN_NAME`` env var. The fingerprint hash
         # remains the canonical de-dup key.
         "run_name": "" if os.environ.get("STAN_STRIP_RUN_NAME") else run.get("run_name", ""),

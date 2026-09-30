@@ -11,6 +11,85 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.9] — 2026-09-29
+
+Community site redesign, phase P1 ("correctness"), in the relay
+(`hf_space/app.py`, Space **1.2.2**). Approved by Brett 2026-09-29; spec
+`docs/superpowers/specs/2026-09-29-community-redesign-and-precursor-lookup-design.md`
+§A.6 P1, evidence `docs/community-redesign/REVIEW.md`. No STAN client
+behaviour changes; the bump carries the relay release. Page layout and
+every chart are kept, except the two Brett dropped (decisions 3 and 4).
+
+### Changed
+- **DIA and DDA never share a cohort (D1).** The reference cards and the
+  column comparison key on model × SPD × amount × track (`cohortKey()`,
+  shared by both), and each cohort's primary metric comes from its own
+  track. The DDA rows that sat in DIA cohorts with 0 precursors ("0 -
+  37,360") now get their own DDA cards; the column bars that plotted PSMs
+  as precursors are gone. Best Configurations ranks DIA by precursors and
+  DDA by PSMs, hides the other track's column, takes "best depth" from the
+  maximum of the track's metric whatever the sort, resets its sort on every
+  tab switch, and shows two tables under "All". The submissions table's
+  percentile cohorts include the track, and under "All" each row shows and
+  ranks on its own track's primary.
+- **One facility, said so (D2).** Header disclosure line (decision 8
+  wording). The banner count is the same array as the Submissions tile
+  (3,279 HeLa rows, not "3,800+"). Cards, Best Configurations rows, the TIC
+  line and the lab-trend note say "n runs · n labs", with a *single-lab
+  reference* tag below 2 labs; "best …" badges appear only on a row with
+  2+ labs; cards under 10 runs list their values instead of an IQR.
+  "Established by the community" and "First-of-its-kind cross-lab" are
+  gone. Labs are still counted by pseudonym until a facility id exists
+  (P3), so rows mixing UC Davis's two pseudonyms count as 2 labs.
+- **IPS off the public page (D3).** No IPS badge, table column, card row,
+  lab-trend metric or CSV column until the reference-key fix and recompute
+  ship (decision 6). The IPS card states the v2 definition (50/30/20,
+  359-run calibration set) and says why scores are hidden; the proteins
+  line reads "context only; not used for leaderboards; 20% of IPS"; IPS is
+  out of the "Health" line. The Identification Depth vs. IPS scatter and
+  the Instrument Health Fingerprint radar are deleted with their code.
+- **No file names in public responses (D4, decision 5).** `/api/leaderboard`
+  and `/api/cohorts` no longer return `run_name` or `fingerprint`
+  (`PRIVATE_SUBMISSION_FIELDS`; `/api/cohorts` strips them at any depth).
+  Chart hovers show instrument, date and SPD; the page no longer parses
+  dates out of file names. `run_name` is optional at submit, so
+  `STAN_STRIP_RUN_NAME=1` rows are accepted. Stored rows keep both fields
+  (dedupe, `/api/update`); the published dataset parquet still carries them
+  until the history scrub (decision 5b, gated).
+- **TIC overlay.** Says what it plots: the MS1 total-ion chromatogram from
+  the raw file. Traces whose first bin starts more than 0.1 min in are
+  identified-ion traces from older STAN versions; they are kept out of the
+  median and shown as their own legend entry (drawn alone where a cohort
+  has nothing else). Opens on the SPD with the most runs (100 SPD, not
+  7 SPD); bands only from 5 or more runs, below that each run is drawn on
+  its own ("each of N runs (too few for a median)"); DDA says "No DDA TIC
+  traces have been submitted yet." once, with its other controls off.
+- Text: "predicted spectral library" → empirical HeLa libraries, one per
+  vendor (timsTOF ~54k, Orbitrap ~170k precursors), with a within-vendor
+  caveat; footer license → STAN Academic License, linked to LICENSE
+  (decision 7).
+
+### Fixed
+- Both Matthews & Hayes links pointed at unrelated papers; they now go to
+  doi:10.1021/ac50003a028, and the 6 / 12 point thresholds are labelled
+  STAN guidelines that cite it (bug 6).
+- "Not enough community data" stayed under the lab-trend plot after a QC
+  standard round trip; every renderer that can write an empty state now
+  clears its chart first (bug 10).
+- Ordinals: 93rd, 82nd, 72nd, 11th–13th (bug 12).
+- "Populated going forward by the STAN watcher" deleted from Dynamic Range
+  (bug 19).
+
+### Tests
+- `tests/test_relay_community_p1.py`: no `run_name`/`fingerprint` in any
+  public GET (checked against the stored values), submit without
+  `run_name` (DIA and DDA, empty and absent), SPACE_VERSION, the page text,
+  and the page logic run in node (cohort split, Best Configurations sort
+  and badges, ordinals, TIC default/bands/DDA, bug 10, hovers).
+- `tests/test_relay_peg.py`: version 1.2.2; the column-comparison label
+  carries the track.
+
+---
 ## [1.2.8] — 2026-09-29
 
 ### Fixed

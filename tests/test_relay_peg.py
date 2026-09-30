@@ -239,8 +239,8 @@ def quartiles(values: list[float]) -> list[float]:
 
 # ── identity (spec §4.5, D3) ─────────────────────────────────────────
 
-def test_space_version_is_1_2_1(client):
-    assert client.get("/api/version").json()["version"] == "1.2.1"
+def test_space_version_is_1_2_2(client):
+    assert client.get("/api/version").json()["version"] == "1.2.2"
 
 
 def test_unclaimed_name_is_accepted_but_unverified(client, relay):
@@ -1638,7 +1638,7 @@ def run_page_js(tmp_path: Path, html: str, calls: list) -> list:
 
 def test_page_has_the_peg_section_linked_from_the_header(client):
     html = _page(client)
-    assert "community site v1.2.1" in html
+    assert "community site v1.2.2" in html
     assert '<a href="#peg">PEG Watch</a>' in html
     assert html.count('id="peg"') == 1
     for endpoint in ("/api/peg/leaderboard", "/api/peg/trend", "/api/peg/lc-compare"):
@@ -1868,7 +1868,8 @@ def test_column_comparison_renders_when_two_columns_share_a_cohort(client, tmp_p
              "acquisition_mode": "dia", "n_precursors": n, "column_vendor": "PepSep", "column_model": col,
              "amount_ng": 50, "spd": 100}
             for n, col in [(40000, "15 cm"), (42000, "15 cm"), (45000, "25 cm"), (47000, "25 cm")]]
-    (tmp_path / "main.js").write_text(main)
+    # esc() lives in its own block, loaded before this one on the page.
+    (tmp_path / "main.js").write_text(_script_block(html, "stan-esc") + "\n" + main)
     (tmp_path / "data.json").write_text(json.dumps(subs))
     (tmp_path / "harness.js").write_text(_MAIN_HARNESS)
     proc = subprocess.run([NODE, str(tmp_path / "harness.js"), str(tmp_path / "main.js"), str(tmp_path / "data.json")],
@@ -1876,5 +1877,6 @@ def test_column_comparison_renders_when_two_columns_share_a_cohort(client, tmp_p
     assert proc.returncode == 0, proc.stderr[-2000:]
     [plot] = json.loads(proc.stdout)
     assert plot["id"] == "chart-column-compare"
-    assert [t["x"] for t in plot["traces"]] == [["timsTOF HT · 100 SPD · 26-75 ng"]] * 2
+    # The cohort label carries the track: DIA and DDA never share a bar (P1, D1).
+    assert [t["x"] for t in plot["traces"]] == [["timsTOF HT · 100 SPD · 26-75 ng · DIA"]] * 2
     assert sorted(t["y"][0] for t in plot["traces"]) == [41000, 46000]

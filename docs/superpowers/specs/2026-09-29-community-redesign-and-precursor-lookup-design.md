@@ -232,6 +232,7 @@ Each phase ships on its own, verified and deployed without asking, except the ga
   - Add the Part B engine fields to the lookup.
   - Republish to the same artifact URL for Brett.
 - **P1: correctness** (the one-day list): D1, D2, D3 (IPS badges off), D4 API and hovers, bugs 6, 10, 11, 12, 19, and the TIC wording (§A.4 item 1).
+  - *Status 2026-09-29:* built on branch `feat/community-p1` as relay (Space) 1.2.2 / STAN 1.2.7, with optional run_name at submit pulled forward from P3; see CHANGELOG 1.2.7. Identified-ion TIC traces are kept out of the median (§A.4 item 1, second half). Labs are counted by pseudonym until the P3 facility id.
 - **P2: layout.** Page order, the B2 cohort key and sticky bar, B1 (standard-search only), D5, D6, D7, B5 (TIC summaries, `<details>` on phone), B6, B3.
 - **P3: schema.** B4, the facility id, optional run_name.
 - **P4: gated data work.** Each item needs Brett's go after a before/after:

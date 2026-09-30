@@ -206,8 +206,10 @@ Tab-complete via `stan --install-completion`.
 - Raw files NEVER uploaded
 - Patient/sample metadata NEVER collected
 - Run filename optionally stripped on submission via
-  `STAN_STRIP_RUN_NAME=1` (default sends; community dataset publishes
-  every submission as a parquet)
+  `STAN_STRIP_RUN_NAME=1` (default sends; accepted blank since relay
+  1.2.2). The relay's API and community page never show it (1.2.2+), but
+  the community dataset still publishes every submission as a parquet
+  with it
 - CC BY 4.0 on the community dataset
 - Serial numbers stored server-side, never exposed in API/downloads
 
