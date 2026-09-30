@@ -192,26 +192,78 @@ def runlen_label(lens: list[int]) -> str:
     return f"{lo} min run" if lo == hi else f"{lo}–{hi} min runs"
 
 
-def grad_label(lc: str, spd: int, lens: list[int]) -> str:
+# B2/B4 amendment (Brett, 2026-09-29): nanoLC cohorts are keyed by a fixed band on the
+# ACTIVE GRADIENT plus LC model and flow regime, so two labs on the same LC, flow and band
+# land in one cohort and can be ranked against each other. gradient_length_min records the
+# acquisition length (Exploris 38 SPD runs store 44 min; their TIC ends at 30 min), so the
+# gradient is recovered from the stored SPD, which gradient_min_to_spd derived from it:
+# gradient = 1440 / (1.25 x SPD), one decimal. Evosep cohorts keep the method (SPD);
+# unverified-Evosep and LC-not-recorded groups keep their SPD, as before.
+# Bands: <=20 -> 15, 21-37 -> 30, 38-52 -> 45, 53-75 -> 60, 76-105 -> 90, 106-150 -> 120, >150 -> 180.
+# Gradients are fractional, so the integer gaps close at the half minute (20.5, 37.5, ...).
+GRAD_BANDS = [(20.5, 15), (37.5, 30), (52.5, 45), (75.5, 60), (105.5, 90), (150.5, 120)]   # (exclusive upper bound, band); else 180
+BAND_RANGE = {15: "≤20 min", 30: "21–37 min", 45: "38–52 min", 60: "53–75 min", 90: "76–105 min", 120: "106–150 min", 180: ">150 min"}
+
+
+def grad_band(mins) -> int:
+    for hi, b in GRAD_BANDS:
+        if mins < hi:
+            return b
+    return 180
+
+
+def gradient_min(spd) -> float:
+    """Active gradient behind a stored nanoLC SPD (inverse of gradient_min_to_spd)."""
+    return round(1440 / (1.25 * spd), 1)
+
+
+def lc_model(r):
+    """The snapshot records no LC model; never invent one."""
+    return r.get("lc_model") or None
+
+
+def flow_regime(r):
+    """The snapshot records no flow regime (nanoflow / capillary / microflow)."""
+    return r.get("flow_regime") or None
+
+
+def spd_txt(spds: C.Counter) -> str:
+    """Derived SPD for a band: the common value if it holds 90% of runs, else the range."""
+    top, n = spds.most_common(1)[0]
+    tot = sum(spds.values())
+    return f"~{top}" if n >= 0.9 * tot else f"~{min(spds)}–{max(spds)}"
+
+
+def grad_label(lc: str, g: int, lens: list[int], spds: C.Counter) -> str:
     if lc == "evosep":
-        return EVOSEP_METHODS[spd]
+        return EVOSEP_METHODS[g]
     if lc == "evosep_unv":
-        return f"Evosep, {runlen_label(lens)} (SPD {spd} unverified)"
+        return f"Evosep, {runlen_label(lens)} (SPD {g} unverified)"
     if lc == "nanolc":
-        return f"{runlen_label(lens)} (~{spd} SPD)"
-    return f"{spd} SPD, LC not recorded ({runlen_label(lens)})"
+        return f"nanoLC · {g} min gradient band ({spd_txt(spds)} SPD)"
+    return f"{g} SPD, LC not recorded ({runlen_label(lens)})"
 
 
 valid = [r for r in kept if r["submission_id"] not in flag_reason]
 flagged = [r for r in kept if r["submission_id"] in flag_reason]
 
-ckey = lambda r: (r["sample_type"], r["instrument_model"], track(r), lc_class(r), int(r["spd"]), abucket(r["amount_ng"]))
+
+def ckey(r):
+    lc = lc_class(r)
+    if lc == "nanolc":
+        return (r["sample_type"], r["instrument_model"], track(r), lc, grad_band(gradient_min(int(r["spd"]))), abucket(r["amount_ng"]), lc_model(r), flow_regime(r))
+    return (r["sample_type"], r["instrument_model"], track(r), lc, int(r["spd"]), abucket(r["amount_ng"]), None, None)
+
+
+# the v2 key (exact stored SPD for nanoLC), kept only to count what the amendment changes
+ckey_v2 = lambda r: (r["sample_type"], r["instrument_model"], track(r), lc_class(r), int(r["spd"]), abucket(r["amount_ng"]))
 coh_rows: dict[tuple, list] = C.defaultdict(list)
 for r in valid:
     coh_rows[ckey(r)].append(r)
 
 LC_ORDER = ["evosep", "nanolc", "evosep_unv", "unrec"]
-order = sorted(coh_rows, key=lambda k: (SAMPLES.index(k[0]), MODELS.index(k[1]), k[2], k[5], LC_ORDER.index(k[3]), -k[4]))
+rep_spd = {k: C.Counter(int(r["spd"]) for r in rs).most_common(1)[0][0] for k, rs in coh_rows.items()}
+order = sorted(coh_rows, key=lambda k: (SAMPLES.index(k[0]), MODELS.index(k[1]), k[2], k[5], LC_ORDER.index(k[3]), -rep_spd[k], -k[4]))
 cohorts, cidx = [], {}
 for i, k in enumerate(order):
     rs = coh_rows[k]
@@ -223,6 +275,7 @@ for i, k in enumerate(order):
     lib = [r["library_coverage_pct"] for r in rs if r.get("library_coverage_pct") is not None]
     cols = C.Counter(r["column_model"] for r in rs if (r.get("column_model") or "Unknown").lower() not in ("unknown", ""))
     lens = [int(r["gradient_length_min"]) for r in rs]
+    spds = C.Counter(int(r["spd"]) for r in rs)
     lc = k[3]
     if lc in ("evosep", "nanolc") and len(rs) >= 5:
         why = ""
@@ -233,13 +286,15 @@ for i, k in enumerate(order):
     else:
         why = "sparse"
     cohorts.append({
-        "s": k[0], "m": MODELS.index(k[1]), "t": k[2], "lc": lc, "spd": k[4], "a": k[5],
-        "g": grad_label(lc, k[4], lens),
+        "s": k[0], "m": MODELS.index(k[1]), "t": k[2], "lc": lc, "spd": rep_spd[k], "a": k[5],
+        "band": k[4] if lc == "nanolc" else None, "lcm": k[6], "flow": k[7],
+        "g": grad_label(lc, k[4], lens, spds),
         "n": len(rs), "why": why,
         "labs": sorted({LABS.index(r["display_name"]) for r in rs}),
         "fac": len({FACILITY.get(r["display_name"], r["display_name"]) for r in rs}),
         "nolc": sum(1 for r in rs if not (r.get("lc_system") or "")),
         "lens": [[x, c] for x, c in C.Counter(lens).most_common()],
+        "spds": [[x, c] for x, c in spds.most_common()],
         "v": v, "pep": pep,
         "prot": [round(q(prot, .25)), round(q(prot, .5)), round(q(prot, .75))],
         "pts": round(med([r["median_points_across_peak"] for r in rs]) or 0, 1),
@@ -250,12 +305,55 @@ for i, k in enumerate(order):
         "cols": [c for c, _ in cols.most_common()],
     })
 
+# ---- what the amendment changed, nanoLC runs only (the other LC classes keep their v2 key)
+_nano = [r for r in valid if lc_class(r) == "nanolc"]
+_old = C.defaultdict(set)
+_new = C.defaultdict(set)
+for r in _nano:
+    _old[ckey_v2(r)].add(r["submission_id"])
+    _new[ckey(r)].add(r["submission_id"])
+_old_of = {sid: k for k, ids in _old.items() for sid in ids}
+_new_of = {sid: k for k, ids in _new.items() for sid in ids}
+band_runs_changed = sum(1 for sid in _new_of if _new[_new_of[sid]] != _old[_old_of[sid]])
+_merged = [k for k, ids in _new.items() if len({_old_of[s] for s in ids}) >= 2]
+_split = [k for k, ids in _old.items() if len({_new_of[s] for s in ids}) >= 2]
+_ranked = lambda groups: sum(1 for ids in groups.values() if len(ids) >= 5)
+# a run "moved" if its new cohort is led by a different v2 cohort than its own
+_moved = 0
+for k, ids in _new.items():
+    lead = C.Counter(_old_of[s] for s in ids).most_common(1)[0][0]
+    _moved += sum(1 for s in ids if _old_of[s] != lead)
+_all_old = C.Counter(ckey_v2(r) for r in valid)
+_all_new = C.Counter(ckey(r) for r in valid)
+band_stats = {
+    "nano_runs": len(_nano), "old": len(_old), "new": len(_new),
+    "runs_changed": band_runs_changed, "moved": _moved,
+    "cohorts_old": len(_all_old), "cohorts_new": len(_all_new),
+    "merged": len(_merged), "merged_from": sum(len({_old_of[s] for s in _new[k]}) for k in _merged),
+    "split": len(_split), "ranked_old": _ranked(_old), "ranked_new": _ranked(_new),
+    "mixed_spd": sum(1 for c in cohorts if c["lc"] == "nanolc" and len(c["spds"]) > 1),
+}
+band_mixed = []
+for k in order:
+    if k[3] != "nanolc":
+        continue
+    rs = coh_rows[k]
+    by = C.defaultdict(list)
+    for r in rs:
+        by[int(r["spd"])].append(primary(r))
+    if len(by) < 2:
+        continue
+    band_mixed.append({"s": k[0], "m": k[1], "t": k[2], "a": k[5], "band": k[4], "n": len(rs),
+                       "med": round(S.median(primary(r) for r in rs)),
+                       "parts": [[spd, len(v), round(S.median(v)), gradient_min(spd)] for spd, v in sorted(by.items(), key=lambda kv: -len(kv[1]))]})
+band_examples = [f'{m["m"]} {m["t"]} {m["s"]} {m["a"]} · {m["band"]} min band, n {m["n"]}, median {m["med"]}: ' + "; ".join(f"{spd} SPD ({g} min) ×{n} median {md}" for spd, n, md, g in m["parts"]) for m in band_mixed]
+
 # ---------------------------------------------------------------- runs for table, lookup, lab trend and every restored chart
 # One row per valid run. Columns 0-7 are unchanged from v2; 8-13 feed the restored
 # Plotly charts (ID-free series, Depth by Amount, Matthews & Hayes, Column Comparison).
 #   0 date  1 lab  2 cohort  3 prec  4 pep  5 prot  6 psms  7 pts/peak
 #   8 |MS1 ppm| (null for DDA: not measured)  9 log10 MS1 signal  10 log10 dynamic range
-#  11 amount_ng  12 known-column index (-1 = column not recorded)  13 peak width (s)
+#  11 amount_ng  12 known-column index (-1 = column not recorded)  13 peak width (s)  14 stored SPD
 COLS: list[str] = []
 
 
@@ -285,7 +383,7 @@ for r in sorted(valid, key=lambda r: instant(r)):
         None if (dda or ppm is None) else round(abs(ppm), 2),
         None if (dda or not sig) else round(math.log10(sig), 3),
         None if dda else rnd(r.get("dynamic_range_log10"), 3),
-        r["amount_ng"], col_index(r), rnd(r.get("median_peak_width_sec"), 1),
+        r["amount_ng"], col_index(r), rnd(r.get("median_peak_width_sec"), 1), int(r["spd"]),
     ])
 flag_rows = []
 for r in sorted(flagged, key=lambda r: -primary(r)):
@@ -361,7 +459,8 @@ assert ips["Exploris"]["fallback_match"] == ips["Exploris"]["n"] and ips["timsTO
 
 # ---------------------------------------------------------------- facts for copy, decisions and annotations
 hela_dia_all = [r for r in rows if r["sample_type"] == "hela" and track(r) == "DIA"]
-expl38 = next(c for c in cohorts if c["s"] == "hela" and MODELS[c["m"]] == "Orbitrap Exploris 480" and c["t"] == "DIA" and c["lc"] == "nanolc" and c["spd"] == 38 and c["a"] == "50")
+expl38 = {"v": sorted(primary(r) for r in valid if r["sample_type"] == "hela" and r["instrument_model"] == "Orbitrap Exploris 480" and track(r) == "DIA" and lc_class(r) == "nanolc" and int(r["spd"]) == 38 and abucket(r["amount_ng"]) == "50")}
+expl38["n"] = len(expl38["v"])
 tims_lib = sorted(r["library_coverage_pct"] for r in kept if r["instrument_family"] == "timsTOF" and r.get("library_coverage_pct") is not None)
 two_col = sum(1 for c in cohorts if len(c["cols"]) >= 2)
 latest = max(instant(r) for r in kept)
@@ -566,6 +665,7 @@ facts = {
     "tic_size": tic_size, "tic_live_raw": tic_live_raw,
     "tic_live_gz": 3017306,          # network.tsv: /api/tic-overlay bytes transferred (gzip) on the live cold load
     "cols_unknown": sum(1 for r in rows if (r.get("column_model") or "Unknown").lower() == "unknown"),
+    "band": band_stats, "band_mixed": band_mixed,
 }
 # ---------------------------------------------------------------- Evosep PEG Watch, drawn as on live 1.2.1
 # The snapshot saved the default payloads only: the timsTOF 100 SPD 30-day leaderboard,
@@ -603,7 +703,8 @@ DATA = {"models": MODELS, "labs": LABS, "vendor": VENDOR, "cohorts": cohorts, "r
         "flagged": flag_rows, "facts": facts, "peg": pegsum, "fields": fields,
         "labFac": [FACS.index(FACILITY.get(n, n)) for n in LABS], "cols": COLS,
         "evosep": {str(k): v for k, v in EVOSEP_METHODS.items()},
-        "libsize": {"bruker": 54000, "thermo": 170000}, "tic": tic_out, "example": example}
+        "libsize": {"bruker": 54000, "thermo": 170000}, "tic": tic_out, "example": example,
+        "bands": [[hi, b] for hi, b in GRAD_BANDS] + [[None, 180]], "bandRange": {str(k): v for k, v in BAND_RANGE.items()}}
 
 payload = "window.STAN_MOCK = " + json.dumps(DATA, separators=(",", ":"), ensure_ascii=False) + ";"
 # guard: no raw filename may reach the page (D4)
@@ -624,4 +725,9 @@ print(f"TIC: {len(tic_raw)} traces, {tic_dups} duplicate copies dropped, {tic_he
 print(f"TIC off-axis (live bin-index method): {len(off_own)} distinct runs in their own LC cohort ({len(off_own_id)} identified-ion), {len(off_union)} counting the combined All views; sizes {tic_size}; live {tic_live_raw}")
 print(f"example calibration: {example}")
 print(f"known columns: {COLS}")
+print(f"nanoLC gradient bands: {band_stats}")
+for e in band_examples:
+    print("  mixed-SPD band:", e)
+for sp in (38, 32, 30, 19, 12, 9):
+    print(f"  check: {sp} SPD -> {gradient_min(sp)} min -> {grad_band(gradient_min(sp))} band")
 print(f"payload {len(payload)/1024:.0f} KB -> {OUT.name} {OUT.stat().st_size/1024:.0f} KB")
