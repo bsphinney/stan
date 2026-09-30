@@ -7683,7 +7683,9 @@ function BFailTable({ rows }) {
       const [msg, setMsg] = useState('');
       const [showAdvanced, setShowAdvanced] = useState(false);
 
-      useEffect(() => { if (instruments) setInstYaml(jsyaml(instruments)); }, [instruments]);
+      // community_submit is the lab-wide flag from community.yml, returned
+      // alongside the instruments for display only; never edit or save it here.
+      useEffect(() => { if (instruments) { const { community_submit, ...inst } = instruments; setInstYaml(jsyaml(inst)); } }, [instruments]);
       useEffect(() => { if (thresholds) setThrYaml(jsyaml(thresholds)); }, [thresholds]);
 
       function jsyaml(obj) { return JSON.stringify(obj, null, 2); }
@@ -7736,7 +7738,7 @@ function BFailTable({ rows }) {
                     <div className="metric"><span className="metric-label">Watch directory</span><span className="metric-value" style={{fontSize:'0.8rem', wordBreak:'break-all'}}>{inst.watch_dir || '(not set)'}</span></div>
                     <div className="metric"><span className="metric-label">LC Column</span><span className="metric-value">{[inst.column_vendor, inst.column_model].filter(Boolean).join(' ') || '(not set)'}</span></div>
                     <div className="metric"><span className="metric-label">HeLa amount</span><span className="metric-value">{inst.hela_amount_ng || 50} ng</span></div>
-                    <div className="metric"><span className="metric-label">Community</span><span className="metric-value">{inst.community_submit ? 'Yes' : 'No'}</span></div>
+                    <div className="metric" title="Lab-wide setting: community_submit in community.yml"><span className="metric-label">Community</span><span className="metric-value">{instruments?.community_submit ? 'Yes' : 'No'}</span></div>
                     {inst.spd && <div className="metric"><span className="metric-label">SPD</span><span className="metric-value">{inst.spd}</span></div>}
                     <div className="metric"><span className="metric-label">Status</span><span className="metric-value" style={{color: inst.enabled !== false ? 'var(--pass)' : 'var(--fail)'}}>{inst.enabled !== false ? 'Enabled' : 'Disabled'}</span></div>
                   </div>

@@ -401,7 +401,10 @@ def _read_community_mapping(path: Path) -> dict:
     """community.yml as a dict, ``{}`` when absent; raises when it is not one."""
     if not path.exists():
         return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    from stan.config import read_config_text
+
+    # BOM-aware: PowerShell 5.1 writes community.yml with a UTF-8 BOM.
+    data = yaml.safe_load(read_config_text(path)) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{path} is not a YAML mapping; refusing to overwrite it")
     return data

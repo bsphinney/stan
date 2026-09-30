@@ -1,858 +1,848 @@
-# STAN Mode C — SLURM Cluster (HPC) Deployment Guide
+# STAN Mode C — Install on a SLURM Cluster
 
-> **Version**: v0.2.347  
-> **Related docs**: [Mode A — Instrument PC](../README.md) · [Mode B — WSL2 Lab Box](INSTALL_MODE_B_WSL.md) · [HPC Paths Reference](HPC_PATHS.md) · [CLAUDE.md Hive section](../CLAUDE.md)
+> **Who this is for:** an AI coding agent (Claude Code, Cursor, Codex, Aider, …) that a lab has pointed at this repository to install STAN on the lab's own SLURM cluster, and the person supervising that agent.
+> **Verified against:** `main` at STAN 1.2.x, 2026-09-29. Code is cited by file and symbol. Line numbers drift; symbol names do not.
+> **Other modes:** [Mode A — instrument PC](../README.md#quick-install--pick-your-mode) (not recommended) · [Mode B — separate Linux box](INSTALL_MODE_B_LINUX.md) · [UC Davis reference paths](HPC_PATHS.md)
+
+Mode C runs STAN's searches as SLURM jobs on the lab's cluster. The instrument PCs only acquire and copy raw files. A cron job on a login node finds new raw files and submits one SLURM job for each. Each job searches the file, scores it, and writes the result to STAN's database.
+
+UC Davis runs STAN this way on its Hive cluster. That deployment is the reference: [HPC_PATHS.md](HPC_PATHS.md) lists its paths, and the `scripts/cron_*.sh` files are its running cron jobs. This guide tells you how to reproduce it on a different cluster. It does not assume any UC Davis path, account or credential.
 
 ---
 
-## TL;DR
+## Read this first
 
-Mode C deploys STAN on a SLURM-managed HPC cluster. The instrument PC (Mode A) copies finished raw files to a shared storage path visible from compute nodes; a cron-driven dispatcher (`stan hive-dispatch`) scans that path, submits one SLURM job per raw file, and each job runs the full search + QC pipeline. **Because every HPC cluster is bespoke** — different partition names, QOS+account triples, container runtimes, filesystem types — this guide does not give you a fixed install script. Instead, it walks you through three phases: (1) collect your cluster's specifics in about 10 minutes, (2) paste a self-contained tailoring prompt into your AI coding agent (Claude Code, Cursor, Aider, or similar) which generates a `dispatch.yml`, bootstrap script, and smoke test matched to your cluster, and (3) eyeball the output against a short review checklist before committing. Expect 1–3 hours for a first setup on an unfamiliar cluster.
-
----
-
-## When to Use Mode C
+### What runs where
 
 ```
-Do you have an HPC account with SLURM access?
-  ├─ No  ──→ Do you have a beefy lab workstation (≥32 cores)?
-  │              ├─ Yes ──→ Mode B (WSL2) — docs/INSTALL_MODE_B_WSL.md
-  │              └─ No  ──→ Mode A (Instrument PC) — README.md
-  └─ Yes ──→ Mode C (this doc)
-                  └─ Multiple instruments or high daily sample counts?
-                       ├─ Yes ──→ Mode C is ideal
-                       └─ No  ──→ Mode A or B may be simpler
+Instrument PC (acquires only; no STAN install)
+    │  copy each finished run (scheduled robocopy task, rsync, vendor transfer)
+    ▼
+Shared storage that compute nodes mount
+    <STAN_HOME>/incoming/<instrument>/<run>.d | <run>.raw      flat, one dir per instrument
+    │
+Login-node cron, every 5–15 min, under flock  (walks directories + calls sbatch; no compute)
+    │  stan hive-dispatch --config <STAN_HOME>/dispatch.yml
+    ▼
+One SLURM job per raw file:  stan hive-process
+    QC-named file  → DIA-NN 2.3.0 (DIA) or Sage 0.14.7 (DDA) → metrics, IPS → runs row
+                     (+ TIC, and for Bruker 4DFF feature cloud + PEG/drift when installed)
+    anything else  → "monitor" job: raw-file metadata only, never searched → sample_health row
+    ▼
+<STAN_HOME>/db/stan.db  (SQLite on shared storage)
+    ├──► dashboard on a lab machine (reads a copy of the DB)
+    └──► optional login-node cron: stan submit-all / stan peg-sync → community relay
 ```
 
-Mode C is the right choice when:
-- You already have an HPC allocation and want to offload DIA-NN/Sage compute from instrument PCs.
-- You run many instruments in parallel and want one shared SQLite database and one dashboard.
-- You need DDA and DIA searches to run simultaneously without tying up local hardware.
+The dispatcher decides whether a file is QC by its filename. A file whose name matches `qc_pattern` gets a search job. Every other file gets a monitor job, which reads only the raw file's metadata and is never searched or submitted anywhere. `DEFAULT_QC_PATTERN` in `stan/community/scripts/dispatch_hive.py` matches names containing `HeLa`/`Hel5`/`He5`, `QC` or `stdHe`.
+
+### Portability status at STAN 1.2.x
+
+The dispatcher's config file is portable, but the scripts that run inside each SLURM job still contain UC Davis values. **You must apply a small site patch before any job will work on another cluster.** Step 2.5 lists every value.
+
+| Component | Portable? | What you do |
+|---|---|---|
+| `stan hive-dispatch`: directory walk, dedup, submission cap, `dispatch.yml` | Yes, except the monitor-job SLURM triple | Write your own `dispatch.yml` (Step 2.6) |
+| QC job script rendered by `_render_sbatch()` (`dispatch_hive.py`) | **No.** It hardcodes the UC Davis module names and 4DFF path, and forces `STAN_DB_BACKEND=pg` with a UC Davis token file | Patch it (Step 2.5) |
+| Monitor job profile `_MONITOR_SLURM` (`dispatch_hive.py`) | **No.** Hardcoded to `low` / `publicgrp-low-qos` / `publicgrp` | Patch it (Step 2.5) |
+| Job body constants in `stan/community/scripts/run_one_v1.py` | **No.** These are the DIA-NN image, Sage binary, asset cache, TRFP DLL and bind mounts | Patch them (Step 2.5) |
+| `scripts/hive_bootstrap.sh` | **No.** It uses UC Davis paths and modules, pulls a container image that was never published, and installs Sage from "latest" | Do not run it. Follow Phase 2 instead |
+| Postgres backend (`STAN_DB_BACKEND=pg`) | **No.** The host and database are hardcoded to UC Davis PG Farm (`PG_DEFAULTS` in `stan/db_pg.py`) | Stay on SQLite. Leave `STAN_DB_BACKEND` unset |
+| `scripts/cron_*.sh` | **No.** They contain UC Davis paths | Copy the *pattern* (Phase 4), not the files |
+| `stan/community/scripts/link_flinders_qc.py` | **No.** Its source archive paths are hardcoded | Write your own linker if you need one (Phase 3) |
+| Cron heartbeat (`check_cron_heartbeat` in `stan/reports/instrument_watch.py`) | **No.** Its log directory and job names are hardcoded | Write a small watchdog (Step 4.3) |
+
+Because you will carry a patch, install STAN from a git clone on a site branch (Step 2.2), the same way UC Davis does: its venv imports straight from a checkout. The maintainer's to-do list for making these values configurable is at the end of this guide ([Known gaps](#known-gaps-in-12x-for-the-maintainer)).
+
+### Hard rules
+
+Follow these without exception. Each one cost the reference deployment an outage or lost data.
+
+1. **No compute on a login node.** A login node may walk directories, create symlinks, run `git`/`pip`/`curl`, call `sbatch`, and make HTTP requests (`stan submit-all`). Anything that opens a raw file, runs DIA-NN, Sage, 4DFF or ThermoRawFileParser, or builds a container goes in `sbatch` or `srun`.
+2. **Never put outputs or `#SBATCH --output` under `/tmp`.** It is node-local, and the files are gone when the job ends. Everything goes on shared storage. (A `flock` lock file in the login node's `/tmp` is fine, because only that node uses it.)
+3. **Use `pip install --upgrade`, never `--force-reinstall`, on a distributed filesystem.** On Quobyte, Lustre and GPFS the force-reinstall rename fails with `OSError [Errno 2] … INSTALLER<rand>.tmp`. For a clean reinstall, delete the venv and recreate it.
+4. **No `sudo`.** Ask the cluster admins for OS packages.
+5. **Use one complete `(account, partition, qos)` row from `sacctmgr`.** Mixing a QOS from one row with an account from another fails with `Invalid qos specification`.
+6. **Use exactly DIA-NN 2.3.0 and Sage v0.14.7.** The cluster pipeline records `diann_version = "2.3.0"` on every DIA run whatever binary actually ran (`_extract_metrics` in `stan/pipeline/hive_process.py`). A different DIA-NN would be mislabelled in your own database and in any community submission.
+7. **Home directories get small files only:** `~/.stan/community.yml` and `~/.stan/tools/ThermoRawFileParser/` (a ~10 MB download). Everything large goes on group storage.
+8. **Leave `STAN_DB_BACKEND` unset** everywhere: in cron jobs, job scripts and your shell.
+9. **Harden every cron job:** use `flock`, invoke the script as `bash <script>`, turn off `set -u` while sourcing the module profile, write a dated log, and add a heartbeat. Record which login node holds the crontab. Phase 4 explains each item.
+
+### Is Mode C the right mode?
+
+| Situation | Mode | Guide |
+|---|---|---|
+| The lab has a SLURM cluster, shared storage that compute nodes mount, and someone who can keep a crontab running | **C** | this doc |
+| No cluster, but a spare Linux machine (or a Windows machine running WSL2) | B | [INSTALL_MODE_B_LINUX.md](INSTALL_MODE_B_LINUX.md) (WSL2 specifics: [INSTALL_MODE_B_WSL.md](INSTALL_MODE_B_WSL.md)) |
+| Only the instrument PC | A | [README](../README.md#quick-install--pick-your-mode). Not recommended: searches on the acquisition PC froze UC Davis's timsTOF |
+
+Most of the setup time goes into two steps: finding or building a DIA-NN 2.3.0 image with .NET 8 inside (Step 2.3), and the site patch (Step 2.5).
 
 ---
 
-## Prerequisites
+## Phase 1 — Survey the cluster
 
-Before starting Phase 1, confirm all of these:
-
-- **SSH access to the cluster login node**, plus a working `~/.ssh/config` alias (e.g. `Host hive`) so `ssh hive` works without typing a password. Cluster-managed SSH keys are fine; password auth works but is inconvenient for cron.
-- **Shared storage path visible from compute nodes** — a path that exists on both the login node and inside SLURM job environments. Common filesystems: Lustre (`/lustre/...`), GPFS/Spectrum Scale (`/gpfs/...`), BeeGFS (`/beegfs/...`), NFS (`/nfs/...`), Quobyte (`/quobyte/...`). Home directories (`~/`) are often NOT visible from compute nodes on large clusters — verify before assuming.
-- **Container runtime available on compute nodes**: Apptainer ≥1.0 or Singularity ≥3.x (most academic HPC). Docker is available on some cloud-burst clusters. Bare-metal install (static DIA-NN binary + Sage binary) works on clusters that forbid containers, but requires more manual setup — flag this in Phase 2.
-- **Python 3.10+ accessible on the login node** — either system Python or via `module load python/3.x`. STAN's venv is created once on shared storage and sourced by every SLURM job.
-- **At least one valid SLURM partition + QOS + account triple** for your user. Verify with:
-  ```bash
-  sacctmgr -nP list assoc user=$USER format=account,partition,qos
-  ```
-  If you have no output, contact your cluster admin — you cannot submit jobs without an authorized triple.
-
----
-
-## Phase 1 — Run These Commands on Your Cluster
-
-Run each block on the cluster login node. Save all output — you will paste it into the Master Prompt in Phase 2. The AI needs real output, not your guesses.
-
-### 1.1 — Partition / QOS / Account triples
+Run these on a login node and keep the output. Write every choice you make into `<STAN_HOME>/SITE.md` as you go: the account triple, paths, module names, and the login node that holds the crontab. Whoever maintains the install next needs that record.
 
 ```bash
-sacctmgr -nP list assoc user=$USER format=account,partition,qos
-```
-
-**What this tells the AI:** the exact set of `(account, partition, qos)` triples you are authorized to use. The AI must pick one for routine STAN community searches and one fallback for when the primary quota is exhausted.
-
-Example output (UC Davis Hive):
-```
-genome-center-grp|high|genome-center-grp-high-qos
-genome-center-grp|gpu-a100|genome-center-grp-gpu-a100-qos
-publicgrp|high|publicgrp-high-qos
-publicgrp|low|publicgrp-low-qos
-```
-
-Each `|`-delimited row is one valid triple. The AI should **never mix a QOS from one row with an account from another** — that produces `sbatch: error: Invalid qos specification`.
-
----
-
-### 1.2 — Partition summary
-
-```bash
+hostname                                                   # the node your crontab will live on
+sacctmgr -nP list assoc user=$(id -un) format=account,partition,qos
 sinfo -s
-```
-
-**What this tells the AI:** which partitions exist, their state, node counts, and whether they appear healthy. Useful for confirming the partition name from 1.1 is correct and for spotting drained/down partitions to avoid.
-
-Example output:
-```
-PARTITION AVAIL  TIMELIMIT   NODES(A/I/O/T) NODELIST
-high         up 7-00:00:00       12/4/0/16  cn[001-016]
-low          up 7-00:00:00       60/20/0/80  cn[017-096]
-gpu-a100     up 2-00:00:00        1/1/0/2   gpu[001-002]
-```
-
----
-
-### 1.3 — Full partition details (time limits + CPU caps)
-
-```bash
-scontrol show partition
-```
-
-**What this tells the AI:** the `MaxTime`, `MaxNodes`, `MaxCPUsPerUser`, and `DefaultTime` for each partition. STAN's DIA-NN jobs need 6–8 hours and 8–32 CPUs. If your `high` partition has a 4-hour wall-time limit, the AI must use a different partition or split the resource profile.
-
-Look for lines like:
-```
-PartitionName=high MaxTime=7-00:00:00 MaxCPUsPerUser=64 ...
-```
-
----
-
-### 1.4 — Available Python modules
-
-```bash
-module avail python 2>&1 | tr ' ' '\n' | grep -i '^python'
-```
-
-**What this tells the AI:** which Python versions are available via the module system. STAN requires Python 3.10+. The bootstrap script will need `module load python/X.Y.Z` before creating the venv. If nothing appears, run `module spider python` as an alternative.
-
-Example output:
-```
-python/3.10.4
-python/3.11.9
-python/3.12.2
-```
-
-Pick the highest 3.11.x or 3.12.x available — STAN's CI targets 3.10+ and newer is fine.
-
----
-
-### 1.5 — Container runtime
-
-```bash
-module avail apptainer singularity 2>&1
-which apptainer 2>/dev/null || which singularity 2>/dev/null || echo "no container runtime on PATH"
-apptainer --version 2>/dev/null || singularity --version 2>/dev/null || true
-```
-
-**What this tells the AI:** whether Apptainer or Singularity is available, and its version. Apptainer ≥1.0 and Singularity ≥3.8 both work with `.sif` container images. If neither is present, the AI must flag this and use bare-binary install instead (DIA-NN's static Linux binary + Sage's Rust binary).
-
-Example output:
-```
-apptainer/1.2.5
-apptainer version 1.2.5
-```
-
----
-
-### 1.6 — Shared storage probe
-
-```bash
-df -h /quobyte /scratch /home /lustre /gpfs /beegfs /project /work 2>/dev/null | head -30
-```
-
-**What this tells the AI:** which shared filesystems exist, their sizes, and their mount points. The AI needs to pick one for: (a) the STAN venv, (b) the SQLite database, (c) DIA-NN/Sage search outputs, (d) SLURM stdout/stderr logs, and (e) the watch directory where instrument PCs drop raw files.
-
-Also run:
-```bash
-ls -ld /scratch/$USER /project/$USER /work/$USER 2>/dev/null
-```
-
-to check if per-user subdirectories already exist.
-
-Example output:
-```
-Filesystem      Size  Used Avail Use% Mounted on
-quobyte         200T   80T  120T  40% /quobyte
-/dev/sda1        50G   30G   20G  60% /home
-```
-
----
-
-### 1.7 — Scheduler version
-
-```bash
-which sbatch && sbatch --version
-```
-
-**What this tells the AI:** the SLURM version. Some `#SBATCH` directives differ between 20.x and 23.x. Most are stable; this is a sanity check.
-
----
-
-### 1.8 — Base OS on compute nodes
-
-```bash
+scontrol show partition <partition> | grep -oE 'MaxTime=[^ ]+|DefaultTime=[^ ]+|MaxCPUsPerNode=[^ ]+'
+squeue --me --noheader >/dev/null; echo "squeue --me exit=$?"  # must be 0; the dispatcher needs --me
+module avail python 2>&1 | tr ' ' '\n' | grep -i '^python'  # or: module spider python
+module avail apptainer singularity dotnet 2>&1 | tr ' ' '\n' | grep -iE 'apptainer|singularity|dotnet'
+command -v apptainer singularity; apptainer --version 2>/dev/null || singularity --version
+df -h /home /scratch /project /work /lustre /gpfs /beegfs /nfs 2>/dev/null
 cat /etc/os-release | grep PRETTY_NAME
-# Also check a compute node if you can:
-srun --partition=<your-partition> --account=<your-account> \
-     --time=00:02:00 --cpus-per-task=1 --mem=1G \
-     cat /etc/os-release 2>/dev/null | grep PRETTY_NAME || true
+for u in https://github.com https://huggingface.co https://brettsp-stan.hf.space; do
+  printf '%s ' "$u"; curl -sS -o /dev/null -w '%{http_code}\n' --max-time 15 "$u"; done
 ```
 
-**What this tells the AI:** whether compute nodes run RHEL/Rocky/AlmaLinux (yum/dnf) or Ubuntu/Debian (apt). This matters for system package installation in the bootstrap script and for DIA-NN's `.NET 8 SDK` dependency path (see Appendix B).
+Then repeat the OS, storage and egress checks from a compute node:
+
+```bash
+srun --account=<acct> --partition=<part> --qos=<qos> --time=00:05:00 --cpus-per-task=1 --mem=1G \
+  bash -c 'hostname; grep PRETTY_NAME /etc/os-release; ls -ld ~ <candidate STAN_HOME parent>;
+           for u in https://github.com https://huggingface.co; do printf "%s " $u;
+           curl -sS -o /dev/null -w "%{http_code}\n" --max-time 15 $u; done'
+```
+
+| Record | Used for |
+|---|---|
+| One `sacctmgr` row for search jobs, and one cheap or preemptible row for monitor jobs | `dispatch.yml` `slurm:` block and the patched `_MONITOR_SLURM` |
+| `MaxTime` of that partition | Must exceed `time:` in `dispatch.yml` (default `06:00:00`) |
+| A Python module between 3.10 and 3.12 | The venv. `[peg]` pins `numpy<2`, which has no wheels for Python 3.13+ |
+| Apptainer/Singularity module name and version | Running DIA-NN; Thermo PEG |
+| A .NET 8 module name, if there is one | Thermo `.raw` (ThermoRawFileParser; DIA-NN outside a container) |
+| A group-writable filesystem mounted on login **and** compute nodes | `STAN_HOME` |
+| Whether `~` is visible from compute nodes | `~/.stan/tools/ThermoRawFileParser` must be readable inside jobs |
+| Egress from login and compute nodes | Login: GitHub, PyPI, Hugging Face, and the relay if you submit to the community. Compute: none needed if you pre-stage assets (Step 2.4) |
+| `hostname` of the login node for the crontab | Clusters with several login nodes keep a separate crontab on each. At UC Davis `ssh hive` lands on `login1`, while STAN's crontab is on `login2`; `crontab -l` on `login1` says `no crontab` |
+
+**Verify:** you have one complete `sacctmgr` row, a Python 3.10–3.12 module, a container runtime, and a shared path that a compute node can list. If any of these is missing, stop and ask the person you are working for. Do not guess.
 
 ---
 
-## Phase 2 — The Master Prompt
+## Phase 2 — Install
 
-Copy everything between the `BEGIN MASTER PROMPT` and `END MASTER PROMPT` markers below (including the cluster output you collected in Phase 1) and paste it into Claude Code, Cursor, Aider, or your preferred AI coding agent. The agent will generate a tailored `dispatch.yml`, bootstrap script, and smoke test for your cluster.
+Set these once. Every later step uses them.
 
----
-
+```bash
+export STAN_HOME=/shared/<lab>/stan          # shared, group-readable, mounted on compute nodes
+export PY_MODULE=python/3.11.9               # your module, 3.10–3.12
 ```
-===== BEGIN MASTER PROMPT =====
 
-You are helping me configure STAN (Standardized proteomic Throughput ANalyzer) for
-my SLURM HPC cluster. STAN is a proteomics QC tool that dispatches DIA-NN and Sage
-mass-spec search jobs via SLURM and stores results in a SQLite database.
+### 2.1 Directory layout
 
-## Your goal
+```bash
+mkdir -p "$STAN_HOME"/{src,db,processing,logs/sbatch,logs/dispatch,incoming,assets,tools,backups}
+```
 
-Produce four artifacts tailored to my cluster:
-1. `<cluster>_dispatch.yml`         — STAN's Hive-side dispatcher config
-2. `bootstrap_<cluster>.sh`         — Idempotent install script (run once on the login node)
-3. `instruments.yml snippet`        — The instrument block(s) to add to ~/.stan/instruments.yml
-                                       on each instrument PC
-4. `submit_smoke_test.sh`           — A minimal sbatch smoke test (1 CPU, 1 GB, 5 min,
-                                       runs `/bin/echo "hello stan" && stan version`)
+| Directory | Holds | `dispatch.yml` key |
+|---|---|---|
+| `src/` | git clone of STAN (site branch) | — |
+| `venv/` | Python venv, created in 2.2 | `stan_venv` |
+| `db/stan.db` | SQLite database | `db_path` |
+| `processing/<run>/` | DIA-NN/Sage output per raw file | `out_root` |
+| `logs/sbatch/` | job stdout, rendered job scripts (`scripts/`), monitor logs (`monitor/`) | `sbatch_log_dir` |
+| `logs/dispatch/` | one JSONL summary line per dispatcher run | `dispatch_log_dir` |
+| `logs/` | cron logs (`cron_*_YYYYMMDD.log`) | — |
+| `incoming/<instrument>/` | flat watch directory per instrument | `instruments[].watch_dir` |
+| `assets/` | community FASTA and spectral libraries | patched `ASSET_CACHE` |
+| `tools/` | Sage, DIA-NN image, 4DFF, TRFP image | patched constants |
 
-## What success looks like
+**Verify from a compute node:**
 
-- `bootstrap_<cluster>.sh` runs to completion with no errors, creates the STAN venv on
-  shared storage, and prints the installed `stan version`.
-- `submit_smoke_test.sh` submits a SLURM job that completes successfully and prints
-  "hello stan" plus the STAN version in its output log.
-- A real DIA-NN or Sage search (dispatched via `stan hive-dispatch`) produces a populated
-  row in the `runs` table of `stan.db`.
+```bash
+srun --account=<acct> --partition=<part> --qos=<qos> --time=00:02:00 --cpus-per-task=1 --mem=1G \
+  bash -c "touch $STAN_HOME/processing/.w && rm $STAN_HOME/processing/.w && echo WRITE-OK"
+```
 
-## Files to read BEFORE generating anything
+### 2.2 STAN from a git clone, editable
 
-Read these files from the STAN repo (https://github.com/bsphinney/stan) before writing
-any config or scripts. Do not invent structure — derive it from the actual code:
+```bash
+module load "$PY_MODULE"
+git clone https://github.com/bsphinney/stan.git "$STAN_HOME/src"
+git -C "$STAN_HOME/src" switch -c site/<cluster-name>
+python3 -m venv "$STAN_HOME/venv"
+"$STAN_HOME/venv/bin/pip" install --upgrade pip
+"$STAN_HOME/venv/bin/pip" install -e "$STAN_HOME/src[peg]"
+```
 
-1. `stan/community/scripts/dispatch_hive.py`
-   Pay special attention to `DEFAULT_CONFIG_TEMPLATE` (the canonical dispatch.yml
-   template), `DEFAULT_CONFIG_PATH`, and the `_MONITOR_SLURM` dict (monitor job profile).
+- `[peg]` installs `alphatims>=1.0,<1.0.9`, `numpy<2` and `pandas<3`, which Bruker PEG and DIA window drift need. Under pandas 3, alphatims frame windows shift and PEG stays NULL (`stan/metrics/alphatims_guard.py`). Do not use `stan install-peg-deps` here: it does not pin pandas.
+- Do not add `[thermo]` (`fisher_py`). It needs .NET inside the venv. Thermo PEG on a cluster uses the ThermoRawFileParser container instead (Step 2.3).
+- If `python3 -m venv` fails with an `ensurepip` error, the system Python lacks it. Load the Python module first; that is why the module comes first above.
 
-2. `scripts/hive_bootstrap.sh`
-   This is the working Hive (UC Davis) bootstrap. Use it as your structural template,
-   adapting paths, module names, and partition triples for my cluster.
+**Verify:**
 
-3. `stan/pipeline/hive_process.py` and `stan/pipeline/hive_steps.py`
-   These run inside SLURM jobs. Understanding the expected environment (venv on PATH,
-   shared storage for outputs, apptainer available) shapes your bootstrap.
+```bash
+"$STAN_HOME/venv/bin/stan" version                      # "STAN v1.2.x"   (there is no --version flag)
+"$STAN_HOME/venv/bin/python" -c "import stan; print(stan.__file__)"   # must be under $STAN_HOME/src
+"$STAN_HOME/venv/bin/stan" doctor                       # numpy 1.x, pandas 2.x, alphatims 1.0.8
+```
 
-4. `CLAUDE.md` — the "HPC: Hive (UC Davis)" section
-   Contains the authoritative Hive partition triples, SSH ControlMaster recipe, and
-   the rules of engagement. Use the Hive setup as your reference template, then adapt.
+**Updating later:** `git -C "$STAN_HOME/src" fetch origin && git -C "$STAN_HOME/src" rebase origin/main`. Rerun the `pip install -e` line only when `pyproject.toml` dependencies changed. The checkout *is* the deployment: a job that starts after the rebase runs the new code. Re-check the site patch after every rebase (Step 2.5, "Verify").
 
-5. `docs/HPC_PATHS.md`
-   Container paths, FASTA locations, storage layout for Hive. Shows the pattern to
-   replicate for my cluster.
+### 2.3 Search engines and tools
 
-## Anti-invention rules (CRITICAL — read before writing anything)
+| Tool | Version | Needed for | Put it in | How the job finds it |
+|---|---|---|---|---|
+| DIA-NN | **2.3.0 exactly**, in an Apptainer image with the .NET 8 SDK (built from DIA-NN's own Dockerfile) | DIA QC; Thermo `.raw` inside DIA-NN | `$STAN_HOME/tools/diann_2.3.0.sif` | patched `DIANN_SIF` + `DIANN_BIN` |
+| Sage | **v0.14.7** static binary | DDA QC | `$STAN_HOME/tools/sage-v0.14.7-x86_64-unknown-linux-gnu/sage` | patched `SAGE_BIN` |
+| ThermoRawFileParser (TRFP) net8 DLL + a .NET 8 runtime | the build STAN auto-downloads (`v.2.0.0-dev`) | Thermo DIA/DDA detection; `.raw`→mzML before Sage | `~/.stan/tools/ThermoRawFileParser/` | detection: automatic. Sage: patched `TRFP_DLL` |
+| 4DFF (`uff-cmdline2`) | pinned by `stan install-4dff` | Bruker feature cloud (optional) | `$STAN_HOME/tools/bruker_ff/linux/` | `STAN_BRUKER_FF_DIR` in the patched job script |
+| TRFP Apptainer image | `quay.io/biocontainers/thermorawfileparser:1.4.5--ha8f3691_0` | Thermo PEG (optional) | `$STAN_HOME/tools/trfp.sif` | `STAN_TRFP_SIF` in the patched job script |
 
-- **Do NOT invent partition names, QOS values, or account names.** Use only the triples
-  I provide from `sacctmgr` output. If uncertain which triple to use as default, ask me.
-- **Do NOT invent container paths.** Ask me where my cluster's Apptainer `.sif` files
-  live, or whether I need to pull the DIA-NN container from a registry.
-- **Do NOT assume the shared storage path.** Use only the mount points I show from `df`.
-- **Do NOT assume the Python module name.** Use only the module name I show from
-  `module avail python`.
-- **Do NOT assume the package manager** (apt vs dnf/yum vs neither). Use only the OS
-  I provide from `cat /etc/os-release`.
-- If any required value is missing from my cluster output, **ask me a specific question**
-  rather than guessing.
+**DIA-NN.** STAN does not ship a DIA-NN image. `hive_bootstrap.sh`'s `pull_diann_sif()` points at `docker://registry.hf.space/brettsp-stan-proteomics:latest`. The script itself says that image was never published, and a registry probe on 2026-09-29 returned 404. Build your own from DIA-NN's release zip. The zip ships a `Dockerfile` and `make-docker.sh`. That Dockerfile starts from `debian:12`, installs `dotnet-sdk-8.0` from Microsoft's repository, and copies the build to `/diann-2.3.0/`, so `DIANN_BIN` stays `/diann-2.3.0/diann-linux`:
 
-## Artifact specifications
+```bash
+# on any machine with Docker (not the cluster):
+curl -fLO https://github.com/vdemichev/DiaNN/releases/download/2.0/DIA-NN-2.3.0-Academia-Linux-Preview.zip
+unzip DIA-NN-2.3.0-Academia-Linux-Preview.zip -d diann-build && cd diann-build
+bash make-docker.sh                                   # → image "diann_docker"
+docker save diann_docker -o diann_docker.tar          # copy this tar to $STAN_HOME/tools/
+# on the cluster, inside SLURM (converting to SIF is CPU-heavy):
+srun --account=<acct> --partition=<part> --qos=<qos> --time=01:00:00 --cpus-per-task=4 --mem=16G \
+  apptainer build "$STAN_HOME/tools/diann_2.3.0.sif" "docker-archive://$STAN_HOME/tools/diann_docker.tar"
+```
 
-### 1. `<cluster>_dispatch.yml`
+The 2.3.0 Linux build is published only as `-Preview.zip`, and DIA-NN publishes its 2.x builds as assets of the `2.0` release tag. DIA-NN is academic-licensed, so the human must read and accept the license. If your cluster forbids containers, see [Appendix B](#appendix-b--net-8-for-thermo-raw-on-a-cluster-no-sudo) and plan a larger patch to `run_diann()` (it calls `apptainer exec`).
 
-Model this on the `DEFAULT_CONFIG_TEMPLATE` constant in `dispatch_hive.py`. Required keys:
-- `db_path`           — absolute path on shared storage for stan.db
-- `out_root`          — absolute path for DIA-NN/Sage search outputs
-- `sbatch_log_dir`    — absolute path for SLURM stdout/stderr (NEVER /tmp — job-node-local)
-- `dispatch_log_dir`  — absolute path for dispatcher JSONL logs
-- `stan_venv`         — absolute path to the Python venv created by the bootstrap
-- `slurm:`            — resource block with partition/qos/account/time/cpus/mem
-- `max_submissions_per_run` — 50 is a safe default
-- `qc_pattern`        — regex for QC filename matching (default: `(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)`)
-- `max_attempts`      — 3
-- `instruments:`      — list of instrument blocks (one per mass spec being watched)
+At UC Davis, two DIA-NN images with near-identical names differ: one silently skips `.raw` files because it has no .NET. See [external_tools.md → DIA-NN containers on Hive](external_tools.md#dia-nn-containers-on-hive--critical). Test yours with a real Thermo `.raw` before relying on it (Step 2.7).
 
-The `slurm:` block MUST use a valid (partition, qos, account) triple from my `sacctmgr`
-output. QOS is bound to account — mixing them causes `Invalid qos specification`.
+**Sage:**
 
-### 2. `bootstrap_<cluster>.sh`
+```bash
+cd "$STAN_HOME/tools"
+curl -fLO https://github.com/lazear/sage/releases/download/v0.14.7/sage-v0.14.7-x86_64-unknown-linux-gnu.tar.gz
+tar -xzf sage-v0.14.7-x86_64-unknown-linux-gnu.tar.gz      # → sage-v0.14.7-x86_64-unknown-linux-gnu/sage
+./sage-v0.14.7-x86_64-unknown-linux-gnu/sage --version     # prints "sage 0.14.6"
+```
 
-Model this on `scripts/hive_bootstrap.sh`. Required sections:
-- `set -euo pipefail`
-- Source the cluster's module system (`/etc/profile.d/modules.sh` or equivalent)
-- `module load python/<version>` (use the version I provide)
-- Create the venv on shared storage if it does not already exist
-- `pip install --upgrade` STAN from GitHub:
-  `"stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"`
-  Use `--upgrade` NOT `--force-reinstall` (the force-reinstall flag triggers rename
-  failures on distributed filesystems like Quobyte and Lustre).
-- `pip install 'alphatims>=1.0,<1.0.9' 'numpy<2'` for PEG + drift (idempotent)
-- Print `stan version` to confirm install
-- `mkdir -p` all required directories (db dir, out_root, sbatch_log_dir, dispatch_log_dir,
-  incoming dirs per instrument)
-- Write `dispatch.yml` via `stan hive-dispatch --print-default-config` only if the file
-  does not already exist (idempotent)
-- **DIA-NN**: call `pull_diann_sif()` — pulls the pre-built STAN container image
-  (`docker://registry.hf.space/brettsp-stan-proteomics:latest`) via `apptainer pull`
-  on a compute node (CPU-intensive; mirrors the DE-LIMP `hpc_setup.sh` pattern).
-  The pull is non-fatal if the image is not yet published. On Hive, the existing
-  container at `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif` is already present
-  and referenced in `dispatch.yml` — the pull step adds the STAN-packaged image as a
-  future upgrade path. **You do not need to install DIA-NN manually.**
-- **Sage**: call `download_sage_linux()` — downloads the latest Sage release tarball
-  from GitHub, extracts the static binary to `<STAN_BASE>/sage/sage`, and writes
-  `sage_binary` into `dispatch.yml`. **You do not need to install Sage manually.**
+The v0.14.7 release binary reports `sage 0.14.6` (checked 2026-09-29 on the Linux and macOS builds of that release). That is the right file.
 
-Do NOT use `sudo` — the script runs as the user on the login node.
-Do NOT write outputs to `/tmp` — node-local, invisible after the job ends.
-Do NOT `pip install --force-reinstall` — distributed-filesystem rename bug.
+**ThermoRawFileParser** (Thermo labs). This is a download only, so it is fine on a login node:
 
-### 3. `instruments.yml snippet`
+```bash
+"$STAN_HOME/venv/bin/python" -c "from stan.tools.trfp import ensure_installed; print(ensure_installed())"
+# → /home/<you>/.stan/tools/ThermoRawFileParser/ThermoRawFileParser.dll
+```
 
-This goes in `~/.stan/instruments.yml` on each instrument PC (the Windows boxes attached
-to the mass specs). The relevant keys for Mode C:
+Jobs need `dotnet` (a .NET 8 runtime) on `PATH`. If `~/.stan` is not visible on compute nodes, choose Bruker-only or ask the admins to mount home. There is no override for the `~/.stan` location.
+
+**4DFF** (Bruker, optional):
+
+```bash
+STAN_BRUKER_FF_DIR="$STAN_HOME/tools/bruker_ff" "$STAN_HOME/venv/bin/stan" install-4dff --platform linux
+ls -l "$STAN_HOME/tools/bruker_ff/linux/uff-cmdline2"
+```
+
+**Thermo PEG image** (optional). UC Davis's image was built from the BioContainers ThermoRawFileParser 1.4.5 image (`apptainer inspect`, 2026-09-29). Pull the same one inside SLURM:
+
+```bash
+srun --account=<acct> --partition=<part> --qos=<qos> --time=00:30:00 --cpus-per-task=2 --mem=8G \
+  apptainer pull "$STAN_HOME/tools/trfp.sif" docker://quay.io/biocontainers/thermorawfileparser:1.4.5--ha8f3691_0
+```
+
+STAN runs `apptainer exec --cleanenv <sif> ThermoRawFileParser -i=… -o=… -f=1 -L=1`. Background and costs are in [PEG_WATCH.md → Thermo PEG on Hive](PEG_WATCH.md#thermo-peg-on-hive).
+
+### 2.4 Pre-stage the community search assets
+
+Every search uses the frozen community FASTA and a vendor spectral library. A job downloads any file missing from `ASSET_CACHE` with `hf download`, and a compute node usually cannot. Stage them now from the login node:
+
+```bash
+cd "$STAN_HOME/assets"
+for f in human_hela_202604.fasta hela_timstof_202604.parquet hela_orbitrap_202604.parquet; do
+  curl -fL -o "$f" "https://github.com/bsphinney/stan/releases/download/v0.1.0-assets/$f"
+done
+md5sum human_hela_202604.fasta hela_timstof_202604.parquet hela_orbitrap_202604.parquet
+```
+
+**Verify** that the hashes equal `EXPECTED_ASSET_HASHES` in `stan/community/validate.py`:
+
+| File | MD5 | Size |
+|---|---|---|
+| `human_hela_202604.fasta` | `8de1d9bd0a052b175f88f66f82500d92` | 13.9 MB |
+| `hela_timstof_202604.parquet` | `ad72bfb2730644c69147ba8f34bfe982` | 12.4 MB |
+| `hela_orbitrap_202604.parquet` | `ac84e40f5b2f23e1286f28a7baeccec2` | 38.4 MB |
+
+The files sit directly in `assets/`, not in subdirectories. That is where `get_community_diann_params()` looks.
+
+### 2.5 Apply the site patch
+
+Edit these in `$STAN_HOME/src` on your site branch and commit them. Change nothing else.
+
+| File | Symbol | UC Davis value | Set to |
+|---|---|---|---|
+| `stan/community/scripts/run_one_v1.py` | `DIANN_SIF` | `/quobyte/…/dia-nn/diann_2.3.0.sif` | your DIA-NN 2.3.0 image |
+| 〃 | `DIANN_BIN` | `/diann-2.3.0/diann-linux` | the binary's path inside your image |
+| 〃 | `SAGE_BIN` | `/quobyte/…/sage-v0.14.7-…/sage` | your Sage v0.14.7 binary |
+| 〃 | `ASSET_CACHE` | `/quobyte/…/stan_community_assets` | `$STAN_HOME/assets` (absolute path) |
+| 〃 | `TRFP_DLL` | `/quobyte/…/ThermoRawFileParser.dll` | `~/.stan/tools/ThermoRawFileParser/ThermoRawFileParser.dll`, written as an absolute path |
+| 〃 | `--bind` list in `run_diann()` | `/quobyte`, `/nfs`, `/tmp` | your storage roots plus `/tmp`. Apptainer fails outright if a bind source does not exist |
+| `stan/community/scripts/dispatch_hive.py` | `_MONITOR_SLURM` | `low` / `publicgrp-low-qos` / `publicgrp` | a valid triple of yours, ideally cheap or preemptible (the job keeps `--requeue`) |
+| 〃 | `_render_sbatch()`: `module load apptainer`, `module load dotnet-core-sdk/8.0.4` | UC Davis module names | your module names. Both lines end in `\|\| true`, so a wrong name fails silently |
+| 〃 | `_render_sbatch()`: `bruker_ff_dir` | `/quobyte/proteomics-grp/brett/bruker_ff` | `$STAN_HOME/tools/bruker_ff` (or leave it; 4DFF is then skipped) |
+| 〃 | `_render_sbatch()`: `export STAN_DB_BACKEND=pg` and the `PGPASSWORD` block | UC Davis PG Farm | **delete these lines**. Otherwise every QC job fails at the DB write with `no PG Farm password` |
+| 〃 | `_render_sbatch()` | — | optional: add `export STAN_TRFP_SIF=$STAN_HOME/tools/trfp.sif` for Thermo PEG |
+| 〃 | `_render_monitor_sbatch()`: `module load dotnet-core-sdk/8.0.4` | UC Davis module name | your .NET module |
+
+Leave these alone. They are harmless or unused off-site:
+
+- `MIRROR_BASE` / `FAMILY_TO_HOST` in `run_one_v1.py`: optional per-instrument library lookups that are skipped when the path is absent.
+- `DEFAULT_CONFIG_PATH` and the `_load_config()` defaults: you always pass `--config` and set every key.
+- The `--partition` map in `dispatch_one_raw()`: do not use `--partition`; edit `dispatch.yml` instead.
+
+The rendered job script sources `/etc/profile.d/modules.sh` after `set -euo pipefail`. That works at UC Davis because the job inherits the cron's environment (`sbatch` exports it by default). If you touch those lines, wrap the sourcing in `set +u` … `set -u` the way the cron scripts do (Phase 4).
+
+**Verify.** Render both job scripts from your config after writing `dispatch.yml` (Step 2.6), and check the job-body constants:
+
+```bash
+cd "$STAN_HOME" && venv/bin/python - <<'EOF'
+from pathlib import Path
+from stan.community.scripts.dispatch_hive import _load_config, _render_sbatch, _render_monitor_sbatch
+from stan.community.scripts import run_one_v1 as r
+cfg = _load_config(Path("dispatch.yml")); inst = cfg["instruments"][0]
+raw = Path(inst["watch_dir"]) / "HeLa_example.d"
+text = _render_sbatch(raw, inst, cfg) + _render_monitor_sbatch(raw, inst, cfg)
+bad = [s for s in ("quobyte", "/nfs", "publicgrp", "genome-center", "pgfarm", "STAN_DB_BACKEND=pg")
+       if s in text]
+print("UC Davis strings left in job scripts:", bad or "none")
+for name in ("DIANN_SIF", "SAGE_BIN", "ASSET_CACHE", "TRFP_DLL"):
+    p = getattr(r, name); print(f"{name:12} {p}  {'OK' if Path(p).exists() else 'MISSING'}")
+EOF
+git -C "$STAN_HOME/src" diff origin/main --stat     # only run_one_v1.py and dispatch_hive.py
+```
+
+Expect `none`, and `OK` on every constant you use. (`TRFP_DLL` may read `MISSING` in a Bruker-only lab.)
+
+### 2.6 Write `dispatch.yml`
+
+Write it by hand from this template. **Do not use `stan hive-dispatch --print-default-config` as-is:** its `qc_pattern` line is double-quoted, and YAML rejects the backslashes (`ScannerError while scanning a double-quoted scalar`). Single quotes work.
+
 ```yaml
+# <STAN_HOME>/dispatch.yml — read on every dispatcher run; no restart needed.
+db_path: /shared/<lab>/stan/db/stan.db
+out_root: /shared/<lab>/stan/processing
+sbatch_log_dir: /shared/<lab>/stan/logs/sbatch       # never /tmp
+dispatch_log_dir: /shared/<lab>/stan/logs/dispatch
+stan_venv: /shared/<lab>/stan/venv
+
+slurm:                     # ONE complete sacctmgr row, plus limits
+  partition: <partition>
+  qos: <qos>
+  account: <account>
+  time: "06:00:00"         # must be below the partition MaxTime
+  cpus: 8
+  mem: "32G"
+
+max_submissions_per_run: 5 # new jobs per dispatcher run; keep low on SQLite (Step 4.4)
+max_attempts: 3            # stop retrying a raw after 3 failed attempts
+qc_pattern: '(?i)(he(l[_\-\s]?[a5\d]|[_\-\s]?\d)|qc|std[_\-\s]?he)'   # SINGLE quotes
+
 instruments:
-  - name: "<instrument name>"
-    watch_dir: "C:/Data/<instrument>"
-    extensions: [".d"]           # or [".raw"] for Thermo
-    vendor: bruker               # or thermo
-    processing_mode: hive
-    hive_host: "<ssh alias for my cluster login node>"
-    hive_upload_dir: "<shared storage incoming path for this instrument>"
-    submit_after_upload: true    # trigger dispatch after upload
+  - name: timsTOF HT                 # stored as runs.instrument
+    family: timsTOF                  # IPS cohort key
+    vendor: bruker                   # bruker | thermo
+    watch_dir: /shared/<lab>/stan/incoming/timsTOF-HT
+    column_vendor: ""                # optional
+    column_model: ""                 # optional
+    # amount_ng: 50                  # optional HeLa load stamp (job default 50)
+  - name: Orbitrap Exploris 480
+    family: Exploris
+    vendor: thermo
+    watch_dir: /shared/<lab>/stan/incoming/Exploris480
 ```
-Generate one block per instrument I mention.
 
-### 4. `submit_smoke_test.sh`
+- `family` has built-in mappings for `timsTOF`, `Lumos` and `Exploris` (`_resolve_instrument` in `run_one_v1.py`). Any other value is stored verbatim as the instrument family.
+- Per-instrument `name`, `family`, `vendor` and `watch_dir` are required; the dispatcher raises `KeyError` without them. See [Appendix A](#appendix-a--dispatchyml-keys) for every key.
 
-A minimal SLURM script that verifies the venv + module load + scheduler triple all work:
+**Verify** with a dry run. It walks and classifies files and submits nothing:
+
+```bash
+"$STAN_HOME/venv/bin/stan" hive-dispatch --config "$STAN_HOME/dispatch.yml" --dry-run
+```
+
+Expected output, from a scratch test with one timsTOF QC, one Exploris QC, one blank and one `.partial`:
+
+```
+[dry-run] would submit HeLa_50ng_60spd_01.d (timsTOF HT) [qc]
+[dry-run] would submit Blank_03.raw (Orbitrap Exploris 480) [monitor]
+[dry-run] would submit QC_HeLa_200ng_02.raw (Orbitrap Exploris 480) [qc]
+Dry-run: scanned=3 submitted=3 skipped(processed=0, pattern=0, in_flight=0, max_attempts=0) failed=0 capped=0
+```
+
+`.partial` and `.tmp` entries are skipped. `pattern=` is always 0 at 1.2.x, because every file is either QC or monitor. Exit code 0 means the config loaded.
+
+### 2.7 Smoke test on a compute node
+
+Save this as `$STAN_HOME/smoke.sbatch` and fill in the placeholders. It checks every dependency a real job needs. It is not a search.
+
 ```bash
 #!/bin/bash
 #SBATCH --job-name=stan-smoke
 #SBATCH --partition=<partition>
 #SBATCH --qos=<qos>
 #SBATCH --account=<account>
-#SBATCH --time=00:05:00
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=1G
-#SBATCH --output=<sbatch_log_dir>/stan-smoke-%j.out
-
-source /etc/profile.d/modules.sh  # adapt if different on my cluster
-module load python/<version>
-source <stan_venv>/bin/activate
-
-/bin/echo "hello stan"
-stan version
-```
-Use 1 CPU, 1 GB, 5 minutes — the lightest possible job that still exercises the
-environment stack. Fill in the SBATCH directives from my sacctmgr output.
-
-## My cluster specifics
-
-[PASTE YOUR PHASE 1 OUTPUT HERE — one section per command]
-
-### sacctmgr output (partition/QOS/account triples)
-```
-<paste output of: sacctmgr -nP list assoc user=$USER format=account,partition,qos>
-```
-
-### sinfo -s output
-```
-<paste output of: sinfo -s>
-```
-
-### scontrol show partition (relevant partitions only)
-```
-<paste key lines including MaxTime, MaxCPUsPerUser>
+#SBATCH --time=00:20:00
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --output=<STAN_HOME>/logs/sbatch/stan-smoke_%j.out
+set -uo pipefail
+set +u
+source /etc/profile.d/modules.sh 2>/dev/null || true      # your site's module init
+module load <apptainer-module> 2>/dev/null || true
+module load <dotnet-module> 2>/dev/null || true
+set -u
+source <STAN_HOME>/venv/bin/activate
+echo "node: $(hostname)"; stan version
+command -v apptainer || echo "MISSING apptainer"
+command -v dotnet    || echo "MISSING dotnet (Thermo only)"
+command -v hf        || echo "MISSING hf (only needed if assets are not pre-staged)"
+python - <<'EOF'
+import numpy, pandas, alphatims
+print("numpy", numpy.__version__, "pandas", pandas.__version__, "alphatims", alphatims.__version__)
+from pathlib import Path
+from stan.community.scripts import run_one_v1 as r
+from stan.watcher.detector import detect_mode
+print("DIA-NN image", r.DIANN_SIF, Path(r.DIANN_SIF).exists())
+for raw, vendor in [("<one Bruker QC .d>", "bruker"), ("<one Thermo QC .raw>", "thermo")]:
+    if Path(raw).exists():
+        print(vendor, "mode:", detect_mode(Path(raw), vendor))   # UNKNOWN = TRFP/dotnet broken
+EOF
+eval "$(python -c 'from stan.community.scripts import run_one_v1 as r; print(f"SIF={r.DIANN_SIF!r}; BIN={r.DIANN_BIN!r}; SAGE={r.SAGE_BIN!r}")')"
+apptainer exec "$SIF" "$BIN" 2>&1 | grep -m1 'DIA-NN'     # expect: DIA-NN 2.3.0 Academia …
+"$SAGE" --version                                         # expect: sage 0.14.6 (see 2.3)
 ```
 
-### Python modules available
-```
-<paste output of: module avail python 2>&1 | tr ' ' '\n' | grep -i '^python'>
-```
-
-### Container runtime
-```
-<paste output of: module avail apptainer singularity 2>&1>
-<paste: which apptainer OR which singularity>
-<paste: apptainer --version OR singularity --version>
-```
-
-### Shared storage
-```
-<paste output of: df -h /quobyte /scratch /home /lustre /gpfs /beegfs /project /work 2>/dev/null>
-<paste output of: ls -ld /scratch/$USER /project/$USER /work/$USER 2>/dev/null>
-```
-
-### Base OS
-```
-<paste output of: cat /etc/os-release | grep PRETTY_NAME>
-<paste srun OS probe output if you ran it>
-```
-
-### Additional context (fill in what you know)
-- Cluster name / hostname: ___
-- Number of instruments sending raw files here: ___
-- Instrument types (Bruker timsTOF, Thermo Exploris, Thermo Lumos, etc.): ___
-- DIA-NN .sif container path on the cluster (if already present, skip the bootstrap pull): ___
-  (Leave blank — `hive_bootstrap.sh` pulls it automatically via `pull_diann_sif()`)
-- Sage binary path on the cluster (if already present, skip the bootstrap download): ___
-  (Leave blank — `hive_bootstrap.sh` downloads it automatically via `download_sage_linux()`)
-- Do you want community benchmark submissions enabled? (yes/no): ___
-
-===== END MASTER PROMPT =====
-```
-
----
-
-## Phase 3 — Human Review Checklist
-
-Before committing the AI's output, verify each item manually. Do not skip this — the AI may produce a plausible-looking config that quietly mismatches your cluster.
-
-**Scheduler triples**
-- [ ] Open `<cluster>_dispatch.yml`. Find `slurm: partition / qos / account`.
-- [ ] Confirm all three values appear together in the same row of your `sacctmgr` output.
-- [ ] Do the same for any `_MONITOR_SLURM`-style block if the AI added a separate monitor job profile.
-
-**Storage paths**
-- [ ] Every path in `dispatch.yml` (`db_path`, `out_root`, `sbatch_log_dir`, `dispatch_log_dir`, `stan_venv`) lives on shared storage — NOT on `/tmp`, NOT on `~/` unless your cluster explicitly mounts home on compute nodes.
-- [ ] Verify those paths are writable from a compute node:
-  ```bash
-  srun --partition=<partition> --account=<account> --time=00:02:00 \
-       --cpus-per-task=1 --mem=1G \
-       bash -c "ls -ld <path> && touch <path>/.write_test && rm <path>/.write_test"
-  ```
-
-**Wall-time headroom**
-- [ ] The `time:` in `dispatch.yml` is comfortably below the partition's `MaxTime`.
-  DIA-NN on a timsTOF HeLa QC raw typically needs 2–4 hours at 8 CPUs.
-  Sage on a DDA raw typically needs 30–90 minutes at 8 CPUs.
-  Use the `scontrol show partition <name>` output from Phase 1 to confirm.
-
-**Bootstrap script assumptions**
-- [ ] The `module load python/X.Y.Z` line matches the version you found in Phase 1.
-- [ ] The package manager in any OS-level install steps (`apt-get` vs `dnf` vs `yum`) matches your `cat /etc/os-release` output.
-- [ ] The script does NOT contain `sudo` — it runs as your user on the login node.
-- [ ] The script does NOT write to `/tmp` — node-local and invisible post-job.
-
-**DIA-NN container / binary**
-- [ ] `hive_bootstrap.sh` calls `pull_diann_sif()` automatically — check the bootstrap log
-  for `"DIA-NN .sif installed"` or the non-fatal warning if the image is not yet published.
-  On Hive, the existing container at `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif`
-  is already present and used by `dispatch.yml` — the bootstrap pull is additive.
-- [ ] If the `.sif` was pulled, verify it exists:
-  ```bash
-  ssh hive "ls -lh /quobyte/proteomics-grp/STAN/containers/diann.sif"
-  ```
-- [ ] If using Apptainer, confirm the `.sif` file (not `.simg`) — Apptainer ≥1.0 requires `.sif`.
-- [ ] If you use Thermo `.raw` files, confirm the DIA-NN container has `.NET 8 SDK` bundled.
-  The Hive container at `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif` does;
-  the lookalike at `apptainers/diann2.3.0.sif` (no underscore) does NOT. See Appendix B.
-
-**Sage binary**
-- [ ] `hive_bootstrap.sh` calls `download_sage_linux()` automatically — check the bootstrap
-  log for `"Sage installed: /quobyte/proteomics-grp/STAN/sage/sage"`.
-- [ ] Verify the binary is present and executable:
-  ```bash
-  ssh hive "/quobyte/proteomics-grp/STAN/sage/sage --help 2>&1 | head -3"
-  ```
-- [ ] Confirm `dispatch.yml` has `sage_binary` set to the correct path:
-  ```bash
-  ssh hive "grep sage_binary /quobyte/proteomics-grp/STAN/dispatch.yml"
-  ```
-
-**DIA-NN download URL (if bare-binary install)**
-- [ ] If the bootstrap script downloads DIA-NN directly (no container), verify the URL
-  still resolves — DIA-NN releases roll forward and old URLs 404. Check:
-  `https://github.com/vdemichev/DiaNN/releases/latest`
-  Pin to a specific `2.x` release tag in the URL.
-
-**Smoke test**
-- [ ] Run `submit_smoke_test.sh`:
-  ```bash
-  bash submit_smoke_test.sh
-  ```
-- [ ] Check it submits (`Submitted batch job <N>`).
-- [ ] Verify it completes:
-  ```bash
-  squeue -u $USER   # wait for it to leave the queue
-  cat <sbatch_log_dir>/stan-smoke-<N>.out
-  ```
-  The output must contain "hello stan" and a STAN version number.
-
----
-
-## Reference: Hive's Working Config (UC Davis)
-
-The following is the verbatim "HPC: Hive (UC Davis)" section from `CLAUDE.md`. This is the gold-standard reference that the AI's Master Prompt is modelled against. When reviewing the AI's output, ask: "does this look structurally like the Hive setup below, adapted for my cluster?"
-
----
-
-### HPC: Hive (UC Davis)
-
-- Host: `hive.hpc.ucdavis.edu` (user `brettsp`, SSH alias `hive`)
-- Scheduler: SLURM
-- DIA-NN, Sage, 4DFF, etc. run as SLURM batch jobs
-- SQLite database lives on Hive scratch/project storage
-- Dashboard API can be SSH-tunneled to local machine
-
-**Hive rules of engagement — violate at your peril:**
-
-1. **Never run compute on the login node (`login1`)**. CPU/memory-heavy work gets flagged.
-   Always use `sbatch` for real work or `srun --pty` for interactive. The dispatcher
-   (`stan hive-dispatch`) only walks the filesystem and calls `sbatch` — it is login-node-safe.
-   Actual DIA-NN/Sage search runs exclusively inside SLURM jobs.
-
-2. **Never use `~/` or `/home/brettsp/` for large artifacts** — the home quota is tight
-   and others can't see it. All shared binaries, FASTA files, analysis outputs, and
-   generated `.features` live under `/quobyte/proteomics-grp/...`. Brett's personal
-   scratch dir is `/quobyte/proteomics-grp/brett/` — writable + visible to the lab.
-
-3. **SLURM commands need module environment loaded**. Non-interactive
-   `ssh hive "sbatch ..."` won't find `sbatch` on PATH. Either:
-   - `ssh hive "bash -l -c 'sbatch ...'"` (login shell), or
-   - `ssh hive "source /etc/profile.d/modules.sh && source /etc/profile.d/hpccf.sh && sbatch ..."`
-
-4. **Partitions + QOS + account** (each row is a valid `sbatch` triple):
-
-   | Partition | QOS | Account | Use |
-   |---|---|---|---|
-   | `high` | `genome-center-grp-high-qos` | `genome-center-grp` | **Default for STAN community searches.** Priority CPU; 64-CPU per-user cap. |
-   | `high` | `publicgrp-high-qos` | `publicgrp` | Open-access alternative when genome-center is capped. |
-   | `gpu-a100` | `genome-center-grp-gpu-a100-qos` | `genome-center-grp` | 1 A100, use for Casanovo inference/training. |
-   | `low` | `publicgrp-low-qos` | `publicgrp` | Preemptible, huge capacity. Fine for fast (<30 min) jobs. `Requeue=1` recommended. |
-
-   QOS is bound to an account — passing `--qos=genome-center-grp-high-qos`
-   without `--account=genome-center-grp` returns
-   `sbatch: error: Batch job submission failed: Invalid qos specification`.
-   Brett's default account is `publicgrp`, so genome-center jobs MUST set
-   `--account=genome-center-grp` explicitly.
-
-   When `high` shows `(QOSGrpCpuLimit)` as the reason, fall back to `low`
-   — different quota, usually works. List allowed combinations with:
-   ```bash
-   sacctmgr -nP list assoc user=brettsp format=account,partition,qos
-   ```
-
-5. **Check queue state** with:
-   ```bash
-   squeue -u brettsp -o '%.10i %.12j %.9P %.2t %.10M %.6C %.8m %R'
-   ```
-   Look for the REASON column — `(None)` means just waiting for scheduler,
-   `(QOSGrpCpuLimit)` / `(QOSGrpGRES)` mean quota is capped.
-
-6. **SSH ControlMaster** speeds up repeated invocations (instrument PC → cluster):
-   ```bash
-   ssh -o ControlMaster=auto -o ControlPath=/tmp/.stan_brettsp_hive \
-       -o ControlPersist=300 brettsp@hive.hpc.ucdavis.edu "<cmd>"
-   ```
-   macOS/Windows socket path must be short — keep `ControlPath` under `/tmp/` not
-   under a long user home path (macOS socket paths max at 104 bytes).
-
-**Hive container paths** (from `docs/HPC_PATHS.md`):
-
-| Container | Path | Notes |
-|-----------|------|-------|
-| DIA-NN 2.3 (with Thermo .raw) | `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif` | Has .NET runtime, reads .raw + .d + .mzML |
-| DIA-NN 2.3 (Bruker only, NO .raw) | `/quobyte/proteomics-grp/apptainers/diann2.3.0.sif` | Missing dotnet — `.raw` silently skipped |
-| msconvert (ProteoWizard) | `/quobyte/proteomics-grp/apptainers/pwiz-skyline-i-agree-to-the-vendor-licenses_latest.sif` | |
-
-**DIA-NN binary inside any container**: `/diann-2.3.0/diann-linux` (NOT just `diann`).
-
-Run command:
 ```bash
-apptainer exec --bind /quobyte:/quobyte \
-  /quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif \
-  /diann-2.3.0/diann-linux [flags]
+sbatch "$STAN_HOME/smoke.sbatch"          # "Submitted batch job <id>"
+sacct -j <id> -X -o JobID,State,Elapsed   # -X hides the .batch/.extern steps
+cat "$STAN_HOME/logs/sbatch/stan-smoke_<id>.out"
 ```
 
-**Sage binary** (bare, no container needed):
-`/quobyte/proteomics-grp/de-limp/cascadia/sage-v0.14.7-x86_64-unknown-linux-gnu/sage`
+**Pass when** the log contains no `MISSING` lines, shows numpy 1.x, pandas 2.x and alphatims 1.0.8, prints `DIA-NN 2.3.0`, and reports a mode for each vendor you run: `DIA_PASEF`/`DDA_PASEF` for Bruker, `DIA_ORBITRAP`/`DDA_ORBITRAP` for Thermo. An `UNKNOWN` Thermo mode means TRFP or `dotnet` is missing. The job would then search that file as DIA, because `_detect_mode_str` falls back to DIA.
 
-**FASTA** (human HeLa, used for community benchmark):
-`/quobyte/proteomics-grp/MRS/UP000005640_9606.fasta`
+### 2.8 First real job
+
+Submit one QC file directly, skipping the walk:
+
+```bash
+"$STAN_HOME/venv/bin/stan" hive-dispatch --config "$STAN_HOME/dispatch.yml" \
+  --raw "<absolute path to one QC .d or .raw>" \
+  --instrument-name "timsTOF HT" --family timsTOF --vendor bruker
+# → {"status": "submitted", "job_id": "…", "classification": "qc", …}
+```
+
+The job is named `stan-<run stem>` (monitor jobs are `stan-mon-<run stem>`). Its log is `<sbatch_log_dir>/<run stem>_<jobid>.out`, and the script it ran is kept at `<sbatch_log_dir>/scripts/<run stem>.sbatch`. At UC Davis, 24 per-raw QC jobs in the week to 2026-09-29 (8 CPUs, 32 GB) took a median of 10 min and at most 26 min. DIA-NN itself has a 3 h timeout.
+
+**Verify:**
+
+```bash
+sacct -j <jobid> -X -o JobID,JobName%40,State,Elapsed
+ls -l "$STAN_HOME/processing/<run stem>/report.parquet"
+"$STAN_HOME/venv/bin/python" -c "
+import sqlite3; con = sqlite3.connect('$STAN_HOME/db/stan.db')
+print(con.execute('select instrument, run_name, mode, n_precursors, n_psms, ips_score, diann_version from runs order by rowid desc limit 3').fetchall())
+print(con.execute('select raw_path, status, attempt_count, error from dispatch_attempts order by attempted_at desc limit 3').fetchall())"
+```
+
+A new `runs` row with a non-zero `n_precursors` (DIA) or `n_psms` (DDA) means the whole path works. Run the same check with one non-QC file and look for a `sample_health` row. Then walk the whole directory with `stan hive-dispatch --config …` (no `--dry-run`) and move on to Phase 4.
 
 ---
 
-## Common Cluster Types — Gotchas Glossary
+## Phase 3 — Getting raw files onto the cluster
 
-### SLURM with Lustre filesystem
+The dispatcher's walk (`_walk_raws`) has three rules you must design around:
 
-- Lustre enforces **file lock limits** — hundreds of simultaneous open handles to the same directory can cause `OSError: [Errno 11] Resource temporarily unavailable`. Avoid running dispatcher cron more frequently than every 15 minutes on a busy mount.
-- **Small-file performance is poor** on Lustre. STAN's SQLite writes are fine (single file, sequential). The `pip install --upgrade` step during bootstrap creates many small files — it can be slow (5–15 minutes) the first time. Do not be alarmed.
-- Use `--upgrade` not `--force-reinstall` in pip: force-reinstall's internal rename pattern can fail on distributed filesystems with `OSError [Errno 2] No such file or directory: ...INSTALLER<rand>.tmp`.
+- **It is flat and non-recursive.** It lists `watch_dir` itself and takes `<name>.d` directories and `<name>.raw` files. Month subfolders are never seen.
+- **It does not check that a copy has finished.** Deliver each run atomically: copy to `<name>.d.partial` or `<name>.raw.partial` (or to a staging directory on the same filesystem) and rename when the copy is complete. `.partial` and `.tmp` entries are skipped. A half-copied run that gets searched either fails (it is retried up to `max_attempts`) or, worse, succeeds and stores bad metrics that are never recomputed.
+- **Symlinks are followed.** The dispatcher resolves each entry to its real path, so a directory of symlinks into an archive works, provided compute nodes can read the target.
 
-### SLURM with Apptainer-only (no Docker)
+| Route | Instrument PC needs | Notes |
+|---|---|---|
+| Scheduled copy task → staging name → rename, straight into `incoming/<instrument>/` | Nothing beyond Windows (robocopy) | Simplest. `scripts/flinders_copy.ps1` is the reference copier: pure PowerShell, a scheduled task every 5 min, copies only runs whose size stopped changing, `/IPG:20` at BelowNormal priority, never touches the source. It is timsTOF-only with UC Davis constants (`$SourceDir`, `$InstrumentDir`), and it copies in place into an archive. Adapt it, and add the rename |
+| The lab already archives raw files (often nested by month) | Nothing | Write a small linker that symlinks new QC runs from the archive into the flat watch dir, and run it in the dispatch cron before `hive-dispatch`. Link a run only once its newest file is older than your copy window (for example 15 min). `link_flinders_qc.py` is the UC Davis version: QC-only by default, `--all-runs` for monitoring, idempotent, archive paths hardcoded |
+| STAN watcher on the instrument PC, `processing_mode: hive` | A full Mode A install | Uploads as `.partial` then renames, which is correct. Set `submit_after_upload: false`: the SSH submit path maps `Y:\` to UC Davis's `/quobyte` (`_smb_to_quobyte_path` in `stan/sync/upload_to_hive.py`). Not recommended, because it puts STAN back on the acquisition PC |
 
-- Require `.sif` image format — Apptainer ≥1.0 dropped support for the old `.simg` format. If someone gives you a `.simg`, convert it: `apptainer build new.sif old.simg`.
-- Pull once on the login node, store on shared storage, reference the absolute path in jobs. Do not pull inside SLURM jobs — it hammers the container registry and may hit rate limits.
-- Bind mounts use `--bind <host_path>:<container_path>`. The Hive pattern `--bind /quobyte:/quobyte` maps the entire Quobyte mount; adapt to your filesystem.
+Point each `watch_dir` at QC runs only if you do not want sample monitoring. Otherwise every non-QC file there gets a cheap monitor job (metadata only, never searched, never submitted).
 
-### SLURM on AWS (ephemeral compute)
+**Verify:** acquire or copy one QC run and time it. It should appear in `incoming/<instrument>/` under its final name only after it is complete, and the next dispatcher tick should list it as `[qc]`.
 
-- Compute nodes are torn down after the job ends — `/tmp` on the compute node is **gone** when you look for it. All outputs must land on shared storage (EFS, FSx for Lustre, S3-backed filesystem). STAN enforces this in `dispatch.yml` but double-check your `out_root` and `sbatch_log_dir` are not on a local path.
-- The login node may also be ephemeral on ParallelCluster setups — do not put the venv on the login node's local disk. Use the shared EFS mount.
+---
 
-### PBS/Torque masquerading as SLURM
+## Phase 4 — Run it unattended
 
-- Some clusters (particularly older academic HPC) run PBS/Torque with a SLURM-compatible shim (`sbatch` exists but `scontrol`, `sacctmgr` may not). Run `scontrol ping` — if it returns `Slurmctld(primary) Version: 23.x...` you have real SLURM. If it hangs or errors, you may have a shim.
-- PBS job directives use `#PBS -q <queue>` not `#SBATCH --partition`. If you have PBS, Mode C as documented does not apply — contact your cluster admin about SLURM availability or consider Mode B instead.
+### 4.1 Dispatch cron script
 
-### Container-forbidden clusters
+Save this as `$STAN_HOME/cron_stan_dispatch.sh`. It follows the pattern of `scripts/cron_flinders_dispatch.sh`, the UC Davis version.
 
-- Some clusters (particularly those handling sensitive data, e.g. medical/patient data) forbid Apptainer/Singularity/Docker entirely for security reasons.
-- In this case, install DIA-NN's static Linux binary directly:
-  1. Download from `https://github.com/vdemichev/DiaNN/releases/latest` — pin a specific `2.x` release.
-  2. Place on shared storage (e.g. `/shared/apps/diann/diann-2.3.0/diann-linux`).
-  3. Install the `.NET 8 SDK` on compute nodes (or confirm it is a cluster module) — required for Thermo `.raw` reading even with the bare binary. See Appendix B.
-  4. In `dispatch.yml`, point `diann_binary` at the bare path instead of an Apptainer exec command.
-- Sage is a single Rust binary with no container dependency — download from `https://github.com/lazear/sage/releases/latest` and place on shared storage.
-- Flag this situation in the Master Prompt so the AI skips the Apptainer invocation pattern.
+```bash
+#!/bin/bash
+# STAN dispatch tick: optionally link new raws, then submit up to
+# max_submissions_per_run SLURM jobs. Login-node-safe: walks, links, sbatch only.
+set -uo pipefail
+
+# cron sets neither LOGNAME nor USER, and module init scripts read unbound
+# variables (LOGNAME, then MANPATH). Under `set -u` that exits the SHELL
+# before anything is logged; `|| true` never runs. Seed first, then drop -u
+# across the sourcing. This order is asserted in tests/test_cron_scripts_executable.py.
+export LOGNAME="${LOGNAME:-$(id -un)}"
+export USER="${USER:-$LOGNAME}"
+set +u
+source /etc/profile.d/modules.sh 2>/dev/null || true     # your site's module init
+set -u
+
+STAN_HOME=/shared/<lab>/stan
+STAN="$STAN_HOME/venv/bin/stan"
+CONFIG="$STAN_HOME/dispatch.yml"
+LOG="$STAN_HOME/logs/cron_dispatch_$(date +%Y%m%d).log"
+MAX_IN_FLIGHT=8          # SQLite: cap concurrent writers (Step 4.4)
+
+{
+  echo "===== tick $(date '+%F %T') on $(hostname) ====="
+  # your linker here, if Phase 3 needs one
+  if ! queued=$(squeue --me --noheader --format=%j 2>&1); then
+    echo "squeue failed, skipping this tick: $queued"     # fail CLOSED
+  else
+    n=$(printf '%s\n' "$queued" | grep -c '^stan-' || true)
+    if [ "$n" -ge "$MAX_IN_FLIGHT" ]; then
+      echo "in flight: $n >= $MAX_IN_FLIGHT, not dispatching"
+    else
+      "$STAN" hive-dispatch --config "$CONFIG" 2>&1 | tail -3
+      echo "dispatch exit=${PIPESTATUS[0]}"
+    fi
+  fi
+  echo
+} >> "$LOG" 2>&1
+```
+
+Use `squeue --me` or `id -un`, never `$USER`, in any guard. Cron does not reliably set `$USER`, and a guard that errors out must skip the tick, not wave everything through.
+
+### 4.2 Install the crontab
+
+On the login node you recorded in Phase 1:
+
+```cron
+*/5 * * * *  flock -n /tmp/stan_dispatch.lock  bash /shared/<lab>/stan/cron_stan_dispatch.sh
+```
+
+- **`bash <script>`, not `<script>`.** At UC Davis a cron script lost its execute bit, and cron answered `Permission denied` into nothing for eight days. With `bash` in the crontab line, the execute bit does not matter.
+- **`flock -n`** skips a tick while the previous one is still running, rather than stacking them.
+- Save the crontab in `SITE.md` too (`crontab -l > $STAN_HOME/crontab.txt`), with the host name.
+
+**Verify** after 10 minutes:
+
+```bash
+tail -20 "$STAN_HOME/logs/cron_dispatch_$(date +%Y%m%d).log"    # "===== tick" lines + "Dispatch: scanned=…"
+tail -1  "$STAN_HOME/logs/dispatch/dispatch_$(date +%Y%m%d).jsonl"
+```
+
+Cron has a minimal environment. If `hive-dispatch` logs `sbatch not on PATH`, the module init did not load SLURM. Source whichever profile script puts `sbatch` on `PATH` at your site.
+
+### 4.3 Heartbeat: a watchdog outside what it watches
+
+A cron job that stops writing looks exactly like "nothing is wrong". Run a separate script from its own crontab line that alarms when a log goes quiet. It measures silence, not success, so one check catches a lost execute bit, a syntax error, an unmounted share, a dead venv and a deleted crontab line alike. The reference implementation is `check_cron_heartbeat()` in `stan/reports/instrument_watch.py`; its log directory and job names are UC Davis values. A minimal generic version:
+
+```bash
+#!/bin/bash
+# cron_stan_heartbeat.sh — alarm when a STAN cron log stops being written.
+set -uo pipefail
+LOGDIR=/shared/<lab>/stan/logs
+now=$(date +%s); msg=""
+check() {   # $1 = log glob, $2 = max silence in hours
+  newest=$(ls -t $LOGDIR/$1 2>/dev/null | head -1)
+  if [ -z "$newest" ]; then msg+=$'\n'"$1: no log at all"; return; fi
+  age=$(( (now - $(stat -c %Y "$newest")) / 3600 ))
+  if [ "$age" -gt "$2" ]; then msg+=$'\n'"$1: silent for ${age} h"; fi
+}
+check 'cron_dispatch_20*.log'        1
+check 'cron_community_sync_20*.log' 14   # only if you run Step 5.2
+check 'db_backup_20*.log'           30
+echo "$(date '+%F %T') heartbeat ran${msg:- — all fresh}" >> "$LOGDIR/heartbeat_$(date +%Y%m%d).log"
+if [ -n "$msg" ]; then
+  printf 'STAN cron silence on %s:%s\n' "$(hostname)" "$msg" | mail -s "STAN heartbeat" <you@lab>
+fi
+```
+
+```cron
+*/20 * * * *  flock -n /tmp/stan_heartbeat.lock  bash /shared/<lab>/stan/cron_stan_heartbeat.sh
+```
+
+Use `mail`, a Slack webhook, or whatever your site allows. The heartbeat writes its own log, so another check can watch it.
+
+**Verify:** temporarily add `check 'does_not_exist_20*.log' 1` and confirm that the alarm arrives.
+
+### 4.4 SQLite on shared storage: concurrency and backups
+
+Every SLURM job writes its own row into `stan.db`. UC Davis ran SQLite on Quobyte until about 100 concurrent jobs surfaced as `SQLITE_IOERR` and index corruption (May 11 and 16, 2026). A drain on 2026-08-26 lost about 37 monitor jobs in 11 minutes. That is why UC Davis moved to Postgres, but at 1.2.x the Postgres backend is wired to UC Davis's server, so other labs stay on SQLite and keep concurrency low:
+
+- Set `max_submissions_per_run` low (`5`), and keep `MAX_IN_FLIGHT` in the dispatch cron (Step 4.1) at a level your filesystem tolerates. Start at 8.
+- Back up daily with SQLite's online-backup API, which is safe while jobs write. Save it as `$STAN_HOME/cron_stan_db_backup.sh`:
+
+```bash
+#!/bin/bash
+set -uo pipefail
+STAN_HOME=/shared/<lab>/stan
+LOG="$STAN_HOME/logs/db_backup_$(date +%Y%m%d).log"
+{
+  echo "===== backup $(date '+%F %T') on $(hostname) ====="
+  "$STAN_HOME/venv/bin/python" - "$STAN_HOME" <<'EOF'
+import sqlite3, sys, datetime, pathlib
+home = pathlib.Path(sys.argv[1])
+dest = home / "backups" / f"stan_{datetime.date.today():%Y%m%d}.db"
+src, dst = sqlite3.connect(home / "db" / "stan.db"), sqlite3.connect(dest)
+src.backup(dst)
+print(dest, dst.execute("PRAGMA integrity_check").fetchone()[0], dest.stat().st_size, "bytes")
+EOF
+  echo "exit=$?"
+  ls -1t "$STAN_HOME"/backups/stan_*.db | tail -n +31 | xargs -r rm -f     # keep 30
+} >> "$LOG" 2>&1
+```
+
+```cron
+17 3 * * *  flock -n /tmp/stan_db_backup.lock  bash /shared/<lab>/stan/cron_stan_db_backup.sh
+```
+
+**Verify:** the log line ends in `ok <bytes> bytes`. Report bytes with `stat` or Python, not `du`: on some NFS exports `du` reports block usage that looks like an empty file.
+
+### 4.5 Recovering runs whose search finished but whose DB write failed
+
+`stan ingest-orphans` finds `processing/<run>/report.parquet` files that have no `runs` row and re-extracts them. It recovers the instrument and family from the saved job script. Run it inside SLURM, dry run first:
+
+```bash
+srun --account=<acct> --partition=<part> --qos=<qos> --time=01:00:00 --cpus-per-task=2 --mem=8G \
+  "$STAN_HOME/venv/bin/stan" ingest-orphans --backend sqlite \
+    --db "$STAN_HOME/db/stan.db" \
+    --processing-dir "$STAN_HOME/processing" \
+    --sbatch-log-dir "$STAN_HOME/logs/sbatch" --dry-run
+```
+
+`--backend` defaults to `pg` (UC Davis), so always pass `--backend sqlite` and all three paths.
+
+---
+
+## Phase 5 — Dashboard and community benchmark (optional)
+
+### 5.1 Dashboard
+
+`stan dashboard` is a long-running web server, which most clusters do not allow on a login node. Run it on a lab machine that can read the cluster's shared storage. Point it at a **copy** of the database (the daily backup, or a more frequent copy made with the same backup API), not at the file that jobs are writing:
+
+```bash
+STAN_DB_PATH=/local/disk/stan_copy.db STAN_PG_REFRESH_SECONDS=0 stan dashboard --backend sqlite     # http://127.0.0.1:8421
+```
+
+`STAN_PG_REFRESH_SECONDS=0` keeps off a background task that copies UC Davis's Postgres into the local database every 5 minutes. That task starts only when `STAN_DB_BACKEND=pg` is set or the host has a PG Farm credential (a `PGPASSWORD` or UC Davis's token file), so on a lab machine without either the setting changes nothing. Keep it anyway: it also covers a shell that exports `PGPASSWORD` for another tool. The default bind is `127.0.0.1:8421`. `--host 0.0.0.0` exposes it to the network; do that only behind the lab's firewall. **Verify:** the page loads, and the runs from Step 2.8 appear.
+
+### 5.2 Community benchmark and PEG sharing
+
+These send aggregate metrics only: never raw files, never sample metadata. PEG sharing sends each run under an anonymous hash. Everything is opt-in and runs from a login-node cron (HTTP only). The login node needs egress to `https://brettsp-stan.hf.space`. No Hugging Face token is needed.
+
+1. In the cron user's `~/.stan/community.yml`, set `display_name: <lab pseudonym>` and `community_submit: true`. Add `peg_share: true` to share PEG. Error telemetry to the relay is off unless you also set `error_telemetry: true`; a missing key means off.
+2. Claim the name interactively on a login node with `stan community-claim`. It emails a 6-digit code from `noreply@stan-proteomics.org`; check spam. It writes `auth_token` into `community.yml`.
+3. Preview what would be sent:
+
+   ```bash
+   STAN_DB_PATH="$STAN_HOME/db/stan.db" "$STAN_HOME/venv/bin/stan" submit-all --dry-run
+   "$STAN_HOME/venv/bin/stan" peg-sync --backend sqlite --dry-run
+   ```
+
+   `peg-sync --backend sqlite` reads `~/.stan/stan.db` unless `STAN_DB_PATH` is set. Set it for both commands.
+
+4. Schedule both commands every 6 h with the same hardened wrapper as Step 4.1 (dated `cron_community_sync_*.log`, `bash`, `flock`). `scripts/cron_community_sync.sh` is the UC Davis version: `submit-all` first, then `peg-sync`, each exit code logged separately so that a PEG failure cannot hold back a benchmark push.
+
+Only DIA-NN 2.3.x results are accepted. Results appear on the public site after the nightly consolidation. For PEG details see [PEG_WATCH.md](PEG_WATCH.md).
+
+**Verify:** the cron log shows `submit-all exit=0` and `peg-sync exit=0`. After the next consolidation, the lab's pseudonym appears at https://community.stan-proteomics.org.
+
+---
+
+## Master Prompt (paste into your coding agent)
+
+Paste this block, followed by your Phase 1 output, into the agent that will do the install.
+
+```
+===== BEGIN STAN MODE C PROMPT =====
+You are installing STAN (https://github.com/bsphinney/stan) on my SLURM cluster.
+STAN is a proteomics QC tool: a login-node cron walks watch directories and submits
+one SLURM job per raw file; each job runs DIA-NN or Sage and writes QC metrics to a
+SQLite database.
+
+Before doing anything, read in the repo:
+  1. docs/INSTALL_MODE_C_HPC.md  — the procedure you must follow, in order
+  2. stan/community/scripts/dispatch_hive.py  — _load_config, _walk_raws,
+     _render_sbatch, _render_monitor_sbatch, _MONITOR_SLURM
+  3. stan/community/scripts/run_one_v1.py  — DIANN_SIF, DIANN_BIN, SAGE_BIN,
+     ASSET_CACHE, TRFP_DLL, run_diann (the apptainer --bind list), run_sage
+  4. scripts/cron_flinders_dispatch.sh and scripts/cron_stan_db_backup.sh — the
+     hardened cron pattern (UC Davis paths; copy the pattern, not the paths)
+  5. docs/HPC_PATHS.md — the UC Davis reference deployment, for comparison only
+
+Deliver, under STAN_HOME on shared storage:
+  - a git clone on branch site/<cluster> carrying ONLY the site patch of Step 2.5
+  - venv/ with `pip install -e src[peg]` on Python 3.10–3.12
+  - dispatch.yml (Step 2.6; qc_pattern in SINGLE quotes)
+  - smoke.sbatch (Step 2.7), and its passing output
+  - cron_stan_dispatch.sh, cron_stan_heartbeat.sh, cron_stan_db_backup.sh, and the
+    crontab lines, installed on ONE named login node
+  - SITE.md recording every choice: sacctmgr rows used, module names, paths,
+    login node holding the crontab, DIA-NN image provenance, open questions
+
+Rules — do not break these:
+  - Never invent partition, QOS, account, module or path names. Use only what
+    my Phase 1 output shows. If a value is missing, ask me one specific question.
+  - Never run compute on a login node; never write outputs or SLURM logs to /tmp;
+    never use sudo; never `pip install --force-reinstall`.
+  - DIA-NN must be exactly 2.3.0 and Sage exactly v0.14.7.
+  - Leave STAN_DB_BACKEND unset; delete the PG lines from _render_sbatch.
+  - Do not run scripts/hive_bootstrap.sh or copy UC Davis paths from any file.
+  - After each Phase 2 step, run its "Verify" check and show me the output. Do
+    not move on while a check fails.
+
+Stop and ask me before: building or pulling a container image, installing a
+crontab, submitting more than one real search job, or enabling community
+submission.
+
+My cluster (Phase 1 output):
+<paste here>
+===== END STAN MODE C PROMPT =====
+```
+
+---
+
+## Review checklist (for the person supervising)
+
+- [ ] `dispatch.yml` `slurm:` values appear together in one row of `sacctmgr`. So do the values in the patched `_MONITOR_SLURM`.
+- [ ] `time:` is below the partition's `MaxTime`.
+- [ ] Every path in `dispatch.yml` is on shared storage. None is under `/tmp`, and none is in a home directory unless home is mounted on compute nodes.
+- [ ] `git -C $STAN_HOME/src diff origin/main --stat` touches only `run_one_v1.py` and `dispatch_hive.py`, and the Step 2.5 check prints `UC Davis strings left in job scripts: none`.
+- [ ] The smoke-test log shows `DIA-NN 2.3.0`, `sage 0.14.6` (the v0.14.7 binary), pandas 2.x, and a detected mode for each vendor you run.
+- [ ] A real QC run produced a `runs` row with non-zero IDs, and a non-QC run produced a `sample_health` row.
+- [ ] The crontab lines use `bash <script>` and `flock -n`. `SITE.md` names the login node that holds them.
+- [ ] The heartbeat alarm has been seen to fire at least once, in a test.
+- [ ] A backup exists and its log reads `ok`.
 
 ---
 
 ## Troubleshooting
 
-### `sbatch: error: Batch job submission failed: Invalid qos specification`
-
-**Cause:** QOS value does not match the account in the same `sbatch` call. QOS+account is a bound pair — you cannot mix them across rows in `sacctmgr` output.
-
-**Fix:** Re-run `sacctmgr -nP list assoc user=$USER format=account,partition,qos` and use one complete row as-is. In `dispatch.yml`, all three of `partition`, `qos`, and `account` must come from the same row.
-
-```bash
-# Wrong: qos from one row, account from another
-#SBATCH --qos=genome-center-grp-high-qos
-#SBATCH --account=publicgrp              ← MISMATCH
-
-# Right: same row
-#SBATCH --qos=genome-center-grp-high-qos
-#SBATCH --account=genome-center-grp      ← correct pair
-```
-
----
-
-### Job stuck in Pending with reason `(QOSGrpCpuLimit)`
-
-**Cause:** Your user or group has hit the per-partition CPU quota. The scheduler is queuing the job until quota frees up.
-
-**Fix:** Switch to the fallback partition/QOS triple. On Hive, the fallback is `low` + `publicgrp-low-qos` + `publicgrp` — preemptible but large capacity. Update `slurm:` in `dispatch.yml` temporarily, or run `stan hive-dispatch --partition low --qos publicgrp-low-qos --account publicgrp` to override for one invocation.
-
-Check current queue:
-```bash
-squeue -u $USER -o '%.10i %.12j %.9P %.2t %.10M %.6C %.8m %R'
-```
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ScannerError while scanning a double-quoted scalar` from `hive-dispatch` | `qc_pattern` is double-quoted (the `--print-default-config` template does this) | Use single quotes (Step 2.6) |
+| `sbatch: error: Batch job submission failed: Invalid qos specification` | QOS and account come from different `sacctmgr` rows. For monitor jobs, `_MONITOR_SLURM` still holds UC Davis's triple | Use one complete row; patch `_MONITOR_SLURM` |
+| Job pending with reason `(QOSGrpCpuLimit)` / `(QOSGrpGRES)` | Group quota exhausted | Wait, or switch `dispatch.yml` `slurm:` to another complete row you are allowed to use. `stan hive-dispatch --partition` only knows UC Davis triples |
+| QC jobs fail at the end with `no PG Farm password` | `export STAN_DB_BACKEND=pg` still in `_render_sbatch` | Delete it and the `PGPASSWORD` block (Step 2.5) |
+| DIA-NN job fails at once with an apptainer bind/mount error naming `/quobyte` or `/nfs` | The `--bind` list in `run_diann()` names a path your nodes do not have | Patch it to your storage roots |
+| `apptainer: command not found` / `dotnet: command not found` in a job log | Module names in `_render_sbatch` are UC Davis's, and `\|\| true` hid the failure | Patch the `module load` lines; rerun the smoke test |
+| Thermo DDA run searched as DIA, or Thermo mode `UNKNOWN` | TRFP missing from `~/.stan/tools/ThermoRawFileParser/`, or no `dotnet` in the job | Step 2.3 TRFP pre-install; load the .NET module in the job |
+| DIA-NN returns 0 precursors on Thermo `.raw` | Image without .NET 8 | Use an image with the .NET 8 SDK; see [Appendix B](#appendix-b--net-8-for-thermo-raw-on-a-cluster-no-sudo) |
+| Job fails in `_assets.sh` on `hf download` | Compute node has no egress, and the asset is missing from `ASSET_CACHE` | Pre-stage assets (Step 2.4); check that `ASSET_CACHE` points there |
+| `sacct` shows COMPLETED but nothing was written | `.batch`/`.extern` steps always read COMPLETED | `sacct -j <id> -X`, then read `<sbatch_log_dir>/<stem>_<id>.out` |
+| `report.parquet` exists but there is no `runs` row | DB write failed after the search | `stan ingest-orphans --backend sqlite …` (Step 4.5) |
+| `module: command not found` over non-interactive `ssh` | Non-interactive shells skip the profile | `ssh <host> "bash -lc '…'"`, or source the module init explicitly |
+| Cron seems dead; `crontab -l` says `no crontab` | You are on a different login node | Check the host recorded in `SITE.md` |
+| Cron log never created | Script died before logging (`set -u` + module init), or lost its execute bit | Use the Step 4.1 preamble order; invoke with `bash` |
+| `pip install` fails with `OSError [Errno 2] … INSTALLER<rand>.tmp` | `--force-reinstall` on a distributed filesystem | Use `--upgrade`; to start clean, delete and recreate the venv |
+| `stan version` is older than expected | The clone was not rebased | `git -C $STAN_HOME/src fetch && git -C $STAN_HOME/src rebase origin/main` |
 
 ---
 
-### `module: command not found` from non-interactive SSH
+## Reference deployment: UC Davis Hive
 
-**Cause:** Non-interactive SSH sessions do not source `/etc/profile.d/modules.sh`, so `module` is not on PATH and `sbatch` may not be either.
+UC Davis runs everything in this guide at scale. Its specifics are **not** instructions for other labs:
 
-**Fix:** Use a login shell or source the module init explicitly:
-```bash
-# Option A — login shell (simplest)
-ssh hive "bash -l -c 'sbatch my_job.sh'"
+| | UC Davis (Hive) | Generic equivalent |
+|---|---|---|
+| Install | `/quobyte/proteomics-grp/brett/stan` checkout, editable-installed into `…/brett/stan_venv` (Python 3.11.9) | Step 2.2 |
+| Raw file delivery | `flinders_copy.ps1` robocopy task → Flinders NFS archive (nested by month) → `link_flinders_qc.py --all-runs` symlinks into flat watch dirs | Phase 3 |
+| Dispatch | `cron_flinders_dispatch.sh` every 5 min on `login2`; `max_submissions_per_run: 60`; jobs on `low` / `publicgrp-low-qos` / `publicgrp` | Phase 4 |
+| Database | PG Farm (UC Davis Library Postgres) via `STAN_DB_BACKEND=pg` with a service-account secret; nightly `pg_dump` in SLURM ([PG_FARM.md](PG_FARM.md)) | SQLite + Step 4.4 |
+| Watchdog | `cron_stan_alerts.sh` → `stan instrument-watch` (feed, publish and cron-heartbeat checks → Slack) | Step 4.3 |
+| Community | `cron_community_sync.sh` every 6 h: `submit-all --backend pg`, then `peg-sync --backend pg` | Step 5.2 |
+| Dashboard | Hosted on Azure (`ucd.stan-proteomics.org`), reading PG | Step 5.1 |
 
-# Option B — explicit source (needed for complex pipelines)
-ssh hive "source /etc/profile.d/modules.sh && source /etc/profile.d/hpccf.sh && sbatch my_job.sh"
-```
-
-The bootstrap script already does this. Instrument PCs using `hive_upload_dir` + `submit_after_upload: true` must also use one of these patterns when SSHing to submit.
-
----
-
-### `stan version` reports an older value than the git log shows
-
-**Cause:** The STAN venv was installed from a prior GitHub zip and has not been upgraded.
-
-**Fix:** Reinstall from the current main branch. Log into the cluster and run:
-```bash
-source /etc/profile.d/modules.sh
-module load python/<version>
-<stan_venv>/bin/pip install --upgrade \
-    "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"
-<stan_venv>/bin/stan version
-```
-
-Do NOT use `--force-reinstall` — see the Lustre/distributed-filesystem note above.
+Paths, containers, account triples and the cron table: [HPC_PATHS.md](HPC_PATHS.md). Canonical copies of every cron and sbatch script live in `scripts/`. Their header comments record why each guard exists.
 
 ---
 
-### DIA-NN search returns 0 precursors on Thermo `.raw` files
+## Appendix A — `dispatch.yml` keys
 
-**Cause:** The compute node cannot read Thermo `.raw` files because the `.NET 8 SDK` is missing or the wrong container is mounted.
+From `_load_config()` and `_render_sbatch()` in `stan/community/scripts/dispatch_hive.py`.
 
-**Diagnosis — run interactively on a compute node:**
-```bash
-srun --partition=<partition> --account=<account> \
-     --time=00:05:00 --cpus-per-task=1 --mem=4G --pty bash
+| Key | Required | Default if absent | Notes |
+|---|---|---|---|
+| `db_path` | yes | — | SQLite file every job writes to |
+| `out_root` | yes | — | `<out_root>/<run stem>/report.parquet` |
+| `sbatch_log_dir` | yes | — | Job logs, `scripts/` (rendered job files, which `ingest-orphans` parses), `monitor/`, `monitor_workdir/` |
+| `stan_venv` | yes | — | Each job runs `<stan_venv>/bin/stan hive-process` |
+| `instruments` | yes, non-empty | — | See below |
+| `dispatch_log_dir` | no | `sbatch_log_dir` | `dispatch_YYYYMMDD.jsonl`, one summary line per non-dry run |
+| `slurm.partition` / `qos` / `account` | set all three | UC Davis values | One `sacctmgr` row |
+| `slurm.time` / `cpus` / `mem` | no | `06:00:00` / `8` / `32G` | QC jobs only; monitor jobs use `_MONITOR_SLURM` (30 min, 4 CPU, 8 GB) |
+| `max_submissions_per_run` | no | `50` | Cap on new jobs per dispatcher run |
+| `max_attempts` | no | `3` | A raw file that failed this many times is skipped |
+| `qc_pattern` | no | `DEFAULT_QC_PATTERN` | Match → search job; no match → monitor job. `''` makes every file QC |
+| `instruments[].name` | yes | — | Stored as `runs.instrument`; must not be `auto` or `unknown` |
+| `instruments[].family` | yes | — | IPS cohort key; `timsTOF`, `Lumos` and `Exploris` have built-in mappings |
+| `instruments[].vendor` | yes | — | `bruker` or `thermo` |
+| `instruments[].watch_dir` | yes | — | Flat directory; see Phase 3 |
+| `instruments[].column_vendor` / `column_model` | no | — | Stamped on each run |
+| `instruments[].amount_ng` | no | job default 50 | HeLa load |
+| `instruments[].spd` | no | — | Fallback only, used when raw-file metadata cannot resolve the samples-per-day value |
 
-# Inside the job:
-module load python/<version>
-source <stan_venv>/bin/activate
-
-# Check dotnet
-dotnet --list-sdks      # must show 8.x — empty means runtime-only, not SDK
-dotnet --list-runtimes  # shows both runtime and SDK installs
-
-# Check DIA-NN sees .raw
-apptainer exec --bind <shared_storage>:<shared_storage> <container.sif> \
-  /diann-2.3.0/diann-linux --help 2>&1 | grep -i "raw\|dotnet\|net"
-```
-
-**Fix options:**
-- If using a container: switch to the container that bundles `.NET 8 SDK`. On Hive, this is `/quobyte/proteomics-grp/dia-nn/diann_2.3.0.sif` (underscore in filename), NOT the lookalike in `apptainers/`.
-- If using bare binary: install the `.NET 8 SDK` on compute nodes or via a module. See Appendix B for the 4-tier install procedure. Key rule: install the SDK (not just the runtime), and install `libicu` explicitly (not pulled by `dotnet-install.sh`).
-
-Also check: `dotnet --list-sdks` returns empty but `dotnet --list-runtimes` is populated → you have runtime, not SDK. The Thermo reader requires SDK presence.
-
----
-
-### `pip install` fails with `OSError [Errno 2] No such file or directory: ...INSTALLER<rand>.tmp`
-
-**Cause:** `pip install --force-reinstall` uses a rename pattern that fails on distributed filesystems (Quobyte, Lustre, GPFS) due to distributed-rename semantics.
-
-**Fix:** Remove `--force-reinstall` from all pip calls. Use `--upgrade` only. If you genuinely need a forced clean reinstall, delete the venv directory and recreate it:
-```bash
-rm -rf <stan_venv>
-python3 -m venv <stan_venv>
-<stan_venv>/bin/pip install --upgrade \
-    "stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"
-```
+`sage_binary`, which `hive_bootstrap.sh` writes, is read by nothing.
 
 ---
 
-### SLURM job completes but no row written to `stan.db`
+## Appendix B — .NET 8 for Thermo `.raw` on a cluster (no sudo)
 
-**Cause options:** (a) the output path in `dispatch.yml` is on node-local storage (e.g. `/tmp`) and vanished after the job ended; (b) the job hit a Python exception before writing to the DB; (c) the SQLite file is on a path not visible from compute nodes.
+Two different things need .NET:
 
-**Diagnosis:**
-```bash
-# Check the SLURM stdout log for the job
-cat <sbatch_log_dir>/stan-hive-process-<jobid>.out
+| Consumer | Needs | Where |
+|---|---|---|
+| DIA-NN 2.3.0 reading Thermo `.raw` | .NET 8 **SDK** (8.0.407+ per [external_tools.md](external_tools.md#current-known-versions-re-verify-before-use)) | Inside the DIA-NN image (preferred) or on compute nodes |
+| ThermoRawFileParser DLL (mode detection, `.raw`→mzML for Sage) | a .NET 8 **runtime** | On compute nodes, found as `dotnet` on `PATH` |
 
-# Look for Python tracebacks
-grep -i "error\|traceback\|exception" <sbatch_log_dir>/stan-hive-process-<jobid>.out
+Try these in order:
 
-# Verify stan.db path is reachable from a compute node
-srun --partition=<partition> --account=<account> --time=00:02:00 \
-     --cpus-per-task=1 --mem=1G \
-     bash -c "ls -lh <db_path>"
-```
+1. **An image with .NET inside.** This makes the DIA-NN half a non-issue on the host.
+2. **A cluster module** (`module avail dotnet`). UC Davis uses `dotnet-core-sdk/8.0.4`.
+3. **A user install on shared storage**, which needs no sudo:
 
----
+   ```bash
+   curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$STAN_HOME/tools/dotnet-install.sh"
+   bash "$STAN_HOME/tools/dotnet-install.sh" --channel 8.0 --install-dir "$STAN_HOME/tools/dotnet"
+   # in the patched job script:
+   export DOTNET_ROOT=$STAN_HOME/tools/dotnet; export PATH=$DOTNET_ROOT:$PATH
+   ```
 
-### `sacct` shows job COMPLETED but output looks empty / wrong
+   `dotnet-install.sh` does not install system libraries. .NET also needs `libicu`, `libssl` and `libstdc++` from the OS. If they are missing, ask the admins; you cannot install them without root.
 
-**Cause:** `sacct` reports the `.batch` and `.extern` sub-steps as COMPLETED even when the main job step failed. The top-level job ID (without a `.`) is the one to check.
+**Verify inside `srun`:** `dotnet --list-sdks` shows `8.x` (needed for DIA-NN outside a container), `dotnet --list-runtimes` shows `Microsoft.NETCore.App 8.x`, and the Step 2.7 smoke test reports a Thermo mode other than `UNKNOWN`. A populated `--list-runtimes` with an empty `--list-sdks` means runtime only. That is enough for TRFP but not for bare-binary DIA-NN.
 
-```bash
-# Wrong — includes .batch and .extern substeps which always show COMPLETED
-sacct -j <jobid>
-
-# Right — filter out substeps
-sacct -j <jobid> | grep -v '\.'
-```
+The same 4-tier install for Ubuntu with root is `install_dotnet8_sdk()` in `stan_wsl_setup.sh` (Mode B).
 
 ---
 
-## Appendix A — `dispatch.yml` Structure Reference
+## Appendix C — Other SLURM code paths (do not use for a new install)
 
-This is an annotated summary of the keys in `DEFAULT_CONFIG_TEMPLATE` (from
-`stan/community/scripts/dispatch_hive.py`). When the AI generates your `dispatch.yml`,
-every key here should be present.
-
-```yaml
-# Absolute path on shared storage. All SLURM jobs open this file.
-db_path: /shared/<your-path>/stan.db
-
-# DIA-NN/Sage search outputs land here. Per-raw subdirs created automatically.
-# Must be on shared storage — never /tmp.
-out_root: /shared/<your-path>/processing
-
-# SLURM job stdout/stderr. Must be on shared storage — never /tmp.
-sbatch_log_dir: /shared/<your-path>/logs/sbatch
-
-# Dispatcher's own JSONL audit log.
-dispatch_log_dir: /shared/<your-path>/logs/dispatch
-
-# Absolute path to the Python venv. Sourced inside SLURM jobs.
-stan_venv: /shared/<your-path>/stan_venv
-
-# SLURM resource block. ALL THREE values must be from the same sacctmgr row.
-slurm:
-  partition: <partition>
-  qos: <qos>
-  account: <account>
-  time: "06:00:00"   # 6h is ample for DIA-NN on a HeLa QC raw
-  cpus: 8
-  mem: "32G"
-
-# Limit new submissions per dispatcher invocation (cron-safety valve).
-max_submissions_per_run: 50
-
-# Regex for QC filename matching. Empty string dispatches everything.
-qc_pattern: "(?i)(he(l[a5\\d]|\\d)|qc|std[_\\-\\s]?he)"
-
-# Stop retrying after this many failures for a given raw file.
-max_attempts: 3
-
-# One block per instrument.
-instruments:
-  - name: "<display name>"
-    family: "<timsTOF|Orbitrap|...>"    # IPS cohort key
-    vendor: "<bruker|thermo>"
-    watch_dir: /shared/<your-path>/incoming/<instrument>
-    column_vendor: ""
-    column_model: ""
-```
+- **`execution_mode: slurm`** plus a top-level `hive:` block in `instruments.yml` (`stan/search/dispatcher.py`, `stan/search/slurm.py`, needs the `[hpc]` extra). The watcher itself SFTPs a job script over SSH and polls until the job finishes. The job runs bare `diann` from `PATH` (no container), passes no QOS, and expects `output_dir` to be the same path on both machines. It predates the dispatcher, is not what the reference deployment runs, and is what the older [hpc_guide.md](hpc_guide.md) describes.
+- **`processing_mode: hive`** (watcher on the instrument PC uploads, then SSH-submits): see the Phase 3 table. Use it only with `submit_after_upload: false`.
 
 ---
 
-## Appendix B — Thermo `.raw` on Linux: .NET 8 SDK Requirement
+## Known gaps in 1.2.x (for the maintainer)
 
-Applies to any cluster where you process Thermo `.raw` files without a container that pre-bundles the .NET runtime (e.g. bare-binary DIA-NN install or a minimal container image).
+Every item below was found by reading the code on 2026-09-29. Each one is why a step above is written the way it is.
 
-**The root cause of "0 precursors from .raw" is almost always a .NET install problem**, not a DIA-NN flag problem. Specifically:
-
-- DIA-NN 2.x requires the **.NET 8 SDK** — NOT just the runtime.
-- `dotnet --list-runtimes` shows entries for both runtime-only and SDK installs.
-- `dotnet --list-sdks` shows entries only if the SDK is installed.
-- If `--list-runtimes` is populated but `--list-sdks` is empty → runtime only → Thermo reader will fail.
-
-**Install order** (try each tier in order until one succeeds):
-
-1. Check for existing 8.x SDK: `dotnet --list-sdks 2>/dev/null | grep -qE '^8\.'`
-2. Try apt: `sudo apt-get install -y dotnet-sdk-8.0` (Ubuntu/Debian only)
-3. Add Microsoft apt repo and retry: `packages-microsoft-prod.deb` from `packages.microsoft.com/config/ubuntu/<release>/`
-4. Fall back to `dotnet-install.sh --channel 8.0` (no `--runtime` flag) + manual `apt-get install -y libicu<N> libssl3 libstdc++6 libunwind8`
-
-The libicu package name varies by Ubuntu release:
-- Ubuntu 26.04 → `libicu76`
-- Ubuntu 24.04 → `libicu74`
-- Ubuntu 22.04 → `libicu70`
-
-`dotnet-install.sh` does NOT install system dependencies — you must install libicu separately or the .NET binary will fail silently.
-
-For the canonical 4-tier implementation, see
-`/Users/brettphinney/Documents/claude/docs/THERMO_RAW_WSL2_NOTES.md` (section 5).
-This doc was written from 27 hotfix versions of DE-LIMP tracking down the same root cause.
-
-**Verification** (run after install, before submitting real jobs):
-```bash
-dotnet --list-sdks      # must show 8.x
-dotnet --list-runtimes  # must show Microsoft.NETCore.App 8.x
-ldd <diann-linux-binary> | grep 'not found'  # must be empty
-LD_LIBRARY_PATH=<diann-dir>:$LD_LIBRARY_PATH \
-  DOTNET_ROOT=/usr/share/dotnet \
-  <diann-dir>/diann-linux --help >/dev/null 2>&1 && echo "OK"
-```
-
-If running DIA-NN via Apptainer (the preferred approach on most clusters), this is a
-non-issue only if the `.sif` image bundles .NET. Always verify with a test `.raw` file
-before assuming the container is correctly built.
+1. **Site constants are hardcoded**: `run_one_v1.py` (`DIANN_SIF`, `DIANN_BIN`, `SAGE_BIN`, `ASSET_CACHE`, `TRFP_DLL`, `--bind` list) and `dispatch_hive.py` (`_MONITOR_SLURM`, module names and `bruker_ff_dir` in `_render_sbatch`, the `--partition` map). These should come from `dispatch.yml` or environment variables so that other labs need no patch.
+2. **`_render_sbatch` forces `STAN_DB_BACKEND=pg`** and reads a UC Davis token path. It should follow the dispatcher's own backend.
+3. **The Postgres backend cannot be pointed elsewhere**: `PG_DEFAULTS` in `stan/db_pg.py` has no host or database override, and `psycopg2` is not a declared dependency (Hive's venv has `psycopg2-binary` installed separately).
+4. **`--print-default-config` emits YAML that does not parse**: `qc_pattern` is double-quoted.
+5. **No copy-completion check** in `_walk_raws` or `link_flinders_qc.py`. A run that is still being copied can be dispatched.
+6. **Monitor jobs are not seen as in flight**: `_job_already_queued` looks for `stan-<stem>`, but monitor jobs are named `stan-mon-<stem>`, so a pending monitor job can be submitted again on the next tick. The Hive job history for the week to 2026-09-29 is consistent with this: 42 of 214 monitor raws were submitted 2–3 times.
+7. **`diann_version` is stamped `2.3.0`** for every DIA run (`_extract_metrics`), whatever binary actually ran.
+8. **DDA rows carry no `diann_version`**, so `submit_to_benchmark` falls back to running `diann` on the submitting host. On a login node without it, that gives `Invalid version format: unknown`, which rejects the row.
+9. **`hive_bootstrap.sh` is stale**: it pulls an unpublished image, installs Sage from "latest", writes an unused `sage_binary` key, installs `alphatims` and `numpy<2` without `pandas<3`, and hardcodes UC Davis paths. UC Davis's own install was not built with it (`STAN/containers/diann.sif` and `STAN/sage/sage` do not exist on Hive).
+10. **`stan install-peg-deps` does not pin `pandas<3`**. The `[peg]` extra does.

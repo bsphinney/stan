@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import codecs
+import locale
 import logging
 import os
 from datetime import datetime, timezone
@@ -377,10 +379,44 @@ def resolve_config_path(filename: str) -> Path:
     )
 
 
+def read_config_text(path: Path) -> str:
+    """A config file's text, whichever Windows tool wrote it.
+
+    Windows PowerShell 5.1 writes ``Out-File -Encoding utf8`` with a UTF-8
+    byte-order mark, and install_stan.ps1 creates
+    ``%USERPROFILE%\\.stan\\instruments.yml`` exactly that way; plain
+    ``Out-File`` and ``>`` write UTF-16. ``open()`` with no encoding uses the
+    ANSI code page on Windows (cp1252), which turns the mark into ``ï»¿``,
+    and PyYAML then rejects the whole file: the watcher and the dashboard saw
+    no instruments and ``stan setup`` / ``stan add-watch`` could not add one.
+
+    A byte-order mark decides the encoding. Text without one is read as
+    UTF-8, which is what STAN writes, and a file that is not valid UTF-8
+    falls back to the locale encoding ``open()`` used before, so a file
+    saved as ANSI by Notepad still reads as it did.
+
+    Raises:
+        OSError: the file cannot be read.
+        UnicodeDecodeError: the bytes fit neither UTF-8 nor the locale.
+    """
+    raw = Path(path).read_bytes()
+    if raw.startswith(codecs.BOM_UTF8):
+        return raw[len(codecs.BOM_UTF8):].decode("utf-8")
+    if raw.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return raw.decode("utf-16")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode(locale.getpreferredencoding(False))
+
+
 def load_yaml(path: Path) -> dict:
-    """Load a YAML file and return its contents as a dict."""
-    with open(path) as f:
-        data = yaml.safe_load(f)
+    """Load a YAML file and return its contents as a dict.
+
+    Decoded by :func:`read_config_text`, so a file with a byte-order mark
+    (what Windows PowerShell writes) parses on every platform.
+    """
+    data = yaml.safe_load(read_config_text(path))
     if data is None:
         return {}
     return data
@@ -492,9 +528,74 @@ def load_thresholds() -> dict:
 
 
 def load_community() -> dict:
-    """Load community.yml."""
+    """Load community.yml.
+
+    ``community_submit`` is read from here by ``stan submit-all``, ``stan
+    verify`` and the arcade. An older ``stan setup`` stored the answer in
+    each instruments.yml block instead, where nothing read it. That old
+    answer is NOT turned into consent here: its question defaulted to yes
+    and never took effect, so honouring it would start sharing for labs
+    that never saw it happen (review of 1.2.6). When community.yml has no
+    ``community_submit`` and every instruments.yml block that carries one
+    says true, a one-time note says where the setting lives instead.
+    """
     path = resolve_config_path("community.yml")
-    return load_yaml(path)
+    data = load_yaml(path)
+    if isinstance(data, dict) and "community_submit" not in data:
+        if _legacy_community_submit():
+            _note_legacy_community_submit(path)
+    return data
+
+
+# One note per process: the dashboard calls load_community() per request.
+_LEGACY_SUBMIT_NOTED = False
+
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _legacy_community_submit() -> bool:
+    """True when instruments.yml blocks carry ``community_submit`` and all say true.
+
+    Answers that disagree (one instrument yes, another no) enable nothing:
+    the switch is lab-wide, so it is left for a person to set.
+    """
+    global _LEGACY_SUBMIT_NOTED
+    try:
+        doc = load_yaml(resolve_config_path("instruments.yml"))
+    except Exception:
+        return False
+    blocks = doc.get("instruments") if isinstance(doc, dict) else None
+    values = [
+        blk["community_submit"] for blk in (blocks or [])
+        if isinstance(blk, dict) and "community_submit" in blk
+    ]
+    if not values:
+        return False
+    flags = {v is True or str(v).strip().lower() in _TRUTHY for v in values}
+    if flags == {True}:
+        return True
+    if flags == {True, False} and not _LEGACY_SUBMIT_NOTED:
+        _LEGACY_SUBMIT_NOTED = True
+        logger.warning(
+            "instruments.yml blocks disagree on community_submit (an older "
+            "`stan setup` stored it per instrument). Submissions stay off; set "
+            "community_submit: true or false in community.yml to decide."
+        )
+    return False
+
+
+def _note_legacy_community_submit(community_path: Path) -> None:
+    """Say, once per process, that the per-instrument opt-in is not read."""
+    global _LEGACY_SUBMIT_NOTED
+    if _LEGACY_SUBMIT_NOTED:
+        return
+    _LEGACY_SUBMIT_NOTED = True
+    logger.warning(
+        "instruments.yml has community_submit: true (an older `stan setup` "
+        "stored it per instrument), but STAN does not read it there, so "
+        "community submissions are off. To share, add community_submit: true "
+        "to %s or press Sync on the dashboard.", community_path,
+    )
 
 
 # Allow-list of UI preference keys the dashboard consumes. Unknown keys are

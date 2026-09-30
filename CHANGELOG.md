@@ -11,6 +11,87 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.6] — 2026-09-29
+
+Installer and setup fixes found by the agent-install-docs audit, with the
+install docs rewritten for AI agents (`INSTALL_FOR_AGENTS.md`).
+
+### Changed
+- **Error reports are off until you opt in** (Brett, 2026-09-29).
+  `telemetry._is_opted_in()` now needs `error_telemetry: true` in
+  community.yml; a missing key or file means off. `stan setup` question 6
+  defaults to No, and its wording now says what a report actually holds:
+  the error message (a failed search's message is its command line, paths
+  included), the raw file's name, and the STAN/Python/OS versions.
+- **Any DIA-NN 2.3.x is asset-verified** (Brett, 2026-09-29).
+  `is_exact_pinned_diann` is replaced by `is_asset_hash_eligible_diann`,
+  the same major.minor rule as acceptance, so 2.3.1 and 2.3.2 rows get the
+  canonical FASTA and library hashes and `assets_verified=True`. On the
+  same timsTOF raws 2.3.2 vs 2.3.0 measured 1.007x (219 pairs in PG).
+- **Search threads respect the CPUs a process may actually use**
+  (`default_search_threads()`: affinity mask, cgroup v2 quota). Instrument
+  PCs keep `max(2, n // 2)`; inside a SLURM job the whole allocation is
+  used, so Hive's DDA Sage jobs keep 8 threads. Sage is capped through
+  `RAYON_NUM_THREADS`, and DIA-NN no longer gets `--threads` twice.
+- **The dashboard's PG mirror starts only on hosts that have PG**
+  (`STAN_DB_BACKEND=pg` or a PG Farm credential). An unreadable credential
+  path turns the mirror off with one warning instead of failing start-up.
+  `/api/capabilities` and `/api/refresh` report what start-up decided, so a
+  share mounted later can't make them claim a mirror that never started.
+- **An old per-instrument `community_submit: true` is not consent.** Older
+  `stan setup` wrote the answer (default yes) into each instruments.yml
+  block, where nothing read it. STAN still ignores it there and now says
+  so once, pointing at `community_submit: true` in community.yml.
+
+### Fixed
+- **Windows installer and updater pin DIA-NN 2.3.2 and Sage v0.14.7**,
+  each checked against a pinned sha256. They used to take the newest MSI
+  (2.7.0 by now), whose rows the relay rejects. The pinned folder goes
+  first on the user PATH; an existing 2.3.x is kept.
+- **`stan.bat` downloads `install-stan.bat` when it is missing** instead
+  of stopping.
+- **`stan baseline` searched with the newest DIA-NN on disk** and labelled
+  its rows with whatever `diann` was on PATH, so a PC with 2.7.0 beside the
+  pinned 2.3.2 produced rows the relay rejects, under the wrong version.
+  `_find_diann()` now prefers the pinned 2.3.x (exact pin first) and warns
+  when there is none; rows carry the version of the binary that searched.
+  The version is read from the last version-like token in the folder path,
+  as the installer does, so `D:\Tools v1.0\DIA-NN\2.3.2` reads as 2.3.2.
+- **`stan setup` and `stan add-watch` write blocks the watcher runs**
+  (`enabled: true`, vendor, extensions, output_dir). Before, the watcher
+  skipped every folder `add-watch` added. `setup` writes `community_submit`
+  to community.yml, where `submit-all` reads it, and no longer deletes other
+  instruments when you decline a folder.
+- **`stan init` creates missing config files** (sharing and telemetry off)
+  instead of copying templates that no longer exist; the fleet question
+  defaults to None.
+- **Config files with a BOM parse** (Windows PowerShell 5.1 writes one):
+  instruments.yml everywhere it is read (watcher, dashboard, `setup`,
+  `add-watch`, `list-watch`, `remove-watch`, the Config tab's delete),
+  community.yml writes, and the Hive dispatcher's config.
+- **`stan setup` could erase a lab's verified-name token.** Its email step
+  re-wrote community.yml with only `email_reports` whenever the file failed
+  to parse (for example a BOM file read as cp1252), dropping `auth_token`,
+  `display_name` and `community_submit`. Email settings now go through the
+  same safe writer as `stan community-claim`, which refuses to overwrite a
+  file it cannot parse.
+- **The Config tab's raw editor planted `community_submit` in
+  instruments.yml** after `/api/instruments` began returning the lab-wide
+  flag; the editor and the save handler now leave it out.
+- **`stan setup`'s QC-filter preview scanned the whole watch folder**,
+  including inside every `.d`; it now stops after 5,000 entries and never
+  descends into a run.
+- **The Config tab's "Community" row** shows the lab-wide
+  `community_submit` from community.yml, not a stale per-instrument "No".
+- **`pg_configured()` no longer lets an unreadable credential path hide a
+  readable one** later in the list.
+
+### Docs
+- New `INSTALL_FOR_AGENTS.md` (instructions an AI agent follows to install
+  STAN: instrument PC, separate Linux box, or SLURM cluster) and
+  `docs/INSTALL_MODE_B_LINUX.md`; README, user guide, WSL and HPC guides and
+  the regression checklist brought in line with the code.
+
 ## [1.2.5] — 2026-09-29
 
 ### Fixed

@@ -273,33 +273,96 @@ async def _pg_refresh_loop() -> None:
 async def api_refresh() -> dict:
     """Pull from PG right now (the dashboard's ↻ shortcut).
 
-    A no-op when the mirror is off: the panels that matter read PG on
-    every request, so there is nothing to catch up on.
+    A no-op when the mirror is off. In PG-direct mode the panels that
+    matter read PG on every request, and on a SQLite-only install there
+    is no PG to pull from, so either way there is nothing to catch up on.
     """
     import asyncio
-    if not _mirror_enabled():
-        return {"ok": True, "runs": -1, "direct": True}
+
+    from stan.db_pg import use_pg
+    if not _mirror_running():
+        return {"ok": True, "runs": -1, "direct": bool(use_pg())}
     n = await asyncio.to_thread(_pull_from_pg_once)
     return {"ok": n >= 0, "runs": n, "direct": False}
 
 
 def _mirror_enabled() -> bool:
-    """Should the SQLite mirror keep running?
+    """Should the PG -> SQLite mirror run on this install?
 
-    Yes by default, even in PG-direct mode. The panels that carry the
-    dashboard -- runs, trends, TIC, PEG, drift, sample health -- no
-    longer go through it, but a handful of endpoints still issue raw
-    SQLite SQL against the mirrored ``runs`` table and would freeze at
-    the last pull without it: /api/warnings, /api/today/tic-overview,
-    /api/utilization, /api/fleet/comparison, /api/fleet/instruments,
-    plus get_column_lifetime and time_since_last_qc. Port those and
-    this can default to off. (/api/cirt was one of them until
-    ``stan.db.get_cirt_history`` gave it a PG path.)
+    Only where there is a PG to mirror. That is either:
 
-    ``STAN_PG_REFRESH_SECONDS=0`` turns it off today for an install that
-    doesn't use those views and wants the PG Farm connection slot back.
+    * ``STAN_DB_BACKEND=pg`` (``use_pg()``) -- PG-direct mode. The hosted
+      dashboard (Azure, ``ucd.stan-proteomics.org``) runs this way, and so
+      does ``stan dashboard`` when its ``--backend auto`` probe reached PG
+      Farm or ``--backend pg`` was given. The mirror keeps running there
+      even though the panels that carry the dashboard -- runs, trends,
+      TIC, PEG, drift, sample health -- no longer go through it, because
+      a handful of endpoints still issue raw SQLite SQL against the
+      mirrored ``runs`` table and would freeze at the last pull without
+      it: /api/warnings, /api/today/tic-overview, /api/utilization,
+      /api/fleet/comparison, /api/fleet/instruments, plus
+      get_column_lifetime and time_since_last_qc. Port those and this
+      can default to off. (/api/cirt was one of them until
+      ``stan.db.get_cirt_history`` gave it a PG path.)
+    * a PG Farm credential on this host (``pg_configured()``: a
+      ``$PGPASSWORD`` or a token file, checked without touching the
+      network) -- a mirror-fed dashboard that reads SQLite but is filled
+      from PG, e.g. a UC Davis Mac whose start-up probe missed PG, or
+      which was started with ``--backend sqlite``.
+
+    Everything else -- every lab that is not UC Davis -- has no PG at all.
+    Before this check the loop started there anyway, never pulled a row,
+    logged ``PG refresh skipped: No module named 'psycopg2'`` at start-up
+    and every five minutes after, and /api/capabilities claimed
+    ``mirror_active: true``.
+
+    ``STAN_PG_REFRESH_SECONDS=0`` still turns it off everywhere, for an
+    install that doesn't use those views and wants the PG Farm
+    connection slot back.
+
+    Never raises. This runs at the top of ``startup()`` and on every
+    /api/capabilities and /api/refresh call, and ``pg_configured()``
+    asks ``Path.exists()`` about each token path -- which raises
+    PermissionError on EACCES rather than answering False. The default
+    path is under /quobyte/proteomics-grp (``drwxrws---``), so for any
+    Hive user outside that group the gate used to take the dashboard
+    down with "Application startup failed". A credential this host
+    cannot read is no credential, so the answer is False.
     """
-    return PG_REFRESH_SECONDS > 0
+    if PG_REFRESH_SECONDS <= 0:
+        return False
+    from stan.db_pg import pg_configured, use_pg
+    if use_pg():
+        return True
+    try:
+        return bool(pg_configured())
+    except OSError as e:
+        global _CRED_UNREADABLE_WARNED
+        if not _CRED_UNREADABLE_WARNED:
+            _CRED_UNREADABLE_WARNED = True
+            logger.warning(
+                "could not check for a PG Farm credential (%s); treating "
+                "this host as having none, so the PG mirror is off", e,
+            )
+        return False
+
+
+# One warning per process, not one per /api/capabilities call.
+_CRED_UNREADABLE_WARNED = False
+
+# The gate's answer when start-up ran: whether the refresh loop was started.
+# /api/capabilities and /api/refresh report this rather than asking again, so
+# they cannot claim a mirror that start-up never launched (e.g. a Mac share
+# mounted after the dashboard started), and they skip a synchronous stat of
+# an SMB path inside an async handler.
+_MIRROR_ACTIVE: bool | None = None
+
+
+def _mirror_running() -> bool:
+    """Whether the mirror runs in this process: start-up's answer when it ran."""
+    if _MIRROR_ACTIVE is not None:
+        return _MIRROR_ACTIVE
+    return _mirror_enabled()
 
 
 @app.on_event("startup")
@@ -313,13 +376,21 @@ async def startup() -> None:
     # haven't been ported (maintenance_events, uploads, scan_cache), so
     # the local DB is created either way.
     init_db()
+    global _MIRROR_ACTIVE
+    mirror = _mirror_enabled()
+    _MIRROR_ACTIVE = mirror
     if use_pg():
         logger.info(
             "reading PG Farm directly; SQLite mirror %s",
             "still refreshing for the un-ported views"
-            if _mirror_enabled() else "disabled",
+            if mirror else "disabled",
         )
-    if _mirror_enabled():
+    elif not mirror and PG_REFRESH_SECONDS > 0:
+        logger.info(
+            "SQLite store; PG mirror off (STAN_DB_BACKEND is not pg and "
+            "no PG Farm credential on this host)",
+        )
+    if mirror:
         asyncio.create_task(_pg_refresh_loop())
 
 
@@ -383,7 +454,7 @@ async def api_capabilities() -> dict:
         # "sqlite" means the local file, whether or not a mirror fills it.
         "db_backend": "pg" if direct else "sqlite",
         "pg_direct": direct,
-        "mirror_active": _mirror_enabled(),
+        "mirror_active": _mirror_running(),
         "version": __version__,
     }
 
@@ -475,11 +546,18 @@ async def api_run_detail(run_id: str) -> dict:
 
 @app.get("/api/instruments")
 async def api_instruments() -> dict:
-    """List instruments from instruments.yml (hot-reloaded)."""
+    """List instruments from instruments.yml (hot-reloaded).
+
+    Also returns the lab-wide ``community_submit`` from community.yml. That
+    file, not a per-instrument key, is what gates ``stan submit-all``, and
+    ``stan setup`` now writes the flag only there, so the Config tab reads
+    it from here rather than showing a stale per-instrument "No".
+    """
+    community = bool(_load_community_cfg().get("community_submit"))
     watcher = _get_instruments_watcher()
     if watcher is None:
-        return {"instruments": []}
-    return watcher.data
+        return {"instruments": [], "community_submit": community}
+    return {**watcher.data, "community_submit": community}
 
 
 @app.get("/api/warnings")
@@ -582,8 +660,16 @@ async def api_update_instruments(body: InstrumentsUpdate) -> dict:
     if not isinstance(data, dict) or "instruments" not in data:
         raise HTTPException(status_code=400, detail="YAML must contain 'instruments' key")
 
+    content = body.yaml_content
+    if "community_submit" in data:
+        # GET /api/instruments returns the lab-wide flag from community.yml
+        # beside the instruments; an editor that saves the whole response
+        # back must not plant it in instruments.yml, where nothing reads it.
+        data.pop("community_submit")
+        content = yaml.safe_dump(data, default_flow_style=False, sort_keys=False)
+
     config_path = resolve_config_path("instruments.yml")
-    config_path.write_text(body.yaml_content)
+    config_path.write_text(content, encoding="utf-8")
 
     # Force reload
     watcher = _get_instruments_watcher()
@@ -596,7 +682,9 @@ async def api_update_instruments(body: InstrumentsUpdate) -> dict:
 async def api_delete_instrument(index: int) -> dict:
     """Delete an instrument by its index in the instruments list."""
     config_path = resolve_config_path("instruments.yml")
-    data = yaml.safe_load(config_path.read_text()) or {}
+    from stan.config import read_config_text
+
+    data = yaml.safe_load(read_config_text(config_path)) or {}
     instruments = data.get("instruments", [])
 
     if index < 0 or index >= len(instruments):
@@ -604,7 +692,7 @@ async def api_delete_instrument(index: int) -> dict:
 
     removed = instruments.pop(index)
     data["instruments"] = instruments
-    config_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+    config_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False), encoding="utf-8")
 
     watcher = _get_instruments_watcher()
     watcher.reload()

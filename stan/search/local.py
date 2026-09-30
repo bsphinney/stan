@@ -22,9 +22,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from stan.search.convert import get_mzml_path
 
@@ -73,6 +74,170 @@ def _mirror_log_to_hive(log_file: Path, run_stem: str, engine: str) -> None:
         logger.debug("Could not mirror log to Hive", exc_info=True)
 
 logger = logging.getLogger(__name__)
+
+
+# ── Search thread budget ─────────────────────────────────────────────
+
+# Module-level so tests can point them at a fake cgroup hierarchy.
+_PROC_SELF_CGROUP = Path("/proc/self/cgroup")
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def _read_cpu_max(path: Path) -> int | None:
+    """Whole CPUs granted by one cgroup v2 ``cpu.max`` file, or None.
+
+    The file holds ``"<quota> <period>"`` in microseconds, or
+    ``"max <period>"`` when the group is unlimited. A fractional grant
+    rounds down (150000/100000 answers 1): a thread count must be whole,
+    and rounding up would oversubscribe the quota it is meant to respect.
+    """
+    try:
+        fields = path.read_text().split()
+    except OSError:
+        return None
+    if not fields or fields[0] == "max":
+        return None
+    try:
+        quota = int(fields[0])
+        period = int(fields[1]) if len(fields) > 1 else 100_000
+    except ValueError:
+        return None
+    if quota <= 0 or period <= 0:
+        return None
+    return max(1, quota // period)
+
+
+def _cgroup_cpu_quota() -> int | None:
+    """Tightest cgroup v2 CPU quota on this process, in whole CPUs, or None.
+
+    Reads this process's cgroup from ``/proc/self/cgroup`` (the ``0::``
+    line; cgroup v1-only hosts have none and answer None) and walks from
+    that group up to the hierarchy root, because a parent's ``cpu.max``
+    limits every child. A container with its own cgroup namespace sees
+    ``0::/`` and its quota in ``/sys/fs/cgroup/cpu.max``; a systemd unit
+    with ``CPUQuota=`` sees its slice path. When the listed path does not
+    exist under the mount (a container without a cgroup namespace), only
+    the mount root is consulted. Any read error answers None: the quota
+    can only lower the count, never be the reason a search fails.
+    """
+    try:
+        text = _PROC_SELF_CGROUP.read_text()
+    except OSError:
+        return None  # not Linux, or no procfs
+    rel = None
+    for line in text.splitlines():
+        if line.startswith("0::"):
+            rel = line[3:].strip()
+            break
+    if rel is None:
+        return None
+
+    root = _CGROUP_ROOT
+    parts = [p for p in PurePosixPath(rel).parts if p != "/"]
+    leaf = root
+    if parts and ".." not in parts:
+        candidate = root.joinpath(*parts)
+        try:
+            if candidate.is_dir():
+                leaf = candidate
+        except OSError:
+            pass
+
+    best: int | None = None
+    level = leaf
+    while True:
+        quota = _read_cpu_max(level / "cpu.max")
+        if quota is not None:
+            best = quota if best is None else min(best, quota)
+        if level == root:
+            break
+        level = level.parent
+    return best
+
+
+def _available_cpus() -> int:
+    """CPUs this process may actually use, not merely CPUs the host has.
+
+    ``os.cpu_count()`` counts the host. Under a CPU affinity mask (SLURM,
+    ``taskset``, systemd ``CPUAffinity=``, a cpuset-limited container) or
+    a cgroup v2 quota (``docker --cpus``, systemd ``CPUQuota=``) the
+    process gets fewer: a SLURM job on 4 allocated CPUs saw
+    ``os.cpu_count() == 128`` and launched DIA-NN with ``--threads 64``.
+    ``os.sched_getaffinity`` (Linux) answers for the mask; the cgroup
+    quota, when one is readable, can lower it further. Windows and macOS
+    have neither and fall back to ``os.cpu_count()``.
+    """
+    try:
+        n = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        n = 0
+    if n <= 0:
+        n = os.cpu_count() or 4
+    quota = _cgroup_cpu_quota()
+    if quota is not None:
+        n = min(n, quota)
+    return max(1, n)
+
+
+def _slurm_allocated_cpus() -> int | None:
+    """CPUs SLURM allocated to this job step, or None when not stated."""
+    for var in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE"):
+        try:
+            n = int(os.environ.get(var, "").strip())
+        except ValueError:
+            continue
+        if n > 0:
+            return n
+    return None
+
+
+def default_search_threads() -> int:
+    """Thread count for a DIA-NN or Sage search when none was requested.
+
+    Outside SLURM this is ``max(2, cpus // 2)`` of the CPUs this process
+    may use (see ``_available_cpus``). The halving is for instrument PCs:
+    the workstation may be acquiring while it searches, and a search that
+    takes every core can starve the acquisition software. The floor of 2
+    keeps a search moving on a small box.
+
+    Inside a SLURM job (``SLURM_JOB_ID`` set) nothing is acquiring and the
+    CPUs are reserved for this job, so the whole allocation is used,
+    bounded by ``SLURM_CPUS_PER_TASK`` / ``SLURM_CPUS_ON_NODE`` in case the
+    cluster sets no affinity mask. This is what keeps Hive's DDA jobs
+    (``run_one_v1.run_sage`` -> ``run_sage_local``, 8 CPUs) at the 8 Sage
+    threads Rayon already chose for them before Sage was capped here.
+    """
+    n = _available_cpus()
+    if os.environ.get("SLURM_JOB_ID", "").strip():
+        allocated = _slurm_allocated_cpus()
+        if allocated is not None:
+            n = min(n, allocated)
+        return max(1, n)
+    return max(2, n // 2)
+
+
+def _sage_thread_env(threads: int) -> dict[str, str]:
+    """Subprocess environment that sizes Sage's Rayon pool.
+
+    An explicit ``threads`` wins; then an operator's own non-zero
+    ``RAYON_NUM_THREADS`` (``0`` means "Rayon's default" to Rayon, i.e.
+    every visible CPU, so it is not treated as a choice); then
+    ``default_search_threads()``.
+    """
+    env = dict(os.environ)
+    if threads > 0:
+        env["RAYON_NUM_THREADS"] = str(threads)
+        return env
+    try:
+        operator_choice = int(env.get("RAYON_NUM_THREADS", "").strip())
+    except ValueError:
+        operator_choice = 0
+    # Re-written even when kept: Rayon parses it strictly, so " 5" would
+    # silently fall back to every CPU.
+    env["RAYON_NUM_THREADS"] = str(
+        operator_choice if operator_choice > 0 else default_search_threads()
+    )
+    return env
 
 
 def _build_local_diann_params(
@@ -242,7 +407,9 @@ def run_diann_local(
         output_dir: Output directory for results.
         vendor: "bruker" or "thermo".
         diann_exe: Path to diann executable (or just "diann" if on PATH).
-        threads: Number of threads (0 = let DIA-NN decide).
+        threads: Number of threads. 0 (the default) uses
+            ``default_search_threads()``: half the CPUs this process may
+            use on an instrument PC, the whole allocation inside SLURM.
         fasta_path: Path to FASTA file (required for local mode).
         lib_path: Path to spectral library (optional — DIA-NN runs library-free if omitted).
         search_mode: "local" (user FASTA) or "community" (frozen HF assets).
@@ -333,15 +500,20 @@ def run_diann_local(
     cmd = [diann_exe, "--f", str(raw_for_diann), "--out", str(report_path_for_diann)]
 
     for key, val in params.items():
+        # --threads is added exactly once below. The community parameter
+        # set carries its own "threads": 8 (sized for the Hive SLURM job),
+        # which used to reach DIA-NN as a second --threads flag.
+        if key == "threads":
+            continue
         if val == "":
             cmd.append(f"--{key}")  # flag-only params like --fasta-search
         else:
             cmd.extend([f"--{key}", str(val)])
 
-    # Default to half available cores — instrument PCs need headroom for acquisition
+    # Half the usable CPUs on an instrument PC (it may be acquiring), the
+    # whole allocation under SLURM -- see default_search_threads().
     if threads <= 0:
-        import os
-        threads = max(2, (os.cpu_count() or 4) // 2)
+        threads = default_search_threads()
     cmd.extend(["--threads", str(threads)])
 
     logger.info("Running DIA-NN locally: %s", raw_path.name)
@@ -460,7 +632,11 @@ def run_sage_local(
         sage_exe: Path to sage executable (or just "sage" if on PATH).
         trfp_exe: Path to ThermoRawFileParser.exe (needed for Thermo DDA only).
         keep_mzml: Keep converted mzML files after search.
-        threads: Number of threads (0 = let Sage decide).
+        threads: Number of threads. Sage has no thread option, so this is
+            passed as ``RAYON_NUM_THREADS`` (Rayon sizes Sage's pool from
+            it). 0 (the default) uses an operator's own
+            ``RAYON_NUM_THREADS`` if one is exported, and otherwise
+            ``default_search_threads()`` -- the same budget as DIA-NN.
         fasta_path: Path to FASTA file (required for local mode).
         search_mode: "local" (user FASTA) or "community" (frozen HF assets).
 
@@ -515,8 +691,17 @@ def run_sage_local(
     # (STAN's extractor reads parquet, not TSV)
     cmd = [sage_exe, "--parquet", str(config_path)]
 
+    # Sage has no thread flag; it runs on Rayon's global pool, which is
+    # sized from RAYON_NUM_THREADS and otherwise from every CPU the
+    # process can see. Unset, a DDA search on an instrument PC took all
+    # of its cores while DIA-NN was held to half.
+    sage_env = _sage_thread_env(threads)
+
     logger.info("Running Sage locally: %s", raw_path.name)
-    logger.info("Command: %s", " ".join(cmd))
+    logger.info(
+        "Command: RAYON_NUM_THREADS=%s %s",
+        sage_env["RAYON_NUM_THREADS"], " ".join(cmd),
+    )
 
     log_file = output_dir / "sage.log"
     try:
@@ -528,6 +713,7 @@ def run_sage_local(
                 stderr=subprocess.STDOUT,
                 text=True,
                 timeout=timeout_sec,
+                env=sage_env,
             )
         logger.info("Sage complete: %s", raw_path.name)
     except FileNotFoundError as e:

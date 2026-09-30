@@ -143,7 +143,9 @@ def _load_config(config_path: Path) -> dict:
             f"  stan hive-dispatch --print-default-config > {config_path}"
         )
     import yaml
-    cfg = yaml.safe_load(config_path.read_text()) or {}
+
+    from stan.config import read_config_text
+    cfg = yaml.safe_load(read_config_text(config_path)) or {}
 
     required = ["db_path", "out_root", "sbatch_log_dir", "stan_venv", "instruments"]
     missing = [k for k in required if k not in cfg]

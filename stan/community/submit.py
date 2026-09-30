@@ -21,7 +21,7 @@ from stan.config import load_community
 from stan.db import mark_submitted
 from stan.metrics.scoring import compute_cohort_id
 from stan.search.community_params import (
-    check_diann_version_compatible, is_exact_pinned_diann,
+    check_diann_version_compatible, is_asset_hash_eligible_diann,
 )
 
 logger = logging.getLogger(__name__)
@@ -269,21 +269,16 @@ def submit_to_benchmark(
     # unverifiable. Wire them through so the v1.0 normalizer can stamp
     # assets_verified=True on every new submission.
     #
-    # Gating policy (Brett 2026-05-05):
+    # Gating policy (Brett 2026-05-05, widened 2026-09-29):
     # - Caller-supplied `asset_hashes` always wins — that's a row whose
     #   producer literally hashed the FASTA + speclib it consumed.
-    # - Otherwise auto-fill from EXPECTED_ASSET_HASHES ONLY when the
-    #   submission's diann_version exactly matches PINNED_TOOL_VERSIONS.
-    #   Same major.minor with a different patch (2.3.0 vs 2.3.1) clears
-    #   check_diann_version_compatible above so the submission ships,
-    #   but we leave fasta_md5 / speclib_md5 unset so the relay can
-    #   mark assets_verified=False on the row. Patch-bumped DIA-NN
-    #   versions sometimes change FDR estimation / RT alignment in
-    #   ways that affect output — claiming the canonical assets were
-    #   used would silently mislead the leaderboard.
+    # - Otherwise auto-fill from EXPECTED_ASSET_HASHES when the
+    #   submission's diann_version has the pinned major.minor (2.3.x).
+    #   Until 2026-09-29 only an exact 2.3.0 qualified; see
+    #   is_asset_hash_eligible_diann for why that changed.
     from stan.community.validate import EXPECTED_ASSET_HASHES
 
-    asset_hash_eligible = is_exact_pinned_diann(diann_version)
+    asset_hash_eligible = is_asset_hash_eligible_diann(diann_version)
 
     fasta_md5 = (asset_hashes or {}).get("fasta_md5")
     if not fasta_md5 and asset_hash_eligible:

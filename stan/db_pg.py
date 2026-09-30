@@ -139,7 +139,21 @@ def pg_configured() -> bool:
     """
     if os.environ.get("PGPASSWORD", "").strip():
         return True
-    return any(p.exists() for p in _token_candidates())
+    first_error: OSError | None = None
+    for p in _token_candidates():
+        try:
+            if p.exists():
+                return True
+        except OSError as exc:
+            # An unreadable candidate (EACCES, a dead mount) must not hide a
+            # readable one later in the list...
+            first_error = first_error or exc
+            continue
+    if first_error is not None:
+        # ...but when nothing was readable, say so: the dashboard's mirror
+        # gate turns this into one warning naming the path.
+        raise first_error
+    return False
 
 
 def _resolve_pgpassword() -> str:

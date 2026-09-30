@@ -6,7 +6,7 @@
 
 > *Know your instrument.*
 
-This is the day-to-day manual for STAN — the Standardized proteomic Throughput ANalyzer. It assumes STAN is already installed and `stan` is on your PATH. If you haven't installed it yet, start with the README or the relevant install doc for your setup.
+This is the day-to-day manual for STAN — the Standardized proteomic Throughput ANalyzer. It assumes STAN is already installed and `stan` is on your PATH. If you haven't installed it yet, start with [`INSTALL_FOR_AGENTS.md`](../INSTALL_FOR_AGENTS.md). It is written for an AI coding agent, and a person can follow it too. It helps you choose one of the [three deployment modes](#three-deployment-modes) and links the step-by-step guide for that mode. Where this guide and an install guide differ on an install step, follow the install guide.
 
 ---
 
@@ -30,37 +30,72 @@ This is the day-to-day manual for STAN — the Standardized proteomic Throughput
 
 ## Quick orientation
 
-STAN runs as three loosely coupled pieces. The **watcher daemon** (`stan watch`) runs in the background on the machine connected to your instrument. It monitors the directories you configure and picks up new raw files as soon as acquisition finishes. When it sees a new QC run — a HeLa standard or other file matching the QC filename pattern — it dispatches a database search (DIA-NN for DIA data, Sage for DDA data), extracts quality metrics from the results, and writes everything to a local SQLite database.
+STAN runs as three loosely coupled pieces. The **watcher daemon** (`stan watch`) runs in the background on the machine where finished raw files arrive. That is a separate Linux box in Mode B, or the instrument PC itself in Mode A (see [Three deployment modes](#three-deployment-modes)). It watches the directories you configure and picks up each new raw file once the file has stopped growing. When it sees a new QC run — a HeLa standard or other file matching the QC filename pattern — it dispatches a database search (DIA-NN for DIA data, Sage for DDA data), extracts quality metrics from the results, and writes everything to a local SQLite database. On a SLURM cluster (Mode C) there is no watcher: a login-node cron job finds new raw files and submits one SLURM job per file, and the jobs write to a SQLite database on shared storage.
 
-The **dashboard** (`stan dashboard`) is a local web app served at `http://localhost:8421`. Open it in any browser on the same machine. It reads the same SQLite database the watcher writes to and shows your QC runs as they accumulate — IPS scores, peptide/precursor counts, TIC traces, ion mobility clouds, chromatography trends, and more. The **community benchmark** is optional: if you opt in, STAN submits aggregate metrics (never raw files or patient metadata) to a shared HF Dataset so you can see how your instrument compares to other labs. The public dashboard is at `https://huggingface.co/spaces/brettsp/stan`.
+The **dashboard** (`stan dashboard`) is a local web app served at `http://localhost:8421`. It normally listens only on the machine that runs it, so open it in a browser there, or reach it from your desk as your mode guide describes. It reads the same SQLite database the watcher writes to and shows your QC runs as they accumulate — IPS scores, peptide/precursor counts, TIC traces, ion mobility clouds, chromatography trends, and more.
+
+The **community benchmark** is optional and off until you turn it on. When you opt in and send runs (with `stan submit-all` or the dashboard's Sync button), STAN submits aggregate metrics and the name of each QC file (never raw data, spectra or patient metadata) so you can see how your instrument compares to other labs; see [The community benchmark](#the-community-benchmark). The public dashboard is at [community.stan-proteomics.org](https://community.stan-proteomics.org) (also [on Hugging Face](https://huggingface.co/spaces/brettsp/stan)). **Error telemetry**, which sends crash reports to the STAN relay, is off as well unless you set `error_telemetry: true` (see [`community.yml` and error telemetry](#communityyml-and-error-telemetry)).
 
 ---
 
 ## Day-1 setup
 
-### `stan init`
+Your mode's install guide does all of this in order, with a check after each step. This section explains what those steps are for, so you can change the setup later.
 
-Run this once after installing:
+### Where the config lives
+
+The config directory is `~/.stan/` on Linux and macOS and `%USERPROFILE%\STAN\` on Windows. It holds:
+
+- `instruments.yml`: what to watch and how to search it;
+- `community.yml`: pseudonym, sharing switches and error telemetry;
+- `thresholds.yml`: optional pass/fail gates;
+- `stan.db`: the SQLite database;
+- `logs/`: one log per watcher start and per command.
+
+Mode C does not use `instruments.yml`. Its cluster dispatcher reads its own `dispatch.yml` ([Mode C guide, step 2.6](INSTALL_MODE_C_HPC.md#26-write-dispatchyml)).
+
+### Add an instrument to `instruments.yml` (Modes A and B)
+
+Each watch folder needs one block. The complete block, with every key the watcher needs, is in your mode guide: [Mode B, section 8.2](INSTALL_MODE_B_LINUX.md#82-instrumentsyml), or [README, Mode A step 5](../README.md#mode-a--instrument-pc-windows). To start a block from the command line:
 
 ```
-stan init
+stan add-watch /srv/stan/incoming/timsTOF_HT --vendor bruker --name "timsTOF HT" -y
 ```
 
-This copies the default config files (`instruments.yml`, `thresholds.yml`, `community.yml`) to `~/.stan/` without overwriting anything that already exists. It also walks you through the **fleet-sync wizard** — a short prompt that tells the godmode multi-instrument view where to find this instrument's mirrored QC data. If you skip or need to redo just that part later, run:
+The folder must already exist. `add-watch` writes a block the watcher can run: `name`, `vendor`, `watch_dir`, `extensions`, `stable_secs`, `enabled: true`, `qc_only` and `output_dir`. The `output_dir` is `qc_output/<name>` in the config directory, with spaces turned into `_`, so each instrument's results get their own folder. `--vendor` can be left out when the folder already holds `.d` folders or `.raw` files. `-y` accepts the default HeLa/QC filename filter; use `--qc-pattern REGEX` for your own pattern, or `--all-files` for a folder that holds only QC runs. `add-watch` does **not** write these keys, so add them to the block by hand:
 
+- `diann_path` and `sage_path`: the DIA-NN 2.3.x and Sage v0.14.7 executables. They default to `diann` and `sage` on the `PATH`.
+- `lib_path` and `fasta_path`: the frozen community spectral library and FASTA. The watcher does not download them, and without a library every DIA search fails. Your mode guide gives the download commands and MD5 checksums.
+
+Give each instrument a `name` that contains its model, for example `timsTOF HT` or `Exploris 480`. The name is stored on every run, and the community benchmark takes the instrument family from it. Check the result with `stan list-watch`: every folder should have a tick under *Exists* and *Enabled*, and its extension under *Extensions*. A key shown in red means the watcher skips that block. Running `stan add-watch <folder> --vendor bruker|thermo -y` on a folder that already has a block adds only the keys it is missing, which repairs a block written by an older version.
+
+The watcher re-reads `instruments.yml` every 30 seconds. That picks up instruments you add, remove, enable or disable. An edit to an instrument that is already being watched (its `watch_dir`, `output_dir`, `lib_path` and so on) takes effect only when the watcher restarts.
+
+### `stan init` and `stan setup`
+
+Neither is needed if you follow your mode guide, which writes the config files by hand.
+
+- **`stan init`** creates the config files that do not exist yet, and never overwrites one: an `instruments.yml` with no instruments, an empty `thresholds.yml` (no gates, so every run passes) and a `community.yml` with every sharing option and error telemetry off. Then it runs the **fleet-sync wizard**, whose answer is saved to `fleet.yml`. Nothing reads that file yet. Its default answer is `3` (None), which is right for every lab outside UC Davis. Pressing Enter, or giving it no input at all (`stan init </dev/null`), takes that default. To redo only the wizard later, run `stan init --reconfigure-fleet`.
+- **`stan setup`** is an interactive wizard for a person at the keyboard. It asks for the watch folder, the vendor (when the files in the folder cannot tell it), the instrument name and the QC filename filter, then the LC column, the HeLa amount, community participation, a daily email and error reports. It writes a block the watcher can run, the same keys as `stan add-watch` plus `hela_amount_ng` and the column, and updates that folder's block if there already is one. It does not write `lib_path`, `fasta_path`, `diann_path` or `sage_path`. It writes your community answer to `community_submit` in `community.yml`. Its community question defaults to yes and its error-report question to no, so read them before pressing Enter.
+
+### `community.yml` and error telemetry
+
+Write `community.yml` in the config directory even if the lab will not take part in the community benchmark, so that it states every sharing choice. It is also where error telemetry is switched on:
+
+```yaml
+display_name: ""          # public pseudonym; needed only for community sharing
+community_submit: false   # true lets `stan submit-all` and the Sync button send benchmark rows
+peg_share: false          # true lets `stan peg-sync` share PEG results
+error_telemetry: false    # true sends crash reports to the STAN relay; off when this key is absent
 ```
-stan init --reconfigure-fleet
-```
 
-After `stan init`, open `~/.stan/instruments.yml` in any text editor. Add an entry for your instrument with at minimum:
-- `name` — a short label (e.g. `timsTOF_HT`)
-- `watch_dir` — the directory where raw files land (e.g. `D:\Data\HeLa_QCs`)
-- `vendor` — `bruker` or `thermo`
-- `family` — instrument family (e.g. `timstof`, `exploris`, `lumos`)
+**Error telemetry is off unless you set `error_telemetry: true`.** When the key is missing, or there is no `community.yml`, nothing is sent; a `community.yml` that `stan init` created says `false`. With `true`, STAN sends a report to `https://brettsp-stan.hf.space` whenever a search or a run's processing fails. A report holds the error type and message, a traceback with the folders stripped from its file paths, and the STAN, Python and OS versions. The message itself is not stripped: for a failed search it is the command line, with the full paths of the raw file and output folder. It can also carry the search engine, vendor, acquisition mode and instrument model, and the name (without its folder) of the raw file involved. Set `error_telemetry: false`, or remove the key, to stop sending. Either way, the last 100 errors are kept locally in `~/.stan/error_log.json` (`%USERPROFILE%\.stan\error_log.json` on Windows).
 
-For a guided alternative, run `stan setup`, which walks you through instrument selection and directory configuration interactively.
+Separately, the watcher sends a keep-alive (`GET /api/health`) to the same host when it starts and every 12 hours, whatever these settings say. It carries no data. If the host is blocked, the watcher logs a warning and carries on.
 
 ### First run of `stan watch`
+
+In Mode B the watcher runs as a systemd service, and in Mode A `stan.bat` starts and supervises it; your mode guide sets that up. To run it by hand in a terminal:
 
 ```
 stan watch
@@ -69,19 +104,21 @@ stan watch
 You'll see a startup banner with the STAN version, and a line showing where the watcher log is written:
 
 ```
-STAN v1.0.0 — watcher starting
-Log: /Users/you/STAN/logs/watch_20260508_143012.log
+STAN v1.2.5 — watcher starting
+Log: /home/stan/.stan/logs/watch_20260929_143012.log
 ```
 
-The watcher polls each configured `watch_dir` for new raw files. A healthy watcher sits quietly and only prints activity when it finds something. You can leave it running in a terminal or start it as a background service. To confirm it's healthy, check the log file shown at startup — warnings and errors go there.
+Every watcher start writes a new `logs/watch_<date>_<time>.log` in the config directory (`%USERPROFILE%\STAN\logs\` on Windows). The watcher reacts to each new raw file as it appears in a configured `watch_dir`. Between files it sits quietly. To confirm it's healthy, open the newest `watch_<date>_<time>.log` (`stan watch-status` writes `watch_status_*.log` files into the same folder, so don't confuse the two). It should contain `watcher: started <name> → <watch_dir>` for each instrument, then `Active watchers: <N>`. `No enabled instruments configured` means a block is missing `enabled: true`. Warnings and errors go to the same log.
 
 ### First open of `stan dashboard`
 
-In a separate terminal (while `stan watch` is running):
+In Modes A and B the dashboard is already running once the install is done. To start it by hand, in a separate terminal (while `stan watch` is running):
 
 ```
 stan dashboard
 ```
+
+It listens on `127.0.0.1:8421`, so only the machine it runs on can reach it (unless Tailscale is logged in on that machine: then it listens on every interface, as [Remote viewing](#remote-viewing--tailscale-and-phone-access) explains). Your mode guide says how to reach it from another machine ([Mode B, section 9.2](INSTALL_MODE_B_LINUX.md#92-stan-dashboardservice); [Mode C, step 5.1](INSTALL_MODE_C_HPC.md#51-dashboard)). The dashboard has no login, and anyone who can reach it can change the configuration, so do not open it to a network you do not trust.
 
 Then open `http://localhost:8421` in Chrome, Edge, or Firefox. You'll see nine tabs across the top:
 
@@ -104,16 +141,22 @@ Then open `http://localhost:8421` in Chrome, Edge, or Firefox. You'll see nine t
 STAN uses a filename regex to decide whether a raw file is a QC standard or a real sample:
 
 ```
-(?i)(he(l[a5\d]|\d)|qc|std[_\-\s]?he)
+(?i)(he(l[_\-\s]?[a5\d]|[_\-\s]?\d)|qc|std[_\-\s]?he)
 ```
 
 In plain English, files whose names contain any of the following are treated as QC runs and routed through the full search + metrics pipeline:
 
-- `hela`, `hel5`, `hel0` ... `hel9` (case-insensitive)
+- `hela`, `hel5`, `hel0` ... `hel9`, also with a `_`, `-` or space after `hel` (case-insensitive)
+- `he` followed by a digit, for example `he5` or `he_5`
 - `qc` anywhere in the name
 - `std_he`, `std-he`, `std he`, `stdhe` and variations
 
-Everything else — washes, blanks, real samples — is routed to the **Sample Health** monitor pipeline, which tracks file counts and flags unusual patterns without running a full search.
+Set `qc_pattern` on an instrument's block (or pass `--qc-pattern` to `stan add-watch`) to use your own pattern, and `exclude_pattern` to skip names such as washes and blanks outright. In Mode C the dispatcher's `qc_pattern` lives in `dispatch.yml`.
+
+What happens to everything else — washes, blanks, real samples — depends on the mode:
+
+- **Modes A and B:** the watcher ignores it and logs `QC filter rejected`. With `monitor_all_files: true` on the block, it records such files in the **Sample Health** table instead, without searching them.
+- **Mode C:** every non-QC file gets a lightweight monitor job that writes **Sample Health**, which tracks file counts and flags unusual patterns without running a full search.
 
 **Worked example.** If you're running a timsTOF, name your HeLa standards something like:
 
@@ -123,7 +166,7 @@ HeL50_30spd_002.d
 QC_HeLa_Whisper40_20260508.d
 ```
 
-All of these match. A file named `Sample_Patient_001.d` does not match and goes to Sample Health instead.
+All of these match. A file named `Sample_Patient_001.d` does not match, so it is never searched (see above for where it goes).
 
 For Thermo instruments, the same rule applies to `.raw` files:
 
@@ -154,15 +197,15 @@ Polyethylene-glycol contamination on one instrument over time, plus the communit
 
 ### Sample Health
 
-A separate table for non-QC files — everything that didn't match the QC filename pattern. Washes, blanks, and real samples show up here with file counts and flags for unusual patterns. This tab doesn't show search metrics (no database search is run for samples), but it helps you track whether the instrument is running the expected number of acquisitions per day and whether blanks look clean.
+A separate table for non-QC files — everything that didn't match the QC filename pattern. It fills in Mode C, and in Modes A and B only for instruments with `monitor_all_files: true` (see [Acquiring your first QC run](#acquiring-your-first-qc-run)). Washes, blanks, and real samples show up here with file counts and flags for unusual patterns. This tab doesn't show search metrics (no database search is run for samples), but it helps you track whether the instrument is running the expected number of acquisitions per day and whether blanks look clean.
 
 ### Fleet
 
-If you have fleet sync configured (via `stan init`'s wizard or `stan init --reconfigure-fleet`), this tab shows the status of all instruments in your lab — last QC time, current IPS, PASS/WARN/FAIL state. Each row is expandable. This is most useful from the godmode global view; on a single-instrument install it shows just your one machine.
+This tab shows every instrument in the database the dashboard reads, with how recently each one's QC runs arrived, and compares their depth at matched load. It needs no setup; `stan init`'s fleet-sync answer is not read by this tab or anything else yet. Below that it notes that no mirror is mounted, unless a UC Davis-style mirror folder exists (`HIVE_MIRROR_DIR`, `hive_mirror_dir` in `community.yml`, or `Y:\STAN` on Windows), in which case it lists each host in it. It is most useful from the godmode global view, or on a Mode B box that watches several instruments; on a single-instrument install it shows just your one machine.
 
 ### Config
 
-A summary of your current `instruments.yml` settings: watch directories, LC column, vendor, family, community submission status. Use this to quickly confirm STAN is watching the right directory. If you need to change anything, edit `~/.stan/instruments.yml` directly — the watcher hot-reloads config changes within 30 seconds.
+A summary of your current `instruments.yml` settings: watch directories, LC column, vendor, family, community submission status. Use this to quickly confirm STAN is watching the right directory. If you need to change anything, edit `instruments.yml` in the config directory directly. The watcher picks up added, removed, enabled or disabled instruments within 30 seconds; any other edit takes effect when the watcher restarts.
 
 ### Community
 
@@ -203,8 +246,10 @@ and both are HTML-escaped everywhere they are rendered.
 
 The older per-lab pseudonym flow (`stan claim-name`, `arcade_submit` in
 `~/.stan/community.yml`, `stan/community/arcade_submit.py`) targeted HF Space
-relay endpoints that were never deployed. The pseudonym is now only used to
-prefill the name box; the relay is a read-only fallback for the board.
+relay endpoints that were never deployed; `stan claim-name` no longer exists,
+and a lab name is claimed with `stan community-claim`. The pseudonym is now
+only used to prefill the name box; the relay is a read-only fallback for the
+board.
 
 ### Museum
 
@@ -242,46 +287,66 @@ Protein count is a secondary input (20% weight) because it's context-dependent w
 
 ## The community benchmark
 
-The community benchmark lets you see how your instrument compares to instruments at other labs running the same QC standards. It's entirely optional and privacy-first.
+The community benchmark lets you see how your instrument compares to instruments at other labs running the same QC standards. It is optional, and nothing is sent until you turn it on and send runs. The watcher never submits by itself.
 
-**What gets sent:**
-- Aggregate metrics: precursor count, peptide count, PSM count, IPS score, gradient length, instrument family, search engine version
-- Nothing else. Raw files are never uploaded. No patient metadata. No sample identifiers. No filenames. Serial numbers are optional, stored server-side, and never exposed in public downloads.
+**What gets sent, per QC run:**
+- your lab's pseudonym;
+- instrument model and family, acquisition mode, SPD, gradient length and injected amount;
+- precursor, peptide, protein and PSM counts and the IPS score, plus chromatography and mass-accuracy statistics and a binned TIC trace;
+- the LC column and LC system, the DIA-NN version and the run date;
+- **the raw file's name**, without its folder.
 
-**Privacy note:** The community dataset publishes aggregate metrics. STAN strips raw filenames before submit. If your QC filename contained patient identifiers, only the local stan.db retains them — the public dataset never sees them.
+**Never sent:** raw files or spectra, the folder a raw file sits in, instrument serial numbers, or anything about your real samples. Only QC runs are sent; washes, blanks and runs with zero identifications are skipped.
 
-**How to opt in:**
+**Privacy note: file names are public.** The relay requires each row's file name (for example `HeLa_50ng_30min_001.raw`), stores it in the public dataset, and shows it in chart tooltips on the public dashboard. Before you opt in, make sure your QC file names carry no patient, customer or project identifiers. Setting the environment variable `STAN_STRIP_RUN_NAME=1` blanks the name, but the relay then refuses the row.
 
-1. Open `~/.stan/community.yml` in a text editor
-2. Set `community_submit: true`
-3. Save the file — the watcher picks it up automatically
+**How to take part:**
 
-From then on, every new QC run that passes local search and metric extraction is submitted automatically. To manually push existing runs:
-
-```
-stan submit-all
-```
-
-This walks the local database and submits any runs not yet in the community benchmark.
+1. **Choose a pseudonym.** Put it in `display_name` in `community.yml` in the config directory (see [`community.yml` and error telemetry](#communityyml-and-error-telemetry)). Your lab appears under this name, never under its real one.
+2. **Claim the name**, in an interactive terminal:
+   ```
+   stan community-claim
+   ```
+   STAN asks for an email address, and the relay sends a 6-digit code from `noreply@stan-proteomics.org` (check the spam folder). Type the code, and STAN writes an `auth_token` into `community.yml`. The address only proves that you own the name; the relay keeps a one-way hash of it, not the address. The relay keeps one token per name, so claiming again replaces the token everywhere: copy the `auth_token` line to every other machine that shares as your lab. Never paste it into an issue or a chat.
+3. **Opt in.** Set `community_submit: true` in `community.yml`.
+4. **Send.** Preview first, then send:
+   ```
+   stan submit-all --dry-run
+   stan submit-all
+   ```
+   The first `submit-all` sends every eligible run already in the database; after that it sends only runs not yet submitted. Each run's outcome, including why a run was rejected, is written to `logs/submit_all_<date>.jsonl` in the config directory.
+5. **Keep it going.** Because the watcher never submits, schedule `stan submit-all` (UC Davis runs it every 6 hours), or press **Sync** on the dashboard now and then. Your mode guide has the schedule: [Mode B, section 11](INSTALL_MODE_B_LINUX.md#11-community-benchmark-and-peg-sharing-optional) (a systemd timer), [Mode C, step 5.2](INSTALL_MODE_C_HPC.md#52-community-benchmark-and-peg-sharing) (a cron job), or [a scheduled task](INSTALL_REGRESSION_CHECKLIST.md#73-scheduling-both) for Mode A.
 
 **Or use the Sync button.** The dashboard's Community tab has a *Community
-sync* panel that does the same thing without the terminal. It shows how many
+sync* panel that does steps 3 and 4 without the terminal. It shows how many
 runs are eligible, lets you set the lab name, and pushes them on one click.
 The count on the button applies the same rules as `stan submit-all`, so it is
 what would actually be pushed — washes, blanks, and runs with zero
-identifications are already excluded.
+identifications are already excluded. Pressing it sets `community_submit: true`
+in `community.yml`.
 
-Your lab appears under a **pseudonym**, not your real name. If you have not
-set one, the panel generates one for you (e.g. *Oxidized Cottrell*) and
-pre-fills it; edit it to whatever you like before syncing. Whatever you
-confirm is saved to `~/.stan/community.yml` and reused from then on.
+If you have not set a pseudonym, the panel generates one for you (e.g.
+*Oxidized Cottrell*) and pre-fills it; edit it to whatever you like before
+syncing. Whatever you confirm is saved to `community.yml` and reused from then
+on. The panel does not claim the name, so run `stan community-claim` (step 2)
+if you want to make sure nobody else can claim it.
+
+**Which searches count.** The benchmark accepts only runs searched with
+DIA-NN 2.3.x, and marks runs from any 2.3.x (2.3.0, 2.3.1 or 2.3.2) as having
+used the verified community library and FASTA. The 2.3.2 that the Windows
+installers put in counts the same as 2.3.0. For a DDA run, submission reads
+the DIA-NN version from the first `diann` on the `PATH`, so that must be 2.3.x
+as well. Sage is pinned at v0.14.7
+(its binary prints `sage 0.14.6`). Use the frozen community FASTA and
+libraries from your mode guide, so that counts are comparable across labs.
+The version pins are listed in [`INSTALL_FOR_AGENTS.md`](../INSTALL_FOR_AGENTS.md#23-version-pins).
 
 Newly submitted runs do not appear on the public site instantly — the public
 dashboard reads a consolidated file that is rebuilt nightly, so allow a day.
 
-**The public dashboard** is at `https://huggingface.co/spaces/brettsp/stan`. It shows the community leaderboard, SPD-bucketed ID depth comparisons, and cross-lab TIC overlays. Your instrument appears under its family and throughput bucket; no lab name or location is shown unless you choose to add one.
+**The public dashboard** is at [community.stan-proteomics.org](https://community.stan-proteomics.org) (also [on Hugging Face](https://huggingface.co/spaces/brettsp/stan)). It shows the community leaderboard, SPD-bucketed ID depth comparisons, and cross-lab TIC overlays. Your runs appear under your pseudonym, grouped by instrument family and throughput bucket.
 
-**To disable submissions temporarily:** set `community_submit: false` in `~/.stan/community.yml`. Submissions stop immediately on the next watcher config reload (within 30 seconds).
+**To stop submitting:** set `community_submit: false` in `community.yml`. `stan submit-all` then refuses to send, so a scheduled sync stops at its next run. Pressing **Sync** on the dashboard turns submission back on. Runs already sent are not withdrawn.
 
 ---
 
@@ -289,9 +354,10 @@ dashboard reads a consolidated file that is rebuilt nightly, so allow a day.
 
 STAN scores PEG (polyethylene glycol, the ladder of peaks 44.026 Da apart
 that plastics, detergents and some Evosep consumables leave behind) on
-every QC run it can read: Bruker `.d` through alphatims
-(`stan install-peg-deps`), Thermo `.raw` through `fisher_py`, or on a
-cluster without `fisher_py` through the ThermoRawFileParser container.
+every QC run it can read: Bruker `.d` through alphatims (the `peg`
+install extra), Thermo `.raw` through `fisher_py` (the `thermo` extra), or,
+on Linux without `fisher_py`, through the ThermoRawFileParser container
+(`STAN_TRFP_SIF`; see [Mode B, section 7.3](INSTALL_MODE_B_LINUX.md#73-thermo-peg)).
 The **PEG** tab turns those numbers into a history. Reference:
 [`docs/PEG_WATCH.md`](PEG_WATCH.md).
 
@@ -353,16 +419,20 @@ Sharing is opt-in and separate from the benchmark: it needs no community
 search, and any lab that scores PEG can take part. Only Evosep runs are
 ranked; runs on other LCs feed the LC comparison.
 
-1. **Claim your lab name** so nobody else can take it:
+1. **Claim your lab name** so nobody else can take it. Set `display_name`
+   in `community.yml` first, then run:
    ```
    stan community-claim
    ```
-   STAN emails a 6-digit code to the address the name was claimed with
-   and stores a fresh `auth_token` in `~/.stan/community.yml`. The relay
-   keeps one token per name, so copy that `auth_token` line to every other
-   machine that shares as your lab. (If you set up with `stan setup` and
-   claimed a name there, you already have a token.)
-2. **Opt in**: add `peg_share: true` to `~/.stan/community.yml` (or set
+   STAN asks for the email address (the one the name was claimed with, if
+   it was claimed before), the relay emails it a 6-digit code, and STAN
+   stores a fresh `auth_token` in `community.yml`. The relay keeps one token
+   per name, so copy that `auth_token` line to every other machine that
+   shares as your lab. If you already claimed the name for the
+   [community benchmark](#the-community-benchmark), skip this step:
+   claiming again replaces the token, and the old one stops working on
+   every machine.
+2. **Opt in**: add `peg_share: true` to `community.yml` (or set
    `STAN_PEG_SHARE=1`).
 3. **Sync**:
    ```
@@ -370,8 +440,12 @@ ranked; runs on other LCs feed the LC comparison.
    stan peg-sync              # send
    ```
    Every sync resends all your shareable QC runs and the relay keeps only
-   what changed, so running it on a schedule is safe. On a cluster that
-   reads PG, use `stan peg-sync --backend pg`.
+   what changed, so running it on a schedule is safe. The mode guides
+   schedule it together with `stan submit-all`. It reads the local SQLite
+   database; on a Mode C cluster, point `STAN_DB_PATH` at the cluster
+   database and pass `--backend sqlite`
+   ([Mode C, step 5.2](INSTALL_MODE_C_HPC.md#52-community-benchmark-and-peg-sharing)).
+   `--backend pg` is only for UC Davis's central Postgres.
 
 **What is shared, per QC run:** date and time, instrument model and
 family, LC (Evosep or other), SPD, acquisition mode, sample type, load,
@@ -433,36 +507,45 @@ half shows once labs with both have shared.
 
 ## Three deployment modes
 
-### Mode A — Local (default)
+The mode decides where the searches run. Choose it with [`INSTALL_FOR_AGENTS.md`](../INSTALL_FOR_AGENTS.md#step-1-choose-the-mode), which asks the questions that decide it, and then follow that mode's guide from its first step. In order of recommendation:
 
-The watcher runs on the instrument PC. DIA-NN or Sage searches also run on the instrument PC, using half the available CPU cores so acquisition isn't disrupted. The SQLite database lives on the instrument PC. The dashboard is served locally.
+| Mode | Searches run on | Instrument PCs run | You need | Install guide |
+|---|---|---|---|---|
+| **C: SLURM cluster** (recommended) | Compute nodes of the lab's cluster | Only a file-copy task | A SLURM account, shared storage that the instruments (or a copy task) can reach, and someone to keep a cron job running | [`INSTALL_MODE_C_HPC.md`](INSTALL_MODE_C_HPC.md) |
+| **B: separate Linux box** (native Linux, or WSL2 on a Windows workstation) | One x86_64 Linux machine that is not an acquisition PC | Only a file-copy task | A spare Linux machine, or a Windows workstation that can run WSL2 | [`INSTALL_MODE_B_LINUX.md`](INSTALL_MODE_B_LINUX.md), plus [`INSTALL_MODE_B_WSL.md`](INSTALL_MODE_B_WSL.md) for WSL2 |
+| **A: instrument PC** (Windows), not recommended | The acquisition PC itself | All of STAN | Only the instrument PC | [README, Mode A](../README.md#mode-a--instrument-pc-windows) |
 
-Good for: single instruments, Windows instrument workstations, labs that don't have a shared compute box.
+UC Davis, where STAN is developed, runs Mode C, and its instrument PCs only acquire.
 
-### Mode B — WSL2 lab box
+### Mode C — SLURM cluster
 
-One or more instrument PCs push raw files to a shared lab workstation running WSL2. The watcher and search jobs run on that box, which has more CPU and RAM than the instrument PCs. The dashboard is served from the lab box and accessible on the local network.
+Instrument PCs copy each finished run to shared storage that the cluster can read. Every 5–15 minutes, a cron job on the login node runs `stan hive-dispatch --config <dispatch.yml>`, which submits one SLURM job per new raw file. Each job runs `stan hive-process`: the search, the metrics and the database write. There is no `stan watch` in this mode. Results go to a SQLite database on shared storage, and a lab machine serves the dashboard from a copy of it.
 
-Good for: multiple instruments sharing one fast compute box, labs that want to keep instrument PCs lightly loaded.
+Things to know before you choose it:
 
-Setup details: [`docs/INSTALL_MODE_B_WSL.md`](INSTALL_MODE_B_WSL.md)
+- **The pipeline is not yet portable.** In STAN 1.2.x the job scripts still contain UC Davis values (container and binary paths, bind mounts, module names, one SLURM account). You install from a git clone and apply a small site patch that the guide lists line by line.
+- **You need a DIA-NN 2.3.0 container with .NET 8 inside**, or a bare binary plus a .NET 8 module. No public STAN image exists.
+- **Delivery is the opposite of Modes A and B.** The dispatcher does not check that a copy has finished, so each run must appear under its final name only when it is complete: copy it as `<run>.d.partial` or `<run>.raw.partial` and rename it when the copy is complete, or symlink finished runs from an existing archive. Each watch directory is read flat; subfolders are not searched.
 
-### Mode C — SLURM/HPC
+Install guide: [`docs/INSTALL_MODE_C_HPC.md`](INSTALL_MODE_C_HPC.md).
 
-Search jobs are dispatched to a SLURM cluster. The SQLite database lives on cluster storage. The dashboard can be SSH-tunneled to your local machine or served behind a proxy. Good for: multi-lab consortia, very high-throughput cores, Hive-class compute environments.
+### Mode B — separate Linux box (native or WSL2)
 
-Good for: centralized search across many instruments, DIA-NN runs that benefit from many cores or GPUs.
+Instrument PCs run only a copy task, for example a scheduled `robocopy`, into a share on one Linux machine that is not an acquisition PC. `stan watch` and `stan dashboard` run on that box as systemd services, and the dashboard is reached from other machines as the guide describes. The box can be native Linux or WSL2 on a Windows workstation.
 
-Setup details: [`docs/INSTALL_MODE_C_HPC.md`](INSTALL_MODE_C_HPC.md)
+- **Hardware.** x86_64 only. Plan on at least 8 cores and 32 GB of RAM, plus more memory if several instruments can finish a QC at the same time. Each DIA-NN or Sage search uses half the cores, and the watcher stops any search after 20 minutes.
+- **Delivery.** Copy each run in place under its final name. The watcher reacts only to newly created files and does not see a file that is renamed into place.
+- **Thermo** needs .NET 8 on the box.
 
-**Choosing a mode:**
+Install guide: [`docs/INSTALL_MODE_B_LINUX.md`](INSTALL_MODE_B_LINUX.md). On a Windows workstation, read the Linux guide first and then [`docs/INSTALL_MODE_B_WSL.md`](INSTALL_MODE_B_WSL.md) for what differs inside WSL2.
 
-| | Mode A | Mode B | Mode C |
-|---|---|---|---|
-| Hardware needed | Instrument PC only | Instrument PCs + 1 lab box | Instrument PCs + HPC access |
-| Setup effort | Low | Medium | High |
-| Best for | 1–2 instruments | 2–6 instruments | 6+ instruments or HPC-connected labs |
-| Search speed | Moderate (half cores) | Fast | Fastest |
+### Mode A — instrument PC (Windows, not recommended)
+
+The watcher, the searches, the database and the dashboard all run on the acquisition PC. Use this only when the instrument PC is the only machine you have, and only after reading the warning in the README. At UC Davis, running searches on the acquisition PC froze a timsTOF mid-run, and a stalled acquisition can cost the run or the sample. STAN holds each DIA-NN and Sage search to half the cores, but not every heavy step is capped (the README's Mode A warning lists which are not), and each watch folder can run its own search at the same time.
+
+If you use it anyway, set `startup_catchup_days: 0` so the first start does not search 30 days of old files while the instrument acquires, do not install 4DFF, and never run `update-stan.bat` on a PC that acquires.
+
+Install guide: [README, Mode A](../README.md#mode-a--instrument-pc-windows), with reference details in [`docs/INSTALL_REGRESSION_CHECKLIST.md`](INSTALL_REGRESSION_CHECKLIST.md).
 
 ---
 
@@ -476,7 +559,7 @@ The dashboard auto-refreshes as runs come in. Being able to check IPS scores and
 
 ### Install Tailscale
 
-Install Tailscale on the machine running `stan dashboard` (the instrument PC, lab box, or HPC login node):
+Install Tailscale on the machine running `stan dashboard`: the Mode B Linux box, the lab machine that serves a Mode C database (not a cluster login node), or the instrument PC in Mode A:
 
 - **macOS:** `brew install --cask tailscale` or download from [tailscale.com/download](https://tailscale.com/download)
 - **Windows:** download the installer from [tailscale.com/download](https://tailscale.com/download)
@@ -550,6 +633,8 @@ STAN v1.0.0 — dashboard (Tailscale detected)
 
 On your phone or remote computer, open the MagicDNS URL (e.g. `http://lumosrox.tail-xxxx-xx.ts.net:8421`) in a browser. **Bookmark the MagicDNS hostname** — it's stable even if the Tailscale IP changes.
 
+`0.0.0.0` means every network the machine is on, not only your tailnet. The dashboard has no login, and anyone who can reach it can rewrite `instruments.yml`, which names the programs the watcher runs, so treat access to it like shell access. On a machine that is also on an untrusted network, bind to the Tailscale address alone with `stan dashboard --host <tailscale IP>`, or keep it behind the lab's firewall. Only a literal `127.0.0.1` (the default) is widened: the Mode B service passes `--host localhost`, which stays on loopback until you change it ([Mode B, section 9.2](INSTALL_MODE_B_LINUX.md#92-stan-dashboardservice)).
+
 ### macOS firewall gotcha
 
 If you're on macOS and traffic is getting blocked even though Tailscale is connected, the macOS application firewall may be blocking incoming connections to the Python process. To fix it:
@@ -601,11 +686,11 @@ STAN_DB_PATH=/path/to/global/stan.db stan dashboard
 ```
 
 The global database can be:
-- A Quobyte/NFS path if all instruments write to shared storage
-- A database on an HPC node (SSH-tunnel the dashboard port to your laptop)
-- The fleet sync mirror set up via `stan init`'s fleet wizard
+- The database of a Mode B box. It already holds every instrument the box watches, so that box's own dashboard is the fleet view and needs no extra setup.
+- A copy of a Mode C cluster database. Point the dashboard at a copy, not at the file the SLURM jobs are writing, and run it on a lab machine rather than a cluster login node: `STAN_DB_PATH=/local/disk/stan_copy.db STAN_PG_REFRESH_SECONDS=0 stan dashboard --backend sqlite` ([Mode C, step 5.1](INSTALL_MODE_C_HPC.md#51-dashboard)).
+- A UC Davis-style mirror on a network drive, which STAN fills when `HIVE_MIRROR_DIR` or `hive_mirror_dir` in `community.yml` names it, or when a `Y:\STAN` folder exists on Windows. Option 1 of `stan init`'s fleet wizard does not set this up by itself. A single-lab install does not need it.
 
-Combine godmode with Tailscale for true remote fleet ops: start the dashboard on your lab box or HPC login node, connect via Tailscale from your phone, and watch all your instruments from anywhere.
+Combine godmode with Tailscale for true remote fleet ops: start the dashboard on your Mode B box or on the lab machine that serves the Mode C copy, connect via Tailscale from your phone, and watch all your instruments from anywhere.
 
 ---
 
@@ -613,21 +698,25 @@ Combine godmode with Tailscale for true remote fleet ops: start the dashboard on
 
 **"I just installed; how do I get QC running?"**
 
-```
-stan init          # copies config files, runs fleet wizard
-# edit ~/.stan/instruments.yml — set watch_dir, vendor, family
-stan watch         # start the watcher
-# acquire a HeLa run with a QC-matching filename
-# open http://localhost:8421 in a browser — run will appear within minutes
-```
-
-**"I want to backfill old runs from a directory."**
+Follow your mode's install guide to the end (start at [`INSTALL_FOR_AGENTS.md`](../INSTALL_FOR_AGENTS.md)); its last step searches one real QC file. After that, acquire a HeLa run with a QC-matching filename, or copy (never move) a finished one into a watched folder, and check on the machine that runs STAN:
 
 ```
-stan backfill-from-dir /path/to/old/raw/files
+stan version                  # STAN v1.2.x  (there is no "stan --version")
+stan list-watch               # Modes A and B: every folder has a tick under Exists and Enabled
+stan watch-status --days 1    # Modes A and B: the file was matched and is in runs
+stan status                   # the database shows (1 runs) or more
+# then open http://localhost:8421 on the machine that runs the dashboard
 ```
 
-This walks the directory, finds raw files that match the QC pattern, runs the search pipeline on each, and writes results to the database. Useful when you've just installed STAN and have months of existing HeLa runs.
+In Mode C there is no watcher, so skip the two watch commands and prefix `stan status` with `STAN_DB_PATH=<db_path>`. The full list of checks is in [`INSTALL_FOR_AGENTS.md`, Success checks](../INSTALL_FOR_AGENTS.md#success-checks).
+
+**"I want to search old QC runs (backfill)."**
+
+- **Modes A and B, runs already in a watched folder:** raise `startup_catchup_days` on that instrument's block to cover them, then restart the watcher. On every start the watcher searches the QC files in its folder from that many days back (by file modification time) that are not in the database yet. Set it back afterwards.
+- **Modes A and B, runs in another folder:** run `stan baseline`. It is interactive: it asks for the folder, the instrument and the search engines, then searches every matching file on this machine. It does not use `diann_path`: it looks in the usual install folders and on the `PATH`, and picks DIA-NN 2.3.0 if it finds one, otherwise the newest 2.3.x, even when a newer DIA-NN is installed beside it. It labels each run with the version of the binary that searched it. If it finds no 2.3.x it uses the newest DIA-NN it has and logs a warning, and the benchmark will reject those runs, so check the DIA-NN path it prints. It also asks whether to submit the results to the community benchmark, with yes as the default (and it does not ask at all when `auto_submit: true` is set in `community.yml`), so answer no unless the lab has opted in.
+- **Mode C:** symlink the old runs into a watch directory, or copy them in under a `.partial` name and rename each one when its copy is complete. The dispatcher submits them over its next ticks, up to `max_submissions_per_run` per tick.
+
+In Mode A, run neither while the instrument acquires: both search on the acquisition PC. Do not use `stan backfill-from-dir` in any mode: it uploads to UC Davis's cluster over UC Davis's own share and SSH setup.
 
 **"The run modal's Ion cloud tab says no cloud is available."** (Bruker only)
 
@@ -637,8 +726,10 @@ have to be true: the sidecar has to exist, and its contents have to be
 published to the database — the dashboard usually runs on a different
 machine from the raw data, so it cannot open the sidecar itself.
 
-On the machine that can see the raw files (your instrument PC, or the
-cluster if searches run there):
+On the machine that can see the raw files: the Mode B box, or in Mode C
+the cluster, inside a SLURM job rather than on the login node. Do not
+install 4DFF on an acquisition PC (Mode A): once it is installed, it runs
+after every Bruker QC run, and it is not thread-capped.
 
 ```
 stan install-4dff              # once — downloads the Bruker binaries
@@ -666,13 +757,13 @@ stan backfill-feature-cloud --from-cache /shared/feature_clouds
 
 **"I need to disable community submission temporarily."**
 
-Edit `~/.stan/community.yml` and set:
+Edit `community.yml` in the config directory and set:
 
 ```yaml
 community_submit: false
 ```
 
-Save the file. The watcher reloads config within 30 seconds and stops submitting.
+Save the file. The watcher never submitted anything, so there is nothing to restart: `stan submit-all` refuses to send while this is `false`, so a scheduled sync stops at its next run. Pressing **Sync** on the dashboard's Community tab turns it back on. PEG sharing has its own switch, `peg_share`.
 
 **"I want to share my QC trends with a collaborator."**
 
@@ -686,12 +777,12 @@ stan version
 
 **"How do I update STAN to the latest version?"**
 
-- **Windows:** `stan.bat` self-updates from GitHub on every launch. Just run it.
-- **macOS/Linux:**
-  ```
-  pip install --upgrade 'stan-proteomics @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip'
-  ```
-  Remember to always bump both `pyproject.toml` and `stan/__init__.py` if you're developing locally.
+Updating STAN through `stan.bat`, git or pip never changes DIA-NN or Sage; keep them at the pinned versions.
+
+- **Mode A (Windows, `stan.bat`):** `stan.bat` upgrades STAN from `main` every time it starts, and keeps the extras you installed. Never run `update-stan.bat` on a PC that acquires, or while `stan.bat` is running: it kills STAN and starts a backfill chain that runs for hours.
+- **Mode B:** fetch and check out the new commit in the git clone, reinstall with the same extra, and restart the services. The commands are in [Mode B, section 12](INSTALL_MODE_B_LINUX.md#12-operating-the-box).
+- **Mode C:** rebase the site branch of the git clone onto `origin/main`, and re-check the site patch. The next job to start runs the new code ([Mode C, step 2.2](INSTALL_MODE_C_HPC.md#22-stan-from-a-git-clone-editable)).
+- **Any other pip install:** `pip install --upgrade "stan-proteomics[peg] @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"`, with the extra you installed originally. STAN is not on PyPI, so a bare `pip install stan-proteomics` will not find it.
 
 ---
 
@@ -699,7 +790,7 @@ stan version
 
 **"Dashboard says 'No QC runs yet'"**
 
-The most common cause is that the watcher is watching the wrong directory, or no files matching the QC filename pattern have been acquired yet. Check `~/.stan/instruments.yml` and confirm `watch_dir` points to where your HeLa raw files actually land. Also confirm your filenames match the QC pattern (contain `hela`, `qc`, or `std-he` / `std_he` variants — case-insensitive).
+The most common cause is that the watcher is watching the wrong directory, or no files matching the QC filename pattern have been acquired yet. Check `instruments.yml` in the config directory: confirm `watch_dir` points to where your HeLa raw files actually land, and that the block has `enabled: true`. Also confirm your filenames match the QC pattern (contain `hela`, `qc`, or `std-he` / `std_he` variants — case-insensitive). `stan watch-status --days 1` lists each recent file in the watched folders and says whether it matched the filter and reached the database. In Mode C, look in the dispatcher's cron log and `squeue` instead.
 
 **"Dashboard is blank or shows an error in Internet Explorer"**
 
@@ -707,11 +798,18 @@ IE is not supported. Use Chrome, Edge (Chromium), or Firefox.
 
 **"Watcher crashes on startup or disappears"**
 
-Check the watcher log file printed at startup (`~/STAN/logs/watch_YYYYMMDD_HHMMSS.log`). Warnings and unhandled exceptions are written there. Common causes: Python version mismatch, instruments.yml parse error (invalid YAML), or a watch directory that doesn't exist.
+Check the watcher log file printed at startup: the newest `logs/watch_YYYYMMDD_HHMMSS.log` in the config directory (`~/.stan/logs/` on Linux and macOS, `%USERPROFILE%\STAN\logs\` on Windows). Warnings and unhandled exceptions are written there. Common causes: Python version mismatch, instruments.yml parse error (invalid YAML), or a watch directory that doesn't exist (`Watch directory does not exist` in the log). Under systemd (Mode B), `journalctl -u stan-watch` also shows anything printed before the log file opened.
 
 **"DIA-NN search returns 0 precursors"**
 
-Usually one of three things: (1) missing or mismatched spectral library — STAN requires a spectral library for DIA, library-free mode is not supported; (2) missing FASTA file; (3) on Linux, the .NET SDK required by ThermoRawFileParser is not installed for Thermo `.raw` files. See [`docs/external_tools.md`](external_tools.md) for library/FASTA paths and tool requirements. For SLURM/HPC deployments, see [`docs/INSTALL_MODE_C_HPC.md`](INSTALL_MODE_C_HPC.md).
+Read `<output_dir>/<run name>/diann.log` first. Usually it is one of these:
+
+1. A missing or wrong spectral library. STAN requires a spectral library for DIA; library-free mode is not supported. The watcher does not download the community library, so set `lib_path` to the file from your mode guide.
+2. A missing FASTA file (`fasta_path`).
+3. On Linux, Thermo `.raw` files and no .NET 8. DIA-NN needs it to read `.raw` (the log says `invalid raw MS data format`), and so does ThermoRawFileParser.
+4. A DIA-NN other than 2.3.x. The community benchmark will refuse the run in any case.
+
+The mode guides' troubleshooting tables cover the rest: [Mode B](INSTALL_MODE_B_LINUX.md#13-troubleshooting), [Mode C](INSTALL_MODE_C_HPC.md#troubleshooting). Tool details are in [`docs/external_tools.md`](external_tools.md).
 
 **"I can't see my dashboard from my phone"**
 
@@ -719,11 +817,20 @@ See the [Tailscale section](#remote-viewing--tailscale-and-phone-access). The mo
 
 **"stan: command not found after install"**
 
-The virtual environment isn't activated, or your terminal hasn't picked up the updated PATH. Try restarting the terminal. On Windows, confirm the STAN venv `Scripts\` directory is on your PATH. If you have both an old `.stan\venv` and a new `STAN\venv`, the updater should have migrated PATH entries — check that the old entry isn't shadowing the new one.
+The virtual environment isn't activated, or your terminal hasn't picked up the updated PATH. Calling `stan` by its full path always works: `~/.stan/venv/bin/stan` in Mode B, `$STAN_HOME/venv/bin/stan` in Mode C, `%USERPROFILE%\STAN\venv\Scripts\stan.exe` on Windows.
 
-**"Community submission returns a 401 error"**
+- **Linux:** the Mode B guide puts the `PATH` line in both `~/.profile` and `~/.bashrc`. Ubuntu's `~/.bashrc` stops early in a non-interactive shell, so a line only there never reaches scripts, `sudo -iu` or an AI agent's shell. A plain `bash -c` reads neither file, so use the full path there.
+- **Windows:** open a new window after the install, and confirm the STAN venv `Scripts\` directory is on your user PATH. If you have both an old `.stan\venv` and a new `STAN\venv`, the updater should have migrated PATH entries — check that the old entry isn't shadowing the new one.
 
-The submission goes through the HF Space relay — you don't need an HF token on the client side. A 401 typically means the relay's server-side token expired; this is an infrastructure issue, not something you need to fix. File an issue on GitHub and it will be resolved.
+**"Community submission is refused or fails"**
+
+Each run's outcome is in `logs/submit_all_<date>.jsonl` in the config directory.
+
+- `community_submit is not enabled`: set `community_submit: true` in `community.yml`. The command suggests `stan setup`, which sets it only if you answer yes to its community question. A `community_submit` key inside an `instruments.yml` block, where older versions of `stan setup` put it, is not what submissions read.
+- `DIA-NN version mismatch` or `DIA-NN version could not be detected`: the run was not searched with DIA-NN 2.3.x. For a DDA run, submission reads the version from the first `diann` on the `PATH`, so that must be 2.3.x as well.
+- `Submission rejected:` followed by a metric: the run failed a quality gate or lacks a metric the benchmark requires.
+
+The submission goes through the HF Space relay — you don't need an HF token on the client side. A 401 or a 5xx error from the relay is a server-side problem, not something you need to fix: open an issue on GitHub (never paste your `auth_token` into it).
 
 **"`stan peg-sync` fails with HTTP 403"**
 
@@ -731,20 +838,34 @@ Your lab name is claimed and the relay did not accept this machine's `auth_token
 
 **"The PEG tab says 'No PEG measurements yet'"**
 
-STAN cannot read that instrument's raw MS1 yet. On a timsTOF run `stan install-peg-deps` (alphatims); on an Orbitrap install `fisher_py` (`pip install stan-proteomics[thermo]`). Then `stan backfill-peg` scores the runs you already have. Runs whose read failed are left out rather than shown as clean.
+STAN cannot read that instrument's raw MS1 yet.
+
+- **timsTOF:** install STAN with the `peg` extra on Python 3.10–3.12, and check that `stan doctor` shows alphatims 1.0.8, numpy 1.26.x and pandas 2.x. `stan install-peg-deps` also installs alphatims, but it does not pin `pandas<3`, and under pandas 3 Bruker PEG stays empty.
+- **Orbitrap on Windows:** install the `thermo` extra (`fisher_py`), the same way you installed STAN, for example `pip install "stan-proteomics[thermo] @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"`. STAN is not on PyPI.
+- **Orbitrap on Linux:** use the ThermoRawFileParser container and set `STAN_TRFP_SIF` ([Mode B, section 7.3](INSTALL_MODE_B_LINUX.md#73-thermo-peg)).
+
+Then `stan backfill-peg` scores the runs you already have. Runs whose read failed are left out rather than shown as clean.
 
 **"Files in F:\data\... aren't being picked up"**
 
-Check `~/.stan/instruments.yml` for a `watch_dir` typo. On Windows, confirm the drive letter is correct and the path uses backslashes or forward slashes consistently. Also confirm the watcher process has read access to that path (run `stan watch` in the same user account that owns the data directory).
+Check `instruments.yml` for a `watch_dir` typo, and confirm the block has `enabled: true` and the right `extensions` (`[".d"]` for Bruker, `[".raw"]` for Thermo). On Windows, confirm the drive letter is correct and the path uses backslashes or forward slashes consistently. Also confirm the watcher process has read access to that path (run `stan watch` in the same user account that owns the data directory).
+
+Two delivery problems look the same (Modes A and B):
+
+- The watcher reacts only to newly created files, so a file that was copied under a temporary name and then renamed into place is never seen. Copy files in place under their final names.
+- A Bruker `.d` that is already complete when it appears (a fast copy or a move) can wait forever on the live watcher. Restart the watcher: its start-up catch-up scan picks the file up.
+
+`stan watch-status --days 1` shows which of these you have. In Mode C the opposite rule applies; see [Three deployment modes](#mode-c--slurm-cluster).
 
 **"Sage returns very low PSM counts for DDA data"**
 
-Confirm the FASTA is the community-standardized one (frozen path in `stan/search/community_params.py`). If you're running on Bruker `.d` files, Sage reads them natively — no mzML conversion needed. If you're on Thermo `.raw`, Sage converts via ThermoRawFileParser — confirm that binary is installed and on PATH. See [`docs/external_tools.md`](external_tools.md).
+Confirm the FASTA is the community-standardized one (`human_hela_202604.fasta`, from your mode guide) and that Sage is v0.14.7 (it prints `sage 0.14.6`). If you're running on Bruker `.d` files, Sage reads them natively — no mzML conversion needed. If you're on Thermo `.raw`, STAN first converts the file to mzML with ThermoRawFileParser, which it downloads on first use into `tools/ThermoRawFileParser/` in the config directory. On Linux that build needs .NET 8 (`dotnet` on the `PATH`). See [`docs/external_tools.md`](external_tools.md).
 
 ---
 
 ## Where to get help
 
-- **GitHub issues:** [github.com/bsphinney/stan/issues](https://github.com/bsphinney/stan/issues) — bug reports, feature requests, questions
-- **Community dashboard:** [huggingface.co/spaces/brettsp/stan](https://huggingface.co/spaces/brettsp/stan) — public benchmark and leaderboard
+- **GitHub issues:** [github.com/bsphinney/stan/issues](https://github.com/bsphinney/stan/issues) — bug reports, feature requests, questions. Include the mode, the OS, `stan version`, the output of `stan doctor`, the relevant log lines and the exact command that failed. Never include your `auth_token`, and never attach raw files.
+- **Installing:** [`INSTALL_FOR_AGENTS.md`](../INSTALL_FOR_AGENTS.md) and the mode guide it links to
+- **Community dashboard:** [community.stan-proteomics.org](https://community.stan-proteomics.org) (also [huggingface.co/spaces/brettsp/stan](https://huggingface.co/spaces/brettsp/stan)) — public benchmark and leaderboard
 - **Source code:** [github.com/bsphinney/stan](https://github.com/bsphinney/stan)

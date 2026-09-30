@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -12,7 +11,7 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from stan import __version__
-from stan.config import get_default_config_dir, get_user_config_dir
+from stan.config import get_user_config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -527,59 +526,61 @@ def community_claim() -> None:
 def init(
     reconfigure_fleet: bool = typer.Option(
         False, "--reconfigure-fleet",
-        help="Re-run only the fleet-sync wizard. Skip the config-file copy.",
+        help="Re-run only the fleet-sync wizard. Leave the config files alone.",
     ),
 ) -> None:
-    """Initialize STAN config directory (~/.stan/).
+    """Initialize the STAN config directory (~/.stan/, %USERPROFILE%\\STAN on Windows).
 
-    Copies default config files from the package. Does not overwrite existing
-    files. Also walks the operator through the fleet-sync wizard so godmode
-    knows where to read this instrument's mirrored QC data.
+    Creates minimal instruments.yml, thresholds.yml and community.yml when
+    they are absent and never overwrites one that exists: no instruments
+    yet, no QC thresholds (every run passes the gate), and every
+    community-sharing option off. Then runs the fleet-sync wizard, which
+    defaults to None; with no terminal (stdin closed or empty) it takes
+    that default instead of aborting, so ``stan init </dev/null`` is safe.
 
-    Use ``--reconfigure-fleet`` to update only the fleet config later
-    (e.g. when the network drive path changes or the lab joins the
-    HF-Space relay).
+    Add instruments afterwards with ``stan add-watch`` or ``stan setup``.
+    Use ``--reconfigure-fleet`` to update only the fleet config later.
     """
     from stan.fleet_setup import run_fleet_wizard
+    from stan.setup import ensure_default_configs
 
     if reconfigure_fleet:
         run_fleet_wizard(force=True)
         return
 
     user_dir = get_user_config_dir()
-    user_dir.mkdir(parents=True, exist_ok=True)
-
-    config_dir = get_default_config_dir()
-    config_files = ["instruments.yml", "thresholds.yml", "community.yml"]
-
-    for filename in config_files:
-        src = config_dir / filename
-        dst = user_dir / filename
-
-        if dst.exists():
-            console.print(f"  [yellow]exists[/yellow]  {dst}")
-        elif src.exists():
-            shutil.copy2(src, dst)
-            console.print(f"  [green]created[/green] {dst}")
+    # The templates init used to copy from <package>/config/ were deleted in
+    # April 2026; the minimal files are now written inline.
+    for path, created in ensure_default_configs():
+        # soft_wrap: a hard-wrapped path cannot be pasted back into a shell.
+        if created:
+            console.print(f"  [green]created[/green] {path}", soft_wrap=True)
         else:
-            console.print(f"  [red]missing[/red] source: {src}")
+            console.print(f"  [yellow]exists[/yellow]  {path}", soft_wrap=True)
 
-    # v0.2.216: prompt once for the fleet-sync root so godmode knows
-    # where to read this lab's mirrored QC. Skips silently if a
-    # fleet.yml already exists with a non-"none" mode.
     run_fleet_wizard(force=False)
 
     console.print()
-    console.print(f"Config directory: [bold]{user_dir}[/bold]")
-    console.print("Edit instruments.yml to configure your instruments, then run: stan watch")
+    console.print(f"Config directory: [bold]{user_dir}[/bold]", soft_wrap=True)
+    console.print(
+        "Add a watch folder: [cyan]stan add-watch <folder> --vendor bruker|thermo "
+        "--name \"<model>\" -y[/cyan] (or [cyan]stan setup[/cyan]), then run "
+        "[cyan]stan watch[/cyan]."
+    )
 
 
 @app.command()
 def setup() -> None:
     """Interactive setup wizard — configure your instrument without editing YAML.
 
-    Walks you through instrument selection, directory configuration,
-    LC method, and FASTA path. Writes instruments.yml to ~/.stan/.
+    Asks for the watch folder (the vendor comes from the raw files already
+    in it, or is asked), the instrument name, which files count as QC, the
+    LC column, HeLa amount, community participation, daily email and error
+    reports. Writes a block the watcher can run (vendor, extensions,
+    stable_secs, enabled, qc_only, output_dir) to instruments.yml, updating
+    the folder's existing block rather than adding a second one, and the
+    community answers (community_submit, error_telemetry, display_name,
+    auth_token) to community.yml.
     """
     from stan.setup import run_setup
 
@@ -693,7 +694,7 @@ def build_library() -> None:
 @app.command("add-watch")
 def add_watch(
     path: str = typer.Argument(..., help="Watch directory path"),
-    name: str = typer.Option(None, "--name", "-n", help="Instrument name (auto-detected if omitted)"),
+    name: str = typer.Option(None, "--name", "-n", help="Instrument name (auto-generated if omitted)"),
     vendor: str = typer.Option(None, "--vendor", "-v", help="bruker or thermo (auto-detected)"),
     no_prompt: bool = typer.Option(
         False, "--no-prompt", "-y",
@@ -711,11 +712,28 @@ def add_watch(
 ) -> None:
     """Add a new watch directory to instruments.yml.
 
+    Writes a block the watcher runs as-is: name, vendor, watch_dir,
+    extensions, stable_secs, enabled: true, qc_only and output_dir
+    (``<config dir>/qc_output/<name>``). The same block ``stan setup``
+    writes.
+
     Interactive: when run without --qc-pattern or --all-files, this will
     scan the directory, show how many files match the default QC pattern
     vs. the total, and ask you to confirm the filter settings. Each
     watch directory can have its own pattern, so mixed sample dirs can
     be filtered while dedicated HeLa dirs process everything.
+
+    A folder that already has a block keeps it: keys an older version left
+    out (vendor, extensions, stable_secs, enabled, output_dir) are added and
+    nothing already set is changed, except what a flag asks for:
+    --all-files and --qc-pattern set the filter, and --name renames a block
+    still named auto or unknown. A different --vendor, a new --name for an
+    instrument that already has a real name, or a name another folder's
+    block also uses (the watcher would start only one of them) changes
+    nothing and exits 1.
+
+    Exits 1 when the folder does not exist or its vendor cannot be told,
+    and 2 for a bad --vendor or --qc-pattern.
 
     Example:
         stan add-watch F:\\data\\new_hela_runs
@@ -723,232 +741,284 @@ def add_watch(
         stan add-watch E:\\data\\shared --qc-pattern "(?i)(hela|qctest)"
         stan add-watch G:\\qc_only --all-files
     """
+    import re as _re
     from pathlib import Path as _Path
+
     import yaml as _yaml
-    from rich.prompt import Confirm, Prompt
-    from stan.config import resolve_config_path, get_user_config_dir
-    from stan.watcher.qc_filter import (
-        DEFAULT_QC_PATTERN,
-        compile_qc_pattern,
-        is_qc_file,
+    from rich.markup import escape as _escape
+
+    from stan.setup import (
+        VENDOR_SCAN_LIMIT,
+        InstrumentNameClash,
+        config_write_notes,
+        detect_vendor,
+        find_instrument_block,
+        instruments_config_path,
+        normalize_vendor,
+        prompt_qc_filter,
+        upsert_instrument_block,
+        watcher_block,
     )
 
     watch_path = _Path(path)
     if not watch_path.exists():
         console.print(f"[red]Directory does not exist: {path}[/red]")
+        raise typer.Exit(1)
+
+    try:
+        vendor = normalize_vendor(vendor)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(2)
+
+    if qc_pattern and not qc_off:
+        # re.compile, not compile_qc_pattern: that one never raises, it logs
+        # and falls back to the default, so a typo was written to the config
+        # and the watcher quietly used the default pattern instead.
+        try:
+            _re.compile(qc_pattern)
+        except _re.error as e:
+            console.print(f"[red]Invalid regex {_escape(qc_pattern)}: {_escape(str(e))}[/red]")
+            raise typer.Exit(2)
+
+    config_path = instruments_config_path()
+    existing = find_instrument_block(watch_path, config_path)
+    if existing is not None:
+        _complete_existing_watch(
+            existing, watch_path, config_path,
+            vendor=vendor, name=name, qc_off=qc_off, qc_pattern=qc_pattern,
+        )
         return
 
     # Auto-detect vendor from contents. The watch dir may have raw files
-    # at any depth (per-project subdirs, date folders, etc.), so we scan
-    # recursively with a hard cap to avoid hanging on huge trees.
+    # at any depth (per-project subdirs, date folders, etc.), so the scan
+    # is recursive with a hard cap to avoid hanging on huge trees.
     if vendor is None:
-        n_d = 0
-        n_raw = 0
-        SCAN_LIMIT = 5000  # stop after this many entries
-        for i, p in enumerate(watch_path.rglob("*")):
-            if i >= SCAN_LIMIT:
-                break
-            try:
-                if p.suffix == ".d" and p.is_dir():
-                    n_d += 1
-                elif p.suffix == ".raw" and p.is_file():
-                    n_raw += 1
-            except OSError:
-                continue
-            # Short-circuit once we're confident
-            if (n_d >= 3 and n_raw == 0) or (n_raw >= 3 and n_d == 0):
-                break
-
-        if n_d > 0 and n_raw == 0:
-            vendor = "bruker"
-        elif n_raw > 0 and n_d == 0:
-            vendor = "thermo"
-        elif n_d > 0 and n_raw > 0:
-            # Mixed-vendor directory — pick the majority, warn.
-            vendor = "bruker" if n_d >= n_raw else "thermo"
+        vendor, n_d, n_raw = detect_vendor(watch_path)
+        if n_d and n_raw:
             console.print(
                 f"[yellow]Mixed-vendor directory ({n_d} .d, {n_raw} .raw) — "
                 f"picking '{vendor}'. Specify --vendor to override.[/yellow]"
             )
-        else:
+        elif vendor is None:
             console.print(
                 "[yellow]No .d or .raw files found (scanned recursively up "
-                f"to {SCAN_LIMIT} entries). Specify --vendor bruker or "
+                f"to {VENDOR_SCAN_LIMIT} entries). Specify --vendor bruker or "
                 "--vendor thermo, or check that the directory path is "
-                "correct.[/yellow]"
+                "correct.[/yellow] Nothing was written."
             )
-            return
+            raise typer.Exit(1)
 
     # Auto-generate name if not given
     if name is None:
         name = f"{watch_path.name}_{vendor}"
 
-    # ── QC filter prompt ───────────────────────────────────────
+    # ── QC filter ──────────────────────────────────────────────
     # Each watch dir can have its own pattern — some are shared with
     # non-QC samples, others are dedicated HeLa/QC folders.
     qc_only_cfg = True
     qc_pattern_cfg: str | None = None
-
     if qc_off:
         qc_only_cfg = False
     elif qc_pattern:
-        # Explicit pattern supplied via flag — skip the prompt.
-        try:
-            compile_qc_pattern(qc_pattern)
-        except Exception:
-            console.print(f"[red]Invalid regex: {qc_pattern}[/red]")
-            return
-        qc_only_cfg = True
+        # Explicit pattern supplied via flag (validated above) — no prompt.
         qc_pattern_cfg = qc_pattern
     elif not no_prompt:
-        # Scan the directory and show a preview so the user can see
-        # what the default pattern actually catches before committing.
-        ext = ".d" if vendor == "bruker" else ".raw"
-        found_files: list[_Path] = []
-        if ext == ".d":
-            for p in watch_path.rglob("*.d"):
-                if p.is_dir():
-                    found_files.append(p)
-        else:
-            for p in watch_path.rglob("*.raw"):
-                if p.is_file():
-                    found_files.append(p)
+        qc_only_cfg, qc_pattern_cfg = prompt_qc_filter(watch_path, vendor, console)
 
-        default_pat = compile_qc_pattern()
-        matched = [f for f in found_files if is_qc_file(f, default_pat)]
-        total = len(found_files)
-
-        console.print()
-        console.print(
-            f"[bold]Scanning {path}[/bold] — found [cyan]{total}[/cyan] "
-            f"{ext} files total."
-        )
-        if total == 0:
-            console.print(
-                "[yellow]No raw files yet — that's fine, filtering will "
-                "apply to future files too.[/yellow]"
-            )
-        else:
-            console.print(
-                f"The default QC pattern [dim]{DEFAULT_QC_PATTERN}[/dim] "
-                f"matches [cyan]{len(matched)}[/cyan] / {total} files."
-            )
-            # Show a few examples of matched vs. unmatched so the user
-            # knows what they're picking.
-            if matched:
-                console.print("[green]Matched (will be processed):[/green]")
-                for f in matched[:3]:
-                    console.print(f"  ✓ {f.name}")
-                if len(matched) > 3:
-                    console.print(f"  [dim]... and {len(matched) - 3} more[/dim]")
-            unmatched = [f for f in found_files if f not in matched]
-            if unmatched:
-                console.print("[dim]Skipped (non-QC):[/dim]")
-                for f in unmatched[:3]:
-                    console.print(f"  [dim]✗ {f.name}[/dim]")
-                if len(unmatched) > 3:
-                    console.print(f"  [dim]... and {len(unmatched) - 3} more[/dim]")
-
-        console.print()
-        console.print("QC filtering options:")
-        console.print("  [cyan]1[/cyan]  Use the default HeLa/QC pattern (recommended)")
-        console.print("  [cyan]2[/cyan]  Custom regex pattern for this directory")
-        console.print("  [cyan]3[/cyan]  Process every file (no filter — for dedicated QC dirs)")
-        choice = Prompt.ask(
-            "Choice", choices=["1", "2", "3"], default="1", console=console
-        )
-
-        if choice == "1":
-            qc_only_cfg = True
-            qc_pattern_cfg = None  # implicit default
-        elif choice == "2":
-            while True:
-                pat = Prompt.ask(
-                    "Enter regex (e.g. (?i)(hela|myqc|std.*he))",
-                    default=DEFAULT_QC_PATTERN,
-                    console=console,
-                )
-                try:
-                    compiled = compile_qc_pattern(pat)
-                    # Preview the match count against found files
-                    if found_files:
-                        n_match = sum(1 for f in found_files if is_qc_file(f, compiled))
-                        console.print(
-                            f"[dim]Matches {n_match} / {total} files.[/dim]"
-                        )
-                    if Confirm.ask(
-                        "Accept this pattern?", default=True, console=console
-                    ):
-                        qc_only_cfg = True
-                        qc_pattern_cfg = pat
-                        break
-                except Exception as e:
-                    console.print(f"[red]Invalid regex: {e}[/red]")
-        else:  # choice == "3"
-            qc_only_cfg = False
-
-    # Load current instruments.yml
+    new_inst = watcher_block(
+        name, vendor, watch_path, qc_only=qc_only_cfg, qc_pattern=qc_pattern_cfg,
+    )
+    read_path = config_path
     try:
-        config_path = resolve_config_path("instruments.yml")
-    except FileNotFoundError:
-        config_path = get_user_config_dir() / "instruments.yml"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text("instruments: []\n")
-
-    with open(config_path) as f:
-        data = _yaml.safe_load(f) or {}
-
-    if "instruments" not in data:
-        data["instruments"] = []
-
-    # Check if already present
-    abs_path = str(watch_path.resolve())
-    for inst in data["instruments"]:
-        existing = str(_Path(inst.get("watch_dir", "")).resolve()) if inst.get("watch_dir") else ""
-        if existing == abs_path:
-            console.print(f"[yellow]Already watching: {abs_path}[/yellow]")
-            console.print(f"  (as instrument '{inst.get('name', 'unnamed')}')")
-            return
-
-    # Add new entry
-    extensions = [".d"] if vendor == "bruker" else [".raw"]
-    stable_secs = 60 if vendor == "bruker" else 30
-    new_inst: dict = {
-        "name": name,
-        "vendor": vendor,
-        "watch_dir": abs_path,
-        "extensions": extensions,
-        "stable_secs": stable_secs,
-        "qc_only": qc_only_cfg,
-    }
-    if qc_pattern_cfg:
-        new_inst["qc_pattern"] = qc_pattern_cfg
-    data["instruments"].append(new_inst)
-
-    with open(config_path, "w") as f:
-        _yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+        _action, new_inst, config_path = upsert_instrument_block(new_inst, config_path=config_path)
+    except InstrumentNameClash as e:
+        console.print(f"[red]{e}[/red] Pass a different --name.")
+        raise typer.Exit(1)
+    except (OSError, ValueError, _yaml.YAMLError) as e:
+        console.print(f"[red]Could not update {config_path}: {e}[/red]")
+        raise typer.Exit(1)
 
     console.print()
     console.print("[green]Added watch directory:[/green]")
-    console.print(f"  Name:   {name}")
-    console.print(f"  Vendor: {vendor}")
-    console.print(f"  Path:   {abs_path}")
+    console.print(f"  Name:    {_escape(str(new_inst['name']))}")
+    console.print(f"  Vendor:  {vendor}")
+    console.print(f"  Path:    {_escape(str(new_inst['watch_dir']))}", soft_wrap=True)
+    console.print(f"  Results: {_escape(str(new_inst['output_dir']))}", soft_wrap=True)
     if qc_only_cfg:
         pat_label = qc_pattern_cfg if qc_pattern_cfg else "default HeLa/QC pattern"
-        console.print(f"  Filter: [cyan]{pat_label}[/cyan]")
+        console.print(f"  Filter:  [cyan]{_escape(pat_label)}[/cyan]")
     else:
-        console.print("  Filter: [cyan]none (processing all files)[/cyan]")
+        console.print("  Filter:  [cyan]none (processing all files)[/cyan]")
     console.print()
-    console.print(f"[dim]Config written to {config_path}[/dim]")
-    console.print("[dim]The watcher daemon picks up changes automatically (hot-reload).[/dim]")
+    console.print(f"[dim]Config written to {_escape(str(config_path))}[/dim]", soft_wrap=True)
+    notes = config_write_notes(read_path, config_path, None, new_inst)
+    for note in notes:
+        console.print(f"[yellow]{note}[/yellow]", soft_wrap=True)
+    if not notes:
+        console.print("[dim]A running watcher picks up a new folder within 30 s (hot-reload).[/dim]")
+
+
+_ADD_WATCH_KEYS = ("vendor", "extensions", "stable_secs", "enabled")
+
+
+def _complete_existing_watch(
+    existing: dict,
+    watch_path: Path,
+    config_path: Path,
+    *,
+    vendor: str | None,
+    name: str | None,
+    qc_off: bool,
+    qc_pattern: str | None,
+) -> None:
+    """``stan add-watch`` on a folder that already has a block.
+
+    Such a block used to be refused outright, which left no command that
+    could fix the blocks older versions wrote: ``stan setup``'s had no
+    vendor or extensions and ``stan add-watch``'s had no ``enabled``, so
+    the watcher skipped both. Missing keys are added; nothing already set
+    is changed except what a flag asks for: ``--all-files`` and
+    ``--qc-pattern`` set the filter, and ``--name`` renames a block whose
+    name is still the placeholder (auto/unknown) an old ``stan setup`` wrote.
+
+    A flag that cannot be honoured, or a name another folder's block also
+    uses, changes nothing and exits 1. This used to exit 0 having dropped
+    ``--name`` / ``--all-files`` / ``--qc-pattern`` silently; with two old
+    blocks both named ``auto`` the watcher, which keys instruments by name,
+    watched only one folder and nothing said so.
+    """
+    import yaml as _yaml
+    from rich.markup import escape as _escape
+
+    from stan.setup import (
+        _PLACEHOLDER_NAMES,
+        InstrumentNameClash,
+        config_write_notes,
+        detect_vendor,
+        instrument_name_owner,
+        normalize_vendor,
+        upsert_instrument_block,
+        watcher_block,
+    )
+
+    label = str(existing.get("name") or "")
+    placeholder = label.strip().lower() in _PLACEHOLDER_NAMES
+    problems: list[str] = []
+
+    try:
+        block_vendor = normalize_vendor(existing.get("vendor"))
+    except ValueError:
+        block_vendor = None
+    if vendor and block_vendor and vendor != block_vendor:
+        problems.append(
+            f"The block for this folder says vendor: {block_vendor}; --vendor {vendor} "
+            "was not applied. Edit instruments.yml to change it."
+        )
+    use_vendor = block_vendor or vendor or detect_vendor(watch_path)[0]
+    if use_vendor is None:
+        problems.append(
+            "The block has no vendor and the folder holds no .d or .raw files to tell "
+            "from. Re-run with --vendor bruker or --vendor thermo."
+        )
+
+    # What the flags ask for explicitly; applied over values already set.
+    override: dict = {}
+    if name and name != label:
+        if placeholder:
+            override["name"] = name
+        else:
+            problems.append(
+                f"The block is named '{label}'; --name '{name}' was not applied, because "
+                "its runs are stored under that name. To rename it, edit name: in "
+                f"instruments.yml, then run stan fix-instrument-names --from '{label}' "
+                f"--to '{name}'."
+            )
+    if qc_off:
+        override.update(qc_only=False, qc_pattern=None)
+    elif qc_pattern:
+        override.update(qc_only=True, qc_pattern=qc_pattern)
+
+    final_name = str(override.get("name", label))
+    owner = instrument_name_owner(final_name, watch_path, config_path)
+    if owner is not None:
+        if "name" in override:
+            fix = "Pass a different --name."
+        elif placeholder:
+            fix = "Pass --name \"<model>\" to give this folder its own name."
+        else:
+            fix = "Edit instruments.yml so each folder has its own name."
+        problems.append(
+            f"The name '{final_name}' is also used by the block for {owner}. The watcher "
+            f"starts one instrument per name, so one of the two folders is never watched. {fix}"
+        )
+
+    if problems:
+        console.print(f"[yellow]{_escape(str(existing.get('watch_dir')))} is already configured "
+                      f"as '{_escape(label)}'.[/yellow]", soft_wrap=True)
+        for p in problems:
+            console.print(f"  [red]{_escape(p)}[/red]", soft_wrap=True)
+        console.print(f"  Nothing was changed in {_escape(str(config_path))}.", soft_wrap=True)
+        raise typer.Exit(1)
+
+    wanted = watcher_block(final_name, use_vendor, watch_path)
+    change = {k: wanted[k] for k in _ADD_WATCH_KEYS}
+    change.update(override)
+    change["watch_dir"] = existing.get("watch_dir")
+    try:
+        action, block, written = upsert_instrument_block(
+            change, config_path=config_path, fill_only=True, override=tuple(override),
+        )
+    except InstrumentNameClash as e:  # another add-watch/setup ran in between
+        console.print(f"[red]{_escape(str(e))}[/red] Nothing was changed.")
+        raise typer.Exit(1)
+    except (OSError, ValueError, _yaml.YAMLError) as e:
+        console.print(f"[red]Could not update {_escape(str(config_path))}: {_escape(str(e))}[/red]")
+        raise typer.Exit(1)
+
+    if action == "unchanged":
+        console.print(f"[yellow]Already watching: {_escape(str(existing.get('watch_dir')))}[/yellow]",
+                      soft_wrap=True)
+        console.print(f"  (as instrument '{_escape(label)}')")
+        if block.get("enabled") is False:
+            console.print("  [yellow]It is disabled (enabled: false) in instruments.yml.[/yellow]")
+        return
+
+    verb = "Completed" if action == "completed" else "Updated"
+    console.print(f"[green]{verb} the existing block[/green] '{_escape(str(block.get('name')))}' "
+                  f"for {_escape(str(block.get('watch_dir')))}", soft_wrap=True)
+    for k, value in block.items():
+        before = existing.get(k)
+        if before == value:
+            continue
+        if before in (None, "", []):
+            console.print(f"  added {k}: {_escape(str(value))}", soft_wrap=True)
+        else:
+            console.print(f"  changed {k}: {_escape(str(before))} -> {_escape(str(value))}",
+                          soft_wrap=True)
+    for k in existing:
+        if k not in block:
+            console.print(f"  removed {k}: {_escape(str(existing[k]))}", soft_wrap=True)
+    console.print(f"[dim]Config written to {_escape(str(written))}[/dim]", soft_wrap=True)
+    for note in config_write_notes(config_path, written, existing, block):
+        console.print(f"[yellow]{note}[/yellow]", soft_wrap=True)
 
 
 @app.command("list-watch")
 def list_watch() -> None:
-    """List all configured watch directories."""
+    """List all configured watch directories.
+
+    Flags what makes the watcher skip a folder: a block without enabled,
+    extensions or vendor, and enabled blocks that share a name (the watcher
+    starts one instrument per name, so only one of those folders is watched).
+    """
+    from collections import Counter
     from pathlib import Path as _Path
+
     import yaml as _yaml
-    from stan.config import resolve_config_path
+    from rich.markup import escape as _escape
+
+    from stan.config import load_yaml, resolve_config_path
 
     try:
         config_path = resolve_config_path("instruments.yml")
@@ -957,13 +1027,20 @@ def list_watch() -> None:
         console.print("  Run [cyan]stan add-watch <path>[/cyan] to add one.")
         return
 
-    with open(config_path) as f:
-        data = _yaml.safe_load(f) or {}
+    try:
+        data = load_yaml(config_path)  # BOM-safe, as the watcher reads it
+    except (OSError, ValueError, _yaml.YAMLError) as e:
+        console.print(f"[red]Cannot read {_escape(str(config_path))}: {_escape(str(e))}[/red]",
+                      soft_wrap=True)
+        raise typer.Exit(1)
 
-    instruments = data.get("instruments", [])
+    instruments = [b for b in ((data or {}).get("instruments") or []) if isinstance(b, dict)]
     if not instruments:
         console.print("[yellow]No instruments configured.[/yellow]")
         return
+
+    enabled_names = Counter(str(b.get("name") or "") for b in instruments if b.get("enabled", False))
+    shared = {n for n, c in enabled_names.items() if c > 1}
 
     from rich.table import Table
     table = Table(title="Watch Directories", show_header=True, border_style="blue")
@@ -972,17 +1049,51 @@ def list_watch() -> None:
     table.add_column("Vendor")
     table.add_column("Path")
     table.add_column("Exists")
+    # The watcher starts only blocks with enabled: true and ignores every
+    # file whose suffix is not in extensions, so show both: without these
+    # columns a block that is never watched looked exactly like one that is.
+    table.add_column("Enabled")
+    table.add_column("Extensions")
     for i, inst in enumerate(instruments, 1):
-        path = inst.get("watch_dir", "")
+        path = str(inst.get("watch_dir") or "")
         exists = "✓" if path and _Path(path).exists() else "[red]✗[/red]"
+        is_enabled = inst.get("enabled", False)
+        enabled = "✓" if is_enabled else "[red]no[/red]"
+        exts = inst.get("extensions") or []
+        ext_label = _escape(", ".join(str(e) for e in exts)) if exts else "[red]none[/red]"
+        name = str(inst.get("name") or "")
+        name_label = _escape(name)
+        if is_enabled and name in shared:
+            name_label = f"[red]{name_label} (shared)[/red]"
         table.add_row(
             str(i),
-            inst.get("name", ""),
-            inst.get("vendor", ""),
-            path,
+            name_label,
+            _escape(str(inst.get("vendor") or "")) or "[red]none[/red]",
+            _escape(path),
             exists,
+            enabled,
+            ext_label,
         )
     console.print(table)
+    # enabled: false on purpose is a choice; a missing key is a broken block.
+    if any("enabled" not in inst or not inst.get("extensions") or not inst.get("vendor")
+           for inst in instruments):
+        console.print(
+            "[yellow]A block with a key shown in red is not watched.[/yellow] "
+            "[dim]Run [cyan]stan add-watch <its folder> --vendor bruker|thermo -y[/cyan] "
+            "to add the missing keys; add [cyan]--name \"<model>\"[/cyan] when it is "
+            "named auto.[/dim]",
+            soft_wrap=True,
+        )
+    for n in sorted(shared):
+        console.print(
+            f"[yellow]{enabled_names[n]} enabled blocks are named '{_escape(n)}'. The watcher "
+            "starts one instrument per name, so only one of those folders is watched.[/yellow] "
+            "[dim]Give each its own name: [cyan]stan add-watch <its folder> --name "
+            "\"<model>\" -y[/cyan] renames a block named auto or unknown; otherwise edit "
+            "instruments.yml.[/dim]",
+            soft_wrap=True,
+        )
 
 
 @app.command("remove-watch")
@@ -991,7 +1102,7 @@ def remove_watch(
 ) -> None:
     """Remove a watch directory from instruments.yml."""
     import yaml as _yaml
-    from stan.config import resolve_config_path
+    from stan.config import load_yaml, resolve_config_path
 
     try:
         config_path = resolve_config_path("instruments.yml")
@@ -999,8 +1110,7 @@ def remove_watch(
         console.print("[yellow]No instruments configured.[/yellow]")
         return
 
-    with open(config_path) as f:
-        data = _yaml.safe_load(f) or {}
+    data = load_yaml(config_path) or {}  # BOM-safe, as the watcher reads it
 
     instruments = data.get("instruments", [])
     if not instruments:
@@ -2855,14 +2965,25 @@ def email_report(
     from stan.reports.daily_email import (
         get_email_config,
         install_scheduled_task,
-        save_email_config,
         send_daily_report,
         send_test_email,
         send_weekly_report,
     )
+    from stan.setup import save_email_settings
+
+    import yaml
+
+    def _save(**kw) -> None:
+        # write_community_keys refuses a community.yml it cannot parse rather
+        # than replace it (and its auth_token) with only email_reports.
+        try:
+            save_email_settings(**kw)
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            console.print(f"[red]Email settings not saved: {e}[/red]")
+            raise typer.Exit(1)
 
     if disable:
-        save_email_config(enabled=False, to="")
+        _save(enabled=False, to="")
         console.print("[yellow]Email reports disabled.[/yellow]")
         return
 
@@ -2873,7 +2994,7 @@ def email_report(
         if not to:
             console.print("[red]--to EMAIL is required when enabling reports.[/red]")
             raise typer.Exit(1)
-        save_email_config(enabled=True, to=to, daily=daily, weekly=weekly)
+        _save(enabled=True, to=to, daily=daily, weekly=weekly)
         console.print("[green]Email reports enabled.[/green]")
         console.print(f"  To: {to}")
         console.print(f"  Daily at: {daily}")

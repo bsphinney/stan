@@ -1,11 +1,13 @@
-"""Opt-in anonymous error telemetry for STAN.
+"""Opt-in error telemetry for STAN.
 
-Collects error type, message, sanitized traceback, STAN version, OS, Python
-version, and optional instrument context. Never collects file paths, serial
-numbers, or patient data.
+Collects error type, message, a traceback stripped to file names, STAN
+version, OS, Python version, and optional instrument context, including the
+raw file's name (stem only). The error message is sent as-is, so it can
+contain paths: a failed search reports its full command line. Never
+collects serial numbers or patient data.
 
-Telemetry is only active when ``error_telemetry: true`` is set in
-``~/.stan/community.yml``. Reports are sent fire-and-forget in a daemon
+Telemetry is off by default and only active when ``error_telemetry: true``
+is set in ``~/.stan/community.yml`` (Brett, 2026-09-29). Reports are sent fire-and-forget in a daemon
 thread so they never block the main process. If the relay is unreachable,
 the error is silently dropped.
 
@@ -44,17 +46,18 @@ def _get_stan_version() -> str:
 
 
 def _is_opted_in() -> bool:
-    """Check if error telemetry is enabled. Default: on.
+    """Check if error telemetry is enabled. Default: off.
 
-    Can be disabled by setting error_telemetry: false in community.yml.
+    Enabled only by ``error_telemetry: true`` in community.yml; a missing key
+    or file means off.
     """
     try:
         from stan.config import load_community
         comm = load_community()
-        return bool(comm.get("error_telemetry", True))
+        return comm.get("error_telemetry", False) is True
     except Exception:
-        # No community.yml — default to on
-        return True
+        # No community.yml — default to off
+        return False
 
 
 def _sanitize_traceback(tb_str: str) -> str:

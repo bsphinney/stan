@@ -6,14 +6,20 @@ monitor every instrument's STAN install from one place. Saves to
 
 - ``smb``: a mapped network drive / SMB mount path
   (e.g. ``\\\\fileserver\\STAN\\`` on Windows,
-  ``/Volumes/proteomics-grp/STAN/`` on macOS).
-  This is the default at UC Davis: STAN's daemon writes a mirror of
-  every important file to that path, and godmode reads it.
+  ``/Volumes/proteomics-grp/STAN/`` on macOS). This is how UC Davis ran
+  it: STAN's daemon writes a mirror of every important file to that
+  path, and godmode reads it.
 
 - ``hf_space``: an HTTP relay via the public HF Space — for sites
   that can't or won't share an SMB mount (e.g. external collaborators).
 
-- ``none``: this instrument doesn't participate in the fleet view.
+- ``none`` (the default): this instrument doesn't participate in the
+  fleet view. Every other lab wants this; the other two need a share or
+  relay that is set up first.
+
+With no terminal to answer on (stdin at end of file: ``</dev/null``, a
+service, a pipe that has run dry) every question takes its default, so
+``stan init`` finishes with ``mode: none`` instead of aborting.
 
 Writes:
 
@@ -23,9 +29,11 @@ Writes:
       space_url: https://...                     # hf_space only
       configured_at: 2026-04-27T...
 
-The watcher's ``sync_to_hive_mirror`` reads ``root_path`` to know
-where to push. Godmode's startup reads the same yaml and points its
-fleet root there.
+Nothing reads this file yet (checked 2026-09-29: no reader in STAN or
+in godmode). The watcher's ``sync_to_hive_mirror`` finds its mirror
+through ``HIVE_MIRROR_DIR`` or ``hive_mirror_dir`` in community.yml, not
+through ``root_path`` here, so choosing ``smb`` does not by itself make
+anything sync.
 
 This is the v1.0 onboarding — first-time install asks once, stores
 the answer, and any future reconfiguration goes through
@@ -45,6 +53,24 @@ from rich.prompt import Prompt
 from stan.config import get_user_config_dir
 
 console = Console()
+
+#: The menu entry taken on Enter or when there is no input at all.
+DEFAULT_CHOICE = "3"
+
+
+def _ask(prompt: str, **kwargs) -> str:
+    """``Prompt.ask``, but end of input answers with the default.
+
+    Rich reads with ``input()``, which raises EOFError when stdin is not a
+    terminal and has nothing left; Click then prints "Aborted." and exits 1.
+    That is what ``stan init </dev/null`` used to do.
+    """
+    try:
+        return Prompt.ask(prompt, **kwargs)
+    except EOFError:
+        default = kwargs.get("default", "")
+        console.print(f"\n[dim](no input; using the default: {default or 'none'})[/dim]")
+        return default
 
 
 def _suggested_default() -> str:
@@ -105,10 +131,10 @@ def save_fleet_config(cfg: dict) -> Path:
 def run_fleet_wizard(force: bool = False) -> dict:
     """Interactive prompt; returns the saved config dict.
 
-    If ``force`` is False and a fleet.yml already exists with a non-
-    ``none`` mode, the wizard offers to keep the existing config
-    instead of re-prompting. ``force=True`` (the
-    ``--reconfigure-fleet`` flag path) always re-prompts.
+    If ``force`` is False and a fleet.yml already exists (any mode), the
+    wizard offers to keep it instead of re-prompting; Enter, or no input
+    at all, keeps it. ``force=True`` (the ``--reconfigure-fleet`` flag
+    path) always re-prompts. A fresh prompt defaults to ``none``.
     """
     existing = load_fleet_config().get("fleet", {}) or {}
     if existing and not force:
@@ -118,7 +144,7 @@ def run_fleet_wizard(force: bool = False) -> dict:
             f"\n[bold cyan]Fleet sync already configured:[/bold cyan] "
             f"mode={mode} path={root}"
         )
-        keep = Prompt.ask(
+        keep = _ask(
             "Keep existing config? [Y/n]", default="y", show_default=False,
         ).strip().lower()
         if keep in ("y", "yes", ""):
@@ -132,14 +158,17 @@ def run_fleet_wizard(force: bool = False) -> dict:
         "[cyan]stan init --reconfigure-fleet[/cyan]."
     )
     console.print()
+    # The numbers are kept as they were: docs and scripts answer "3" for
+    # None, and renumbering would turn that answer into the HF relay.
     console.print("  [bold]1[/bold]  Mapped network drive / SMB mount  "
-                  "[dim](default — UC Davis style)[/dim]")
+                  "[dim](UC Davis style; the share must already be mounted)[/dim]")
     console.print("  [bold]2[/bold]  Hugging Face Space (HTTP relay)  "
                   "[dim](for sites with no SMB share)[/dim]")
-    console.print("  [bold]3[/bold]  None — this instrument is solo")
+    console.print("  [bold]3[/bold]  None — this instrument is solo  "
+                  "[dim](default)[/dim]")
     console.print()
 
-    choice = Prompt.ask("Choice", choices=["1", "2", "3"], default="1").strip()
+    choice = _ask("Choice", choices=["1", "2", "3"], default=DEFAULT_CHOICE).strip()
 
     cfg: dict = {
         "fleet": {
@@ -150,14 +179,14 @@ def run_fleet_wizard(force: bool = False) -> dict:
 
     if choice == "1":
         suggested = _suggested_default()
-        path_str = Prompt.ask(
+        path_str = _ask(
             "Path to fleet root (must already exist + be writable)",
             default=suggested,
         ).strip()
         ok, msg = _validate_smb_path(path_str)
         if not ok:
             console.print(f"[yellow]warning:[/yellow] {msg}")
-            confirm = Prompt.ask(
+            confirm = _ask(
                 "Save anyway? godmode + sync will fail until the path is "
                 "mounted/writable. [y/N]",
                 default="n",
@@ -169,7 +198,7 @@ def run_fleet_wizard(force: bool = False) -> dict:
         cfg["fleet"]["root_path"] = str(Path(path_str))
 
     elif choice == "2":
-        url = Prompt.ask(
+        url = _ask(
             "HF Space URL",
             default="https://brettsp-stan.hf.space",
         ).strip()

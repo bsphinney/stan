@@ -1119,9 +1119,10 @@ def _process_files(
     # we exclude DIA rows whose version doesn't match the current binary,
     # so they'll fall through the skip check and get re-searched.
     current_diann_version = None
+    searched_diann_version: str | None = None
     if redo_stale_diann:
         from stan.search.version_detect import detect_diann_version
-        current_diann_version = detect_diann_version() or "unknown"
+        current_diann_version = detect_diann_version(diann_exe or "diann") or "unknown"
         console.print(
             f"[yellow]redo-stale-diann mode: re-searching DIA runs whose "
             f"diann_version != {current_diann_version}[/yellow]"
@@ -1397,9 +1398,16 @@ def _process_files(
                 # binary — a run searched today with DIA-NN 1.8.1 must not
                 # later pretend it was 2.3.0 because someone upgraded the PC.
                 if is_dia(mode_obj):
-                    from stan.search.version_detect import detect_diann_version
+                    # Label with the binary that ran, not whatever `diann`
+                    # is on PATH: with 2.3.2 and 2.7.0 side by side the two
+                    # differ. Detected once per batch.
+                    if searched_diann_version is None:
+                        from stan.search.version_detect import detect_diann_version
+                        searched_diann_version = (
+                            detect_diann_version(diann_exe or "diann") or "unknown"
+                        )
                     metrics["search_engine"] = "diann"
-                    metrics["diann_version"] = detect_diann_version() or "unknown"
+                    metrics["diann_version"] = searched_diann_version
                 else:
                     metrics["search_engine"] = "sage"
                     metrics["diann_version"] = None
@@ -1917,11 +1925,12 @@ def _test_sage(
 
 
 def _find_diann() -> str | None:
-    """Find DIA-NN executable, preferring version 2.0+.
+    """Find the DIA-NN executable to search with, preferring the pinned 2.3.x.
 
-    Searches common install locations first (newest versions tend to be
-    in higher-numbered directories like C:\\DIA-NN\\2.0), then falls back
-    to PATH. This avoids using an outdated 1.x on PATH when 2.x is installed.
+    Collects binaries from the common install locations, STAN's tools
+    folder and PATH, then picks with ``_pick_diann``: the pinned
+    major.minor first (exact pin, then highest patch), otherwise the
+    highest version found, with a warning.
     """
     candidates: list[str] = []
 
@@ -1965,18 +1974,76 @@ def _find_diann() -> str | None:
     if not candidates:
         return None
 
-    # Prefer highest version number in path (e.g. 2.0 > 1.8.1)
+    from stan.search.community_params import PINNED_TOOL_VERSIONS
+
+    picked = _pick_diann(candidates, PINNED_TOOL_VERSIONS["diann"])
+    if picked is None:
+        return None
+    path, version, compatible = picked
+    if not compatible:
+        logger.warning(
+            "No DIA-NN %s.x found; using %s (%s). Community submissions "
+            "need DIA-NN %s.x.",
+            ".".join(PINNED_TOOL_VERSIONS["diann"].split(".")[:2]),
+            path, version or "version unknown",
+            ".".join(PINNED_TOOL_VERSIONS["diann"].split(".")[:2]),
+        )
+    return path
+
+
+def _diann_version_of(path: str) -> str | None:
+    """Version of a DIA-NN binary: from its folder name, else its header.
+
+    Uses the LAST version-like token in the directory part, as the Windows
+    installer's Get-DiannVersionFromPath does: in ``D:/Tools v1.0/DIA-NN/
+    2.3.2/DiaNN.exe`` the version is 2.3.2, not 1.0.
+    """
     import re
-    def _version_key(path: str) -> tuple:
-        m = re.search(r"(\d+)\.(\d+)\.?(\d*)", path)
-        if m:
-            return (int(m.group(1)), int(m.group(2)), int(m.group(3) or 0))
-        return (0, 0, 0)
 
-    candidates.sort(key=_version_key, reverse=True)
-    return candidates[0]
+    # Split as text: Path() on macOS/Linux does not treat "\\" as a separator.
+    norm = str(path).replace("\\", "/")
+    parent = norm.rsplit("/", 1)[0] if "/" in norm else ""
+    found = re.findall(r"(\d+)\.(\d+)(?:\.(\d+))?", parent)
+    if found:
+        return ".".join(g for g in found[-1] if g)
+    from stan.search.version_detect import detect_diann_version
 
-    return None
+    return detect_diann_version(path)
+
+
+def _pick_diann(
+    candidates: list[str], pinned: str
+) -> tuple[str, str | None, bool] | None:
+    """Choose the DIA-NN binary to search with.
+
+    The newest binary on disk is the wrong default: the Windows installer
+    now puts the pinned 2.3.x beside whatever else is there (often 2.7.0),
+    and a 2.7.0 search is rejected by the community relay. Prefer the
+    pinned major.minor, the exact pin first, then the highest patch.
+    Otherwise fall back to the highest version found.
+
+    Returns:
+        (path, version, compatible) or None when there are no candidates.
+    """
+    if not candidates:
+        return None
+    want = pinned.split(".")[:2]
+
+    def _key(version: str | None) -> tuple[int, ...]:
+        if not version:
+            return (0, 0, 0)
+        parts = [int(p) for p in version.split(".")[:3] if p.isdigit()]
+        return tuple(parts + [0] * (3 - len(parts)))
+
+    scored = [(p, _diann_version_of(p)) for p in candidates]
+    compatible = [(p, v) for p, v in scored if v and v.split(".")[:2] == want]
+    if compatible:
+        compatible.sort(key=lambda pv: (pv[1] == pinned, _key(pv[1])), reverse=True)
+        path, version = compatible[0]
+        return path, version, True
+    scored.sort(key=lambda pv: _key(pv[1]), reverse=True)
+    path, version = scored[0]
+    return path, version, False
 
 
 def _find_sage() -> str | None:
