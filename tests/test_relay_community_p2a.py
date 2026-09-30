@@ -479,26 +479,48 @@ def _big_lab(n: int = 5) -> list[dict]:
 
 
 @needs_node
-def test_dedupe_prefers_a_usable_copy_then_one_with_a_column(client, tmp_path):
+def test_dedupe_prefers_a_usable_copy_and_inherits_only_the_column(client, tmp_path):
     """A held-back or flagged copy that won the tie-break was then filtered
-    out, losing the acquisition; a column-"Unknown" copy beat one that records
-    its column (127 -> 87 column-labelled rows on the snapshot)."""
+    out, losing the acquisition. Preferring the copy that records a column
+    swapped in whole older seed rows (identified-ion TIC, no lc_system, other
+    SPD and amount), so the kept copy is chosen without looking at the column
+    and takes only column_vendor/column_model from a dropped copy."""
+    raw_tic = json.dumps([round(0.05 + 0.1 * j, 3) for j in range(30)])
+    idion_tic = json.dumps([round(2.0 + 0.1 * j, 3) for j in range(30)])
+    ys = json.dumps([float(1 + j % 10) for j in range(30)])
+    newer = dict(_SAME, display_name="Big Lab", lc_system="evosep", spd=60, amount_ng=50, stan_version="0.2.376",
+                 tic_rt_bins=raw_tic, tic_intensity=ys, submitted_at="2026-05-28T00:00:00Z")
+    seed = dict(_SAME, display_name="Small Lab", lc_system="", spd=100, amount_ng=40, stan_version="0.2.282",
+                tic_rt_bins=idion_tic, tic_intensity=ys, column_vendor="PepSep", column_model="PepSep MAX 10cm",
+                submitted_at="2026-04-01T00:00:00Z")
     cases = {
-        "held": [_row(1, display_name="Small Lab", **_SAME), _row(2, display_name="Big Lab", **dict(_SAME, amount_ng=50000))],
-        "flagged": [_row(1, display_name="Small Lab", **_SAME), _row(2, display_name="Big Lab", is_flagged=True, **_SAME)],
-        "column": [_row(1, display_name="Big Lab", **_SAME),
-                   _row(2, display_name="Small Lab", column_vendor="PepSep", column_model="PepSep MAX 10cm", **_SAME)],
-        "bigger": [_row(1, display_name="Small Lab", **_SAME), _row(2, display_name="Big Lab", **_SAME)],
+        "inherit": [_row(1, **newer), _row(2, **seed)],
+        "held": [_row(1, **dict(newer, amount_ng=50000)), _row(2, **seed)],
+        "flagged": [_row(1, is_flagged=True, **newer), _row(2, **seed)],
+        "usable_donor": [_row(1, **newer), _row(2, is_flagged=True, **dict(seed, column_model="Flagged Col")),
+                         _row(3, **dict(seed, display_name="Other Lab", column_model="Usable Col"))],
+        "own_column": [_row(1, **dict(newer, column_vendor="IonOpticks", column_model="Aurora 25cm")), _row(2, **seed)],
     }
-    scenario = "(() => {" + "".join(
-        f"const r_{k} = dedupeRuns({json.dumps(v + _big_lab())});" for k, v in cases.items()) + "return {" + ",".join(
-        f"{k}: [r_{k}.dropped, r_{k}.kept.filter(s => s.n_precursors === 41000).map(s => s.submission_id)]"
-        for k in cases) + "}; })()"
+    scenario = "(() => { const out = {};" + "".join(f"""
+        {{ const src = {json.dumps(v + _big_lab())}; const before = JSON.stringify(src);
+          const r = dedupeRuns(src); const k = r.kept.find(s => s.n_precursors === 41000);
+          const orig = src.find(s => s.submission_id === k.submission_id);
+          out.{name} = {{ dropped: r.dropped, id: k.submission_id, lc: k.lc_system, spd: k.spd, amount: k.amount_ng,
+                          version: k.stan_version, idion: ticOf({{...k}}).idion, col: [k.column_vendor, k.column_model],
+                          untouched: JSON.stringify(src) === before, same: k === orig }}; }}""" for name, v in cases.items()) + "return out; })()"
     got = _run(client, tmp_path, scenario)
-    assert got["held"] == [1, ["s1"]]         # the big lab's held-back copy loses
-    assert got["flagged"] == [1, ["s1"]]      # so does a flagged one
-    assert got["column"] == [1, ["s2"]]       # the copy that records its column wins
-    assert got["bigger"] == [1, ["s2"]]       # otherwise the larger contributor's
+    # the newer copy stays whole, and takes only the seed copy's column
+    assert got["inherit"] == {"dropped": 1, "id": "s1", "lc": "evosep", "spd": 60, "amount": 50, "version": "0.2.376",
+                              "idion": False, "col": ["PepSep", "PepSep MAX 10cm"], "untouched": True, "same": False}
+    # a held-back or flagged copy still loses, whatever its lab's size
+    assert got["held"]["id"] == "s2" and got["flagged"]["id"] == "s2"
+    assert got["held"]["col"] == ["PepSep", "PepSep MAX 10cm"] and got["held"]["same"] is True
+    # the column comes from a usable dropped copy before a flagged one
+    assert got["usable_donor"]["id"] == "s1" and got["usable_donor"]["col"] == ["PepSep", "Usable Col"]
+    # a kept copy with its own column keeps it, and is the source object itself
+    assert got["own_column"]["col"] == ["IonOpticks", "Aurora 25cm"] and got["own_column"]["same"] is True
+    # the fetched rows are never changed in place
+    assert all(c["untouched"] for c in got.values())
 
 
 @needs_node

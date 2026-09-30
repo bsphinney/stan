@@ -4069,10 +4069,13 @@ function columnName(s) {
 // A copy is the same instrument model, track and all four ID counts, with
 // acquisition instants within 2 s of each other (copies differ only in
 // sub-second precision). The file name is not in the key (D4). Of each set of
-// copies the page keeps a usable one (not flagged, not held back), then one
-// that records its LC column, then the one from the lab with more runs, then
-// the first submitted. Reference: build_mockup.py (3,305 -> 3,061 rows on
-// 2026-09-29; the key, not the tie-break, sets that count).
+// copies the page keeps a usable one (not flagged, not held back), then the
+// one from the lab with more runs, then the first submitted. If that copy
+// records no LC column and a dropped copy does, the kept row takes just the
+// dropped copy's column_vendor and column_model; every other field is the
+// kept copy's own (preferring a copy for its column swapped in older seed
+// rows with identified-ion TICs, no lc_system and other SPDs). Reference:
+// build_mockup.py (3,305 -> 3,061 rows on 2026-09-29).
 const DUP_WINDOW_MS = 2000;
 function _instantMs(s) {
     if (!s.run_date) return NaN;
@@ -4088,24 +4091,28 @@ function dedupeRuns(rows) {
         if (!groups.has(k)) groups.set(k, []);
         groups.get(k).push(r);
     });
-    const keep = new Set();
+    const keep = new Map();   // source row -> the row the page uses for it
     let dropped = 0;
     // Which copy stays: a usable one first (a flagged or held-back copy
-    // would win only to be filtered out, losing the acquisition), then one
-    // that records its LC column, then the lab with more runs, then the
-    // earliest submitted.
+    // would win only to be filtered out, losing the acquisition), then the
+    // lab with more runs, then the earliest submitted.
     const usable = (s) => (!s.is_flagged && !isHeldBack(s)) ? 1 : 0;
-    const hasCol = (s) => colKey(s) ? 1 : 0;
     const pick = (chain) => {
         if (chain.length > 1) dropped += chain.length - 1;
-        chain.sort((a, b) => (usable(b) - usable(a)) || (hasCol(b) - hasCol(a))
+        const order = chain.slice().sort((a, b) => (usable(b) - usable(a))
             || ((total[b.display_name] || 0) - (total[a.display_name] || 0))
             || String(a.submitted_at || '').localeCompare(String(b.submitted_at || '')));
-        keep.add(chain[0]);
+        const kept = order[0];
+        // The column, and only the column, from a dropped copy that records
+        // one (a usable one first), on a shallow copy: the fetched rows are
+        // never changed in place.
+        const donor = colKey(kept) ? null
+            : order.slice(1).filter(r => colKey(r)).sort((a, b) => usable(b) - usable(a))[0];
+        keep.set(kept, donor ? { ...kept, column_vendor: donor.column_vendor, column_model: donor.column_model } : kept);
     };
     for (const g of groups.values()) {
         const timed = g.filter(r => isFinite(_instantMs(r))).sort((a, b) => _instantMs(a) - _instantMs(b));
-        g.filter(r => !isFinite(_instantMs(r))).forEach(r => keep.add(r));   // no instant: never a copy
+        g.filter(r => !isFinite(_instantMs(r))).forEach(r => keep.set(r, r));   // no instant: never a copy
         let chain = [];
         for (const r of timed) {
             if (chain.length && _instantMs(r) - _instantMs(chain[chain.length - 1]) <= DUP_WINDOW_MS) chain.push(r);
@@ -4113,7 +4120,7 @@ function dedupeRuns(rows) {
         }
         if (chain.length) pick(chain);
     }
-    return { kept: rows.filter(r => keep.has(r)), dropped };
+    return { kept: rows.filter(r => keep.has(r)).map(r => keep.get(r)), dropped };
 }
 // A stored amount above 5 ug is a unit error (100,000 and 562,100 ng on
 // 2026-09-29), so the run is held back from every range and ranking until
@@ -4331,7 +4338,7 @@ function statsNoteText() {
     if (duplicateCopies) {
         parts.push(`${fmtN(duplicateCopies)} duplicate cop${duplicateCopies === 1 ? 'y' : 'ies'} removed `
             + '(same instrument, acquisition mode and all four ID counts, acquired within 2 seconds of each other; '
-            + 'of each set the page keeps a usable copy, then one that records its LC column, then the one from the lab with more runs)');
+            + 'of each set the page keeps a usable copy, then the one from the lab with more runs, and takes the LC column from another copy when the kept one records none)');
     }
     if (held) {
         parts.push(`${fmtN(held)} run${held === 1 ? '' : 's'} held back from every range and ranking because the `

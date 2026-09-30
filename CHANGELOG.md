@@ -87,10 +87,14 @@ overlay and the lab trend are byte-identical to 1.2.3.
 - **D8 at read time.** The page counts each acquisition once: rows with the
   same instrument, mode and all four ID counts, run dates within 2 s, are one
   run (3,305 → 3,061 on the 2026-09-29 snapshot). Of each set it keeps a
-  usable copy (not flagged or held back), then one that records its LC
-  column, then the larger contributor's, then the first submitted; so 126 of
-  the 127 column-labelled rows survive (one pair are copies of each other),
-  where the larger-contributor rule alone kept 87. Stored amounts above 5,000 ng are held back from
+  usable copy (not flagged or held back), then the larger contributor's,
+  then the first submitted. When the kept copy records no LC column and a
+  dropped copy does, the kept row takes only that `column_vendor` and
+  `column_model` (on a copy of the row; the fetched rows are never changed),
+  so 126 of the 127 column-labelled rows keep their column (one pair are
+  copies of each other) where they had been cut to 87. Choosing the copy
+  that records a column instead would have swapped in 39 older seed rows
+  (identified-ion TICs, no `lc_system`, other SPDs and amounts). Stored amounts above 5,000 ng are held back from
   every range and ranking (2 rows). A note under the stats row says both.
 - Bug 21: the site icon is served inline and at `/favicon.ico`, and
   `mobile-web-app-capable` is set.
