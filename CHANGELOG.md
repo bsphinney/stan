@@ -11,6 +11,22 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.8] — 2026-09-29
+
+### Fixed
+- **IPS scored timsTOF and Exploris runs against the wrong reference.**
+  The pipeline passes the instrument family ("timsTOF", "Exploris",
+  "Lumos") but `IPS_REFERENCES` is keyed "timsTOF HT" / "Exploris 480" /
+  "Lumos", so only Lumos found its own cohort and the other two fell back to
+  the pooled global reference (DDA likewise). Over 4,264 PG DIA runs the
+  Exploris median IPS read 38 (fixed: 52) and timsTOF 66 (fixed: 53); 96% of
+  Exploris runs showed below 60. `_reference_key()` now maps family and model
+  names to the reference keys. Stored `runs.ips_score` values in PG were
+  recomputed with Brett's approval (2026-09-29), old values backed up to
+  `/quobyte/proteomics-grp/STAN/logs/ips_rewrite_*.json`. Even fixed, both
+  medians sit near 52-53 rather than 60: the April references need
+  recalibrating (separate decision). Tests: `tests/test_ips_reference_key.py`.
+
 ## [1.2.7] — 2026-09-29
 
 ### Security

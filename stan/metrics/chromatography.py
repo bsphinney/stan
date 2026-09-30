@@ -205,8 +205,31 @@ def spd_bucket(spd: int | float | None) -> str:
     return _scoring_spd_bucket(int(spd))
 
 
+# The Hive pipeline and the watcher pass the instrument FAMILY ("timsTOF",
+# "Exploris", "Lumos"); some callers pass the model. The references are keyed
+# by the instrument they were calibrated on. Until 1.2.8 only "Lumos" matched,
+# so every timsTOF and Exploris run was scored against the pooled
+# _GLOBAL_REFERENCE: Exploris medians read ~38 instead of ~52, timsTOF ~66
+# instead of ~53 (dry run over 4,264 PG DIA runs, 2026-09-29).
+_REFERENCE_KEY = {
+    "timsTOF": "timsTOF HT",
+    "Exploris": "Exploris 480",
+    "Orbitrap Exploris 480": "Exploris 480",
+    "Orbitrap Fusion Lumos": "Lumos",
+    "Fusion Lumos": "Lumos",
+}
+
+
+def _reference_key(instrument: str | None) -> str | None:
+    """Map a family or model name to the key its references are stored under."""
+    if not instrument:
+        return instrument
+    return _REFERENCE_KEY.get(instrument.strip(), instrument.strip())
+
+
 def _get_reference(instrument_family: str | None, spd: int | float | None) -> Reference:
     """Look up cohort reference with graceful fallback."""
+    instrument_family = _reference_key(instrument_family)
     if instrument_family:
         key = (instrument_family, spd_bucket(spd))
         if key in IPS_REFERENCES:
@@ -261,6 +284,7 @@ def compute_ips_dia(metrics: dict) -> int:
 
 def _get_dda_reference(instrument_family: str | None) -> Reference:
     """Look up DDA cohort reference with fallback to absolute anchors."""
+    instrument_family = _reference_key(instrument_family)
     if instrument_family:
         ref = IPS_REFERENCES_DDA.get((instrument_family, "*"))
         if ref is not None:
