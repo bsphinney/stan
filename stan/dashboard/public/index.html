@@ -81,6 +81,36 @@
        margin below is set on purpose. */
     .peg-root { font-size: 14px; line-height: 1.45; }
     .peg-stack { display: grid; gap: 16px; }
+    /* "Your last 5 QC runs" strip at the top of the PEG tab (v1.2.11). */
+    .peg-latest { display: grid; gap: 12px; }
+    .peg-lt-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+    .peg-lt-verdict { margin: 0; font-size: 1rem; max-width: 80ch; text-wrap: balance; }
+    .peg-lt-verdict b { color: var(--accent-hi); }
+    .peg-lt-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+    .peg-lt-tile { background: rgba(1, 26, 58, .6); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: grid; gap: 4px; min-width: 0; position: relative; }
+    .peg-lt-tile.peg-lt-newest { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+    .peg-lt-tag { position: absolute; top: -9px; right: 10px; background: var(--accent); color: #0b1a2e; font-size: .66rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; border-radius: 4px; padding: 1px 6px; }
+    .peg-lt-when { color: var(--muted); font-size: .76rem; font-variant-numeric: tabular-nums; }
+    .peg-lt-pct { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+    .peg-lt-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+    .peg-lt-cls { font-size: .7rem; font-weight: 650; border-radius: 4px; padding: 1px 6px; border: 1px solid currentColor; white-space: nowrap; }
+    .peg-lt-spd { color: var(--muted); font-size: .72rem; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+    .peg-lt-cmp { font-size: .76rem; }
+    .peg-lt-up { color: var(--moderate); font-weight: 650; }
+    .peg-lt-down { color: var(--pass); font-weight: 650; }
+    .peg-lt-pc { font-size: .72rem; color: var(--muted); }
+    .peg-lt-meter { height: 5px; border-radius: 3px; background: var(--peg-grid); position: relative; margin-top: 2px; }
+    .peg-lt-meter i { position: absolute; top: -3px; width: 3px; height: 11px; border-radius: 2px; background: var(--text); }
+    .peg-lt-hist { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+    .peg-lt-hist svg { width: 100%; height: auto; display: block; }
+    .peg-lt-table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+    .peg-lt-table td { padding: 5px 6px; border-bottom: 1px solid var(--border); vertical-align: baseline; }
+    .peg-lt-table td.v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
+    .peg-lt-table td.n { color: var(--muted); font-size: .72rem; text-align: right; white-space: nowrap; }
+    .peg-lt-table tr.me td { color: var(--accent-hi); }
+    .peg-lt-sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+    @media (max-width: 900px) { .peg-lt-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } .peg-lt-hist { grid-template-columns: minmax(0, 1fr); } }
+    @media (max-width: 560px) { .peg-lt-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .peg-lt-pct { font-size: 1.3rem; } }
     .peg-busy > * { opacity: .55; transition: opacity .15s; }
     .peg-root .card { margin-bottom: 0; min-width: 0; padding: 18px 18px 16px; border-radius: 12px; }
     .peg-root .card h3 { margin: 0 0 2px; font-size: 1rem; font-weight: 650; text-wrap: balance; }
@@ -10191,6 +10221,7 @@ function BFailTable({ rows }) {
       const degraded = new Set(Array.isArray(ov.degraded) ? ov.degraded : []);
       return (
         <div className={`peg-root peg-stack${busy ? ' peg-busy' : ''}`} aria-busy={busy || undefined}>
+          <PegLatest ov={ov} runs={runs} asOfT={asOfT} timsCal={timsCal} onInstrument={onInstrument} pick={pick} />
           {/* The lede quotes a clean rate only where the classes were calibrated. */}
           <PegHero ov={ov} runs={runs} isEvosep={isEvosep} myName={myName} baseClean={timsCal ? baseClean : null}
                    onInstrument={onInstrument} pick={pick} unread={degraded.has('ladder')} />
@@ -10220,6 +10251,185 @@ function BFailTable({ rows }) {
       );
     }
 
+    /* "Your last 5 QC runs" (v1.2.11). Brett, 2026-09-30: "easy to see the PEG
+       in the last 5 runs … right at the top and compare this to historical
+       averages". Every number comes from the overview already loaded: the
+       per-run rows, summary (30 days), lab_lc (1 year), baseline (best 90
+       days). A run is ranked against this instrument's runs at the SAME SPD,
+       because gradient length changes how much PEG shows. */
+    const PEG_LT_N = 5;
+    const PEG_LT_CLR = ['var(--pass)', 'var(--warn)', 'var(--moderate)', 'var(--fail)'];
+    const pegOrd = (n) => { const v = n % 100; return n + (v >= 11 && v <= 13 ? 'th' : ({1: 'st', 2: 'nd', 3: 'rd'}[n % 10] || 'th')); };
+    function pegLatestStats(ov, runs, asOfT) {
+      const sorted = [...runs].sort((a, b) => a.t - b.t);
+      const last = sorted.slice(-PEG_LT_N);
+      const yearCut = asOfT - 365 * PEG_DAY_MS;
+      const bySpd = new Map(), yearBySpd = new Map();
+      sorted.forEach(r => {
+        const k = r.spd == null ? 'x' : r.spd;
+        if (!bySpd.has(k)) bySpd.set(k, []);
+        bySpd.get(k).push(r.pct);
+        if (r.t >= yearCut) {
+          if (!yearBySpd.has(k)) yearBySpd.set(k, []);
+          yearBySpd.get(k).push(r.pct);
+        }
+      });
+      bySpd.forEach(a => a.sort((x, y) => x - y));
+      const tiles = last.map(r => {
+        const k = r.spd == null ? 'x' : r.spd;
+        const hist = bySpd.get(k) || [];
+        let lo = 0, hi = hist.length;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (hist[m] < r.pct) lo = m + 1; else hi = m; }
+        return { ...r, pctile: hist.length ? Math.round(100 * lo / hist.length) : null,
+                 nSpd: hist.length, spdYear: pegMedian(yearBySpd.get(k) || []) };
+      });
+      const s = ov.summary || {};
+      const lab = (ov.lab_lc || []).find(x => x.instrument === ov.instrument) || null;
+      const yearRuns = sorted.filter(r => r.t >= yearCut).map(r => r.pct);
+      return {
+        tiles,
+        last: pegMedian(last.map(r => r.pct)),
+        m30: s.median_30d, n30: s.n_30d,
+        m365: lab && lab.median_365d != null ? lab.median_365d : pegMedian(yearRuns),
+        n365: lab && lab.n_365d != null ? lab.n_365d : yearRuns.length,
+        all: pegMedian(sorted.map(r => r.pct)), nAll: sorted.length,
+        first: sorted.length ? sorted[0].t : null,
+        best: ov.baseline && ov.baseline.median_pct != null ? ov.baseline : null,
+        recent: sorted.filter(r => r.t >= asOfT - 90 * PEG_DAY_MS),
+      };
+    }
+    function PegLatest({ ov, runs, asOfT, timsCal, onInstrument, pick }) {
+      const S = useMemo(() => pegLatestStats(ov, runs, asOfT), [ov, runs, asOfT]);
+      if (!S.tiles.length) return null;
+      const ratio = S.m365 ? S.last / S.m365 : null;
+      const word = ratio == null ? 'compared with'
+        : ratio >= 1.5 ? 'higher than' : ratio <= 0.67 ? 'lower than' : 'in line with';
+      const B = S.best, b = B ? B.median_pct : null;
+      let tail = null;
+      if (b != null) {
+        const far = S.last > 3 * Math.max(b, 0.01) && S.last - b >= 0.5;
+        const near = S.last <= Math.max(2 * b, b + 0.05);
+        tail = <>, {far ? 'but well above' : near ? 'and close to' : 'and above'} your cleanest 90 days (<b>{pegFmtPct(b)}</b>)</>;
+      }
+      const newest = S.tiles[S.tiles.length - 1];
+      /* Classes are calibrated on timsTOF (PEG_CAL_NOTE), so only there does
+         the sentence name the newest run's class. */
+      const clsNote = timsCal && newest.cls >= 2
+        ? <> The newest run is <b style={{color: PEG_LT_CLR[newest.cls]}}>{PEG_CLS_NAMES[newest.cls].toLowerCase()}</b>.</> : null;
+      const hhmm = (r) => (r.ts || '').slice(11, 16);
+
+      // Ruler: PEG share on the tab's log(p + 0.05) axis, so 0 % draws.
+      const W = 640, H = 128, x0 = 16, x1 = W - 16, axHi = 30;
+      const X = (p) => x0 + (pegLg(Math.min(axHi, p || 0)) - pegLg(0)) / (pegLg(axHi) - pegLg(0)) * (x1 - x0);
+      const yLine = H - 52;
+      const marks = [
+        ['Best 90 days', b, 'var(--pass)'], ['All-time median', S.all, 'var(--muted)'],
+        ['Last year', S.m365, 'var(--text)'], ['Last 30 days', S.m30, 'var(--accent)'],
+      ].filter(m => m[1] != null);
+      const range = (B && B.start && B.end) ? pegFmtRange(B.start, B.end) : null;
+      const rows = [
+        ['me', 'var(--accent-hi)', `Last ${S.tiles.length} runs (median)`, S.last, `${S.tiles.length} runs`],
+        ['', 'var(--accent)', 'Last 30 days', S.m30, S.n30 != null ? `${pegFmtN(S.n30)} runs` : ''],
+        ['', 'var(--text)', 'Last year', S.m365, `${pegFmtN(S.n365)} runs`],
+        ['', 'var(--pass)', range ? `Best 90 days (${range})` : 'Best 90 days', b, B && B.n ? `${pegFmtN(B.n)} runs` : ''],
+        ['', 'var(--muted)', S.first ? `All runs since ${pegFmtD(S.first)}` : 'All runs', S.all, `${pegFmtN(S.nAll)} runs`],
+      ];
+      return (
+        <section className="card peg-latest" aria-labelledby="peg-lt-h">
+          <div className="peg-lt-head">
+            <div>
+              <h3 id="peg-lt-h">Your last {S.tiles.length} QC runs</h3>
+              <p className="peg-sub">{ov.instrument} · {pegFmtD(S.tiles[0].t, false)} to {pegFmtD(newest.t)} · PEG share of MS1</p>
+            </div>
+            <div className="peg-chips"><PegInstrumentPicker ov={ov} onInstrument={onInstrument} pick={pick} /></div>
+          </div>
+          <p className="peg-lt-verdict">
+            Median PEG share of the last {S.tiles.length} runs is <b>{pegFmtPct(S.last)}</b>, {word} this
+            instrument's last year (<b>{pegFmtPct(S.m365)}</b>){tail}.{clsNote}
+          </p>
+          <div className="peg-lt-tiles">
+            {S.tiles.map((t, i) => {
+              const isNew = i === S.tiles.length - 1;
+              const rel = t.spdYear ? t.pct / t.spdYear : null;
+              return (
+                <div key={`${t.t}-${i}`} className={`peg-lt-tile${isNew ? ' peg-lt-newest' : ''}`}
+                     title={`${t.ts.replace('T', ' ')} UTC · ${t.spd != null ? t.spd + ' SPD · ' : ''}${pegFmtPct(t.pct)} of MS1${t.ions != null ? ` · ${t.ions} PEG ions` : ''}`}>
+                  {isNew && <span className="peg-lt-tag">Latest</span>}
+                  <div className="peg-lt-when">{pegFmtD(t.t, false)} · {hhmm(t)}</div>
+                  <div className="peg-lt-pct" style={{color: PEG_LT_CLR[t.cls]}}>{pegFmtPct(t.pct)}</div>
+                  <div className="peg-lt-row">
+                    <span className="peg-lt-cls" style={{color: PEG_LT_CLR[t.cls]}}>{PEG_CLS_NAMES[t.cls]}</span>
+                    {t.spd != null && <span className="peg-lt-spd">{t.spd} SPD</span>}
+                  </div>
+                  {rel != null && (
+                    <div className="peg-lt-cmp">
+                      {rel >= 1.15 ? <span className="peg-lt-up">{rel.toFixed(1)}× </span>
+                        : rel <= 0.87 ? <span className="peg-lt-down">{rel.toFixed(1)}× </span> : 'about '}
+                      its {t.spd != null ? `${t.spd} SPD ` : ''}year median ({pegFmtPct(t.spdYear)})
+                    </div>
+                  )}
+                  {t.pctile != null && (
+                    <>
+                      <div className="peg-lt-pc">{pegOrd(t.pctile)} percentile of {pegFmtN(t.nSpd)} runs{t.spd != null ? ` at ${t.spd} SPD` : ''}</div>
+                      <div className="peg-lt-meter" aria-hidden="true"><i style={{left: `calc(${t.pctile}% - 1.5px)`}} /></div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div className="peg-lt-hist">
+            <svg viewBox={`0 0 ${W} ${H}`} role="img"
+                 aria-label="The last runs on a log scale of PEG share, with markers for best 90 days, all-time median, last year and last 30 days">
+              {[0.1, 1, 10].map(v => (
+                <g key={`t${v}`}>
+                  <line className="peg-g-grid" x1={X(v)} x2={X(v)} y1={26} y2={H - 30} />
+                  <text className="peg-g-ax" x={X(v)} y={H - 16} textAnchor="middle">{v}%</text>
+                </g>
+              ))}
+              <text className="peg-g-ax" x={X(0)} y={H - 16} textAnchor="start">0%</text>
+              <line x1={x0} x2={x1} y1={yLine} y2={yLine} style={{stroke: 'var(--border)', strokeWidth: 2}} />
+              {S.recent.map((r, i) => (
+                <circle key={`r${i}`} cx={X(r.pct)} cy={yLine + ((i * 37) % 17) - 8} r={1.8}
+                        style={{fill: PEG_LT_CLR[r.cls], fillOpacity: 0.35}} />
+              ))}
+              {marks.map(([lab, v, c], i) => {
+                const x = X(v), y = 18 + (i % 2) * 12;
+                const anchor = x < x0 + 60 ? 'start' : x > x1 - 60 ? 'end' : 'middle';
+                return (
+                  <g key={lab}>
+                    <line x1={x} x2={x} y1={y + 4} y2={H - 44} style={{stroke: c, strokeWidth: 1.5, strokeDasharray: '3 2'}} />
+                    <text className="peg-g-ax" x={anchor === 'start' ? x - 2 : x} y={y} textAnchor={anchor} style={{fill: c}}>{lab}</text>
+                  </g>
+                );
+              })}
+              {S.tiles.map((t, i) => {
+                const isNew = i === S.tiles.length - 1;
+                return (
+                  <circle key={`d${i}`} cx={X(t.pct)} cy={yLine} r={isNew ? 7 : 5}
+                          style={{fill: PEG_LT_CLR[t.cls], stroke: isNew ? 'var(--accent-hi)' : 'var(--bg)', strokeWidth: isNew ? 2.5 : 1.5}}>
+                    <title>{`${pegFmtD(t.t, false)} ${hhmm(t)} · ${pegFmtPct(t.pct)}`}</title>
+                  </circle>
+                );
+              })}
+              <text className="peg-g-ax-strong" x={x0} y={H - 2}>PEG share of MS1 (log scale) · large dots: last {S.tiles.length} runs · faint: last 90 days</text>
+            </svg>
+            <table className="peg-lt-table" aria-label="PEG share of MS1 compared with this instrument's history">
+              <tbody>
+                {rows.map(([cls, c, lab, v, n]) => (
+                  <tr key={lab} className={cls}>
+                    <td><span className="peg-lt-sw" style={{background: c}} />{lab}</td>
+                    <td className="v">{pegFmtPct(v)}</td>
+                    <td className="n">{n}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="peg-fine">Percentiles compare each run with this instrument's runs at the same SPD, because gradient length changes how much PEG shows.{timsCal ? '' : ' ' + PEG_CAL_NOTE}</p>
+        </section>
+      );
+    }
     function PegHero({ ov, runs, isEvosep, myName, baseClean, onInstrument, pick, unread }) {
       const s = ov.summary || {};
       const B = ov.baseline && ov.baseline.median_pct != null ? ov.baseline : null;

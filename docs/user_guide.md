@@ -395,6 +395,13 @@ and neither does a run that read no MS1 signal at all.
 Pick the instrument at the top (the one with the most PEG runs is the
 default). From top to bottom:
 
+- **Your last 5 QC runs** (1.2.11) — one tile per recent run, newest
+  outlined: its PEG share and class, how it compares with that SPD's
+  median over the last year ("1.9× its 60 SPD year median"), and its
+  percentile among this instrument's runs at the same SPD. A sentence
+  compares the median of the five with the last year and your cleanest
+  90 days, and a log-scale ruler and table place them against the last
+  30 days, the last year, the best 90 days and every run since the first.
 - **Headline and tiles** — the 30-day median PEG share against the 30
   days before, the clean and heavy QC counts, the latest episode, and
   your community rank (Evosep instruments only).

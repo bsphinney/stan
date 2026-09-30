@@ -216,6 +216,13 @@ on every request. A failure reading the runs answers **503**; a failure
 in a side panel (ladder, column log, LC comparison) serves the rest with
 `"degraded": [...]` and is not cached.
 
+The **"Your last 5 QC runs"** strip at the top of the tab (1.2.11,
+`PegLatest` in `index.html`) needs no endpoint of its own: it is computed in
+the browser from this document's `runs`, `summary.median_30d`,
+`lab_lc[instrument].median_365d` and `baseline`. Each run's percentile is
+against this instrument's runs at the same SPD; its "× year median" is
+against the same SPD over the 365 days to `as_of`.
+
 All windows are UTC days. Definitions (`stan/metrics/peg_trends.py`):
 
 | Section | Definition |

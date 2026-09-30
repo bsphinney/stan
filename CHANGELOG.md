@@ -11,6 +11,21 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.11] — 2026-09-30
+
+### Added
+- **"Your last 5 QC runs" at the top of the PEG tab.** Brett: "easy to see
+  the PEG in the last 5 runs … right at the top and compare this to
+  historical averages". One tile per run, newest outlined: PEG share and
+  class, "× its SPD's year median", and the percentile among this
+  instrument's runs at the same SPD (gradient length changes how much PEG
+  shows). A sentence compares the median of the five with the last year and
+  the cleanest 90 days; a log-scale ruler and table add the last 30 days and
+  every run since the first. Computed in the browser from the overview the
+  tab already loads; no new endpoint. Covered by `scripts/render_check.js`
+  (strip above the hero, 5 tiles, verdict, history table) on live timsTOF
+  and Exploris overviews. Mockup approved 2026-09-30.
+
 ## [1.2.10] — 2026-09-29
 
 ### Fixed

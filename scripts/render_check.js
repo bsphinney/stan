@@ -939,6 +939,24 @@ function checkPegCalibration(fx, { seed, expect, text }) {
        card beside an empty slot -- never the empty note. */
     if (lcCom) ok &= expect(`${who}: community LC half`, !lcCom.errs.length, lcCom.errs.join('; '));
 
+    /* v1.2.11: "Your last 5 QC runs" sits first, above the hero, with one
+       tile per run (the last five), a verdict against the last year, and the
+       history table. The 40 runs of the smallest fixture still give 5 tiles. */
+    {
+      const nRuns = (v.runs || []).filter(r => Array.isArray(r) && r[2] != null).length;
+      const want5 = Math.min(5, nRuns);
+      const iLt = h.indexOf('class="card peg-latest"'), iHero = h.indexOf('class="peg-hero"');
+      const tiles = (h.match(/class="peg-lt-tile[ "]/g) || []).length;
+      const newest = (h.match(/peg-lt-newest/g) || []).length;
+      const verdict = text((/<p class="peg-lt-verdict">([\s\S]*?)<\/p>/.exec(h) || [])[1] || '').replace(/\s+/g, ' ');
+      if (nRuns) {
+        ok &= expect(`${who}: last-runs strip renders above the hero`, iLt >= 0 && (iHero < 0 || iLt < iHero), `strip at ${iLt}, hero at ${iHero}`);
+        ok &= expect(`${who}: one tile per recent run, newest marked`, tiles === want5 && newest === 1, `${tiles} tiles, ${newest} newest`);
+        ok &= expect(`${who}: verdict compares with the last year`, /Median PEG share of the last \d+ runs is .*last year/.test(verdict), verdict);
+        ok &= expect(`${who}: history table has 5 rows`, (h.match(/<tr class="(me)?"><td><span class="peg-lt-sw"/g) || []).length === 5);
+      }
+    }
+
     /* The hero lede: the clean rate of the best 90 days goes, the rest stays. */
     const lede = text((/<p class="peg-lede">([\s\S]*?)<\/p>/.exec(h) || [])[1] || '').replace(/\s+/g, ' ');
     const s = v.summary || {}, B = v.baseline;
