@@ -240,7 +240,7 @@ def quartiles(values: list[float]) -> list[float]:
 # ── identity (spec §4.5, D3) ─────────────────────────────────────────
 
 def test_space_version(client):
-    assert client.get("/api/version").json()["version"] == "1.3.0"
+    assert client.get("/api/version").json()["version"] == "1.4.0"
 
 
 def test_unclaimed_name_is_accepted_but_unverified(client, relay):
@@ -1638,7 +1638,7 @@ def run_page_js(tmp_path: Path, html: str, calls: list) -> list:
 
 def test_page_has_the_peg_section_linked_from_the_header(client):
     html = _page(client)
-    assert "community site v1.3.0" in html
+    assert "community site v1.4.0" in html
     assert '<a href="#peg">PEG Watch</a>' in html
     assert html.count('id="peg"') == 1
     for endpoint in ("/api/peg/leaderboard", "/api/peg/trend", "/api/peg/lc-compare"):
@@ -1879,5 +1879,7 @@ def test_column_comparison_renders_when_two_columns_share_a_cohort(client, tmp_p
     assert plot["id"] == "chart-column-compare"
     # The cohort label carries the track: DIA and DDA never share a bar (P1, D1).
     # P2a: the label says the SPD and amount the runs carry, not the tier name.
-    assert [t["x"] for t in plot["traces"]] == [["timsTOF HT · DIA<br>100 SPD · 50 ng"]] * 2
+    # P2b: the gradient is named as the page's cohort key names it (B2); these
+    # rows record no LC at an Evosep-method SPD, so that is said, not inferred.
+    assert [t["x"] for t in plot["traces"]] == [["timsTOF HT · DIA<br>100 SPD, LC not recorded · 50 ng"]] * 2
     assert sorted(t["y"][0] for t in plot["traces"]) == [41000, 46000]

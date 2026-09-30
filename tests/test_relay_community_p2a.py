@@ -38,10 +38,11 @@ def _section(html: str, sid: str) -> str:
 
 # ── server ───────────────────────────────────────────────────────────
 
-def test_space_version_is_1_3_0(client, relay):
-    assert relay.SPACE_VERSION == "1.3.0"
-    assert client.get("/api/version").json()["version"] == "1.3.0"
-    assert "community site v1.3.0" in _page(client)
+def test_space_version_is_1_3_0_or_later(client, relay):
+    # P2a shipped as 1.3.0; P2b (tests/test_relay_community_p2b.py) is 1.4.0.
+    assert relay.SPACE_VERSION == "1.4.0"
+    assert client.get("/api/version").json()["version"] == "1.4.0"
+    assert "community site v1.4.0" in _page(client)
 
 
 def test_favicon_is_served_and_inline(client, relay):
@@ -241,9 +242,11 @@ def test_colkey_treats_unknown_as_no_column(client, tmp_path):
 def _card_rows() -> list[dict]:
     rows = [_row(i, run_date=f"2026-0{1 + i % 9}-10T10:00:00Z") for i in range(12)]          # HT 100 SPD, Unknown column
     rows += [_row(20 + i, column_vendor="PepSep", column_model="PepSep MAX 10cm") for i in range(4)]
-    rows += [_row(40 + i, spd=spd, cohort_id="timsTOF_60spd_low", n_precursors=45000 + i)     # HT 60 SPD tier, 46-60 SPD
+    rows += [_row(40 + i, spd=spd, cohort_id="timsTOF_60spd_low", n_precursors=45000 + i,     # HT 60 SPD tier, 46-60 SPD
+                  gradient_length_min=21 if spd == 60 else 30)
              for i, spd in enumerate([46, 50, 60, 60, 46, 60])]
-    ex = dict(instrument_family="Exploris", instrument_model="Orbitrap Exploris 480", cohort_id="Exploris_30spd_low", spd=38)
+    ex = dict(instrument_family="Exploris", instrument_model="Orbitrap Exploris 480", cohort_id="Exploris_30spd_low",
+              spd=38, lc_system="custom", gradient_length_min=44)
     rows += [_row(60 + i, **ex) for i in range(3)]                                             # sparse DIA
     rows += [_dda(70 + i, **ex) for i in range(2)]                                              # sparse DDA
     return rows
@@ -251,44 +254,54 @@ def _card_rows() -> list[dict]:
 
 @needs_node
 def test_reference_cards_grouped_by_model_with_sparse_folded(client, tmp_path):
-    """D5: grouped under model headings, primary metric large, "gradients
-    seen" instead of a tier title, cohorts under 5 runs folded, and "Unknown"
-    never a column."""
-    html = _run(client, tmp_path, f"allData = {json.dumps(_card_rows())}; renderRefRanges(); els['ref-ranges-container'].innerHTML")
+    """D5: grouped under model headings, primary metric large, cohorts that
+    cannot be ranked folded, and "Unknown" never a column.
+
+    P2b: each card is one cohort of the page's one cohort key (B2), titled by
+    its gradient ("Evosep 100 SPD", "44 min run (~38 SPD)") rather than P2a's
+    "gradients seen: 46–60 SPD" over a throughput tier; an Evosep run at a
+    non-Evosep SPD is "SPD unverified" and not ranked."""
+    html = _run(client, tmp_path, f"allData = {json.dumps(_card_rows())}; view.mode = 'all'; renderRefRanges(); els['ref-ranges-container'].innerHTML")
     groups = html.split('<details class="mgroup"')[1:]
     assert len(groups) == 2
     ht, ex = groups
     assert ">timsTOF HT</h3>" in ht and ">Orbitrap Exploris 480</h3>" in ex
-    assert "2 cohorts + 1 sparse · 22 runs · 1 lab" in ht
+    assert "1 cohort + 4 not ranked · 22 runs · 1 lab" in ht
     cards = ht.split('<article class="rc">')[1:]
-    assert len(cards) == 2
-    big, tier60 = cards
+    assert len(cards) == 1
+    [big] = cards
     # the cohort card holds every run, the column is named once, "Unknown" nowhere
-    assert "gradients seen: 100 SPD" in big and "All columns combined" in big and "16 runs · 1 lab" in big
+    assert "<h4>Evosep 100 SPD</h4>" in big and "All columns combined" in big and "16 runs · 1 lab" in big
     assert '<div class="rc-big">40,750<small>median precursors</small></div>' in big
     assert "Middle half <b>" in big and "Proteins · context" in big and "single-lab reference" in big
-    assert "gradients seen: 46–60 SPD" in tier60 and "6 runs, listed: <b>45,000 · 45,001" in tier60
+    assert "Run length recorded: 11 min" in big
     assert "Unknown" not in html and " SPD · 26-75 ng" not in html
-    # the 4-run PepSep column card is folded, with its column
-    assert "Show 1 sparse cohort (4 runs, fewer than 5 each)" in ht
-    assert "DIA · 100 SPD · 50 ng · PepSep MAX 10cm" in ht
-    # a model with only sparse cohorts opens its fold, DIA and DDA apart
-    assert "<div class=\"refgrid\">" not in ex and "Only 2 sparse cohorts (5 runs, fewer than 5 each)" in ex
-    assert "DIA · 38 SPD · 50 ng</b></span><span>3 runs · 1 lab · precursors" in ex
-    assert "DDA · 38 SPD · 50 ng</b></span><span>2 runs · 1 lab · PSMs" in ex
+    # the 4-run PepSep column card, the 3-run Evosep 60 SPD cohort and the
+    # unverified 46 and 50 SPD runs are folded, each with its reason
+    assert "Show 4 not-ranked cohorts (10 runs)" in ht
+    assert "DIA · Evosep 100 SPD · 50 ng · PepSep MAX 10cm" in ht and "not ranked: fewer than 5 runs" in ht
+    assert "DIA · Evosep 60 SPD · 50 ng</b>" in ht
+    assert "DIA · Evosep, 30 min run (SPD 46 unverified) · 50 ng</b>" in ht
+    assert "not ranked: recorded as Evosep, but 46 SPD is not an Evosep method (SPD unverified)" in ht
+    # a model with only unranked cohorts opens its fold, DIA and DDA apart
+    assert "<div class=\"refgrid\">" not in ex and "Only 2 not-ranked cohorts (5 runs)" in ex
+    assert "DIA · 44 min run (~38 SPD) · 50 ng</b>" in ex and "3 runs · 1 lab · precursors" in ex
+    assert "DDA · 44 min run (~38 SPD) · 50 ng</b>" in ex and "2 runs · 1 lab · PSMs" in ex
     assert "IPS" not in html
 
 
 @needs_node
 def test_reference_cards_and_filters_escape_submitter_strings(client, tmp_path):
+    """P2b: the per-panel family and mode checkboxes are the filter bar's
+    Instrument and Mode now; its menus are escaped too."""
     rows = [_row(i, instrument_model=EVIL, instrument_family=EVIL, column_vendor="<b>v</b>",
                  column_model="<script>x</script>") for i in range(6)]
-    scenario = f"""(() => {{ allData = {json.dumps(rows)}; refFilters.families.clear(); refFilters.modes.clear();
-        renderRefRanges(); return els['ref-ranges-container'].innerHTML + els['ref-filters'].innerHTML; }})()"""
+    scenario = f"""(() => {{ allData = {json.dumps(rows)};
+        renderRefRanges(); renderFilterBar();
+        return els['ref-ranges-container'].innerHTML + els['fbar-model'].innerHTML + els['fbar-column'].innerHTML; }})()"""
     html = _run(client, tmp_path, scenario)
     assert "<img" not in html and "<script>" not in html and "<b>v</b>" not in html
     assert "&lt;img" in html and "&lt;script&gt;" in html
-    assert "toggleRefFilter(this.dataset.group, this.dataset.value)" in html
 
 
 @needs_node
@@ -328,30 +341,34 @@ def test_held_back_amounts_leave_every_panel_and_are_counted(client, tmp_path):
 
 
 def _best_rows() -> list[dict]:
-    rows = [_row(i, n_precursors=40000 + i) for i in range(3)]
+    rows = [_row(i, n_precursors=40000 + i) for i in range(5)]
     rows += [_row(10 + i, instrument_family="Lumos", instrument_model="Orbitrap Fusion Lumos", spd=9,
-                  cohort_id="Lumos_deep_very-high", amount_ng=1000, n_precursors=80000 + i) for i in range(3)]
+                  lc_system="custom", gradient_length_min=128,
+                  cohort_id="Lumos_deep_very-high", amount_ng=1000, n_precursors=80000 + i) for i in range(5)]
     return rows
 
 
 @needs_node
 def test_best_configurations_amount_select_defaults_to_50_ng(client, tmp_path):
-    """B6: a >=250 ng cohort is not ranked against 50 ng ones unless asked."""
+    """B6: a >=250 ng cohort is not ranked against 50 ng ones unless asked.
+
+    P2b: the amount is the filter bar's; the select on the card is a view of it."""
     scenario = f"""(() => {{
-        allData = {json.dumps(_best_rows())}; currentTab = 'dia';
+        allData = {json.dumps(_best_rows())}; view.mode = 'dia';
         renderConfigLeaderboard();
         const first = [els['config-leaderboard'].innerHTML, els['config-leaderboard-badge'].textContent];
-        document.getElementById('config-amount-filter').value = 'all';
-        renderConfigLeaderboard();
-        return first.concat([els['config-leaderboard'].innerHTML, els['config-leaderboard-badge'].textContent]);
+        setView({{ amount: 'all' }});
+        return first.concat([els['config-leaderboard'].innerHTML, els['config-leaderboard-badge'].textContent,
+                             els['config-amount-filter'].value]);
     }})()"""
-    html50, badge50, html_all, badge_all = _run(client, tmp_path, scenario)
+    html50, badge50, html_all, badge_all, mirror = _run(client, tmp_path, scenario)
     models = lambda h: re.findall(r'font-weight:600">([^<]+)</span>', h)  # noqa: E731
-    assert models(html50) == ["timsTOF HT"] and badge50 == "HELA · 50 ng · DIA · sorted by precursors"
-    assert models(html_all) == ["Orbitrap Fusion Lumos", "timsTOF HT"] and "all amounts" in badge_all
+    assert models(html50) == ["timsTOF HT"] and badge50 == "HeLa · DIA · 50 ng · sorted by precursors"
+    assert models(html_all) == ["Orbitrap Fusion Lumos", "timsTOF HT"] and badge_all == "HeLa · DIA · all amounts · sorted by precursors"
+    assert mirror == "all"
     # the primary metric is the column right after Instrument (phone order)
     heads = re.findall(r"<th[^>]*>([^<]+)<", html50)
-    assert heads[1:4] == ["Instrument", "Precursors ▼", "SPD"]
+    assert heads[1:4] == ["Instrument", "Precursors ▼", "LC and gradient"]
 
 
 @needs_node
@@ -364,7 +381,7 @@ def test_violins_one_per_spd_cohort_and_track(client, tmp_path):
         allData = {json.dumps(rows)};
         const out = {{}};
         for (const [tab, width] of [['all', 1280], ['dia', 1280], ['all', 200]]) {{
-            currentTab = tab; window.innerWidth = width; renderViolin();
+            view.mode = tab; window.innerWidth = width; renderViolin();
             const p = plots[plots.length - 1], v = p.traces.filter(t => t.type === 'violin');
             const ax = v[0].orientation === 'h' ? p.layout.yaxis : p.layout.xaxis;
             out[tab + width] = {{ n: v.length, orient: v[0].orientation, ticks: ax.ticktext,
@@ -374,12 +391,13 @@ def test_violins_one_per_spd_cohort_and_track(client, tmp_path):
     }})()"""
     got = _run(client, tmp_path, scenario)
     assert got["all1280"]["n"] == 3 and got["all1280"]["orient"] == "v"
-    assert [t for t in got["all1280"]["ticks"] if "DDA" in t] == ["timsTOF HT<br>100 SPD<br>DDA"]
-    assert got["all1280"]["note"].startswith("1 cohort with fewer than 5 runs (2 runs) has no violin")
-    assert got["dia1280"]["n"] == 2 and got["dia1280"]["ticks"][:2] == ["timsTOF HT<br>60 SPD", "timsTOF HT<br>100 SPD"]
+    # P2b: one violin per cohort of the page's cohort key, named by its Evosep method
+    assert [t for t in got["all1280"]["ticks"] if "DDA" in t] == ["timsTOF HT<br>Evosep<br>100 SPD<br>DDA"]
+    assert got["all1280"]["note"].startswith("1 cohort not ranked (2 runs: fewer than 5 runs")
+    assert got["dia1280"]["n"] == 2 and got["dia1280"]["ticks"][:2] == ["timsTOF HT<br>Evosep<br>60 SPD", "timsTOF HT<br>Evosep<br>100 SPD"]
     # under 70 px a violin (phones): horizontal, so the labels no longer clip; a vendor label row heads the group
     assert got["all200"]["orient"] == "h"
-    assert "timsTOF HT · 100 SPD · DDA" in got["all200"]["ticks"]
+    assert "timsTOF HT · Evosep 100 SPD · DDA" in got["all200"]["ticks"]
     assert any("~54k-precursor library" in t for t in got["all200"]["ticks"])
 
 
@@ -390,9 +408,9 @@ def test_depth_by_throughput_facets_per_model(client, tmp_path):
     rows += [_row(20 + i, instrument_model="timsTOF Pro 2") for i in range(2)]
     rows += [_dda(30 + i) for i in range(3)]
     scenario = f"""(() => {{
-        allData = {json.dumps(rows)}; currentTab = 'dia'; renderSpdDepth();
+        allData = {json.dumps(rows)}; view.mode = 'dia'; renderSpdDepth();
         const dia = plots[plots.length - 1];
-        currentTab = 'all'; renderSpdDepth();
+        view.mode = 'all'; renderSpdDepth();
         const all = plots[plots.length - 1];
         const heads = p => p.layout.annotations.map(a => a.text.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim());
         return [heads(dia), heads(all), dia.layout.yaxis.title];
@@ -409,7 +427,7 @@ def test_column_comparison_stays_visible_with_an_honest_empty_state(client, tmp_
     rows = [_row(i) for i in range(8)] + [_row(10 + i, column_vendor="PepSep", column_model="PepSep MAX 10cm") for i in range(3)]
     two = rows + [_row(20 + i, column_vendor="IonOpticks", column_model="Aurora 25cm") for i in range(3)]
     scenario = f"""(() => {{
-        currentTab = 'dia';
+        view.mode = 'dia';
         allData = {json.dumps(rows)}; renderColumnComparison();
         const one = {{ note: els['column-compare-note'].innerHTML, row: els['row-column-compare'].style.display,
                        traces: plots[plots.length - 1].traces }};
@@ -424,7 +442,7 @@ def test_column_comparison_stays_visible_with_an_honest_empty_state(client, tmp_
     assert sorted(t["name"] for t in two_["traces"]) == ["IonOpticks Aurora 25cm", "PepSep MAX 10cm"]
     for t in two_["traces"]:
         assert t["text"] == ["3 runs · 1 lab<br>Sep 2026"]          # runs, labs and date span on each bar
-        assert t["x"] == ["timsTOF HT · DIA<br>100 SPD · 50 ng"]
+        assert t["x"] == ["timsTOF HT · DIA<br>Evosep 100 SPD · 50 ng"]   # P2b: the gradient's name (B2)
     assert "Unknown" not in json.dumps(one) + json.dumps(two_)
 
 
@@ -451,7 +469,7 @@ def test_depth_by_amount_states_the_50_ng_share_not_saturation(client, tmp_path)
     html = _page(client)
     assert "Saturation typically" not in html and 'id="amount-share"' in html
     rows = [_row(i) for i in range(9)] + [_row(20, amount_ng=200)]
-    got = _run(client, tmp_path, f"allData = {json.dumps(rows)}; currentTab = 'dia'; renderAmountDepth(); els['amount-share'].textContent")
+    got = _run(client, tmp_path, f"allData = {json.dumps(rows)}; view.mode = 'dia'; renderAmountDepth(); els['amount-share'].textContent")
     assert got.startswith("90% of the 10 runs in view are at 50 ng")
 
 
@@ -532,7 +550,7 @@ def test_a_cohort_split_across_columns_keeps_its_own_card(client, tmp_path):
     html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; renderRefRanges(); els['ref-ranges-container'].innerHTML")
     cards = html.split('<article class="rc">')[1:]
     assert len(cards) == 1 and "All columns combined" in cards[0] and "6 runs · 1 lab" in cards[0]
-    assert "Show 2 sparse cohorts" in html
+    assert "Show 2 not-ranked cohorts" in html
 
 
 @needs_node
@@ -542,7 +560,7 @@ def test_column_colours_do_not_depend_on_the_tab(client, tmp_path):
     rows += [_dda(20 + i, column_vendor="IonOpticks", column_model="Aurora 25cm") for i in range(3)]
     scenario = f"""(() => {{
         allDataRaw = allData = {json.dumps(rows)};
-        const colours = (tab) => {{ currentTab = tab; renderColumnComparison();
+        const colours = (tab) => {{ view.mode = tab; renderColumnComparison();
             return Object.fromEntries(plots[plots.length - 1].traces.map(t => [t.name, t.marker.color])); }};
         return [colours('dia'), colours('dda')];
     }})()"""
@@ -556,7 +574,7 @@ def test_edge_case_wording(client, tmp_path):
     rows = [_dda(i) for i in range(3)]
     labelled = [_row(i, column_vendor="PepSep", column_model="PepSep MAX 10cm") for i in range(3)]
     scenario = f"""(() => {{
-        currentTab = 'dia'; allData = {json.dumps(rows)}; renderColumnComparison();
+        view.mode = 'dia'; allData = {json.dumps(rows)}; renderColumnComparison();
         const ddaOnly = els['column-compare-note'].innerHTML;
         allData = {json.dumps(labelled)}; renderColumnComparison();
         const allLabelled = els['column-compare-note'].innerHTML;
@@ -598,29 +616,33 @@ def test_undated_rows_do_not_set_the_latest_run(client, tmp_path):
 @needs_node
 def test_family_filter_follows_the_qc_standard_and_keeps_unticks(client, tmp_path):
     """Switching to Yeast used to leave a yeast-only family unticked, so its
-    cards read "No data yet"."""
+    cards read "No data yet".
+
+    P2b: the family checkboxes are the filter bar's Instrument. Picking one
+    narrows the cards to it; a QC standard without that instrument falls back
+    to every instrument instead of showing nothing."""
     hela = [_row(i) for i in range(6)] + [_row(10 + i, instrument_family="Lumos", instrument_model="Orbitrap Fusion Lumos") for i in range(6)]
     yeast = [_row(20 + i, instrument_family="Astral", instrument_model="Orbitrap Astral", sample_type="yeast") for i in range(6)]
     scenario = f"""(() => {{
-        allData = {json.dumps(hela)}; renderRefRanges();
-        toggleRefFilter('families', 'Lumos');                       // the reader unticks Lumos
-        const unticked = els['ref-ranges-container'].innerHTML;
-        allData = {json.dumps(yeast)}; renderRefRanges();          // QC standard: yeast
-        const yeastHtml = els['ref-ranges-container'].innerHTML;
-        allData = {json.dumps(hela)}; renderRefRanges();           // back to HeLa
-        return [unticked, yeastHtml, els['ref-ranges-container'].innerHTML, [...refFilters.families]];
+        setSubmissions({json.dumps(hela + yeast)}); renderRefRanges();
+        setView({{ model: 'timsTOF HT' }});                          // the reader picks timsTOF HT
+        const picked = els['ref-ranges-container'].innerHTML;
+        setView({{ sample: 'yeast' }});                              // QC standard: yeast
+        const yeastHtml = els['ref-ranges-container'].innerHTML, yeastModel = view.model;
+        setView({{ sample: 'hela' }});                               // back to HeLa
+        return [picked, yeastHtml, yeastModel, els['ref-ranges-container'].innerHTML];
     }})()"""
-    unticked, yeast_html, back, families = _run(client, tmp_path, scenario)
-    assert "Orbitrap Fusion Lumos" not in unticked and "timsTOF HT" in unticked
-    assert "Orbitrap Astral" in yeast_html and "No data yet" not in yeast_html
-    assert "Orbitrap Fusion Lumos" not in back and families == ["timsTOF"]   # the untick survives
+    picked, yeast_html, yeast_model, back = _run(client, tmp_path, scenario)
+    assert "Orbitrap Fusion Lumos" not in picked and "timsTOF HT" in picked
+    assert "Orbitrap Astral" in yeast_html and "No data yet" not in yeast_html and yeast_model == ""
+    assert "Orbitrap Fusion Lumos" in back and "timsTOF HT" in back
 
 
 @needs_node
 def test_horizontal_violins_keep_a_short_value_title(client, tmp_path):
     rows = [_row(i) for i in range(6)] + [_row(10 + i, spd=60, cohort_id="timsTOF_60spd_low") for i in range(6)]
     rows += [_dda(20 + i) for i in range(5)]
-    scenario = f"""(() => {{ allData = {json.dumps(rows)}; currentTab = 'all';
+    scenario = f"""(() => {{ allData = {json.dumps(rows)}; view.mode = 'all';
         window.innerWidth = 200; renderViolin(); const h = plots[plots.length - 1].layout.xaxis.title;
         window.innerWidth = 1280; renderViolin(); const v = plots[plots.length - 1].layout.yaxis.title;
         return [h, v]; }})()"""
@@ -631,9 +653,10 @@ def test_explorer_intro_and_dead_css(client):
     html = _page(client)
     intro = _section(html, "explore")
     intro = re.sub(r"\s+", " ", intro[:intro.index('<div class="chart-row">')])
-    assert "Every chart here follows the QC standard at the top of the page" in intro
-    assert "Throughput vs. Quantitation Quality shows every run, and the TIC overlay has its own acquisition-mode menu" in intro
-    assert "each says in its badge what it shows" not in intro
+    # P2b: every chart follows the filter bar and says so in its badge
+    assert "Every chart here follows the filter bar at the top of the page and says in its badge what it shows" in intro
+    assert "The TIC overlay keeps its own SPD, LC and acquisition-mode menus and follows only the QC standard" in intro
+    assert "Throughput vs. Quantitation Quality shows every run" not in intro
     css = html[:html.index("</style>")]
     for dead in (".ref-card", ".ref-row", ".ref-grid", ".ref-metric", ".ref-range", ".ref-n", ".ref-vals"):
         assert dead not in css, dead

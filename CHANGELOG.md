@@ -11,6 +11,104 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.13] — 2026-09-30
+
+Community site redesign, phase P2b ("one cohort key, one filter bar, lab
+trend"), in the relay (`hf_space/app.py`, Space **1.4.0**). Approved by Brett
+2026-09-29 (mockup v3.1); spec
+`docs/superpowers/specs/2026-09-29-community-redesign-and-precursor-lookup-design.md`
+§A.1 item 3, §A.3 B2 and B3, §A.6 P2. No STAN client behaviour changes; the
+bump carries the relay release. No schema change and no stored row changes.
+Every chart §A.2 keeps is still on the page. The TIC overlay (its code and
+its card, with its own SPD, LC and acquisition-mode menus) and PEG Watch
+(section, CSS and script) are byte-identical to 1.3.0, pinned by hash in the
+tests. The P2a read-time rules are unchanged: the D8 dedupe (a usable copy,
+then the lab with more runs, then the earliest submitted, inheriting only
+`column_vendor`/`column_model`), stored amounts above 5,000 ng held back, and
+`colKey()` mapping "Unknown" to ''.
+
+### Added
+- **Sticky filter bar (§A.1 item 3, B2).** One state for every panel that
+  ranks or compares: QC standard · DIA / DDA / Both · instrument model ·
+  gradient · amount · column, with the runs in view and a Reset button. It
+  sits under the stats row and stays at the top of the screen while the page
+  scrolls. At phone width it folds to a one-line summary ("HeLa · DIA · 50
+  ng · 2,975 runs") and a Filters button that opens the controls. Every
+  option shows how many runs it would hold. The menus cascade: instruments
+  follow the QC standard, mode and amount; gradients also follow the
+  instrument; columns follow everything else; picking a value resets a later
+  field it rules out. The root's `scroll-padding-top` is the bar's height,
+  so `#join`, `#where`, `#explore`, `#methods` and `#peg` land just below
+  it. Nothing is persisted: a reload starts at HeLa · DIA · 50 ng, and the
+  page makes no browser-storage call.
+- **Every panel says what it follows.** A badge on the reference ranges, Best
+  Configurations, each Explorer chart, the four ID-free charts, the lab trend
+  and the table ("HeLa · DIA · timsTOF HT · 50 ng"). A panel that leaves a
+  field out says so: Depth by Amount Loaded shows "all amounts", Depth by
+  Throughput and Throughput vs. Quantitation Quality "all gradients", Column
+  Comparison "all columns". A filter change re-renders only the panels that
+  follow the changed field.
+- **Submissions table: Cohort column.** Each run's percentile is within its
+  cohort, named in the new column ("Evosep 60 SPD · 50 ng (n=599)"); a
+  cohort that is not ranked shows a dash and the reason. The CSV gains a
+  `cohort` column.
+
+### Changed
+- **One cohort key (B2)** for the reference cards, Best Configurations, the
+  violins, Column Comparison, the lab trend and the table percentiles:
+  QC standard × instrument model × mode × gradient × amount bucket, from
+  `lc_class()`, `grad_label()` and `abucket()` in `build_mockup.py`. Evosep
+  runs are named by their method ("Evosep 60 SPD"); an Evosep run at another
+  SPD is "Evosep, 30 min run (SPD 46 unverified)"; nanoLC runs by the stored
+  `gradient_length_min` and the derived SPD ("44 min run (~38 SPD)"); a run
+  with no LC at an Evosep-method SPD is "60 SPD, LC not recorded", never
+  inferred. Amount buckets are ≤25, 50 (26–75), 100–250 and >250 ng. The
+  card titles read the gradient instead of P2a's "gradients seen: 46–60 SPD"
+  over a throughput tier.
+- **Ranked cohorts.** A cohort is ranked with 5 or more runs and its LC known
+  (evosep or nanoLC). Unranked cohorts are folded under their instrument on
+  the reference cards with the reason, and left out of Best Configurations
+  (whose minimum rises from 3 to 5 runs), the violins and the table
+  percentiles, each of which says how many it left out.
+- **The per-chart amount selects and the DIA / DDA / All tabs are views of
+  the bar.** The three Explorer amount selects mirror the bar's amount and
+  set it; the tabs above the table set the bar's mode. The instrument-family
+  and mode checkboxes above the reference cards are gone (the bar's
+  Instrument and Mode), as are the lab trend's own amount and instrument
+  selects.
+- **Lab trend vs. reference (B3)**, the rebuilt "Your Lab vs. Community",
+  still one lab's runs over time against the community. It opens on the lab
+  with the most recent runs, in its busiest recent cohort, and lists only
+  cohorts in the bar's view where the lab has 5 or more runs. The reference
+  is the same cohort **without** the selected lab, and never "Anonymous Lab"
+  (which may be the lab itself), as grey 10th–90th and 25th–75th percentile
+  bands, replacing mean ± 1/2/3 σ over the whole instrument family (1,008 of
+  whose 1,026 runs were the lab's own for Clogged PeakTail on Exploris). The
+  baseline is fixed from the lab's own first 30 runs in the cohort (median ±
+  3 MAD, drawn from 20), later runs outside it are ringed, and a white line
+  follows the median of the last 15. "No other lab in this cohort yet" when
+  none has 5 runs in the window. Metrics: precursors or PSMs, peptides, MS1
+  mass error, MS1 signal (proteins dropped, per B3), with readable axis
+  titles; window 12 months or all. Only lab pseudonyms appear, escaped.
+- ID-free charts under DDA say "Not measured for DDA runs" (DIA-NN reports
+  those metrics; Sage does not).
+
+### Tests
+- `tests/test_relay_community_p2b.py`: SPACE_VERSION 1.4.0; the bar's markup,
+  sticky CSS, phone fold and scroll padding; the amount selects and tabs as
+  views; a badge on every panel; TIC overlay and PEG Watch byte-identical to
+  1.3.0 (sha256); no browser storage, and the page loads with storage that
+  throws; and in node: the B2 key, the filter state driving each panel, which
+  panels re-render for each field, the facet cascade, the bar's counts, tabs
+  and 400 px summary, escaping of hostile names in the bar, badges and lab
+  trend, the lab trend's cohort matching and reference, no file names, and 8
+  filter changes over 3,400 rows.
+- `tests/test_relay_community_p1.py`, `tests/test_relay_community_p2a.py`,
+  `tests/test_relay_peg.py`: version 1.4.0; the fixture rows record an LC and
+  run length; cohorts of 5; `view.mode` instead of `currentTab`; the B2 card
+  titles, violin ticks and column labels; the rebuilt lab trend; the family
+  checkbox test is now the bar's instrument filter.
+
 ## [1.2.12] — 2026-09-30
 
 Community site redesign, phase P2a ("layout and cards"), in the relay

@@ -44,9 +44,9 @@ SECRET_PRINT = "feedfacecafebeef"
 # ── server: SPACE_VERSION ────────────────────────────────────────────
 
 def test_space_version(client):
-    # P1 shipped as 1.2.2; P2a (tests/test_relay_community_p2a.py) is 1.3.0.
-    assert client.get("/api/version").json()["version"] == "1.3.0"
-    assert "community site v1.3.0" in _page(client)
+    # P1 shipped as 1.2.2, P2a as 1.3.0; P2b (tests/test_relay_community_p2b.py) is 1.4.0.
+    assert client.get("/api/version").json()["version"] == "1.4.0"
+    assert "community site v1.4.0" in _page(client)
 
 
 # ── server: D4, no file names in public responses ────────────────────
@@ -334,11 +334,15 @@ def _run(client, tmp_path: Path, scenario: str):
 
 
 def _row(i: int, **over) -> dict:
-    """A page row as /api/leaderboard serves it, plus a file name the page must never show."""
+    """A page row as /api/leaderboard serves it, plus a file name the page must never show.
+
+    P2b: an Evosep run (lc_system, gradient_length_min), so it falls in a
+    ranked cohort of the page's one cohort key (B2) once there are 5 runs."""
     row = {
         "submission_id": f"s{i}", "display_name": "Clogged PeakTail",
         "instrument_family": "timsTOF", "instrument_model": "timsTOF HT",
         "acquisition_mode": "diapasef", "spd": 100, "amount_ng": 50, "cohort_id": "timsTOF_100spd_low",
+        "lc_system": "evosep", "gradient_length_min": 11,
         "n_precursors": 40000 + 100 * i, "n_peptides": 35000 + 50 * i, "n_proteins": 5000, "n_psms": 0,
         "ips_score": 55, "median_points_across_peak": 9.0, "median_mass_acc_ms1_ppm": 1.1,
         "ms1_signal": 1e12, "dynamic_range_log10": 3.5, "column_vendor": "Unknown", "column_model": "Unknown",
@@ -367,7 +371,8 @@ def test_reference_cards_keep_dda_out_of_dia_cohorts(client, tmp_path):
     P2a markup: cards are <article class="rc">, the primary metric is the
     large median, and a DIA card never carries PSMs."""
     rows = [_row(i) for i in range(12)] + [_dda(100 + i) for i in range(5)]
-    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; renderRefRanges(); els['ref-ranges-container'].innerHTML")
+    # P2b: the filter bar's mode is "Both", so the DDA card is in view too.
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; view.mode = 'all'; renderRefRanges(); els['ref-ranges-container'].innerHTML")
     cards = html.split('<article class="rc">')[1:]
     assert len(cards) == 2
     dia, dda = cards
@@ -391,20 +396,23 @@ def test_two_labs_lose_the_single_lab_tag(client, tmp_path):
 
 
 def _config_rows() -> list[dict]:
+    """P2b: 5 runs a cohort, and the nanoLC ones say so, so each is ranked (B2)."""
     rows = []
     # DDA: Lumos 15 SPD, two labs, lowest PSMs; timsTOF HT 30 SPD, two labs, most PSMs;
     # Exploris 60 SPD, one lab, middle.
-    for i, (psms, lab) in enumerate([(20000, "A"), (21000, "B"), (22000, "A")]):
+    for i, (psms, lab) in enumerate([(20000, "A"), (21000, "B"), (22000, "A"), (20500, "B"), (21500, "A")]):
         rows.append(_dda(i, instrument_model="Orbitrap Fusion Lumos", instrument_family="Lumos", spd=15,
+                         lc_system="custom", gradient_length_min=77,
                          cohort_id="Lumos_15spd_low", n_psms=psms, n_peptides=30000, display_name=lab))
-    for i, (psms, lab) in enumerate([(50000, "A"), (52000, "B"), (51000, "A")]):
+    for i, (psms, lab) in enumerate([(50000, "A"), (52000, "B"), (51000, "A"), (50500, "B"), (51500, "A")]):
         rows.append(_dda(10 + i, spd=30, cohort_id="timsTOF_30spd_low", n_psms=psms, n_peptides=10000,
                          display_name=lab))
-    for i, psms in enumerate([30000, 31000, 32000]):
+    for i, psms in enumerate([30000, 31000, 32000, 30500, 31500]):
         rows.append(_dda(20 + i, instrument_model="Orbitrap Exploris 480", instrument_family="Exploris",
-                         spd=60, cohort_id="Exploris_60spd_low", n_psms=psms, n_peptides=50000))
+                         spd=60, lc_system="custom", gradient_length_min=19,
+                         cohort_id="Exploris_60spd_low", n_psms=psms, n_peptides=50000))
     # DIA, one lab
-    rows += [_row(30 + i) for i in range(4)]
+    rows += [_row(30 + i) for i in range(5)]
     return rows
 
 
@@ -413,11 +421,10 @@ def test_best_configurations_under_dda_rank_by_psms(client, tmp_path):
     """REVIEW D1 / bug 3: DDA stayed "sorted by precursors" and badged 24,636 PSMs over 52,085."""
     scenario = f"""(() => {{
         allData = {json.dumps(_config_rows())};
-        currentTab = 'dia';
+        view.mode = 'dia';
         sortConfigLeaderboard('peptides', 'DIA');         // a reader re-sorts the DIA table ...
         sortConfigLeaderboard('peptides', 'DDA');         // ... and the DDA one
-        event = {{ target: document.getElementById('tab-dda') }};  // showTab() reads window.event
-        showTab('dda');                                   // the tab switch resets both
+        showTab('dda');                                   // the tab switch (the bar's mode) resets both
         const html = els['config-leaderboard'].innerHTML;
         return {{ html, badge: els['config-leaderboard-badge'].textContent,
                   sort: JSON.parse(JSON.stringify(configSort)) }};
@@ -425,7 +432,7 @@ def test_best_configurations_under_dda_rank_by_psms(client, tmp_path):
     got = _run(client, tmp_path, scenario)
     html = got["html"]
     assert got["sort"] == {"DIA": {"col": "precursors", "asc": False}, "DDA": {"col": "psms", "asc": False}}
-    assert got["badge"] == "HELA · 50 ng · DDA · sorted by psms"   # P2a: amount select (B6)
+    assert got["badge"] == "HeLa · DDA · 50 ng · sorted by psms"   # P2b: the filter bar's view
     assert ">Precursors" not in html and ">PSMs ▼" in html and ">Labs" in html
     order = re.findall(r'font-weight:600">([^<]+)</span>', html)
     assert order == ["timsTOF HT", "Orbitrap Exploris 480", "Orbitrap Fusion Lumos"]
@@ -438,13 +445,14 @@ def test_best_configurations_under_dda_rank_by_psms(client, tmp_path):
 @needs_node
 def test_best_configurations_one_lab_row_gets_no_best_badge(client, tmp_path):
     rows = [r for r in _config_rows() if r["instrument_family"] == "Exploris"]
-    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; currentTab = 'dda'; renderConfigLeaderboard(); els['config-leaderboard'].innerHTML")
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; view.mode = 'dda'; renderConfigLeaderboard(); els['config-leaderboard'].innerHTML")
+    assert "Orbitrap Exploris 480" in html
     assert "best depth" not in html and "best accuracy" not in html
 
 
 @needs_node
 def test_best_configurations_under_all_shows_two_tables(client, tmp_path):
-    html = _run(client, tmp_path, f"allData = {json.dumps(_config_rows())}; currentTab = 'all'; renderConfigLeaderboard(); els['config-leaderboard'].innerHTML")
+    html = _run(client, tmp_path, f"allData = {json.dumps(_config_rows())}; view.mode = 'all'; renderConfigLeaderboard(); els['config-leaderboard'].innerHTML")
     assert html.count("<table") == 2
     dia, dda = html.split("<table")[1:]
     assert "DIA · ranked by precursors" in html and "DDA · ranked by psms" in html
@@ -454,13 +462,14 @@ def test_best_configurations_under_all_shows_two_tables(client, tmp_path):
 
 @needs_node
 def test_submissions_table_has_no_ips_and_ranks_each_track_on_its_own(client, tmp_path):
-    rows = [_row(i) for i in range(4)] + [_dda(10 + i, cohort_id="timsTOF_100spd_low") for i in range(4)]
-    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; currentTab = 'all'; renderTable(); els['table-container'].innerHTML")
+    rows = [_row(i) for i in range(5)] + [_dda(10 + i, cohort_id="timsTOF_100spd_low") for i in range(5)]
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; view.mode = 'all'; renderTable(); els['table-container'].innerHTML")
     assert ">IPS<" not in html and "IPS " not in html
     assert "Precursors / PSMs" in html
     # a DDA row shows its PSMs, not 0 precursors, and ranks among DDA rows only
+    # (P2b: within its cohort of the page's cohort key, 5 runs each)
     assert "<strong>31,300</strong>" in html and "<strong>0</strong>" not in html
-    assert "100th" not in html and "75th" in html
+    assert "100th" not in html and "80th" in html
 
 
 @needs_node
@@ -469,8 +478,7 @@ def test_no_file_name_in_any_chart_hover(client, tmp_path):
     scenario = f"""(() => {{
         allDataRaw = {json.dumps(rows)}; applyFilters();
         renderCharts();
-        document.getElementById('lab-select').value = 'Clogged PeakTail';
-        renderLabVsCommunity();
+        pickTrend('lab', 'Clogged PeakTail');                          // P2b: the lab trend (B3)
         renderLeveyJennings(allData, 'n_precursors', 'timsTOF HT');   // not on the page, but fixed too
         return plots;
     }})()"""
@@ -486,24 +494,26 @@ def test_no_file_name_in_any_chart_hover(client, tmp_path):
 
 @needs_node
 def test_lab_trend_clears_a_stale_empty_state(client, tmp_path):
-    """Bug 10: E. coli -> HeLa left "Not enough community data" under the drawn plot."""
+    """Bug 10: E. coli -> HeLa left "Not enough community data" under the drawn plot.
+
+    P2b rebuilt the panel (B3); the empty state it clears is its own."""
     rows = [_row(i) for i in range(12)]
     scenario = f"""(() => {{
-        const sel = document.getElementById('lab-select');
-        allData = []; renderLabVsCommunity();
-        allData = {json.dumps([r for r in rows[:1]])}; sel.value = 'Clogged PeakTail';
-        renderLabVsCommunity();
+        allData = []; renderLabTrend();
+        allData = {json.dumps([r for r in rows[:1]])};
+        renderLabTrend();
         const before = els['chart-lab-trend'].innerHTML;
-        allData = {json.dumps(rows)}; sel.value = 'Clogged PeakTail';
-        renderLabVsCommunity();
+        allData = {json.dumps(rows)};
+        renderLabTrend();
         return {{ before, after: els['chart-lab-trend'].innerHTML,
                   plotted: plots.filter(p => p.id === 'chart-lab-trend').length,
-                  note: plots.length ? plots[plots.length - 1].layout.annotations[0].text : '' }};
+                  note: els['lab-trend-note'].innerHTML, sum: els['lab-trend-sum'].innerHTML }};
     }})()"""
     got = _run(client, tmp_path, scenario)
-    assert "Not enough community data" in got["before"]
+    assert "No lab has 5 or more runs in a ranked cohort in view" in got["before"]
     assert got["after"] == "" and got["plotted"] == 1
-    assert "12 runs · 1 lab" in got["note"]
+    assert "12 of the 20 needed" in got["note"] and "No other lab in this cohort yet" in got["note"]
+    assert "the cohort holds 12 runs · 1 lab" in got["sum"]
 
 
 def _tic(i: int, spd: int, idion: bool = False, **over) -> dict:
@@ -610,9 +620,9 @@ def test_best_configurations_default_name_is_not_a_second_lab(client, tmp_path):
     for i in range(6):
         for name in ("Clogged PeakTail", "Anonymous Lab"):
             rows.append(_row(len(rows), display_name=name, instrument_family="Exploris",
-                             instrument_model="Orbitrap Exploris 480", spd=38,
-                             median_mass_acc_ms1_ppm=0.4 + 0.01 * i))
-    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; currentTab = 'dia'; renderConfigLeaderboard(); els['config-leaderboard'].innerHTML")
+                             instrument_model="Orbitrap Exploris 480", spd=38, lc_system="custom",
+                             gradient_length_min=44, median_mass_acc_ms1_ppm=0.4 + 0.01 * i))
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; view.mode = 'dia'; renderConfigLeaderboard(); els['config-leaderboard'].innerHTML")
     assert "single-lab reference" in html
     assert "best depth" not in html and "best accuracy" not in html
 
@@ -674,7 +684,7 @@ def test_update_owner_check(relay, monkeypatch):
 def test_submissions_table_escapes_submitter_strings(client, tmp_path):
     rows = [_row(1, instrument_model='<img src=x onerror=alert(1)>',
                  column_vendor='<b>v</b>', column_model='<script>x</script>', spd='<i>60</i>')]
-    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; currentTab = 'all'; renderTable(); els['table-container'].innerHTML")
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; view.mode = 'all'; renderTable(); els['table-container'].innerHTML")
     assert "<img" not in html and "<script>" not in html and "<i>60" not in html
     assert "&lt;img" in html
 
@@ -682,7 +692,7 @@ def test_submissions_table_escapes_submitter_strings(client, tmp_path):
 @needs_node
 def test_all_tab_never_ranks_psms_against_precursors(client, tmp_path):
     rows = [_row(i) for i in range(3)] + [_dda(10 + i, n_psms=90000 + i) for i in range(3)]
-    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; currentTab = 'all'; tableSortCol = null; renderTable(); els['table-container'].innerHTML")
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; view.mode = 'all'; tableSortCol = null; renderTable(); els['table-container'].innerHTML")
     body = html.split("<tbody>")[1]
     first_dda = body.find("badge-dda")
     last_dia = body.rfind("badge-dia")
