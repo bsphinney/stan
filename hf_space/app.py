@@ -3109,8 +3109,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
         .disclose::before { content: 'i'; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--ucd-gold); color: var(--ucd-gold); display: grid; place-items: center; font-weight: 800; font-size: 0.75rem; font-style: italic; margin-top: 1px; }
         /* A cohort whose runs all come from one lab (D2). */
         .tag1 { display: inline-block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 999px; border: 1px dashed var(--text-secondary); color: var(--text-secondary); white-space: nowrap; vertical-align: 1px; }
-        .ref-n { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; display: flex; flex-wrap: wrap; gap: 0.3rem 0.6rem; align-items: center; }
-        .ref-vals { font-size: 0.78rem; text-align: right; max-width: 65%; overflow-wrap: anywhere; }
 
         /* Stats */
         .stats-row { display: flex; gap: 1.5rem; justify-content: center; flex-wrap: wrap; margin-bottom: 2.5rem; }
@@ -3129,15 +3127,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
         .chart-card h3 { font-size: 0.95rem; color: var(--ucd-gold-dark); margin-bottom: 0.25rem; padding-left: 0.5rem; }
         .chart-card .chart-desc { font-size: 0.8rem; color: var(--text-muted); padding-left: 0.5rem; margin-bottom: 0.5rem; }
         .chart-full { grid-column: 1 / -1; }
-
-        /* Reference ranges */
-        .ref-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; margin-top: 1rem; }
-        .ref-card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 1.25rem; }
-        .ref-card h4 { color: var(--ucd-gold-dark); font-size: 0.9rem; margin-bottom: 0.75rem; }
-        .ref-row { display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid var(--table-border); font-size: 0.85rem; }
-        .ref-row:last-child { border-bottom: none; }
-        .ref-metric { color: var(--text-secondary); }
-        .ref-range { color: var(--text-primary); font-weight: 500; }
 
         /* Info cards */
         .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
@@ -3484,10 +3473,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <h3>Three steps</h3>
             <ol class="steps">
                 <li><div><b>Install STAN and inject Pierce HeLa as your QC standard.</b>Thermo 88328 (20&nbsp;&micro;g) or 88329 (5 &times; 20&nbsp;&micro;g), 50&nbsp;ng per injection. <a href="https://github.com/bsphinney/stan/blob/main/INSTALL_FOR_AGENTS.md">Install guide</a></div></li>
-                <li><div><b>Claim your lab name.</b>Run <code>stan community-claim</code> (STAN 1.2 or later) and enter the 6-digit code it emails you (from noreply@stan-proteomics.org; check the spam folder). Do this first: an unclaimed name can be taken by anyone.</div></li>
-                <li><div><b>Turn sharing on and send.</b>Set <code>community_submit: true</code> in <code>~/.stan/community.yml</code>, then run <code>stan submit-all</code> to send the runs you already have (or press Sync on the dashboard's Community tab, which does both). Schedule <code>stan submit-all</code> to keep new runs flowing.</div></li>
+                <li><div><b>Name your lab, then claim the name.</b>Set <code>display_name</code> in <code>community.yml</code> (<code>~/.stan/community.yml</code> on macOS and Linux, <code>%USERPROFILE%\STAN\community.yml</code> on Windows), or run <code>stan setup</code>; <code>stan init</code> leaves the name empty, and <code>stan community-claim</code> refuses to run without one. Then run <code>stan community-claim</code> (STAN 1.2 or later) and enter the 6-digit code it emails you (from noreply@stan-proteomics.org; check the spam folder). Do this first: an unclaimed name can be taken by anyone.</div></li>
+                <li><div><b>Turn sharing on and send.</b>Set <code>community_submit: true</code> in the same <code>community.yml</code>, then run <code>stan submit-all</code> to send the runs you already have (or press Sync on the dashboard's Community tab, which does both). Schedule <code>stan submit-all</code> to keep new runs flowing.</div></li>
             </ol>
-            <p class="when">Your runs appear after the <b>nightly rebuild at 04:00 UTC</b>. They are searched with the pinned engines and frozen libraries described under <a href="#methods">Methods</a>, so they compare directly with the runs already here.</p>
+            <p class="when">Your runs appear after the <b>nightly rebuild at 04:00 UTC</b>. STAN searches them with the pinned engines and frozen parameters described under <a href="#methods">Methods</a>. Comparisons with the runs already here are close but not yet exact: nothing verifies which library a run was searched against, and UC Davis's timsTOF HT and Exploris 480 cohorts used subset libraries until a planned re-search (see <a href="#methods">Methods</a>).</p>
         </div>
         <div class="card" id="join-fields">
             <h3>What leaves your lab, and what is published</h3>
@@ -3505,7 +3494,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
                     <li>A binned MS1 total-ion chromatogram (retention-time bins and intensities)</li>
                     <li>Missed-cleavage rate, median CV and fragments per precursor, when measured</li>
                     <li>IPS, community score, cohort ID, library coverage and review flags</li>
-                    <li>STAN, DIA-NN and schema versions; FASTA and library checksums</li>
+                    <li>STAN, DIA-NN and schema versions; the frozen FASTA and library checksums STAN stamps on the run (not hashes of the files searched)</li>
                 </ul></div>
                 <div class="kept"><h4>Sent, but not shown on this site</h4><ul>
                     <li>The file name<small>Used to catch duplicate submissions and to let you update a run. This page and its API never show it, but the stored row, name included, is also written to the public Hugging Face dataset, whose history keeps every name sent so far (removing it there is pending). Keep patient, customer and project identifiers out of QC file names, or set <code>STAN_STRIP_RUN_NAME=1</code> to send none.</small></li>
@@ -3526,7 +3515,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <!-- How the numbers are made (D7 + D3). -->
 <div class="section" id="methods">
     <h2>How the numbers are made</h2>
-    <p class="description">Every run on this page is searched with pinned engine versions against one frozen FASTA and, for DIA, a frozen per-vendor HeLa library. This is what that means in practice, and where it does not hold yet.</p>
+    <p class="description">Runs on this page are searched with pinned engine versions and frozen parameters, against one frozen FASTA and, for DIA, a per-vendor HeLa library. This is what that means in practice, and where it does not hold yet.</p>
     <div class="grid2">
         <div class="card span-all">
             <h3>Search: one frozen parameter set per track (SEARCH_PARAMS_VERSION v1.0.0)</h3>
@@ -3536,7 +3525,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
                     <dt>Digest</dt><dd>Trypsin (after K or R), 1 missed cleavage, peptides 7&ndash;30 residues</dd>
                     <dt>Charge</dt><dd>Precursor charge 2&ndash;4</dd>
                     <dt>FDR</dt><dd>Run-level precursor q-value &le; 0.01</dd>
-                    <dt>Version</dt><dd>Pinned 2.3.0, the version the libraries were built with. The relay accepts any DIA-NN 2.3.x and refuses other versions; 2.3.x runs with matching FASTA and library checksums are marked assets-verified (2.3.2 gave 1.007&times; the 2.3.0 count on the same timsTOF raws).</dd>
+                    <dt>Version</dt><dd>Pinned 2.3.0, the version the libraries were built with. STAN submits only DIA-NN 2.3.x runs, and the relay refuses a submission that states any other version; one that states no version is not checked. 2.3.2 gave 1.007&times; the 2.3.0 count on the same timsTOF raws.</dd>
                 </dl></div>
                 <div><h4>DDA &middot; Sage 0.14.x</h4><dl class="kv">
                     <dt>Search</dt><dd>Database search against the frozen FASTA (no library)</dd>
@@ -3572,8 +3561,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
                 <dt>Orbitrap</dt><dd>~170,000 precursors &middot; <a class="md5" href="https://huggingface.co/datasets/brettsp/stan-benchmark/blob/main/community_library/hela_orbitrap_202604.parquet">hela_orbitrap_202604.parquet</a><br><span class="md5">md5 ac84e40f5b2f23e1286f28a7baeccec2</span></dd>
                 <dt>FASTA</dt><dd>UniProt human + contaminants &middot; <a class="md5" href="https://huggingface.co/datasets/brettsp/stan-benchmark/blob/main/community_fasta/human_hela_202604.fasta">human_hela_202604.fasta</a><br><span class="md5">md5 8de1d9bd0a052b175f88f66f82500d92</span></dd>
             </dl>
-            <p class="status"><b>Not yet true for UC Davis's timsTOF HT and Exploris 480 cohorts.</b> Those runs were searched against subsets of these libraries built from the lab's own runs (about 51,000 and 53,000 precursors), which no outside lab has; on the same timsTOF raws the full library gives about 1.034&times; the subset's count. A re-search of those cohorts against the full frozen libraries is planned (decision 11). The Fusion Lumos cohorts already use the full Orbitrap library.</p>
-            <p class="caveat" id="lib-caveat">Counts compare within a vendor, not across: timsTOF and Orbitrap runs search different libraries, and above 90% library coverage the library rather than the instrument caps the count.</p>
+            <p class="status"><b>The checksums on a row do not prove what was searched.</b> For every DIA-NN 2.3.x run, STAN stamps the frozen checksums above onto the submission; it does not hash the FASTA and library the search actually used, and a row is marked assets-verified whenever a checksum is present. Nothing yet checks which library a lab searched: an install that has built its own <code>instrument_library.parquet</code> is searched against that automatically.</p>
+            <p class="status"><b>Not yet true for UC Davis's timsTOF HT and Exploris 480 cohorts.</b> Those runs were searched against subsets of these libraries built from the lab's own runs (about 51,000 and 53,000 precursors), which no outside lab has, although their rows carry the full library's checksum. On the same timsTOF raws the full library gives about 1.034&times; the subset's count. A re-search of those cohorts against the full frozen libraries is planned (decision 11). The Fusion Lumos cohorts already use the full Orbitrap library.</p>
+            <p class="caveat" id="lib-caveat">Counts compare within a vendor, not across: timsTOF and Orbitrap runs search different libraries, and above 90% library coverage the library rather than the instrument caps the count. Coverage divides by the full library's size, so for runs searched against a subset it reads slightly low.</p>
         </div>
         <div class="card" id="ips-card">
             <h3>IPS: Instrument Performance Score (0-100)</h3>
@@ -3621,9 +3611,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="section" id="explore">
     <h2>Instrument Health Explorer</h2>
     <p class="description">
-        Each point is one QC run. The charts follow the QC standard at the top of the page and the DIA / DDA tab
-        above the submissions table, and each says in its badge what it shows. Counts compare fairly within a
-        vendor: timsTOF and Orbitrap runs search different libraries (see <a href="#methods" style="color:var(--ucd-gold)">Methods</a>).
+        Each point is one QC run. Every chart here follows the QC standard at the top of the page. Best
+        Configurations, Depth by Amount, Identification Depth by Platform, Depth by Throughput and Column
+        Comparison also follow the DIA / DDA tab above the submissions table, and the first three say so in their
+        badge; Throughput vs. Quantitation Quality shows every run, and the TIC overlay has its own
+        acquisition-mode menu. Counts compare fairly within a vendor: timsTOF and Orbitrap runs search different
+        libraries (see <a href="#methods" style="color:var(--ucd-gold)">Methods</a>).
     </p>
     <!-- Best Configurations (B6): the headline "which instrument x SPD x
          amount gives the best data?", as one ranked table per track. -->
@@ -3966,7 +3959,7 @@ const PC = { responsive: true, displayModeBar: false };
 // and Exploris indistinguishable on the Matthews & Hayes plot etc.
 const FC = {
     'timsTOF':       '#5cb8ff',  'timsTOF HT': '#5cb8ff',
-    'timsTOF Pro':   '#7dd3fc',  'timsTOF Pro 2': '#2dd4bf',  // Pro 2 its own hue: per-model charts (P2a)
+    'timsTOF Pro':   '#a3e635',  'timsTOF Pro 2': '#2dd4bf',  // Pro and Pro 2 their own hues: per-model charts (P2a)
     'Astral':        '#FFBF00',  'Orbitrap Astral': '#FFBF00',
     'Exploris':      '#c084fc',  'Exploris 480': '#c084fc',
     'Orbitrap Exploris 480': '#c084fc',
@@ -4047,8 +4040,11 @@ function amountSeenText(rows) {
 }
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function monthText(d) { return `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`; }
+// Acquisition dates only: runDate() falls back to the submission time and
+// then to now, which would make an undated row read as today's run.
+function datedTimes(rows) { return rows.map(_instantMs).filter(x => isFinite(x)).sort((a, b) => a - b); }
 function dateSpanText(rows) {
-    const t = rows.map(s => runDate(s).getTime()).filter(x => isFinite(x)).sort((a, b) => a - b);
+    const t = datedTimes(rows);
     if (!t.length) return '';
     const a = monthText(new Date(t[0])), b = monthText(new Date(t[t.length - 1]));
     return a === b ? a : `${a} – ${b}`;
@@ -4073,8 +4069,10 @@ function columnName(s) {
 // A copy is the same instrument model, track and all four ID counts, with
 // acquisition instants within 2 s of each other (copies differ only in
 // sub-second precision). The file name is not in the key (D4). Of each set of
-// copies the page keeps the one from the lab with more runs, then the first
-// submitted. Reference: build_mockup.py (3,305 -> 3,061 rows on 2026-09-29).
+// copies the page keeps a usable one (not flagged, not held back), then one
+// that records its LC column, then the one from the lab with more runs, then
+// the first submitted. Reference: build_mockup.py (3,305 -> 3,061 rows on
+// 2026-09-29; the key, not the tie-break, sets that count).
 const DUP_WINDOW_MS = 2000;
 function _instantMs(s) {
     if (!s.run_date) return NaN;
@@ -4092,9 +4090,16 @@ function dedupeRuns(rows) {
     });
     const keep = new Set();
     let dropped = 0;
+    // Which copy stays: a usable one first (a flagged or held-back copy
+    // would win only to be filtered out, losing the acquisition), then one
+    // that records its LC column, then the lab with more runs, then the
+    // earliest submitted.
+    const usable = (s) => (!s.is_flagged && !isHeldBack(s)) ? 1 : 0;
+    const hasCol = (s) => colKey(s) ? 1 : 0;
     const pick = (chain) => {
         if (chain.length > 1) dropped += chain.length - 1;
-        chain.sort((a, b) => ((total[b.display_name] || 0) - (total[a.display_name] || 0))
+        chain.sort((a, b) => (usable(b) - usable(a)) || (hasCol(b) - hasCol(a))
+            || ((total[b.display_name] || 0) - (total[a.display_name] || 0))
             || String(a.submitted_at || '').localeCompare(String(b.submitted_at || '')));
         keep.add(chain[0]);
     };
@@ -4292,7 +4297,7 @@ function updateStats() {
     const models = [...new Set(allData.map(s => s.instrument_model).filter(Boolean))].sort();
     _setText('stat-instruments', String(models.length));
     _setText('stat-models', models.map(shortModel).join(' · '));
-    const t = allData.map(s => runDate(s).getTime()).filter(x => isFinite(x)).sort((a, b) => a - b);
+    const t = datedTimes(allData);
     if (t.length) {
         _setText('stat-latest', new Date(t[t.length - 1]).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' }));
         _setText('stat-first', `first run ${monthText(new Date(t[0]))}`);
@@ -4326,15 +4331,16 @@ function statsNoteText() {
     if (duplicateCopies) {
         parts.push(`${fmtN(duplicateCopies)} duplicate cop${duplicateCopies === 1 ? 'y' : 'ies'} removed `
             + '(same instrument, acquisition mode and all four ID counts, acquired within 2 seconds of each other; '
-            + 'the copy from the lab with more runs is kept)');
+            + 'of each set the page keeps a usable copy, then one that records its LC column, then the one from the lab with more runs)');
     }
     if (held) {
         parts.push(`${fmtN(held)} run${held === 1 ? '' : 's'} held back from every range and ranking because the `
             + `stored amount is above 5,000 ng, most likely a unit error`);
     }
     if (flagged) parts.push(`${fmtN(flagged)} flagged run${flagged === 1 ? '' : 's'} left out`);
-    if (!parts.length) return `Built from all ${fmtN(submittedRows)} submitted rows: no duplicate copies or implausible amounts found.`;
-    return `Built from ${fmtN(submittedRows)} submitted rows: ${parts.join('; ')}.`;
+    const rowsText = submittedRows === 1 ? 'the 1 submitted row' : `${parts.length ? '' : 'all '}${fmtN(submittedRows)} submitted rows`;
+    if (!parts.length) return `Built from ${rowsText}: no duplicate copies or implausible amounts found.`;
+    return `Built from ${rowsText}: ${parts.join('; ')}.`;
 }
 
 // The Join card's exact field list: the keys the API actually served, so it
@@ -4348,6 +4354,13 @@ function publishedFields(rows) {
 function renderPublishedFields() {
     const list = document.getElementById('fl-list');
     if (!list) return;
+    // No rows (the API's empty or error payload): no count, since only the
+    // two TIC names would be listed.
+    if (!allDataRaw.length) {
+        _setText('fl-sum', 'Every published field, by API name');
+        list.innerHTML = '<span class="fine">The benchmark data did not load, so the field list is not available. Reload the page to try again.</span>';
+        return;
+    }
     const fields = publishedFields(allDataRaw);
     _setText('fl-sum', `Every published field, by API name (${fields.length})`);
     list.innerHTML = fields.map(f => `<code>${esc(f)}</code>`).join(' ');
@@ -4362,7 +4375,9 @@ function renderLibraryCaveat() {
     const hi = cov.filter(v => v > 90).length;
     _setText('lib-caveat', `timsTOF runs cover a median ${Math.round(quant(cov, 0.5))}% of their library `
         + `(highest ${Math.round(cov[cov.length - 1])}%). Above 90% the library rather than the instrument caps the count; `
-        + `${hi} run${hi === 1 ? ' is' : 's are'} there today. Counts therefore compare within a vendor, not across.`);
+        + `${hi} run${hi === 1 ? ' is' : 's are'} there today. Coverage divides by the full library's 54,000 precursors, `
+        + `so for runs searched against a subset (UC Davis's timsTOF HT runs searched a ~51,000-precursor one) it reads slightly low. `
+        + 'Counts therefore compare within a vendor, not across.');
 }
 
 // A deep link (#join, #methods, #explore, ...) lands before the data has
@@ -4383,16 +4398,19 @@ function _honourHash() {
 
 // ── Reference ranges ────────────────────────────────────────────
 
-// Global filter state
+// Global filter state. The ticked sets are rebuilt from the rows in view on
+// every render, so a family that appears after a QC-standard switch starts
+// ticked (it once stayed unticked and its cards read "No data yet"); only
+// the reader's unticks are remembered.
 let refFilters = { families: new Set(), modes: new Set() };
+const refUnticked = { families: new Set(), modes: new Set() };
 
 function buildRefFilters() {
     const families = [...new Set(allData.map(s=>s.instrument_family))].sort();
     const modes = [...new Set(allData.map(trackOf))].sort();
 
-    // Initialize: all selected
-    if (refFilters.families.size === 0) families.forEach(f => refFilters.families.add(f));
-    if (refFilters.modes.size === 0) modes.forEach(m => refFilters.modes.add(m));
+    refFilters.families = new Set(families.filter(f => !refUnticked.families.has(f)));
+    refFilters.modes = new Set(modes.filter(m => !refUnticked.modes.has(m)));
 
     // Family names are submitter-supplied: escaped, and passed through a
     // data attribute rather than spliced into the onchange code.
@@ -4415,8 +4433,8 @@ function buildRefFilters() {
 }
 
 function toggleRefFilter(group, value) {
-    if (refFilters[group].has(value)) refFilters[group].delete(value);
-    else refFilters[group].add(value);
+    if (refUnticked[group].has(value)) refUnticked[group].delete(value);
+    else refUnticked[group].add(value);
     renderRefRanges();
 }
 
@@ -4463,7 +4481,10 @@ function refCardsFor(rows) {
                 ? `LC column recorded for ${known} run${known === 1 ? '' : 's'}; too few per column for a column card yet`
                 : '' });
         } else {
-            if (subs.length > covered) cards.push({ rows: subs, column: '', note: 'All columns combined' });
+            // The cohort's own card, unless one column holds every run (then
+            // the column card is the cohort card). Without it a 6-run cohort
+            // split 3 + 3 by column had no card at all.
+            if (subs.length > covered || colGroups.length > 1) cards.push({ rows: subs, column: '', note: 'All columns combined' });
             colGroups.forEach(g => cards.push({ rows: g, column: columnName(g[0]), note: '' }));
         }
     }
@@ -4630,13 +4651,20 @@ function _lcScatterByModel(divId, field, yTitle, transform, layoutOverrides) {
     const val = (s) => transform ? transform(s[field]) : s[field];
     const models = [...new Set(data.map(modelOf))].sort();
     // Points first, every model's median line after them, so no model's
-    // points hide another model's line.
-    const points = [], lines = [];
+    // points hide another model's line. The legend has its own solid entry
+    // per model (a point's faint style made its key hard to see); clicking it
+    // hides the model's points and line together (same legendgroup).
+    const points = [], lines = [], keys = [];
     models.forEach(model => {
         const sub = data.filter(s => modelOf(s) === model);
-        points.push({
-            type: 'scatter', mode: 'markers',
+        keys.push({
+            type: 'scatter', mode: 'lines+markers', x: [null], y: [null], hoverinfo: 'skip',
             name: `${esc(model)} (${runsLabsText(sub.length, labCount(sub))})`, legendgroup: model,
+            marker: { color: fc(model), size: 9 }, line: { color: fc(model), width: 2.8 },
+        });
+        points.push({
+            type: 'scatter', mode: 'markers', showlegend: false,
+            name: `${esc(model)} runs`, legendgroup: model,
             x: sub.map(s => runDate(s).toISOString().slice(0,10)),
             y: sub.map(val),
             marker: { color: fc(model), size: 5, opacity: 0.35, line: { width: 0 } },
@@ -4667,7 +4695,7 @@ function _lcScatterByModel(divId, field, yTitle, transform, layoutOverrides) {
             hovertemplate: `${esc(model)} · %{x|%b %Y}<br>monthly median: %{y:.2f}<extra></extra>`,
         });
     });
-    const traces = points.concat(lines);
+    const traces = points.concat(lines, keys);
     const narrow = isNarrowView();
     const layout = {
         ...PL,
@@ -4677,7 +4705,8 @@ function _lcScatterByModel(divId, field, yTitle, transform, layoutOverrides) {
         height: narrow ? 560 : 360,
         showlegend: true,
         // Below the axis title, not on it (the live legend sat on "Acquisition date").
-        legend: { font: { color: '#a0b4cc', size: narrow ? 10 : 11 }, orientation: 'h', x: 0, y: narrow ? -0.1 : -0.3, yanchor: 'top' },
+        legend: { font: { color: '#a0b4cc', size: narrow ? 10 : 11 }, orientation: 'h', x: 0, y: narrow ? -0.1 : -0.3,
+                  yanchor: 'top', itemsizing: 'constant' },
         margin: { ...PL.margin, b: narrow ? 170 : 110 },
     };
     if (layoutOverrides) {
@@ -5953,7 +5982,10 @@ function renderViolin() {
         text: `Color: SPD &nbsp;·&nbsp; n=${plotData.length - small.reduce((t, g) => t + g.length, 0)} (${pos.length} shown)`,
         font: { color: 'var(--text-muted)', size: 10 },
     });
-    const valTitle = mixed ? 'Precursors (DIA) / PSMs (DDA)' : (trackOf(plotData[0]) === 'DDA' ? 'PSMs' : 'Precursors');
+    // Horizontal (phones) the title runs under a narrow plot: keep it short
+    // enough not to be cut at the card's edge.
+    const valTitle = mixed ? (horiz ? 'Precursors / PSMs' : 'Precursors (DIA) / PSMs (DDA)')
+                           : (trackOf(plotData[0]) === 'DDA' ? 'PSMs' : 'Precursors');
     const posAxis = {
         ...PL.xaxis, type: 'linear', autorange: false, tickmode: 'array', showgrid: false, zeroline: false,
         tickvals: cohorts.map((_, i) => P(i)).concat(vendorTicks.map(t => t[0])),
@@ -5963,7 +5995,7 @@ function renderViolin() {
     const valAxis = { ...PL.yaxis, title: valTitle, automargin: true, zeroline: false };
     const layout = horiz
         ? { ...PL, xaxis: valAxis, yaxis: { ...posAxis, range: [P(n - 1) + 0.6, -0.6] },
-            height: 130 + 44 * (n + vendors.length), margin: { t: 40, r: 12, b: 50, l: 10 },
+            height: 130 + 44 * (n + vendors.length), margin: { t: 40, r: 20, b: 50, l: 10 },
             shapes, annotations, showlegend: false }
         : { ...PL, xaxis: { ...posAxis, range: [-0.6, n - 0.4] }, yaxis: valAxis,
             height: 460, margin: { ...PL.margin, t: 40, b: 70, r: 70 }, shapes, annotations, showlegend: false };
@@ -6006,15 +6038,19 @@ function renderColumnComparison() {
     // enough runs for a column card (MIN_FOR_COLUMN); count the rest.
     const show = single ? entries.filter(([, cols]) => size(cols) >= MIN_FOR_COLUMN) : multi;
     const lead = '<b>Nothing to compare yet.</b> Column comparison needs a second known column in one cohort';
+    const tabName = currentTab === 'dia' ? 'DIA ' : currentTab === 'dda' ? 'DDA ' : '';
+    const unknownText = unknown
+        ? `${fmtN(unknown)} of ${fmtN(data.length)} run${data.length === 1 ? '' : 's'} in view record${unknown === 1 ? 's' : ''} no column and ${unknown === 1 ? 'is' : 'are'} left out. `
+        : '';
     if (single && note) {
         const rest = entries.length - show.length;
-        note.innerHTML = entries.length
-            ? `${lead}, and today every cohort that records a column has only one. `
-              + `${fmtN(unknown)} of ${fmtN(data.length)} runs in view record no column and are left out. `
+        note.innerHTML = !data.length
+            ? `<b>Nothing to compare yet.</b> There are no ${tabName}runs in view.`
+            : entries.length
+            ? `${lead}, and today every cohort that records a column has only one. ${unknownText}`
               + (show.length ? `Shown: the ${show.length} cohort${show.length === 1 ? '' : 's'} with ${MIN_FOR_COLUMN} or more runs on a recorded column, with runs, labs and dates on each bar.` : '')
               + (rest ? ` ${rest} cohort${rest === 1 ? '' : 's'} with fewer ${rest === 1 ? 'is' : 'are'} not drawn.` : '')
-            : `${lead}, and no run in view records its LC column`
-              + `${unknown ? ` (${fmtN(unknown)} run${unknown === 1 ? '' : 's'} record none)` : ''}. `
+            : `${lead}, and none of the ${fmtN(data.length)} ${tabName}run${data.length === 1 ? '' : 's'} in view records its LC column. `
               + 'Set the column in <code>stan setup</code> to contribute.';
     }
     if (!show.length) return;
@@ -6039,7 +6075,11 @@ function renderColumnComparison() {
         : `${runsLabsText(rows.length, labCount(rows))}<br>${esc(dateSpanText(rows))}`;
     const COL_COLORS = ['#FFBF00', '#5cb8ff', '#c084fc', '#34d399', '#f87171', '#fb923c'];
     const colKeys = [...new Set([].concat(...show.map(([, cols]) => Object.keys(cols))))];
-    const traces = colKeys.map((ck, ci) => {
+    // A column keeps its colour whatever the tab or QC standard: colours come
+    // from every known column, sorted, not from the order bars appear in.
+    const colOrder = [...new Set(usableRows().concat(allData).map(colKey).filter(Boolean))].sort();
+    const colourOf = (ck) => COL_COLORS[Math.max(0, colOrder.indexOf(ck)) % COL_COLORS.length];
+    const traces = colKeys.map((ck) => {
         const cat = [], val = [], text = [], hover = [];
         let name = '';
         show.forEach(([, cols], gi) => {
@@ -6058,7 +6098,7 @@ function renderColumnComparison() {
             [horiz ? 'y' : 'x']: cat, [horiz ? 'x' : 'y']: val,
             name: esc(shortName), text, textposition: inLabel ? 'none' : narrow ? 'auto' : 'outside', cliponaxis: false,
             textfont: { size: 10, color: '#a0b4cc' }, customdata: hover, hovertemplate: '%{customdata}<extra></extra>',
-            marker: { color: COL_COLORS[ci % COL_COLORS.length], opacity: 0.85 },
+            marker: { color: colourOf(ck), opacity: 0.85 },
         };
     });
 
@@ -6102,6 +6142,8 @@ function renderPointsAcrossPeak() {
     const symbolOf = s => colKey(s) ? (SYMBOLS[String(s.column_vendor || '').trim().toLowerCase()] || 'cross') : 'circle-open';
     const models = [...new Set(withPts.map(modelOf))].sort();
 
+    // Each model's legend key is its own solid circle: a points trace's key
+    // takes its first point's shape, which read "Column not recorded".
     const traces = models.map(model => {
         const sub = withPts.filter(s => modelOf(s) === model);
         return {
@@ -6111,7 +6153,7 @@ function renderPointsAcrossPeak() {
                 const col = columnName(s) || 'Column not recorded';
                 return `${esc(s.instrument_model)}<br>${esc(col)}<br>Peak width: ${(s.median_peak_width_sec||0).toFixed(1)}s`;
             }),
-            mode:'markers', type:'scatter', name: `${esc(model)} (${runsLabsText(sub.length, labCount(sub))})`,
+            mode:'markers', type:'scatter', name: `${esc(model)} runs`, legendgroup: model, showlegend: false,
             marker: {
                 color: fc(model), size: 12, opacity: 0.85,
                 symbol: sub.map(symbolOf),
@@ -6119,6 +6161,12 @@ function renderPointsAcrossPeak() {
             },
             hovertemplate: '%{text}<br>SPD: %{x}<br>Points/peak: %{y:.1f}<extra></extra>',
         };
+    });
+    models.forEach(model => {
+        const n = withPts.filter(s => modelOf(s) === model);
+        traces.push({ x: [null], y: [null], mode: 'markers', type: 'scatter', legendgroup: model, hoverinfo: 'skip',
+            name: `${esc(model)} (${runsLabsText(n.length, labCount(n))})`,
+            marker: { symbol: 'circle', size: 10, color: fc(model), line: { color: '#fff', width: 1 } } });
     });
     // Legend keys for the shapes actually drawn.
     const shapeKey = (symbol, name) => ({ x: [null], y: [null], mode: 'markers', type: 'scatter', name,
@@ -6161,13 +6209,14 @@ function renderPointsAcrossPeak() {
         yaxis: {...PL.yaxis, title:'Data Points Across Peak', automargin: true},
         legend: narrow ? { orientation: 'h', x: 0, y: -0.22, yanchor: 'top', font: { color: '#a0b4cc', size: 10 } }
                        : { font: { color: '#a0b4cc', size: 11 } },
-        height: narrow ? 620 : 400,
-        margin: narrow ? { ...PL.margin, b: 230 } : PL.margin,
+        height: narrow ? 640 : 420,
+        margin: narrow ? { ...PL.margin, t: 44, b: 230 } : { ...PL.margin, t: 40 },
+        // Above the plot, clear of the data (inside, it sat on the runs).
         annotations: [
-            {x:0.02, y:0.08, xref:'paper', yref:'paper', xanchor: 'left',
+            {x:0, y:1.02, xref:'paper', yref:'paper', xanchor: 'left', yanchor: 'bottom',
              text: narrow ? 'Below the dashed line: error grows (STAN guideline)'
                           : 'Below the dashed line, quantitation error grows quickly (STAN guideline, after Matthews & Hayes 1976)',
-             showarrow:false, font:{color:'rgba(248,113,113,0.7)',size:10}},
+             showarrow:false, font:{color:'rgba(248,113,113,0.85)',size:10}},
         ],
     }, PC);
 }

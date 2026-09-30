@@ -137,7 +137,18 @@ def test_join_card(client):
              "community_submit: true", "stan submit-all"]
     assert [steps.index(x) for x in order] == sorted(steps.index(x) for x in order)
     assert "Pierce HeLa" in steps and "88328" in steps
+    # A fresh `stan init` leaves display_name empty and community-claim then
+    # refuses to run, so the step names the lab first, in the real files.
+    assert steps.index("display_name") < steps.index("stan community-claim")
+    assert 'display_name: ""' in (REPO / "stan/setup.py").read_text()
+    assert "no community lab name to claim" in (REPO / "stan/cli.py").read_text()
+    config = (REPO / "stan/config.py").read_text()
+    assert 'Path.home() / "STAN"' in config and 'Path.home() / ".stan"' in config
+    assert "~/.stan/community.yml" in steps and "%USERPROFILE%\\STAN\\community.yml" in steps
+    assert "stan setup" in steps
     assert "nightly rebuild at 04:00 UTC" in join
+    # Not a promise the data cannot keep until the decision-11 re-search.
+    assert "compare directly" not in join and "close but not yet exact" in join
     # The rebuild the card promises is the consolidation cron.
     wf = (REPO / ".github/workflows/consolidate_benchmark.yml").read_text()
     assert "cron: '0 4 * * *'" in wf
@@ -178,6 +189,27 @@ def test_methods_card_matches_the_code(client, relay):
     assert COMMUNITY_SAGE_PARAMS["fragment_tol"] == {"ppm": [-20, 20]}
     for name, md5 in EXPECTED_ASSET_HASHES.items():
         assert name in text and f"md5 {md5}" in text, name
+    # The checksums are stamped, not computed (stan/community/submit.py), and
+    # any present checksum marks a row assets-verified (normalize_v1.py).
+    submit = (REPO / "stan/community/submit.py").read_text()
+    assert 'EXPECTED_ASSET_HASHES.get("human_hela_202604.fasta"' in submit
+    assert 'EXPECTED_ASSET_HASHES.get(\n                "hela_timstof_202604.parquet"' in submit
+    norm = (REPO / "stan/community/normalize_v1.py").read_text()
+    assert "ok = bool(fasta)" in norm and "ok = ok and bool(speclib)" in norm
+    assert "The checksums on a row do not prove what was searched" in text
+    assert "it does not hash the FASTA and library the search actually used" in text
+    assert "matching FASTA and library checksums" not in text
+    # An install's own library is used automatically (stan/search/local.py).
+    local = (REPO / "stan/search/local.py").read_text()
+    assert 'get_user_config_dir() / "instrument_library.parquet"' in local and "instrument_library.parquet" in text
+    assert "although their rows carry the full library's checksum" in text
+    # Only a stated version is checked by the relay.
+    app = (REPO / "hf_space/app.py").read_text()
+    assert "    if sub.diann_version:\n        ver_parts = sub.diann_version.split(\".\")" in app
+    assert "the relay refuses a submission that states any other version; one that states no version is not checked" in text
+    assert "refuses other versions" not in text
+    # Coverage divides by the full library, so a subset search reads low.
+    assert "Coverage divides by the full library's size, so for runs searched against a subset it reads slightly low" in text
     # The count definition is the extractor's.
     ext = (REPO / "stan/metrics/extractor.py").read_text()
     assert 'pl.col("Q.Value") <= q_cutoff' in ext and '"n_precursors": filt["Precursor.Id"].n_unique()' in ext
@@ -403,11 +435,14 @@ def test_id_free_charts_draw_one_line_per_model(client, tmp_path):
     scenario = f"""(() => {{ allData = {json.dumps(rows)}; renderMs1Signal();
         return plots[plots.length - 1].traces.map(t => [t.mode, t.name, t.showlegend === false, (t.x || []).length]); }})()"""
     traces = _run(client, tmp_path, scenario)
+    # points and lines carry no legend entry; each model has one solid key
     assert traces == [
-        ["markers", "timsTOF HT (6 runs · 1 lab)", False, 6],
-        ["markers", "timsTOF Pro (3 runs · 1 lab)", False, 3],
+        ["markers", "timsTOF HT runs", True, 6],
+        ["markers", "timsTOF Pro runs", True, 3],
         ["lines", "timsTOF HT monthly median", True, 3],
         ["lines", "timsTOF Pro monthly median", True, 3],
+        ["lines+markers", "timsTOF HT (6 runs · 1 lab)", False, 1],
+        ["lines+markers", "timsTOF Pro (3 runs · 1 lab)", False, 1],
     ]
 
 
@@ -432,3 +467,160 @@ def test_published_field_list_is_what_the_api_serves(client, tmp_path):
     assert "_tic" not in fields and fields == sorted(fields)
     assert summary == f"Every published field, by API name ({len(fields)})"
     assert html.count("<code>") == len(fields)
+
+
+# ── Review fixes before the P2a deploy (2026-09-30) ──────────────────
+
+_SAME = dict(n_precursors=41000, n_peptides=36000, n_proteins=5000, n_psms=0, run_date="2026-09-20T10:00:00+00:00")
+
+
+def _big_lab(n: int = 5) -> list[dict]:
+    return [_row(900 + i, display_name="Big Lab") for i in range(n)]
+
+
+@needs_node
+def test_dedupe_prefers_a_usable_copy_then_one_with_a_column(client, tmp_path):
+    """A held-back or flagged copy that won the tie-break was then filtered
+    out, losing the acquisition; a column-"Unknown" copy beat one that records
+    its column (127 -> 87 column-labelled rows on the snapshot)."""
+    cases = {
+        "held": [_row(1, display_name="Small Lab", **_SAME), _row(2, display_name="Big Lab", **dict(_SAME, amount_ng=50000))],
+        "flagged": [_row(1, display_name="Small Lab", **_SAME), _row(2, display_name="Big Lab", is_flagged=True, **_SAME)],
+        "column": [_row(1, display_name="Big Lab", **_SAME),
+                   _row(2, display_name="Small Lab", column_vendor="PepSep", column_model="PepSep MAX 10cm", **_SAME)],
+        "bigger": [_row(1, display_name="Small Lab", **_SAME), _row(2, display_name="Big Lab", **_SAME)],
+    }
+    scenario = "(() => {" + "".join(
+        f"const r_{k} = dedupeRuns({json.dumps(v + _big_lab())});" for k, v in cases.items()) + "return {" + ",".join(
+        f"{k}: [r_{k}.dropped, r_{k}.kept.filter(s => s.n_precursors === 41000).map(s => s.submission_id)]"
+        for k in cases) + "}; })()"
+    got = _run(client, tmp_path, scenario)
+    assert got["held"] == [1, ["s1"]]         # the big lab's held-back copy loses
+    assert got["flagged"] == [1, ["s1"]]      # so does a flagged one
+    assert got["column"] == [1, ["s2"]]       # the copy that records its column wins
+    assert got["bigger"] == [1, ["s2"]]       # otherwise the larger contributor's
+
+
+@needs_node
+def test_a_cohort_split_across_columns_keeps_its_own_card(client, tmp_path):
+    """3 + 3 runs on two columns: each column card is sparse, but the 6-run
+    cohort still gets its "All columns combined" card."""
+    rows = [_row(i, column_vendor="PepSep", column_model="PepSep MAX 10cm") for i in range(3)]
+    rows += [_row(10 + i, column_vendor="IonOpticks", column_model="Aurora 25cm") for i in range(3)]
+    html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; renderRefRanges(); els['ref-ranges-container'].innerHTML")
+    cards = html.split('<article class="rc">')[1:]
+    assert len(cards) == 1 and "All columns combined" in cards[0] and "6 runs · 1 lab" in cards[0]
+    assert "Show 2 sparse cohorts" in html
+
+
+@needs_node
+def test_column_colours_do_not_depend_on_the_tab(client, tmp_path):
+    rows = [_row(i, column_vendor="PepSep", column_model="PepSep MAX 10cm") for i in range(3)]
+    rows += [_row(10 + i, column_vendor="IonOpticks", column_model="Aurora 25cm") for i in range(3)]
+    rows += [_dda(20 + i, column_vendor="IonOpticks", column_model="Aurora 25cm") for i in range(3)]
+    scenario = f"""(() => {{
+        allDataRaw = allData = {json.dumps(rows)};
+        const colours = (tab) => {{ currentTab = tab; renderColumnComparison();
+            return Object.fromEntries(plots[plots.length - 1].traces.map(t => [t.name, t.marker.color])); }};
+        return [colours('dia'), colours('dda')];
+    }})()"""
+    dia, dda = _run(client, tmp_path, scenario)
+    assert dda["IonOpticks Aurora 25cm"] == dia["IonOpticks Aurora 25cm"]
+    assert dia["IonOpticks Aurora 25cm"] != dia["PepSep MAX 10cm"]
+
+
+@needs_node
+def test_edge_case_wording(client, tmp_path):
+    rows = [_dda(i) for i in range(3)]
+    labelled = [_row(i, column_vendor="PepSep", column_model="PepSep MAX 10cm") for i in range(3)]
+    scenario = f"""(() => {{
+        currentTab = 'dia'; allData = {json.dumps(rows)}; renderColumnComparison();
+        const ddaOnly = els['column-compare-note'].innerHTML;
+        allData = {json.dumps(labelled)}; renderColumnComparison();
+        const allLabelled = els['column-compare-note'].innerHTML;
+        setSubmissions({json.dumps([_row(1)])}); updateStats();
+        const one = els['stats-note'].textContent;
+        setSubmissions([]); renderPublishedFields();
+        return [ddaOnly, allLabelled, one, els['fl-sum'].textContent, els['fl-list'].innerHTML];
+    }})()"""
+    dda_only, all_labelled, one, fl_sum, fl_list = _run(client, tmp_path, scenario)
+    assert dda_only == "<b>Nothing to compare yet.</b> There are no DIA runs in view."
+    assert "record no column" not in all_labelled and "0 of" not in all_labelled
+    assert one == "Built from the 1 submitted row: no duplicate copies or implausible amounts found."
+    assert fl_sum == "Every published field, by API name" and "<code>" not in fl_list
+
+
+@needs_node
+def test_points_across_peak_legend_is_solid_and_the_note_is_clear_of_the_data(client, tmp_path):
+    rows = [_row(i, instrument_family="Exploris", instrument_model="Orbitrap Exploris 480") for i in range(3)]
+    rows += [_row(10 + i, column_vendor="PepSep", column_model="PepSep MAX 10cm") for i in range(2)]
+    scenario = f"""(() => {{ allData = {json.dumps(rows)}; renderPointsAcrossPeak();
+        const p = plots[plots.length - 1];
+        return [p.traces.filter(t => t.showlegend !== false).map(t => [t.name, (t.marker || {{}}).symbol || null]),
+                p.layout.annotations[0].y, p.layout.annotations[0].yanchor]; }})()"""
+    keys, y, yanchor = _run(client, tmp_path, scenario)
+    assert ["Orbitrap Exploris 480 (3 runs · 1 lab)", "circle"] in keys
+    assert ["timsTOF HT (2 runs · 1 lab)", "circle"] in keys
+    assert ["Column not recorded", "circle-open"] in keys and ["PepSep column", "square"] in keys
+    assert y > 1 and yanchor == "bottom"      # above the plot, not on the runs
+
+
+@needs_node
+def test_undated_rows_do_not_set_the_latest_run(client, tmp_path):
+    rows = [_row(1, run_date="2026-03-05T10:00:00Z"), _row(2, run_date=None, submitted_at=None)]
+    scenario = f"""(() => {{ setSubmissions({json.dumps(rows)}); updateStats();
+        return [els['stat-latest'].textContent, els['stat-first'].textContent, dateSpanText(allData)]; }})()"""
+    assert _run(client, tmp_path, scenario) == ["Mar 5, 2026", "first run Mar 2026", "Mar 2026"]
+
+
+@needs_node
+def test_family_filter_follows_the_qc_standard_and_keeps_unticks(client, tmp_path):
+    """Switching to Yeast used to leave a yeast-only family unticked, so its
+    cards read "No data yet"."""
+    hela = [_row(i) for i in range(6)] + [_row(10 + i, instrument_family="Lumos", instrument_model="Orbitrap Fusion Lumos") for i in range(6)]
+    yeast = [_row(20 + i, instrument_family="Astral", instrument_model="Orbitrap Astral", sample_type="yeast") for i in range(6)]
+    scenario = f"""(() => {{
+        allData = {json.dumps(hela)}; renderRefRanges();
+        toggleRefFilter('families', 'Lumos');                       // the reader unticks Lumos
+        const unticked = els['ref-ranges-container'].innerHTML;
+        allData = {json.dumps(yeast)}; renderRefRanges();          // QC standard: yeast
+        const yeastHtml = els['ref-ranges-container'].innerHTML;
+        allData = {json.dumps(hela)}; renderRefRanges();           // back to HeLa
+        return [unticked, yeastHtml, els['ref-ranges-container'].innerHTML, [...refFilters.families]];
+    }})()"""
+    unticked, yeast_html, back, families = _run(client, tmp_path, scenario)
+    assert "Orbitrap Fusion Lumos" not in unticked and "timsTOF HT" in unticked
+    assert "Orbitrap Astral" in yeast_html and "No data yet" not in yeast_html
+    assert "Orbitrap Fusion Lumos" not in back and families == ["timsTOF"]   # the untick survives
+
+
+@needs_node
+def test_horizontal_violins_keep_a_short_value_title(client, tmp_path):
+    rows = [_row(i) for i in range(6)] + [_row(10 + i, spd=60, cohort_id="timsTOF_60spd_low") for i in range(6)]
+    rows += [_dda(20 + i) for i in range(5)]
+    scenario = f"""(() => {{ allData = {json.dumps(rows)}; currentTab = 'all';
+        window.innerWidth = 200; renderViolin(); const h = plots[plots.length - 1].layout.xaxis.title;
+        window.innerWidth = 1280; renderViolin(); const v = plots[plots.length - 1].layout.yaxis.title;
+        return [h, v]; }})()"""
+    assert _run(client, tmp_path, scenario) == ["Precursors / PSMs", "Precursors (DIA) / PSMs (DDA)"]
+
+
+def test_explorer_intro_and_dead_css(client):
+    html = _page(client)
+    intro = _section(html, "explore")
+    intro = re.sub(r"\s+", " ", intro[:intro.index('<div class="chart-row">')])
+    assert "Every chart here follows the QC standard at the top of the page" in intro
+    assert "Throughput vs. Quantitation Quality shows every run, and the TIC overlay has its own acquisition-mode menu" in intro
+    assert "each says in its badge what it shows" not in intro
+    css = html[:html.index("</style>")]
+    for dead in (".ref-card", ".ref-row", ".ref-grid", ".ref-metric", ".ref-range", ".ref-n", ".ref-vals"):
+        assert dead not in css, dead
+
+
+@needs_node
+def test_library_coverage_caveat_says_subset_runs_read_low(client, tmp_path):
+    rows = [_row(i, library_coverage_pct=60.0 + i) for i in range(5)] + [_row(9, library_coverage_pct=92.0)]
+    got = _run(client, tmp_path, f"(() => {{ setSubmissions({json.dumps(rows)}); renderLibraryCaveat(); return els['lib-caveat'].textContent; }})()")
+    assert got.startswith("timsTOF runs cover a median 63% of their library (highest 92%)")
+    assert "1 run is there today" in got
+    assert "Coverage divides by the full library's 54,000 precursors" in got and "it reads slightly low" in got

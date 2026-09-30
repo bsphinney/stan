@@ -47,20 +47,25 @@ overlay and the lab trend are byte-identical to 1.2.3.
   unlabelled runs never form a column card (and the table shows "--").
   Library coverage on timsTOF DIA cards, "Library-limited" above 90%.
 - **Join the benchmark (D6).** Three steps (install STAN and inject Pierce
-  HeLa 88328; `stan community-claim`; `community_submit: true` then `stan
-  submit-all`), a link to `INSTALL_FOR_AGENTS.md`, "appears after the
-  nightly rebuild at 04:00 UTC", what is published, what is sent but not
-  shown (the file name, which the public dataset parquet still carries until
-  decision 5b), what never leaves the lab, and the exact published field
-  list, read at runtime from what `/api/leaderboard` served.
-- **How the numbers are made (D7 + D3).** DIA-NN 2.3.x (pinned 2.3.0, 2.3.x
-  accepted and asset-verified) and Sage 0.14.x (pinned 0.14.7) with their
-  frozen parameters, SEARCH_PARAMS_VERSION v1.0.0, what each count is
+  HeLa 88328; set `display_name` in `community.yml` (`~/.stan/` on macOS and
+  Linux, `%USERPROFILE%\STAN\` on Windows) or run `stan setup`, then `stan
+  community-claim`; `community_submit: true` then `stan submit-all`), a link
+  to `INSTALL_FOR_AGENTS.md`, "appears after the nightly rebuild at 04:00
+  UTC" with comparisons called close but not yet exact, what is published,
+  what is sent but not shown (the file name, which the public dataset parquet
+  still carries until decision 5b), what never leaves the lab, and the exact
+  published field list, read at runtime from what `/api/leaderboard` served.
+- **How the numbers are made (D7 + D3).** DIA-NN 2.3.x (pinned 2.3.0; the
+  relay refuses a stated version outside 2.3.x, and does not check a missing
+  one) and Sage 0.14.x (pinned 0.14.7) with their frozen parameters, SEARCH_PARAMS_VERSION v1.0.0, what each count is
   (unique `Precursor.Id` at run-level `Q.Value` ≤ 0.01, from
   `stan/metrics/extractor.py`), the two empirical libraries and the FASTA
-  with md5s, and plainly that UC Davis's timsTOF HT and Exploris 480 cohorts
-  were searched against instrument subsets of those libraries with a full-
-  library re-search planned (decision 11). IPS v2 definition, still hidden
+  with md5s, and plainly that the checksums on a row are stamped from the
+  frozen set for any 2.3.x run (`submit.py`), not computed from the files
+  searched, so they do not prove which library was used, and that UC Davis's
+  timsTOF HT and Exploris 480 cohorts were searched against instrument
+  subsets of those libraries (their coverage reads slightly low) with a
+  full-library re-search planned (decision 11). IPS v2 definition, still hidden
   until the scores are recomputed and recalibrated. Within-vendor caveat.
 - **Charts (§A.2).** Identification Depth by Platform: one violin per SPD
   cohort and acquisition mode (5+ runs), grouped by vendor with its library
@@ -81,13 +86,28 @@ overlay and the lab trend are byte-identical to 1.2.3.
 ### Fixed
 - **D8 at read time.** The page counts each acquisition once: rows with the
   same instrument, mode and all four ID counts, run dates within 2 s, are one
-  run, keeping the larger contributor's copy (3,305 → 3,061 on the
-  2026-09-29 snapshot). Stored amounts above 5,000 ng are held back from
+  run (3,305 → 3,061 on the 2026-09-29 snapshot). Of each set it keeps a
+  usable copy (not flagged or held back), then one that records its LC
+  column, then the larger contributor's, then the first submitted; so 126 of
+  the 127 column-labelled rows survive (one pair are copies of each other),
+  where the larger-contributor rule alone kept 87. Stored amounts above 5,000 ng are held back from
   every range and ranking (2 rows). A note under the stats row says both.
 - Bug 21: the site icon is served inline and at `/favicon.ico`, and
   `mobile-web-app-capable` is set.
 - Reference-card filter checkboxes escaped the family name only in text;
-  it now goes through `esc()` and a data attribute.
+  it now goes through `esc()` and a data attribute. The family and mode
+  filters are rebuilt from the rows in view on every render, keeping only the
+  reader's unticks, so a family that appears after a QC-standard switch is
+  ticked (it used to read "No data yet").
+- Review fixes before deploy: a cohort split across several columns keeps
+  its "All columns combined" card; column colours no longer change between
+  tabs; undated rows no longer make "Latest run" read as today; the ID-free
+  and Throughput vs. Quantitation Quality legends have one solid key per
+  model (timsTOF Pro now lime, not a second blue), and the guideline note
+  sits above that plot; the phone violin axis title is no longer cut off;
+  the Explorer intro says which charts follow the DIA/DDA tab; edge-case
+  wording ("the 1 submitted row", no "0 of N" clause, no field count when
+  the API returned nothing); unused `.ref-*` CSS removed.
 
 ### Tests
 - `tests/test_relay_community_p2a.py`: SPACE_VERSION, favicon, nav and
