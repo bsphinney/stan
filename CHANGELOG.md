@@ -59,10 +59,12 @@ then the lab with more runs, then the earliest submitted, inheriting only
   QC standard × instrument model × mode × gradient × amount bucket, from
   `lc_class()`, `grad_label()` and `abucket()` in `build_mockup.py`. Evosep
   runs are named by their method ("Evosep 60 SPD"); an Evosep run at another
-  SPD is "Evosep, 30 min run (SPD 46 unverified)"; nanoLC runs by the stored
-  `gradient_length_min` and the derived SPD ("44 min run (~38 SPD)"); a run
-  with no LC at an Evosep-method SPD is "60 SPD, LC not recorded", never
-  inferred. Amount buckets are ≤25, 50 (26–75), 100–250 and >250 ng. The
+  SPD is "Evosep, 30 min run (SPD 46 unverified)"; nanoLC runs by the
+  gradient their SPD implies (1440 ÷ (1.25 × SPD)) and then the stored
+  `gradient_length_min` run length ("~30 min gradient (38 SPD) · 44 min run",
+  so two 44 min runs at 38 and 32 SPD no longer read as a contradiction); a
+  run with no LC at an Evosep-method SPD is "60 SPD, LC not recorded", never
+  inferred. The cohort key itself is unchanged by the naming. Amount buckets are ≤25, 50 (26–75), 100–250 and >250 ng. The
   card titles read the gradient instead of P2a's "gradients seen: 46–60 SPD"
   over a throughput tier.
 - **Ranked cohorts.** A cohort is ranked with 5 or more runs and its LC known
@@ -79,19 +81,36 @@ then the lab with more runs, then the earliest submitted, inheriting only
 - **Lab trend vs. reference (B3)**, the rebuilt "Your Lab vs. Community",
   still one lab's runs over time against the community. It opens on the lab
   with the most recent runs, in its busiest recent cohort, and lists only
-  cohorts in the bar's view where the lab has 5 or more runs. The reference
+  cohorts in the bar's view where the lab has 5 or more dated runs (an
+  undated run is never plotted, so it never counts). "Anonymous Lab", the
+  relay's name for every unclaimed install, is listed as "Anonymous Lab
+  (unclaimed; may be several labs)". The reference
   is the same cohort **without** the selected lab, and never "Anonymous Lab"
   (which may be the lab itself), as grey 10th–90th and 25th–75th percentile
   bands, replacing mean ± 1/2/3 σ over the whole instrument family (1,008 of
   whose 1,026 runs were the lab's own for Clogged PeakTail on Exploris). The
-  baseline is fixed from the lab's own first 30 runs in the cohort (median ±
-  3 MAD, drawn from 20), later runs outside it are ringed, and a white line
-  follows the median of the last 15. "No other lab in this cohort yet" when
+  baseline is the median ± 3 robust SD (1.4826 × MAD, the usual robust-σ
+  control-chart convention) of the lab's own first 30 runs in the cohort. It
+  is drawn from 20 runs and provisional until the 30th (every run so far,
+  nothing flagged), then fixed; later runs outside it are ringed, and a white
+  line follows the median of the last 15. "No other lab in this cohort yet" when
   none has 5 runs in the window. Metrics: precursors or PSMs, peptides, MS1
   mass error, MS1 signal (proteins dropped, per B3), with readable axis
   titles; window 12 months or all. Only lab pseudonyms appear, escaped.
 - ID-free charts under DDA say "Not measured for DDA runs" (DIA-NN reports
   those metrics; Sage does not).
+- **Every count in the bar is the view it leads to.** Each option's count is
+  the runs the page shows after picking it, cascade included: with Evosep 60
+  chosen, "DDA" counts the DDA runs it shows once the gradient clears, not 0.
+  `setView()` and the counts share one `resolveView()`.
+- Under a column filter the table's Cohort label names the column, so each
+  percentile says it is among that column's runs.
+- The runs tile under the header says it counts every mode and amount of the
+  QC standard, and that the filter bar below narrows the view (3,035 HeLa
+  against 2,975 in view by default).
+- The Explorer intro names Depth by Amount Loaded as the one chart that puts
+  DIA and DDA on one axis under "Both"; the reference-ranges intro lists "no
+  SPD recorded" among the reasons a cohort is not ranked.
 
 ### Tests
 - `tests/test_relay_community_p2b.py`: SPACE_VERSION 1.4.0; the bar's markup,
@@ -101,8 +120,11 @@ then the lab with more runs, then the earliest submitted, inheriting only
   throws; and in node: the B2 key, the filter state driving each panel, which
   panels re-render for each field, the facet cascade, the bar's counts, tabs
   and 400 px summary, escaping of hostile names in the bar, badges and lab
-  trend, the lab trend's cohort matching and reference, no file names, and 8
-  filter changes over 3,400 rows.
+  trend, the lab trend's cohort matching and reference, no file names, 8
+  filter changes over 3,400 rows, every option's count against the runs in
+  view after picking it (from seven starting views), the Anonymous Lab label,
+  dated-run counts, the provisional baseline, the nanoLC names on every panel,
+  the column in the table's cohort, and the runs tile.
 - `tests/test_relay_community_p1.py`, `tests/test_relay_community_p2a.py`,
   `tests/test_relay_peg.py`: version 1.4.0; the fixture rows record an LC and
   run length; cohorts of 5; `view.mode` instead of `currentTab`; the B2 card

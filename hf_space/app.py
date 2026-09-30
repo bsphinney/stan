@@ -3538,14 +3538,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <p class="description">
         Longitudinal performance ranges from the runs submitted so far, grouped by instrument model. Each card is
         one cohort: the same model, acquisition mode, LC and gradient, and load. Evosep runs are named by their
-        Evosep method; nanoLC runs by the run length recorded with them and the samples per day it gives. The
+        Evosep method; nanoLC runs by the gradient their samples per day imply (1440 &divide; (1.25 &times; SPD))
+        and then the run length recorded with them. The
         large number is the cohort's median precursors (DIA) or PSMs (DDA) at 1% FDR, and the bar shows the middle
         half of its runs inside the 10th&ndash;90th percentile, on one scale per instrument. Every card says how
         many runs and labs it holds; a card built from one lab's runs is marked
         <span class="tag1">single-lab reference</span>. Below 10 runs a card lists its values instead of a range.
         A cohort is not ranked, and is folded under its instrument with the reason, when it has fewer than 5 runs,
-        records no LC at an SPD that is also an Evosep method, or records Evosep at an SPD that is not an Evosep
-        method. Proteins are context only. The filter bar above chooses what is shown.
+        records no SPD, records no LC at an SPD that is also an Evosep method, or records Evosep at an SPD that is
+        not an Evosep method. Proteins are context only. The filter bar above chooses what is shown.
     </p>
     <p class="fbadge-line">Showing <span class="fbadge" id="ref-badge"></span></p>
     <div id="ref-ranges-container">
@@ -3703,8 +3704,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
         Each point is one QC run. Every chart here follows the filter bar at the top of the page and says in its
         badge what it shows. A chart that deliberately leaves a filter out says so: Depth by Amount Loaded shows
         every amount, Depth by Throughput and Throughput vs. Quantitation Quality every gradient, and Column
-        Comparison every column. DIA and DDA are never pooled: under "Both" each keeps its own table, violin or
-        facet. The TIC overlay keeps its own SPD, LC and acquisition-mode menus and follows only the QC standard.
+        Comparison every column. Under "Both", DIA and DDA keep their own table, violin or facet, with one
+        exception: Depth by Amount Loaded puts precursors and PSMs on one axis, and its badge warns about it. The
+        TIC overlay keeps its own SPD, LC and acquisition-mode menus and follows only the QC standard.
         Counts compare fairly within a vendor: timsTOF and Orbitrap runs search different libraries (see
         <a href="#methods" style="color:var(--ucd-gold)">Methods</a>).
     </p>
@@ -3853,9 +3855,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <h2>Lab trend vs. reference</h2>
     <p class="description">
         Your lab against the community, one cohort at a time: <em>"Is my instrument drifting, and where do I sit
-        against other labs running the same thing?"</em> The gold band is the lab's own baseline, the median
-        &plusmn; 3 MAD of its first 30 runs in the cohort (drawn once there are 20), so a problem shows up even when
-        no other lab shares the cohort, and a bad stretch is flagged instead of widening the band. The white line
+        against other labs running the same thing?"</em> The gold band is the lab's own baseline: the median
+        &plusmn; 3 robust SD (1.4826 &times; MAD) of its first 30 runs in the cohort. It is drawn from 20 runs,
+        provisional until there are 30, and fixed from then on, so a problem shows up even when no other lab shares
+        the cohort, and a bad stretch is flagged instead of widening the band. The white line
         is the median of the last 15 runs, so slow drift is visible too. Other labs in the same cohort, never the
         lab itself, appear as grey 10th&ndash;90th and 25th&ndash;75th percentile bands once they have 5 runs in the
         window. Labs and cohorts are listed from the filter bar's view: labs with 5 or more runs in a ranked cohort.
@@ -3880,7 +3883,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="chart-row">
         <div class="chart-card chart-full">
             <h3>Your lab's trend vs. the community reference <span class="fbadge" id="lab-trend-badge"></span></h3>
-            <div class="chart-desc">Dots = the lab's runs, coloured by instrument model; ringed dots fall outside its baseline band. Gold line and band = the fixed baseline and &plusmn; 3 MAD. White line = median of the last 15 runs. Grey bands = other labs in this cohort.</div>
+            <div class="chart-desc">Dots = the lab's runs, coloured by instrument model; ringed dots fall outside its baseline band. Gold line and band = the baseline, median &plusmn; 3 robust SD (1.4826 &times; MAD), fixed at 30 runs. White line = median of the last 15 runs. Grey bands = other labs in this cohort.</div>
             <div class="empty-note" id="lab-trend-note"></div>
             <div id="chart-lab-trend"></div>
             <p class="trend-sum" id="lab-trend-sum"></p>
@@ -4260,23 +4263,31 @@ function runLenText(rows) {
     const lo = s[Math.floor(0.1 * (s.length - 1))], hi = s[Math.round(0.9 * (s.length - 1))];
     return lo === hi ? `${lo} min run` : `${lo}–${hi} min runs`;
 }
-// A gradient's name. Plain text: escape it before it reaches innerHTML.
+// The gradient a nanoLC run's SPD implies, by the glossary's rule
+// SPD = 1440 / (gradient minutes × 1.25), so gradient = 1440 / (1.25 × SPD).
+// The stored gradient_length_min is the whole run (44 min for a 30 min
+// gradient at 38 SPD), so a title leads with the gradient and gives the run
+// length second; "44 min run (~38 SPD)" next to "44 min run (~32 SPD)" read
+// as a contradiction.
+function gradientMinOf(spd) { return Math.round(1440 / (1.25 * spd)); }
+// A gradient's name: "Evosep 60 SPD", "~30 min gradient (38 SPD) · 44 min
+// run". Plain text: escape it before it reaches innerHTML.
 function gradLabel(lc, spd, rows) {
     const len = runLenText(rows || []);
     if (lc === 'evosep') return EVOSEP_METHODS[spd];
     if (lc === 'evosep_unv') return len ? `Evosep, ${len} (SPD ${spd} unverified)` : `Evosep (SPD ${spd} unverified)`;
-    if (lc === 'nanolc') return len ? `${len} (~${spd} SPD)` : `~${spd} SPD`;
+    if (lc === 'nanolc') { const g = `~${gradientMinOf(spd)} min gradient (${spd} SPD)`; return len ? `${g} · ${len}` : g; }
     if (lc === 'unrec') return len ? `${spd} SPD, LC not recorded (${len})` : `${spd} SPD, LC not recorded`;
     return 'SPD not recorded';
 }
-// The short form for chart ticks: "Evosep 60 SPD", "~38 SPD · 44 min".
+// The short form for chart labels, in parts joined by " · " so a tick can
+// break it into lines: "Evosep 60 SPD", "~30 min gradient · 38 SPD · 44 min run".
 function gradShort(lc, spd, rows) {
     if (lc === 'evosep') return EVOSEP_METHODS[spd];
     if (lc === 'evosep_unv') return `Evosep ${spd} SPD (unverified)`;
     if (lc === 'unrec') return `${spd} SPD, LC not recorded`;
     if (lc === 'nospd') return 'SPD not recorded';
-    const len = runLenText(rows || []).replace(/ runs?$/, '');
-    return len ? `~${spd} SPD · ${len}` : `~${spd} SPD`;
+    return [`~${gradientMinOf(spd)} min gradient`, `${spd} SPD`, runLenText(rows || [])].filter(Boolean).join(' · ');
 }
 // Each row's cohort fields, worked out once. A WeakMap, so the rows the API
 // served are never written to (publishedFields() lists their keys).
@@ -4349,16 +4360,23 @@ const MODE_TRACK = { dia: 'DIA', dda: 'DDA' };
 const SAMPLE_LABEL = { hela: 'HeLa', k562: 'K562', yeast: 'Yeast', ecoli: 'E. coli', hek293: 'HEK293', all: 'all QC standards' };
 const _FACET_KEY = { model: 'm', gradient: 'g', column: 'c' };
 function sampleLabel() { return SAMPLE_LABEL[view.sample] || String(view.sample).toUpperCase(); }
-// Does a row pass every filter except the QC standard (allData holds that
-// one) and the fields in `ignore`?
+// Does a row pass every filter of view `v` except the QC standard (the rows
+// passed in hold that one) and the fields in `ignore`?
 const _NO_IGNORE = new Set();
-function matchesView(s, ignore) {
+function matchesIn(v, s, ignore) {
     const k = rowKey(s), ig = ignore || _NO_IGNORE;
-    return (ig.has('mode') || view.mode === 'all' || k.t === MODE_TRACK[view.mode])
-        && (ig.has('model') || !view.model || k.m === view.model)
-        && (ig.has('gradient') || !view.gradient || k.g === view.gradient)
-        && (ig.has('amount') || view.amount === 'all' || k.a === view.amount)
-        && (ig.has('column') || !view.column || k.c === view.column);
+    return (ig.has('mode') || v.mode === 'all' || k.t === MODE_TRACK[v.mode])
+        && (ig.has('model') || !v.model || k.m === v.model)
+        && (ig.has('gradient') || !v.gradient || k.g === v.gradient)
+        && (ig.has('amount') || v.amount === 'all' || k.a === v.amount)
+        && (ig.has('column') || !v.column || k.c === v.column);
+}
+function matchesView(s, ignore) { return matchesIn(view, s, ignore); }
+// The usable rows of one QC standard ('all' = every standard).
+function rowsOfSample(sample) {
+    if (sample === view.sample) return allData;
+    const rows = usableRows();
+    return sample === 'all' ? rows : rows.filter(s => (s.sample_type || 'hela') === sample);
 }
 // The rows in view, leaving out the filters a panel deliberately ignores.
 function viewRows(...ignore) { const ig = new Set(ignore); return allData.filter(s => matchesView(s, ig)); }
@@ -4423,27 +4441,41 @@ function renderPanels(changed) {
     return done;
 }
 
-// Is the facet value still offered, given the fields it follows?
-function _facetValid(f) {
-    const want = view[f], key = _FACET_KEY[f], ig = FACET_IGNORE[f];
-    return allData.some(s => rowKey(s)[key] === want && matchesView(s, ig));
-}
-// Change the view. A facet that no longer has any run under the fields it
-// follows falls back to "all", in cascade order, so a picked instrument
-// clears a gradient it does not run and a picked gradient clears a column.
-// Returns the fields that changed.
-function setView(patch) {
-    const changed = new Set();
-    for (const [k, v] of Object.entries(patch || {})) {
+// The view a patch leads to, without applying it: the patch's valid fields,
+// then the cascade. A facet with no run under the fields it follows falls
+// back to "all", in order, so a picked instrument clears a gradient it does
+// not run and a picked gradient clears a column. setView() applies exactly
+// this, and every count in the bar is the runs of the view it would lead to.
+function resolveView(base, patch, rows) {
+    const v = { ...base };
+    for (const [k, val0] of Object.entries(patch || {})) {
         if (!VIEW_FIELDS.includes(k)) continue;
-        const val = v == null ? '' : String(v);
+        const val = val0 == null ? '' : String(val0);
         if (k === 'mode' && !['dia', 'dda', 'all'].includes(val)) continue;
         if (k === 'amount' && !AMOUNT_LABEL[val]) continue;
-        if (view[k] !== val) { view[k] = val; changed.add(k); }
+        v[k] = val;
     }
+    const pool = rows || rowsOfSample(v.sample);
+    for (const f of VIEW_FACETS) {
+        const want = v[f], key = _FACET_KEY[f], ig = FACET_IGNORE[f];
+        if (want && !pool.some(s => rowKey(s)[key] === want && matchesIn(v, s, ig))) v[f] = '';
+    }
+    return v;
+}
+// The runs a view shows, from the rows of its QC standard.
+function countView(v, rows) {
+    const pool = rows || rowsOfSample(v.sample);
+    let n = 0;
+    for (const s of pool) if (matchesIn(v, s)) n++;
+    return n;
+}
+// Change the view to what resolveView() says. Returns the fields that changed.
+function setView(patch) {
+    const next = resolveView(view, patch);
+    const changed = new Set(VIEW_FIELDS.filter(f => next[f] !== view[f]));
     if (!changed.size) { renderFilterBar(); return changed; }
+    Object.assign(view, next);
     if (changed.has('sample')) applyFilters();
-    for (const f of VIEW_FACETS) if (view[f] && !_facetValid(f)) { view[f] = ''; changed.add(f); }
     if (changed.has('mode')) { resetConfigSort(); tableSortCol = null; }   // each table starts on its own primary metric (D1)
     tablePage = 0;
     renderFilterBar();
@@ -4468,47 +4500,51 @@ function _setSelect(id, html, value) {
     el.value = value;
 }
 // The bar: every control shows the current view, and every option says how
-// many runs it would show given the other filters. Submitter-supplied names
-// (models, columns) are escaped in both the option text and its value.
+// many runs the page would show if it were picked: the count of the view
+// resolveView() leads to, cascade included, so an option reading "DDA · 36"
+// shows 36 runs even when picking it clears a gradient DDA does not run.
+// Submitter-supplied names (models, columns) are escaped in both the option
+// text and its value.
 function renderFilterBar() {
     const ig = (f) => allData.filter(s => matchesView(s, FACET_IGNORE[f] || new Set([f])));
-    // QC standard: every standard's runs under the other filters.
-    const bySample = _countBy(usableRows().filter(s => matchesView(s)), s => s.sample_type || 'hela');
-    const nAllSamples = [...bySample.values()].reduce((a, b) => a + b, 0);
+    const nIf = (patch, rows) => { const v = resolveView(view, patch, rows); return countView(v, rows || rowsOfSample(v.sample)); };
+    const withN = (label, n) => `${label} · ${fmtN(n)}`;
+    // QC standard: each standard's rows, grouped once.
+    const usable = usableRows(), bySample = new Map([['all', usable]]);
+    usable.forEach(s => { const k = s.sample_type || 'hela'; if (!bySample.has(k)) bySample.set(k, []); bySample.get(k).push(s); });
     const sampleOpts = ['hela', 'k562', 'yeast', 'ecoli', 'hek293', 'all'].map(v => [v,
-        `${v === 'all' ? 'All standards' : SAMPLE_LABEL[v]} · ${fmtN(v === 'all' ? nAllSamples : (bySample.get(v) || 0))}`]);
+        withN(v === 'all' ? 'All standards' : SAMPLE_LABEL[v], nIf({ sample: v }, v === view.sample ? allData : (bySample.get(v) || [])))]);
     _setSelect('sample-type-select', _optionsHtml(sampleOpts, view.sample), view.sample);
     // Mode: DIA, DDA and both.
-    const byTrack = _countBy(ig('mode'), s => rowKey(s).t);
-    _setText('fbar-n-dia', fmtN(byTrack.get('DIA') || 0));
-    _setText('fbar-n-dda', fmtN(byTrack.get('DDA') || 0));
-    _setText('fbar-n-all', fmtN((byTrack.get('DIA') || 0) + (byTrack.get('DDA') || 0)));
+    ['dia', 'dda', 'all'].forEach(m => _setText(`fbar-n-${m}`, fmtN(nIf({ mode: m }, allData))));
     document.querySelectorAll('#fbar-mode button[data-mode], .tabs .tab[data-mode]').forEach(b => {
         const on = b.getAttribute('data-mode') === view.mode;
         if (b.classList.contains('tab')) { if (on) b.classList.add('active'); else b.classList.remove('active'); }
         else b.setAttribute('aria-pressed', String(on));
     });
-    // Instrument model, most runs first.
+    // Instrument model, most runs first. Listed: the models the QC standard,
+    // mode and amount hold (the cascade's first facet).
     const models = [..._countBy(ig('model'), s => rowKey(s).m).entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    _setSelect('fbar-model', _optionsHtml([['', 'All instruments']].concat(models.map(([m, n]) => [m, `${m} · ${fmtN(n)}`])), view.model), view.model);
+    _setSelect('fbar-model', _optionsHtml([['', withN('All instruments', nIf({ model: '' }, allData))]]
+        .concat(models.map(([m]) => [m, withN(m, nIf({ model: m }, allData))])), view.model), view.model);
     // Gradient: Evosep methods, then nanoLC, then the unranked kinds; each by SPD.
     const byGrad = new Map();
     ig('gradient').forEach(s => { const k = rowKey(s); if (!byGrad.has(k.g)) byGrad.set(k.g, { lc: k.lc, spd: k.spd, rows: [] }); byGrad.get(k.g).rows.push(s); });
     const grads = [...byGrad.entries()].sort((a, b) => LC_ORDER.indexOf(a[1].lc) - LC_ORDER.indexOf(b[1].lc) || b[1].spd - a[1].spd);
-    _setSelect('fbar-gradient', _optionsHtml([['', 'All gradients']].concat(grads.map(([g, o]) =>
-        [g, `${gradLabel(o.lc, o.spd, o.rows)} · ${fmtN(o.rows.length)}`])), view.gradient), view.gradient);
+    _setSelect('fbar-gradient', _optionsHtml([['', withN('All gradients', nIf({ gradient: '' }, allData))]].concat(grads.map(([g, o]) =>
+        [g, withN(gradLabel(o.lc, o.spd, o.rows), nIf({ gradient: g }, allData))])), view.gradient), view.gradient);
     // Amount: fixed buckets; "not recorded" only when some run is.
-    const byAmt = _countBy(ig('amount'), s => rowKey(s).a);
-    const amtTotal = [...byAmt.values()].reduce((a, b) => a + b, 0);
-    const amtOpts = AMOUNT_OPTS.filter(([v]) => v !== 'unk' || byAmt.get('unk') || view.amount === 'unk')
-        .map(([v, label]) => [v, `${label} · ${fmtN(v === 'all' ? amtTotal : (byAmt.get(v) || 0))}`]);
+    const nAmt = Object.fromEntries(AMOUNT_OPTS.map(([v]) => [v, nIf({ amount: v }, allData)]));
+    const amtOpts = AMOUNT_OPTS.filter(([v]) => v !== 'unk' || nAmt.unk || view.amount === 'unk')
+        .map(([v, label]) => [v, withN(label, nAmt[v])]);
     const amtHtml = _optionsHtml(amtOpts, view.amount);
     _setSelect('fbar-amount', amtHtml, view.amount);
     // The per-chart amount selects are the same control (mirrors).
     ['config-amount-filter', 'violin-amount-filter', 'spd-amount-filter'].forEach(id => _setSelect(id, amtHtml, view.amount));
     // Column: only recorded columns ("Unknown" is not a column, D5).
     const cols = [..._countBy(ig('column').filter(s => rowKey(s).c), s => rowKey(s).c).entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    _setSelect('fbar-column', _optionsHtml([['', 'Any column']].concat(cols.map(([c, n]) => [c, `${columnLabelOf(c)} · ${fmtN(n)}`])), view.column), view.column);
+    _setSelect('fbar-column', _optionsHtml([['', withN('Any column', nIf({ column: '' }, allData))]]
+        .concat(cols.map(([c]) => [c, withN(columnLabelOf(c), nIf({ column: c }, allData))])), view.column), view.column);
     // Runs in view, the phone summary and the reset button.
     const inView = viewRows();
     const nLabs = labCount(inView);
@@ -4690,9 +4726,12 @@ function _setText(id, text) { const el = document.getElementById(id); if (el) el
 function updateStats() {
     // Every tile is the page's own array (allData): duplicate copies removed,
     // held-back runs left out, then the QC standard (D2, D8).
-    const sampleLabel = view.sample === 'all' ? 'all QC standards' : view.sample.toUpperCase();
+    // The tile counts the whole QC standard; the filter bar's "runs in view"
+    // is the part of it the panels show, and the subtext says so.
+    const sampleLabel = view.sample === 'all' ? 'All QC standards' : (SAMPLE_LABEL[view.sample] || view.sample.toUpperCase());
     _setText('stat-submissions', fmtN(allData.length));
-    _setText('stat-runs-sub', allData.length ? `${sampleLabel} runs, one per acquisition` : `no ${sampleLabel} runs yet`);
+    _setText('stat-runs-sub', allData.length ? `${sampleLabel} runs, every mode and amount; the filter bar below narrows the view`
+                                             : `no ${sampleLabel} runs yet`);
     const nLabs = labCount(allData);
     const names = new Set(allData.map(s => s.display_name).filter(Boolean));
     _setText('stat-labs', String(nLabs));
@@ -5327,8 +5366,10 @@ function renderCommunityTIC() {
 // ── Lab trend vs. reference (community redesign B3) ─────────────────
 // The rebuilt "Your Lab vs. Community": one lab's runs in one cohort (the
 // filter bar's B2 key) over time. Problems are judged against a baseline
-// fixed from the lab's own first runs in the cohort, the median ± 3 MAD of
-// its first 30 runs, drawn once there are 20. Later runs never feed it, so a
+// fixed from the lab's own first runs in the cohort: the median ± 3 robust
+// SD (1.4826 × MAD, the usual robust-σ control-chart convention) of its
+// first 30 runs. It is drawn from 20 runs, provisional (every run so far,
+// nothing flagged) until the 30th, then fixed. Later runs never feed it, so a
 // bad stretch is ringed instead of widening the band; the median of the
 // last 15 runs shows slow drift. The reference is the same cohort WITHOUT the
 // selected lab, as percentile bands: the old band was mean ± 1/2/3 σ over
@@ -5366,12 +5407,15 @@ function trendOptions() {
     const labs = new Map();
     cohorts.forEach(c => {
         const per = new Map();
+        // Only dated runs count: an undated run can never be plotted.
         c.rows.forEach(s => {
             const name = labOf(s), t = _instantMs(s);
+            if (!isFinite(t)) return;
             let e = per.get(name);
             if (!e) per.set(name, e = { n: 0, recent: 0, last: -Infinity });
             e.n++;
-            if (isFinite(t)) { if (t >= cut) e.recent++; if (t > e.last) e.last = t; }
+            if (t >= cut) e.recent++;
+            if (t > e.last) e.last = t;
         });
         per.forEach((e, name) => {
             if (e.n < TREND_MIN_RUNS) return;
@@ -5421,7 +5465,15 @@ function renderLabTrend() {
     if (!cohs.some(o => o.c.key === trendState.cohort)) trendState.cohort = cohs[0].c.key;
     if (labSel) {
         labSel.disabled = false;
-        labSel.innerHTML = labs.map(([name, L]) => `<option value="${esc(name)}">${esc(name)}${isFinite(L.last) ? ` (latest ${esc(dayText(L.last))})` : ''}</option>`).join('');
+        // "Anonymous Lab" is the relay's name for every unclaimed install, so
+        // it may be several labs; the picker says so.
+        labSel.innerHTML = labs.map(([name, L]) => {
+            const latest = isFinite(L.last) ? `latest ${dayText(L.last)}` : '';
+            const text = name === DEFAULT_LAB_NAME
+                ? `${name} (unclaimed; may be several labs)${latest ? ', ' + latest : ''}`
+                : `${name}${latest ? ` (${latest})` : ''}`;
+            return `<option value="${esc(name)}">${esc(text)}</option>`;
+        }).join('');
         labSel.value = lab;
     }
     if (cohSel) {
@@ -5438,12 +5490,16 @@ function renderLabTrend() {
         el.innerHTML = `<div class="empty-state" style="padding:2rem">${esc(lab)} has no ${esc(M.word(c.track))} values in this cohort. Pick another metric.</div>`;
         return;
     }
-    // Fixed own baseline: later runs are judged against it and never feed it.
+    // Own baseline, the median ± 3 robust SD (1.4826 × MAD) of the lab's first
+    // TREND_BASE_WIN runs: later runs are judged against it and never feed it.
+    // From TREND_BASE_MIN runs until the TREND_BASE_WIN-th it is provisional:
+    // every run so far, moving as runs arrive, and nothing is judged.
     let base = null;
     if (mine.length >= TREND_BASE_MIN) {
         const nRef = Math.min(TREND_BASE_WIN, mine.length), ref = sortedNums(mine.slice(0, nRef).map(p => p.v));
-        const md = quant(ref, 0.5), mad = quant(sortedNums(ref.map(x => Math.abs(x - md))), 0.5) * 1.4826;
-        base = { md, lo: md - 3 * mad, hi: md + 3 * mad, n: nRef, ta: mine[0].t, tb: mine[nRef - 1].t };
+        const md = quant(ref, 0.5), rsd = quant(sortedNums(ref.map(x => Math.abs(x - md))), 0.5) * 1.4826;
+        base = { md, lo: md - 3 * rsd, hi: md + 3 * rsd, n: nRef, ta: mine[0].t, tb: mine[nRef - 1].t,
+                 provisional: nRef < TREND_BASE_WIN };
         mine.forEach((p, i) => { if (i >= nRef) { p.judged = true; p.out = p.v < base.lo || p.v > base.hi; } });
     }
     // The median of the last TREND_RECENT runs, as a line.
@@ -5457,9 +5513,13 @@ function renderLabTrend() {
     const nOtherLabs = labCount(otherPts.map(p => p.s));
     const msgs = [];
     if (!base) msgs.push(`<b>Not enough runs for a baseline yet:</b> ${mine.length} of the ${TREND_BASE_MIN} needed. The runs are plotted, but nothing is flagged.`);
+    else if (base.provisional) {
+        msgs.push(`<b>Provisional baseline:</b> ${base.n} of the ${TREND_BASE_WIN} runs that fix it. Until then it is `
+            + 'built from every run so far and moves as runs arrive, and nothing is flagged.');
+    }
     if (others.length < TREND_MIN_REF) {
         msgs.push(`<b>No other lab in this cohort yet.</b> The reference band appears when one joins.`
-            + (base ? ` Until then the gold band, fixed from ${esc(lab)}'s own first runs in this cohort, is what flags problems.` : ''));
+            + (base ? ` Until then the gold band, from ${esc(lab)}'s own ${base.provisional ? 'runs so far' : 'first runs'} in this cohort, is what flags problems.` : ''));
     }
     if (note) note.innerHTML = msgs.join(' ');
     if (!shown.length) {
@@ -5481,9 +5541,12 @@ function renderLabTrend() {
     }
     if (base) {
         const ta = Math.max(t0, base.ta - 2 * DAY_MS), tb = base.tb + 2 * DAY_MS;
-        traces.push(rect(Math.max(0, base.lo), base.hi, X(ta), x1, 'rgba(255,191,0,0.15)', 'Baseline ± 3 MAD', 'rgba(255,191,0,0.55)'));
+        const pre = base.provisional ? 'Provisional baseline' : 'Baseline';
+        traces.push(rect(Math.max(0, base.lo), base.hi, X(ta), x1, 'rgba(255,191,0,0.15)',
+            `${pre} ± 3 robust SD (1.4826 × MAD)`, 'rgba(255,191,0,0.55)'));
         traces.push({ type: 'scatter', mode: 'lines', x: [X(ta), x1], y: [base.md, base.md], hoverinfo: 'skip',
-            line: { color: '#FFBF00', width: 2 }, name: `Baseline: median of the lab's first ${base.n} runs here` });
+            line: { color: '#FFBF00', width: 2 },
+            name: base.provisional ? `${pre}: median of the lab's ${base.n} runs so far` : `${pre}: median of the lab's first ${base.n} runs here` });
         if (tb > t0) {
             shapes.push({ type: 'rect', xref: 'x', yref: 'paper', x0: X(ta), x1: X(tb), y0: 0, y1: 1, layer: 'below',
                 fillcolor: 'rgba(255,191,0,0.06)', line: { width: 0 } });
@@ -5529,8 +5592,12 @@ function renderLabTrend() {
     let s = `<b>${esc(lab)}</b> · ${esc(cohortTitle(c))} · ${shown.length} run${shown.length === 1 ? '' : 's'} shown; `
         + `the cohort holds ${runsLabsText(c.rows.length, labCount(c.rows))}. `;
     if (base) {
-        s += `Baseline <b>${M.fmt(base.md)}</b> (band ${M.fmt(Math.max(0, base.lo))}–${M.fmt(base.hi)}), fixed from the lab's first ${base.n} runs here, `
-            + `${esc(dayText(base.ta))} – ${esc(dayText(base.tb))}. `;
+        const band = `median ± 3 robust SD (1.4826 × MAD): ${M.fmt(Math.max(0, base.lo))}–${M.fmt(base.hi)}`;
+        s += base.provisional
+            ? `Provisional baseline <b>${M.fmt(base.md)}</b> (${band}) from the lab's ${base.n} runs here so far, `
+              + `${esc(dayText(base.ta))} – ${esc(dayText(base.tb))}; it is fixed, and later runs judged against it, from the ${TREND_BASE_WIN}th run. `
+            : `Baseline <b>${M.fmt(base.md)}</b> (${band}), fixed from the lab's first ${base.n} runs here, `
+              + `${esc(dayText(base.ta))} – ${esc(dayText(base.tb))}. `;
         if (judged.length) s += `<b>${nOut}</b> of ${fmtN(judged.length)} later run${judged.length === 1 ? '' : 's'} shown fell outside it. `;
         if (last.rm != null && base.md) {
             const d = (last.rm - base.md) / base.md * 100;
@@ -6217,13 +6284,19 @@ function renderViolin() {
     const vendors = [...new Set(cohorts.map(g => vendorOf(g[0])))];
     // Horizontal: one empty row above each vendor group carries its label.
     const P = (i) => horiz ? i + 1 + vendors.indexOf(vendorOf(cohorts[i][0])) : i;
-    // Upright ticks get one short line each (model, LC, SPD or run length),
-    // so neighbouring labels do not run into each other.
+    // Upright ticks get one short line each (model, LC or gradient, SPD, run
+    // length), so neighbouring labels do not run into each other. Sideways
+    // (phones) a nanoLC tick takes a second line for its gradient and run.
     const tick = (c) => {
-        const g = gradShort(c.lc, c.spd, c.rows);
-        const gl = horiz ? [g] : c.lc === 'evosep' ? [EVOSEP_METHODS[c.spd].replace(/ \d+ SPD$/, ''), `${c.spd} SPD`] : g.split(' · ');
-        const parts = [shortModel(c.model)].concat(gl, [mixed ? c.track : '', amounts ? AMOUNT_LABEL[c.amt] : '']).filter(Boolean);
-        return parts.map(esc).join(horiz ? ' · ' : '<br>');
+        const g = gradShort(c.lc, c.spd, c.rows).split(' · ');
+        const tail = [mixed ? c.track : '', amounts ? AMOUNT_LABEL[c.amt] : ''];
+        if (horiz) {
+            const head = [shortModel(c.model), c.lc === 'nanolc' ? g[1] : g.join(' · ')].concat(tail).filter(Boolean);
+            const more = c.lc === 'nanolc' ? [g[0]].concat(g.slice(2)) : [];
+            return head.map(esc).join(' · ') + (more.length ? '<br>' + more.map(esc).join(' · ') : '');
+        }
+        const gl = c.lc === 'evosep' ? [EVOSEP_METHODS[c.spd].replace(/ \d+ SPD$/, ''), `${c.spd} SPD`] : g;
+        return [shortModel(c.model)].concat(gl, tail).filter(Boolean).map(esc).join('<br>');
     };
 
     const violinTraces = cohorts.map((g, i) => ({
@@ -6579,7 +6652,10 @@ function modeBadge(m) {
 // never changes a percentile), each with its name for the Cohort column.
 function tableCohorts() {
     const m = new Map();
-    cohortsOf(viewRows()).forEach(c => { c.label = `${cohortGradLabel(c)} · ${AMOUNT_LABEL[c.amt]}`; m.set(c.key, c); });
+    // Under a column filter the cohort holds only that column's runs, so its
+    // name (and so the percentile's "n=") says the column too.
+    const col = view.column ? ` · ${columnLabelOf(view.column)}` : '';
+    cohortsOf(viewRows()).forEach(c => { c.label = `${cohortGradLabel(c)} · ${AMOUNT_LABEL[c.amt]}${col}`; m.set(c.key, c); });
     return m;
 }
 

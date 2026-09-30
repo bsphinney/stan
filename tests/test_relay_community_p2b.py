@@ -280,11 +280,12 @@ def test_b2_cohort_key(client, tmp_path):
         ["evosep", "evosep:60", "Evosep 60 SPD", "Evosep 60 SPD"],
         ["evosep", "evosep:40", "Evosep Whisper 40 SPD", "Evosep Whisper 40 SPD"],
         ["evosep_unv", "evosep_unv:46", "Evosep, 30 min run (SPD 46 unverified)", "Evosep 46 SPD (unverified)"],
-        ["nanolc", "nanolc:38", "44 min run (~38 SPD)", "~38 SPD · 44 min"],
-        ["nanolc", "nanolc:38", "44 min run (~38 SPD)", "~38 SPD · 44 min"],          # no LC, not an Evosep SPD
+        # nanoLC leads with the gradient its SPD implies, 1440 / (1.25 × 38) = 30 min, then the stored run length
+        ["nanolc", "nanolc:38", "~30 min gradient (38 SPD) · 44 min run", "~30 min gradient · 38 SPD · 44 min run"],
+        ["nanolc", "nanolc:38", "~30 min gradient (38 SPD) · 44 min run", "~30 min gradient · 38 SPD · 44 min run"],  # no LC, not an Evosep SPD
         ["unrec", "unrec:60", "60 SPD, LC not recorded (22 min run)", "60 SPD, LC not recorded"],
         ["nospd", "nospd:0", "SPD not recorded", "SPD not recorded"],
-        ["nanolc", "nanolc:38", "~38 SPD", "~38 SPD"],
+        ["nanolc", "nanolc:38", "~30 min gradient (38 SPD)", "~30 min gradient · 38 SPD"],
     ]
     assert amounts == ["unk", "unk", "le25", "le25", "50", "50", "50", "100_250", "100_250", "gt250", "gt250"]
     assert lens == "44 min run"          # the 10th-90th percentile of the stored lengths
@@ -535,14 +536,14 @@ def test_lab_trend_matches_the_cohort_and_excludes_the_lab(client, tmp_path):
     # reference: Lab B's 7 runs, never Lab A's own or Anonymous Lab's 90,000s
     assert a["bands"] and max(hi for _, hi in a["bands"]) <= 36000 and min(lo for lo, _ in a["bands"]) >= 30000
     assert "Other labs, 10–90th pct (7 runs · 1 lab)" in a["names"]
-    assert "Baseline ± 3 MAD" in a["names"] and "Median of the last 15 runs" in a["names"]
+    assert "Baseline ± 3 robust SD (1.4826 × MAD)" in a["names"] and "Median of the last 15 runs" in a["names"]
     assert a["out"] == 1 and a["ytitle"] == "Precursors (1% FDR)"
     assert a["note"] == ""
     assert "Baseline <b>40,200</b>" in a["sum"] and "<b>1</b> of 2 later runs shown fell outside it" in a["sum"]
     assert "the cohort holds 45 runs · 2 labs" in a["sum"]
     # Lab B: its reference is Lab A (32 runs), and it has no baseline yet
     b = got["b"]
-    assert "Other labs, 10–90th pct (32 runs · 1 lab)" in b["names"] and "Baseline ± 3 MAD" not in b["names"]
+    assert "Other labs, 10–90th pct (32 runs · 1 lab)" in b["names"] and not any("aseline" in n for n in b["names"])
     assert "7 of the 20 needed" in b["note"]
     # Anonymous Lab: the named labs are its reference
     assert "Other labs, 10–90th pct (39 runs · 2 labs)" in got["anon"]["names"]
@@ -604,3 +605,192 @@ def test_a_filter_change_over_3400_rows_is_quick(client, tmp_path):
     ms, inview = _run(client, tmp_path, scenario)
     assert inview.startswith("<b>3,400</b> runs in view")
     assert ms < 4000, f"8 filter changes over 3,400 rows took {ms} ms"
+
+
+# ── Review fixes before the P2b deploy (2026-09-30) ──────────────────
+
+def _count_rows() -> list[dict]:
+    """_mixed_rows() plus low-load, yeast and K562 runs, so picking an option
+    can clear a gradient, an instrument or a column through the cascade."""
+    rows = _mixed_rows()
+    rows += [_row(700 + i, amount_ng=10, n_precursors=30000 + i) for i in range(2)]                 # HT Evosep 100, ≤25 ng
+    rows += [_row(720 + i, sample_type="yeast") for i in range(3)]                                   # yeast, HT Evosep 100
+    rows += [_nano(740 + i, sample_type="yeast") for i in range(2)]                                  # yeast, Exploris
+    rows += [_row(760 + i, sample_type="k562", spd=60, gradient_length_min=21) for i in range(2)]    # K562, HT Evosep 60
+    return rows
+
+
+@needs_node
+def test_every_option_count_is_the_view_it_leads_to(client, tmp_path):
+    """Review finding 1: a count must be what the page shows after picking it,
+    cascade included ("DDA · 0" once showed 36 after clearing the gradient)."""
+    starts = [{}, {"gradient": "evosep:60"}, {"model": "timsTOF HT", "column": "pepsep max 10cm"},
+              {"mode": "all", "amount": "all"}, {"sample": "yeast"}, {"model": "Orbitrap Exploris 480", "amount": "le25"},
+              {"mode": "dda", "gradient": "evosep:100"}]
+    scenario = f"""(() => {{
+        setSubmissions({json.dumps(_count_rows())}); renderFilterBar();
+        const inView = () => +els['fbar-inview'].innerHTML.match(/<b>([\\d,]+)<\\/b>/)[1].replace(/,/g, '');
+        const count = (label) => +label.split(' · ').pop().replace(/,/g, '');
+        const restore = (v) => {{ Object.assign(view, v); applyFilters(); renderFilterBar(); }};
+        const opts = (id) => [...els[id].innerHTML.matchAll(/<option value="([^"]*)"[^>]*>([^<]*)<\\/option>/g)].map(m => [m[1], m[2]]);
+        const bad = [], seen = {{}};
+        let checks = 0;
+        for (const start of {json.dumps(starts)}) {{
+            restore({{ ...VIEW_DEFAULT }}); setView(start); const base = {{ ...view }};
+            seen[JSON.stringify(start)] = base;
+            const controls = [['sample', 'sample-type-select'], ['model', 'fbar-model'], ['gradient', 'fbar-gradient'],
+                              ['amount', 'fbar-amount'], ['column', 'fbar-column']];
+            for (const [field, id] of controls) {{
+                restore(base);
+                for (const [value, label] of opts(id)) {{
+                    restore(base); setView({{ [field]: value }}); checks++;
+                    if (count(label) !== inView()) bad.push([JSON.stringify(start), field, value, label, inView(), {{ ...view }}]);
+                }}
+            }}
+            for (const m of ['dia', 'dda', 'all']) {{
+                restore(base); const n = +els['fbar-n-' + m].textContent.replace(/,/g, '');
+                setView({{ mode: m }}); checks++;
+                if (n !== inView()) bad.push([JSON.stringify(start), 'mode', m, n, inView(), {{ ...view }}]);
+            }}
+        }}
+        return {{ bad, checks, seen }};
+    }})()"""
+    got = _run(client, tmp_path, scenario)
+    assert got["bad"] == [], got["bad"][:5]
+    assert got["checks"] > 100
+    # the starting views are what the bar resolves them to (a cleared facet shows here)
+    assert got["seen"]['{"gradient":"evosep:60"}']["gradient"] == "evosep:60"
+    assert got["seen"]['{"mode":"dda","gradient":"evosep:100"}']["gradient"] == "evosep:100"
+    assert got["seen"]['{"model":"Orbitrap Exploris 480","amount":"le25"}']["model"] == ""   # no Exploris run at ≤25 ng
+
+
+@needs_node
+def test_option_counts_follow_the_cascade_in_the_cases_the_review_found(client, tmp_path):
+    scenario = f"""(() => {{
+        setSubmissions({json.dumps(_count_rows())}); setView({{ gradient: 'evosep:60' }});
+        const label = (id, v) => [...els[id].innerHTML.matchAll(/<option value="([^"]*)"[^>]*>([^<]*)<\\/option>/g)].find(m => m[1] === v)[2];
+        return [els['fbar-n-dda'].textContent, label('fbar-amount', 'le25'), label('fbar-model', 'timsTOF HT'),
+                label('fbar-model', ''), label('fbar-gradient', '')];
+    }})()"""
+    dda, le25, ht, all_models, all_grads = _run(client, tmp_path, scenario)
+    assert dda == "5"                              # picking DDA clears Evosep 60 (DIA only) and shows the 5 DDA runs
+    assert le25 == "≤25 ng · 2"                    # likewise the two 10 ng runs
+    assert ht == "timsTOF HT · 6" and all_models == "All instruments · 6"   # under Evosep 60: its 6 runs
+    assert all_grads == "All gradients · 28"
+
+
+def test_page_text_after_review(client):
+    html = _page(client)
+    main = _main_script(html)
+    # 2: the band is a robust SD, named so wherever it is described
+    assert "&plusmn; 3 MAD" not in html and "± 3 MAD" not in main
+    trend = html[html.index('<div class="section" id="trend">'):html.index("<!-- Evosep PEG Watch (v1.2.0).")]
+    assert "median\n        &plusmn; 3 robust SD (1.4826 &times; MAD) of its first 30 runs" in trend
+    assert "provisional until there are 30" in trend
+    assert "`${pre} ± 3 robust SD (1.4826 × MAD)`" in main
+    # 3: the Explorer intro names Depth by Amount as the one chart that pools DIA and DDA
+    explore = html[html.index('<div class="section" id="explore">'):html.index("<!-- Best Configurations (B6)")]
+    assert "with one\n        exception: Depth by Amount Loaded puts precursors and PSMs on one axis" in explore
+    assert "DIA and DDA are never pooled" not in explore
+    # 8: every reason a cohort is not ranked
+    where = html[html.index('<div class="section" id="where">'):html.index('<div class="section" id="join">')]
+    assert "fewer than 5 runs,\n        records no SPD, records no LC at an SPD that is also an Evosep method" in where
+
+
+@needs_node
+def test_lab_picker_names_anonymous_lab_and_counts_dated_runs(client, tmp_path):
+    """4: "Anonymous Lab" is every unclaimed install. 5: an undated run is never
+    plotted, so it never counts toward a lab's 5 runs."""
+    rows = _trend_rows()
+    rows += [_row(800 + i, display_name="Lab C", spd=60, gradient_length_min=21, run_date=f"2026-02-{1 + i:02d}T10:00:00Z")
+             for i in range(4)]
+    rows += [_row(820 + i, display_name="Lab C", spd=60, gradient_length_min=21, run_date=None, submitted_at=None)
+             for i in range(3)]                                                                  # 4 dated + 3 undated
+    rows += [_row(840 + i, display_name="Lab D", spd=60, gradient_length_min=21, run_date=f"2026-02-{1 + i:02d}T11:00:00Z")
+             for i in range(5)]
+    rows += [_row(860 + i, display_name="Lab D", spd=60, gradient_length_min=21, run_date=None, submitted_at=None)
+             for i in range(2)]                                                                  # 5 dated + 2 undated
+    scenario = f"""(() => {{
+        setSubmissions({json.dumps(rows)}); renderLabTrend();
+        const labs = els['lab-select'].innerHTML;
+        pickTrend('lab', 'Lab D');
+        return [labs, els['lab-cohort'].innerHTML];
+    }})()"""
+    labs, cohorts = _run(client, tmp_path, scenario)
+    assert '<option value="Anonymous Lab">Anonymous Lab (unclaimed; may be several labs), latest ' in labs
+    assert ">Lab A (latest " in labs
+    assert "Lab C" not in labs                  # 4 dated runs: not listed
+    assert ">Lab D (latest " in labs and "Evosep 60 SPD · 50 ng (5 runs)" in cohorts
+
+
+@needs_node
+def test_a_baseline_is_provisional_until_30_runs(client, tmp_path):
+    """6: from 20 to 29 runs the baseline is every run so far, so it moves and
+    nothing is judged; the panel says provisional, not fixed."""
+    rows = [_row(i, spd=60, gradient_length_min=21, run_date=f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}T10:00:00Z",
+                 n_precursors=40000 + (i % 5) * 100) for i in range(25)]
+    scenario = f"""(() => {{
+        setSubmissions({json.dumps(rows)}); renderLabTrend();
+        const p = plots.filter(p => p.id === 'chart-lab-trend').slice(-1)[0];
+        return [p.traces.map(t => t.name), els['lab-trend-note'].innerHTML, els['lab-trend-sum'].innerHTML];
+    }})()"""
+    names, note, summary = _run(client, tmp_path, scenario)
+    assert "Provisional baseline ± 3 robust SD (1.4826 × MAD)" in names
+    assert "Provisional baseline: median of the lab's 25 runs so far" in names
+    assert "Outside the baseline band" not in names
+    assert "<b>Provisional baseline:</b> 25 of the 30 runs that fix it" in note and "nothing is flagged" in note
+    assert "from Clogged PeakTail's own runs so far in this cohort" in note
+    assert "Provisional baseline <b>40,200</b> (median ± 3 robust SD (1.4826 × MAD): " in summary
+    assert "from the 30th run" in summary and "fixed from" not in summary
+
+
+@needs_node
+def test_nanolc_names_lead_with_the_gradient_everywhere(client, tmp_path):
+    """9: "~30 min gradient (38 SPD) · 44 min run", the gradient 1440 / (1.25 × 38)
+    implies first, on the cards, Best Configurations, the violins, the table
+    and the lab-trend cohort picker; the cohort key is unchanged."""
+    name = "~30 min gradient (38 SPD) · 44 min run"
+    scenario = f"""(() => {{
+        setSubmissions({json.dumps(_mixed_rows())}); renderFilterBar(); renderPanels(null);
+        setView({{ model: 'Orbitrap Exploris 480' }});
+        const violin = plots.filter(p => p.id === 'chart-violin').slice(-1)[0];
+        const ticks = violin.layout.xaxis.ticktext;
+        return [els['ref-ranges-container'].innerHTML, els['config-leaderboard'].innerHTML, ticks,
+                els['table-container'].innerHTML, els['lab-cohort'].innerHTML, els['fbar-gradient'].innerHTML,
+                rowKey(allData.find(s => s.instrument_model === 'Orbitrap Exploris 480')).g];
+    }})()"""
+    cards, best, ticks, table, picker, grads, key = _run(client, tmp_path, scenario)
+    assert f"<h4>{name}</h4>" in cards
+    assert f">{name}</td>" in best
+    assert ticks == ["Exploris 480<br>~30 min gradient<br>38 SPD<br>44 min run"]
+    assert f"{name} · 50 ng" in table
+    assert f"Exploris 480 · DIA · {name} · 50 ng (6 runs)" in picker
+    assert f"{name} · 6</option>" in grads
+    assert key == "nanolc:38"
+    assert "44 min run (~38 SPD)" not in cards + best + table + picker
+
+
+@needs_node
+def test_table_cohort_names_the_column_under_a_column_filter(client, tmp_path):
+    """7: under a column filter the percentile is among that column's runs, so
+    the cohort says so."""
+    scenario = f"""(() => {{
+        setSubmissions({json.dumps(_mixed_rows())}); renderFilterBar();
+        renderTable(); const before = els['table-container'].innerHTML;
+        setView({{ column: 'pepsep max 10cm' }});
+        return [before, els['table-container'].innerHTML];
+    }})()"""
+    before, after = _run(client, tmp_path, scenario)
+    assert "Evosep 100 SPD · 50 ng <span" in before and "PepSep" not in before.split("<tbody>")[1].split("Evosep 100 SPD · 50 ng")[1][:40]
+    assert "Evosep 100 SPD · 50 ng · PepSep MAX 10cm <span class=\"nr-why\">(n=5)</span>" in after
+
+
+@needs_node
+def test_stats_tile_says_it_is_the_whole_standard(client, tmp_path):
+    """10: the tile counts every mode and amount; the bar's count is the view."""
+    rows = _mixed_rows()
+    scenario = f"""(() => {{ setSubmissions({json.dumps(rows)}); updateStats(); renderFilterBar();
+        return [els['stat-submissions'].textContent, els['stat-runs-sub'].textContent, els['fbar-inview'].innerHTML]; }})()"""
+    tile, sub, inview = _run(client, tmp_path, scenario)
+    assert tile == "38" and inview.startswith("<b>28</b> runs in view")
+    assert sub == "HeLa runs, every mode and amount; the filter bar below narrows the view"

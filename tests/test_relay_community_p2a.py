@@ -258,7 +258,7 @@ def test_reference_cards_grouped_by_model_with_sparse_folded(client, tmp_path):
     cannot be ranked folded, and "Unknown" never a column.
 
     P2b: each card is one cohort of the page's one cohort key (B2), titled by
-    its gradient ("Evosep 100 SPD", "44 min run (~38 SPD)") rather than P2a's
+    its gradient ("Evosep 100 SPD", "~30 min gradient (38 SPD) · 44 min run") rather than P2a's
     "gradients seen: 46–60 SPD" over a throughput tier; an Evosep run at a
     non-Evosep SPD is "SPD unverified" and not ranked."""
     html = _run(client, tmp_path, f"allData = {json.dumps(_card_rows())}; view.mode = 'all'; renderRefRanges(); els['ref-ranges-container'].innerHTML")
@@ -285,8 +285,8 @@ def test_reference_cards_grouped_by_model_with_sparse_folded(client, tmp_path):
     assert "not ranked: recorded as Evosep, but 46 SPD is not an Evosep method (SPD unverified)" in ht
     # a model with only unranked cohorts opens its fold, DIA and DDA apart
     assert "<div class=\"refgrid\">" not in ex and "Only 2 not-ranked cohorts (5 runs)" in ex
-    assert "DIA · 44 min run (~38 SPD) · 50 ng</b>" in ex and "3 runs · 1 lab · precursors" in ex
-    assert "DDA · 44 min run (~38 SPD) · 50 ng</b>" in ex and "2 runs · 1 lab · PSMs" in ex
+    assert "DIA · ~30 min gradient (38 SPD) · 44 min run · 50 ng</b>" in ex and "3 runs · 1 lab · precursors" in ex
+    assert "DDA · ~30 min gradient (38 SPD) · 44 min run · 50 ng</b>" in ex and "2 runs · 1 lab · PSMs" in ex
     assert "IPS" not in html
 
 
