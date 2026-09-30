@@ -43,9 +43,10 @@ SECRET_PRINT = "feedfacecafebeef"
 
 # ── server: SPACE_VERSION ────────────────────────────────────────────
 
-def test_space_version_is_1_2_2(client):
-    assert client.get("/api/version").json()["version"] == "1.2.3"
-    assert "community site v1.2.3" in _page(client)
+def test_space_version(client):
+    # P1 shipped as 1.2.2; P2a (tests/test_relay_community_p2a.py) is 1.3.0.
+    assert client.get("/api/version").json()["version"] == "1.3.0"
+    assert "community site v1.3.0" in _page(client)
 
 
 # ── server: D4, no file names in public responses ────────────────────
@@ -230,7 +231,8 @@ def test_page_text_p1(client):
     assert ("Today essentially every run here comes from one facility, the UC Davis Proteomics Core "
             "(timsTOF HT, Exploris 480, Fusion Lumos). The ranges below are that facility's "
             "longitudinal ranges until more labs join.") in html
-    assert "3,800+" not in html and 'id="banner-runs"' in html
+    # P2a drops the banner: the stats row carries the computed count.
+    assert "3,800+" not in html and "Seeded with" not in html
     assert "established by the community" not in html
     assert "First-of-its-kind" not in html and "cross-lab TIC" not in html
     # D3: IPS card is v2, badges and the two dropped charts are gone
@@ -360,19 +362,22 @@ def test_ordinals(client, tmp_path):
 
 @needs_node
 def test_reference_cards_keep_dda_out_of_dia_cohorts(client, tmp_path):
-    """REVIEW D1 / bug 1: 11 DDA rows in a DIA cohort made its card read "0 - 37,360"."""
+    """REVIEW D1 / bug 1: 11 DDA rows in a DIA cohort made its card read "0 - 37,360".
+
+    P2a markup: cards are <article class="rc">, the primary metric is the
+    large median, and a DIA card never carries PSMs."""
     rows = [_row(i) for i in range(12)] + [_dda(100 + i) for i in range(5)]
     html = _run(client, tmp_path, f"allData = {json.dumps(rows)}; renderRefRanges(); els['ref-ranges-container'].innerHTML")
-    cards = html.split('<div class="ref-card"')[1:]
+    cards = html.split('<article class="rc">')[1:]
     assert len(cards) == 2
     dia, dda = cards
-    assert "timsTOF HT · 100 SPD · 26-75 ng · DIA" in dia and "12 runs · 1 lab" in dia
-    assert "Precursors (IQR)" in dia and "PSMs" not in dia
-    m = re.search(r'Precursors \(IQR\)</span><span class="ref-range">([^<]+)<', dia)
+    assert "badge-dia" in dia and "12 runs · 1 lab" in dia
+    assert "median precursors" in dia and "PSMs" not in dia
+    m = re.search(r'Middle half <b>([^<]+)</b>', dia)
     assert m and not m.group(1).startswith("0"), m and m.group(1)
     # below 10 runs the values are listed, not a range; one lab gets the tag
-    assert "· DDA" in dda and "5 runs · 1 lab" in dda and "PSMs (values)" in dda
-    assert "40,000 · 40,100 · 40,200 · 40,300 · 40,400" in dda
+    assert "badge-dda" in dda and "5 runs · 1 lab" in dda and "median PSMs" in dda
+    assert "5 runs, listed: <b>40,000 · 40,100 · 40,200 · 40,300 · 40,400</b>" in dda
     assert dda.count("single-lab reference") == 1 and dia.count("single-lab reference") == 1
     # D3: no IPS on a card
     assert "IPS" not in html
@@ -420,7 +425,7 @@ def test_best_configurations_under_dda_rank_by_psms(client, tmp_path):
     got = _run(client, tmp_path, scenario)
     html = got["html"]
     assert got["sort"] == {"DIA": {"col": "precursors", "asc": False}, "DDA": {"col": "psms", "asc": False}}
-    assert got["badge"] == "HELA · DDA · sorted by psms"
+    assert got["badge"] == "HELA · 50 ng · DDA · sorted by psms"   # P2a: amount select (B6)
     assert ">Precursors" not in html and ">PSMs ▼" in html and ">Labs" in html
     order = re.findall(r'font-weight:600">([^<]+)</span>', html)
     assert order == ["timsTOF HT", "Orbitrap Exploris 480", "Orbitrap Fusion Lumos"]
@@ -473,7 +478,8 @@ def test_no_file_name_in_any_chart_hover(client, tmp_path):
     ids = {p["id"] for p in plots}
     assert {"chart-mass-acc", "chart-lab-trend", "chart-lj"} <= ids
     assert SECRET_NAME not in json.dumps(plots)
-    [scatter] = [t for p in plots if p["id"] == "chart-mass-acc" for t in p["traces"]]
+    # P2a: a point trace and a monthly-median line per model; the points carry the hover.
+    [scatter] = [t for p in plots if p["id"] == "chart-mass-acc" for t in p["traces"] if t["mode"] == "markers"]
     assert scatter["text"][0] == "timsTOF HT<br>2026-09-01<br>100 SPD"
     assert not ids & {"chart-ips", "chart-radar"}
 
@@ -570,15 +576,17 @@ def test_tic_dda_says_none_submitted_and_turns_its_controls_off(client, tmp_path
 
 
 @needs_node
-def test_banner_counts_the_whole_seed_and_the_tile_follows_the_filter(client, tmp_path):
-    """No hard-coded "3,800+" (D2), and no "Seeded with 0" under a QC standard
-    with no runs: the banner counts every standard, the tile the filtered set."""
+def test_stats_tile_follows_the_filter_and_the_note_counts_every_standard(client, tmp_path):
+    """No hard-coded "3,800+" (D2). P2a removed the banner: the runs tile is
+    the filtered set, and the D8 note under the stats row counts every standard."""
     rows = [_row(i) for i in range(3)] + [_row(10 + i, sample_type="yeast") for i in range(2)]
     scenario = f"""(() => {{
-        allDataRaw = {json.dumps(rows)}; applyFilters(); updateStats();
-        return [els['banner-runs'].textContent, els['stat-submissions'].textContent];
+        setSubmissions({json.dumps(rows)}); updateStats();
+        return [els['stat-submissions'].textContent, els['stats-note'].textContent];
     }})()"""
-    assert _run(client, tmp_path, scenario) == ["5", "3"]
+    tile, note = _run(client, tmp_path, scenario)
+    assert tile == "3"
+    assert "Built from all 5 submitted rows" in note
 
 
 @needs_node

@@ -37,7 +37,7 @@ import pyarrow.parquet as pq
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.2.3"
+SPACE_VERSION = "1.3.0"
 
 # Fields a submission row keeps on the server but that no public response
 # may carry (community redesign D4, decision 5). run_name is the raw file
@@ -1338,6 +1338,24 @@ async def index() -> HTMLResponse:
     # INDEX_HTML is a raw string (it contains JS braces), so the version
     # is substituted here rather than interpolated into the literal.
     return HTMLResponse(INDEX_HTML.replace("__SPACE_VERSION__", SPACE_VERSION))
+
+
+# The site's icon: a gold "S" on the page's navy (community redesign bug 21).
+# The index page carries it inline as a data URI; this route answers the
+# /favicon.ico request every other page (museum, arcade, /docs) makes, which
+# returned 404 before.
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+    '<rect width="64" height="64" rx="14" fill="#011a3a"/>'
+    '<text x="32" y="47" font-family="Arial,Helvetica,sans-serif" font-size="42" '
+    'font-weight="900" text-anchor="middle" fill="#FFBF00">S</text></svg>'
+)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> Response:
+    return Response(FAVICON_SVG, media_type="image/svg+xml",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/health")
@@ -3024,6 +3042,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <!-- PWA: makes the community site installable (Add to Home Screen -> standalone,
          chrome-free) just like the godmode dashboard. -->
     <link rel="manifest" href="/static/manifest.json">
+    <!-- Site icon inline, so the page never asks for /favicon.ico (it was a
+         404 on every load: redesign bug 21). Same gold "S" as /favicon.ico. -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2064%2064%22%3E%3Crect%20width%3D%2264%22%20height%3D%2264%22%20rx%3D%2214%22%20fill%3D%22%23011a3a%22%2F%3E%3Ctext%20x%3D%2232%22%20y%3D%2247%22%20font-family%3D%22Arial%2CHelvetica%2Csans-serif%22%20font-size%3D%2242%22%20font-weight%3D%22900%22%20text-anchor%3D%22middle%22%20fill%3D%22%23FFBF00%22%3ES%3C%2Ftext%3E%3C%2Fsvg%3E">
+    <!-- The standard name for the Apple-only meta below; Chrome warned that
+         apple-mobile-web-app-capable alone is deprecated. -->
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="STAN Community">
@@ -3071,9 +3095,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
         .header .subtitle { color: var(--text-secondary); margin-top: 0.5rem; font-size: 1.05rem; }
         .header .tagline { color: var(--text-muted); margin-top: 0.25rem; font-size: 0.95rem; font-style: italic; }
         .header .ucd-badge { display: inline-block; margin-top: 0.75rem; padding: 0.3rem 1rem; border: 1px solid var(--ucd-gold-border); border-radius: 999px; font-size: 0.8rem; color: var(--ucd-gold-dark); background: var(--ucd-gold-glow); }
-        .links { margin-top: 1rem; }
-        .links a { color: var(--ucd-gold); text-decoration: none; margin: 0 0.75rem; font-weight: 500; }
-        .links a:hover { text-decoration: underline; color: #ffe066; }
+        /* Purpose line and nav (redesign §A.1): Join first, then the in-page
+           anchors, then the other sites. */
+        .header .purpose { color: var(--text-primary); margin: 0.6rem auto 0; font-size: 1.05rem; max-width: 62ch; line-height: 1.45; }
+        .nav { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 0.4rem 1.1rem; margin-top: 1.1rem; }
+        .nav a { color: var(--ucd-gold); text-decoration: none; font-weight: 500; }
+        .nav a:hover { text-decoration: underline; color: #ffe066; }
+        .nav a.join { color: var(--ucd-blue-dark); background: var(--ucd-gold); padding: 0.1rem 0.85rem; border-radius: 999px; font-weight: 700; }
+        .nav a.join:hover { color: var(--ucd-blue-dark); background: #ffd54f; text-decoration: none; }
+        .nav .sep { width: 1px; height: 1.1em; background: var(--ucd-gold-border); }
         /* One-facility disclosure (community redesign D2, decision 8). */
         .disclose { margin: 1rem auto 0; max-width: 900px; border: 1px solid var(--ucd-gold-border); background: rgba(255,191,0,0.07); border-radius: 10px; padding: 0.6rem 1rem; color: var(--text-primary); font-size: 0.9rem; line-height: 1.5; text-align: left; display: grid; grid-template-columns: auto minmax(0,1fr); gap: 0.6rem; align-items: start; }
         .disclose::before { content: 'i'; width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--ucd-gold); color: var(--ucd-gold); display: grid; place-items: center; font-weight: 800; font-size: 0.75rem; font-style: italic; margin-top: 1px; }
@@ -3152,7 +3182,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
             th, td { padding: 0.5rem; }
             .chart-card { padding: 0.75rem; }
             .chart-desc { font-size: 0.8rem; line-height: 1.4; }
-            .links { gap: 0.4rem; flex-wrap: wrap; justify-content: center; }
+            .nav { gap: 0.35rem 0.8rem; }
+            .nav .sep { display: none; }
             select { max-width: 100%; }
         }
         /* Tap-to-fullscreen for charts (esp. phones) */
@@ -3170,6 +3201,111 @@ INDEX_HTML = r"""<!DOCTYPE html>
         .chart-card.fs > *:not([id^="chart-"]):not(.fs-btn) { display: none !important; }
         .chart-card.fs > div[id^="chart-"], .chart-card.fs .js-plotly-plot { height: 92vh !important; }
         body.fs-open { overflow: hidden; }
+
+        /* ── Community redesign P2a (relay 1.3.0) ──
+           Stats, glossary, reference cards, Join, Methods and the Explorer
+           notes. New class names only: the PEG section keeps its own #peg
+           rules, and the shared .section / .chart-card / .info-card rules it
+           uses are not changed here. Spec §A.1, §A.3 D5-D8, B6. */
+        .section { scroll-margin-top: 1rem; }
+        .chart-card > h3 { padding-right: 2.75rem; } /* clear the injected fs button, as #peg does */
+        .stats-block { max-width: 1200px; margin: 0 auto 1.75rem; scroll-margin-top: 1rem; }
+        .stats-block .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 1rem; margin-bottom: 0.9rem; }
+        .stats-block .stat-card { min-width: 0; padding: 1.1rem 1rem; }
+        @media (max-width: 560px) { .stats-block .stats-row { grid-template-columns: 1fr 1fr; gap: 0.6rem; } a.stat-card.stat-join { grid-column: 1 / -1; } .stats-block .stat-card .number { font-size: 1.6rem; } }
+        .stat-card .sub { color: var(--text-muted); font-size: 0.76rem; margin-top: 0.25rem; max-width: 24ch; margin-left: auto; margin-right: auto; line-height: 1.4; }
+        a.stat-card.stat-join { text-decoration: none; border-color: var(--ucd-gold); background: linear-gradient(180deg, rgba(255,191,0,0.14), rgba(255,191,0,0.04)); display: flex; flex-direction: column; justify-content: center; }
+        a.stat-card.stat-join .number { font-size: 1.3rem; }
+        a.stat-card.stat-join:hover { background: rgba(255,191,0,0.18); }
+        .stats-note { color: var(--text-muted); font-size: 0.82rem; text-align: center; line-height: 1.55; margin: 0 auto 0.9rem; max-width: 110ch; }
+        .stats-note:empty { display: none; }
+        .gloss { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 0.4rem 1.4rem; font-size: 0.84rem; color: var(--text-secondary); line-height: 1.5; }
+        .gloss b { color: var(--text-primary); margin-right: 0.3rem; }
+        .card code, .gloss code, .chart-desc code, .empty-note code, .description code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.88em; color: var(--text-primary); background: rgba(1,26,58,0.7); padding: 0.05rem 0.35rem; border-radius: 4px; white-space: nowrap; }
+        .card a, .chart-desc a, .empty-note a { color: var(--ucd-gold); }
+        /* Reference cards (D5): grouped by model, primary metric large, sparse folded. */
+        .mgroup { margin-top: 1rem; }
+        .mgroup > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding: 0.5rem 0.1rem; border-bottom: 1px solid var(--table-border); }
+        .mgroup > summary::-webkit-details-marker { display: none; }
+        .mgroup > summary::before { content: '\25B8'; color: var(--ucd-gold-dark); font-size: 0.85rem; transition: transform .15s; }
+        .mgroup[open] > summary::before { transform: rotate(90deg); }
+        .mgroup > summary h3 { font-size: 1.02rem; display: flex; align-items: center; gap: 0.5rem; color: var(--text-primary); }
+        .mgroup .mg-meta { color: var(--text-muted); font-size: 0.82rem; }
+        .mdot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; flex: none; }
+        .refgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 262px), 1fr)); gap: 0.75rem; margin-top: 0.75rem; }
+        .rc { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 0.9rem 0.95rem 0.8rem; display: grid; gap: 0.45rem; align-content: start; min-width: 0; }
+        .rc-top { display: flex; justify-content: space-between; gap: 0.5rem; align-items: baseline; }
+        .rc-top h4 { font-size: 0.9rem; color: var(--ucd-gold-dark); font-weight: 700; }
+        .rc-top .amt { font-size: 0.76rem; color: var(--text-secondary); white-space: nowrap; background: rgba(1,26,58,0.6); border-radius: 4px; padding: 1px 6px; }
+        .rc-sub { font-size: 0.78rem; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 0.3rem 0.5rem; align-items: center; overflow-wrap: anywhere; }
+        .rc-n { font-size: 0.78rem; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 0.25rem 0.55rem; align-items: center; }
+        .rc-n b { color: var(--text-primary); font-weight: 650; font-variant-numeric: tabular-nums; }
+        .rc-big { font-size: 1.75rem; font-weight: 750; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--text-primary); }
+        .rc-big small { font-size: 0.76rem; font-weight: 500; color: var(--text-muted); margin-left: 0.4rem; }
+        .rbar { position: relative; height: 12px; }
+        .rbar .w { position: absolute; top: 5px; height: 2px; background: var(--text-secondary); opacity: 0.55; border-radius: 1px; }
+        .rbar .b { position: absolute; top: 1px; height: 10px; border-radius: 3px; opacity: 0.6; }
+        .rbar .m { position: absolute; top: -2px; height: 16px; width: 3px; border-radius: 2px; background: var(--text-primary); }
+        .rbar .dotv { position: absolute; top: 3px; width: 6px; height: 6px; border-radius: 50%; margin-left: -3px; }
+        .rbar-ax { display: flex; justify-content: space-between; font-size: 0.66rem; color: var(--text-muted); margin-top: -0.2rem; font-variant-numeric: tabular-nums; }
+        .rc-iqr { font-size: 0.82rem; color: var(--text-secondary); overflow-wrap: anywhere; }
+        .rc-iqr b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+        .rc dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.2rem 0.6rem; font-size: 0.8rem; border-top: 1px solid var(--table-border); padding-top: 0.45rem; }
+        .rc dt { color: var(--text-muted); }
+        .rc dd { margin: 0; text-align: right; color: var(--text-primary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+        .libhi { font-size: 0.64rem; font-weight: 750; letter-spacing: 0.04em; text-transform: uppercase; color: var(--yellow); border: 1px solid rgba(251,191,36,0.5); padding: 0 5px; border-radius: 4px; margin-left: 4px; }
+        .sparse { margin-top: 0.6rem; }
+        .sparse > summary { cursor: pointer; color: var(--ucd-gold); font-size: 0.84rem; }
+        .sparse-list { display: grid; gap: 0.25rem; margin-top: 0.5rem; font-size: 0.82rem; color: var(--text-secondary); max-width: 860px; }
+        .sparse-list > div { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 0.6rem; padding: 0.25rem 0; border-bottom: 1px solid var(--table-border); }
+        .sparse-list b { color: var(--text-primary); font-weight: 600; }
+        .sparse-list span { overflow-wrap: anywhere; }
+        /* Join (D6) and Methods (D7 + D3) */
+        .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1rem 1.1rem; min-width: 0; }
+        .card > h3 { font-size: 0.95rem; color: var(--ucd-gold-dark); margin-bottom: 0.4rem; }
+        .card .sub { color: var(--text-secondary); font-size: 0.88rem; line-height: 1.6; margin-bottom: 0.6rem; }
+        .card .fine, .fine { color: var(--text-muted); font-size: 0.8rem; line-height: 1.5; }
+        .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 1rem; }
+        .stack { display: grid; gap: 1rem; }
+        .span-all { grid-column: 1 / -1; }
+        ol.steps { list-style: none; counter-reset: jstep; display: grid; gap: 0.75rem; margin: 0.5rem 0 0; }
+        ol.steps li { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 0.6rem; counter-increment: jstep; color: var(--text-secondary); font-size: 0.9rem; line-height: 1.55; }
+        ol.steps li::before { content: counter(jstep); width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--ucd-gold-dark); color: var(--ucd-gold); display: grid; place-items: center; font-weight: 750; font-size: 0.82rem; }
+        ol.steps b { color: var(--text-primary); display: block; }
+        .when { margin-top: 0.8rem; padding-top: 0.65rem; border-top: 1px solid var(--table-border); font-size: 0.86rem; color: var(--text-secondary); line-height: 1.55; }
+        .when b { color: var(--text-primary); }
+        .share { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 0.9rem; }
+        .share h4 { font-size: 0.74rem; letter-spacing: 0.09em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 0.4rem; }
+        .share ul { padding-left: 1.1rem; display: grid; gap: 0.2rem; font-size: 0.86rem; color: var(--text-primary); line-height: 1.45; }
+        .share .kept li, .share .no li { color: var(--text-secondary); }
+        .share li small { display: block; color: var(--text-muted); font-size: 0.76rem; line-height: 1.45; margin-top: 0.1rem; }
+        .fieldlist { margin-top: 0.8rem; border-top: 1px solid var(--table-border); padding-top: 0.6rem; }
+        .fieldlist > summary { cursor: pointer; color: var(--ucd-gold); font-size: 0.84rem; }
+        .fieldlist .fl { display: flex; flex-wrap: wrap; gap: 0.3rem 0.35rem; margin-top: 0.5rem; }
+        .fieldlist p { margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted); }
+        .split2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 0.9rem 1.4rem; }
+        .split2 h4 { font-size: 0.8rem; letter-spacing: 0.02em; color: var(--text-secondary); margin: 0.3rem 0 0.4rem; }
+        .kv { display: grid; grid-template-columns: minmax(0, 104px) minmax(0, 1fr); gap: 0.35rem 0.9rem; font-size: 0.86rem; }
+        .kv dt { color: var(--text-muted); }
+        .kv dd { margin: 0; color: var(--text-primary); min-width: 0; overflow-wrap: anywhere; line-height: 1.5; }
+        .md5 { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.8em; color: var(--text-secondary); overflow-wrap: anywhere; }
+        .caveat { margin-top: 0.6rem; font-size: 0.82rem; color: var(--yellow); display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 0.5rem; align-items: start; line-height: 1.5; }
+        .caveat::before { content: '!'; width: 16px; height: 16px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: 0.66rem; font-weight: 800; margin-top: 2px; }
+        .status { border-left: 3px solid var(--yellow); background: rgba(251,191,36,0.08); padding: 0.5rem 0.7rem; border-radius: 0 8px 8px 0; font-size: 0.86rem; color: var(--text-primary); margin-top: 0.6rem; line-height: 1.55; }
+        .status b { color: var(--text-primary); }
+        /* Explorer notes under charts */
+        .chart-note { font-size: 0.8rem; color: var(--text-muted); padding-left: 0.5rem; margin-top: 0.4rem; line-height: 1.5; }
+        .chart-note:empty { display: none; }
+        .chart-card > .caveat { padding-left: 0.5rem; }
+        .empty-note { border: 1px dashed var(--ucd-gold-border); border-radius: 10px; padding: 0.75rem 1rem; color: var(--text-secondary); font-size: 0.86rem; line-height: 1.55; margin: 0.3rem 0.5rem 0.6rem; }
+        .empty-note:empty { display: none; }
+        .empty-note b { color: var(--text-primary); }
+        .card-ctl { margin: 0.5rem 0; display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+        @media (max-width: 480px) {
+            .kv { grid-template-columns: 1fr; gap: 0.05rem; }
+            .kv dd { margin-bottom: 0.4rem; }
+            .sparse-list > div { grid-template-columns: 1fr; gap: 0.1rem; }
+        }
 
         /* ── Evosep PEG Watch (v1.2.0) ──
            Everything is scoped to #peg with peg- prefixes: the page already has
@@ -3266,36 +3402,42 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="header">
     <h1>STAN</h1>
     <p class="subtitle">Standardized proteomic Throughput ANalyzer</p>
-    <p class="tagline">Know your instrument. Community reference ranges for mass spectrometer QC.</p>
+    <p class="purpose">Compare your QC HeLa against reference ranges from labs running the same frozen search.</p>
     <div class="ucd-badge">UC Davis Proteomics Core</div>
     <div style="margin-top:0.4rem;font-size:0.78rem;opacity:0.65">community site v__SPACE_VERSION__</div>
     <div class="disclose"><span id="disclose-text">Today essentially every run here comes from one facility, the UC Davis Proteomics Core (timsTOF HT, Exploris 480, Fusion Lumos). The ranges below are that facility's longitudinal ranges until more labs join.</span></div>
-    <div style="margin-top:1rem;padding:0.5rem 1.25rem;background:rgba(255,191,0,0.1);border:1px solid var(--ucd-gold-border);border-radius:8px;display:inline-block;font-size:0.85rem;color:var(--ucd-gold-dark)">
-        <!-- Same array as the Submissions tile in the stats row (updateStats). -->
-        Seeded with <span id="banner-runs">--</span> longitudinal QC runs from UC Davis across timsTOF HT, Exploris 480, and Fusion Lumos.
-        <a href="https://github.com/bsphinney/stan" style="color:var(--ucd-gold);margin-left:0.5rem">Install STAN to contribute your own.</a>
-    </div>
-    <div class="links">
-        <a href="/museum">&#127963; Museum</a>
-        <a href="/arcade">&#127918; Arcade</a>
+    <!-- Nav order from spec §A.1: Join first, the in-page anchors, then the other sites. -->
+    <nav class="nav" aria-label="Site">
+        <a class="join" href="#join">Join</a>
+        <a href="#where">Where do I stand</a>
+        <a href="#explore">Instrument Health Explorer</a>
+        <a href="#methods">Methods</a>
         <a href="#peg">PEG Watch</a>
-        <a href="https://github.com/bsphinney/stan">GitHub</a>
+        <span class="sep" aria-hidden="true"></span>
         <a href="https://huggingface.co/datasets/brettsp/stan-benchmark">Dataset</a>
         <a href="/docs">API</a>
-    </div>
+        <a href="https://github.com/bsphinney/stan">GitHub</a>
+        <a href="/museum">&#127963; Museum</a>
+        <a href="/arcade">&#127918; Arcade</a>
+    </nav>
 </div>
 
-<!-- Summary stats -->
-<div class="stats-row">
-    <div class="stat-card"><div class="number" id="stat-submissions">--</div><div class="label">Submissions</div></div>
-    <div class="stat-card"><div class="number" id="stat-labs">--</div><div class="label">Contributing Labs</div></div>
-    <div class="stat-card"><div class="number" id="stat-instruments">--</div><div class="label">Instrument Models</div></div>
-    <div class="stat-card" style="display:flex;align-items:center;gap:0.5rem;cursor:pointer" onclick="toggleFailedFilter()">
-        <input type="checkbox" id="hide-failed-cb" checked style="accent-color:var(--accent);cursor:pointer">
-        <div>
-            <div class="number" id="stat-failed" style="font-size:1.1rem">--</div>
-            <div class="label">Hide failed runs</div>
-        </div>
+<!-- Summary stats. Every count comes from the page's one array: duplicate
+     copies removed and held-back runs left out (D8), then the QC standard. -->
+<div class="stats-block" id="stats">
+    <div class="stats-row">
+        <div class="stat-card"><div class="number" id="stat-submissions">--</div><div class="label">QC runs in the benchmark</div><div class="sub" id="stat-runs-sub"></div></div>
+        <div class="stat-card"><div class="number" id="stat-labs">--</div><div class="label" id="stat-labs-label">Contributing labs</div><div class="sub" id="stat-labs-sub"></div></div>
+        <div class="stat-card"><div class="number" id="stat-instruments">--</div><div class="label">Instrument models</div><div class="sub" id="stat-models"></div></div>
+        <div class="stat-card"><div class="number" id="stat-latest" style="font-size:1.35rem">--</div><div class="label">Latest run</div><div class="sub" id="stat-first"></div></div>
+        <!-- The Join tile takes the place of the inert "Hide failed runs · 0 flagged" card (D6). -->
+        <a class="stat-card stat-join" href="#join"><div class="number">Add your lab &rarr;</div><div class="label">Three steps. Your runs appear after the nightly rebuild.</div></a>
+    </div>
+    <p class="stats-note" id="stats-note"></p>
+    <div class="gloss" id="gloss">
+        <div><b>SPD</b>samples per day. For Evosep it names the method you ran; for nanoLC it is 1440 &divide; (gradient minutes &times; 1.25).</div>
+        <div><b>Middle half (IQR)</b>the range holding the middle 50% of runs, from the 25th to the 75th percentile.</div>
+        <div><b>IPS</b>a 0&ndash;100 depth score against a fixed calibration set for the run's instrument and SPD; 60 is the median calibration run. Not shown on this page until a scoring fix ships (see <a href="#methods" style="color:var(--ucd-gold)">Methods</a>).</div>
     </div>
 </div>
 
@@ -3314,54 +3456,213 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="sample-type-counts" style="color:var(--text-muted);font-size:0.8rem"></span>
 </div>
 
-<!-- Community Reference Ranges -->
-<div class="section">
-    <h2>Community Reference Ranges</h2>
+<!-- Reference ranges (D5). The nav's "Where do I stand" lands here until the
+     P2c lookup ("Where does my run sit?") takes over the #where anchor. -->
+<div class="section" id="where">
+    <h2>Reference ranges</h2>
     <p class="description">
-        Longitudinal performance ranges from the runs submitted so far. Use the filters below to
-        find your instrument and method. Each card is one instrument model, acquisition mode,
-        throughput and load, and says how many runs and labs it holds; a card built from one lab's
-        runs is marked <span class="tag1">single-lab reference</span>. Below 10 runs a card lists the
-        values instead of a range. Ranges update automatically as more labs contribute.
+        Longitudinal performance ranges from the runs submitted so far, grouped by instrument model. Each card is
+        one cohort: the same model, acquisition mode, throughput tier and load. The large number is the cohort's
+        median precursors (DIA) or PSMs (DDA) at 1% FDR, and the bar shows the middle half of its runs inside the
+        10th&ndash;90th percentile, on one scale per instrument. Every card says how many runs and labs it holds;
+        a card built from one lab's runs is marked <span class="tag1">single-lab reference</span>. Below 10 runs a
+        card lists its values instead of a range, and cohorts of fewer than 5 runs are folded under each
+        instrument. Proteins are context only.
     </p>
     <div id="ref-filters" style="margin-bottom:1rem; display:flex; flex-wrap:wrap; gap:1.5rem; align-items:flex-start;"></div>
-    <div id="ref-ranges-container" class="ref-grid">
+    <div id="ref-ranges-container">
         <div class="empty-state">Loading community data...</div>
     </div>
 </div>
 
-<!-- Best Configurations leaderboard — answers the headline question
-     "what instrument × SPD × amount loaded gives the best data?" in
-     a single ranked table. -->
-<div class="section">
-    <h2>Best Configurations <span id="config-leaderboard-badge" style="font-size:0.75rem; padding:0.15rem 0.5rem; border-radius:4px; background:rgba(56,189,248,0.2); color:var(--accent); margin-left:0.5rem"></span></h2>
-    <p class="description">
-        Top instrument × throughput × amount-loaded combinations from the submitted runs.
-        Each row is one cohort (≥3 runs); DIA and DDA are ranked in separate tables, by precursors
-        and by PSMs. Click any column header to re-rank — pick your priority (depth or accuracy)
-        and read the row. A "best" badge appears only on a row with runs from two or more labs.
-    </p>
-    <div class="chart-card chart-full">
-        <div id="config-leaderboard" style="overflow-x:auto"></div>
+<!-- Join the benchmark (D6), modelled on the PEG "Put your lab on the board" card. -->
+<div class="section" id="join">
+    <h2>Join the benchmark</h2>
+    <p class="description">Any lab running STAN can add its QC HeLa runs. Your lab appears under a pseudonym you claim, and your runs join the ranges above.</p>
+    <div class="stack">
+        <div class="card">
+            <h3>Three steps</h3>
+            <ol class="steps">
+                <li><div><b>Install STAN and inject Pierce HeLa as your QC standard.</b>Thermo 88328 (20&nbsp;&micro;g) or 88329 (5 &times; 20&nbsp;&micro;g), 50&nbsp;ng per injection. <a href="https://github.com/bsphinney/stan/blob/main/INSTALL_FOR_AGENTS.md">Install guide</a></div></li>
+                <li><div><b>Claim your lab name.</b>Run <code>stan community-claim</code> (STAN 1.2 or later) and enter the 6-digit code it emails you (from noreply@stan-proteomics.org; check the spam folder). Do this first: an unclaimed name can be taken by anyone.</div></li>
+                <li><div><b>Turn sharing on and send.</b>Set <code>community_submit: true</code> in <code>~/.stan/community.yml</code>, then run <code>stan submit-all</code> to send the runs you already have (or press Sync on the dashboard's Community tab, which does both). Schedule <code>stan submit-all</code> to keep new runs flowing.</div></li>
+            </ol>
+            <p class="when">Your runs appear after the <b>nightly rebuild at 04:00 UTC</b>. They are searched with the pinned engines and frozen libraries described under <a href="#methods">Methods</a>, so they compare directly with the runs already here.</p>
+        </div>
+        <div class="card" id="join-fields">
+            <h3>What leaves your lab, and what is published</h3>
+            <div class="share">
+                <div><h4>Published, per QC run</h4><ul>
+                    <li>Your lab pseudonym</li>
+                    <li>Run date, submission time and ID</li>
+                    <li>Instrument model and family, acquisition mode</li>
+                    <li>LC system, SPD and gradient length</li>
+                    <li>QC standard and amount loaded</li>
+                    <li>Column vendor and model, if you set them</li>
+                    <li>Precursor, peptide, protein and PSM counts</li>
+                    <li>Mass accuracy, peak width, points per peak, peak capacity</li>
+                    <li>MS1/MS2 signal and dynamic range</li>
+                    <li>A binned MS1 total-ion chromatogram (retention-time bins and intensities)</li>
+                    <li>Missed-cleavage rate, median CV and fragments per precursor, when measured</li>
+                    <li>IPS, community score, cohort ID, library coverage and review flags</li>
+                    <li>STAN, DIA-NN and schema versions; FASTA and library checksums</li>
+                </ul></div>
+                <div class="kept"><h4>Sent, but not shown on this site</h4><ul>
+                    <li>The file name<small>Used to catch duplicate submissions and to let you update a run. This page and its API never show it, but the stored row, name included, is also written to the public Hugging Face dataset, whose history keeps every name sent so far (removing it there is pending). Keep patient, customer and project identifiers out of QC file names, or set <code>STAN_STRIP_RUN_NAME=1</code> to send none.</small></li>
+                    <li>Your email address<small>Used once, to send the claim code. Only a one-way hash of it is kept, in the dataset's claims file.</small></li>
+                </ul></div>
+                <div class="no"><h4>Never leaves your lab</h4><ul>
+                    <li>Raw data and spectra</li>
+                    <li>Search results beyond the summary numbers listed here</li>
+                    <li>Instrument serial numbers</li>
+                    <li>Sample, customer or project names, except as far as they appear in your file names</li>
+                </ul></div>
+            </div>
+            <details class="fieldlist"><summary id="fl-sum">Every published field, by API name</summary><div class="fl" id="fl-list"><span class="fine">Loads with the benchmark data.</span></div><p>From <code>/api/leaderboard</code>, plus the two TIC fields from <code>/api/tic-overlay</code>.</p></details>
+        </div>
     </div>
 </div>
 
-<!-- Where Do You Stand -->
-<div class="section">
+<!-- How the numbers are made (D7 + D3). -->
+<div class="section" id="methods">
+    <h2>How the numbers are made</h2>
+    <p class="description">Every run on this page is searched with pinned engine versions against one frozen FASTA and, for DIA, a frozen per-vendor HeLa library. This is what that means in practice, and where it does not hold yet.</p>
+    <div class="grid2">
+        <div class="card span-all">
+            <h3>Search: one frozen parameter set per track (SEARCH_PARAMS_VERSION v1.0.0)</h3>
+            <div class="split2">
+                <div><h4>DIA &middot; DIA-NN 2.3.x</h4><dl class="kv">
+                    <dt>Search</dt><dd>Library search against the vendor's empirical HeLa library (below) and the frozen FASTA</dd>
+                    <dt>Digest</dt><dd>Trypsin (after K or R), 1 missed cleavage, peptides 7&ndash;30 residues</dd>
+                    <dt>Charge</dt><dd>Precursor charge 2&ndash;4</dd>
+                    <dt>FDR</dt><dd>Run-level precursor q-value &le; 0.01</dd>
+                    <dt>Version</dt><dd>Pinned 2.3.0, the version the libraries were built with. The relay accepts any DIA-NN 2.3.x and refuses other versions; 2.3.x runs with matching FASTA and library checksums are marked assets-verified (2.3.2 gave 1.007&times; the 2.3.0 count on the same timsTOF raws).</dd>
+                </dl></div>
+                <div><h4>DDA &middot; Sage 0.14.x</h4><dl class="kv">
+                    <dt>Search</dt><dd>Database search against the frozen FASTA (no library)</dd>
+                    <dt>Digest</dt><dd>Trypsin (after K or R, not before P), 1 missed cleavage, peptides 7&ndash;30 residues</dd>
+                    <dt>Mods</dt><dd>Carbamidomethyl C fixed; oxidised M variable (up to 2)</dd>
+                    <dt>Tolerance</dt><dd>Precursor &plusmn;10&nbsp;ppm, fragment &plusmn;20&nbsp;ppm</dd>
+                    <dt>FDR</dt><dd>PSM-level only: q &le; 0.01. No separate peptide or protein FDR</dd>
+                    <dt>Version</dt><dd>Pinned 0.14.7 (its binary reports 0.14.6)</dd>
+                </dl></div>
+            </div>
+        </div>
+        <div class="card span-all">
+            <h3>What each count means</h3>
+            <div class="split2">
+                <div><h4>DIA &middot; DIA-NN</h4><dl class="kv">
+                    <dt>Precursors</dt><dd><b>Primary.</b> Unique <code>Precursor.Id</code> (modified sequence + charge) at run-level <code>Q.Value</code> &le; 0.01</dd>
+                    <dt>Peptides</dt><dd>Distinct <code>Stripped.Sequence</code> among those precursors</dd>
+                    <dt>Proteins</dt><dd>Distinct <code>Protein.Group</code> with <code>PG.Q.Value</code> &le; 0.01 among those precursors</dd>
+                </dl></div>
+                <div><h4>DDA &middot; Sage</h4><dl class="kv">
+                    <dt>PSMs</dt><dd><b>Primary.</b> Peptide-spectrum matches at q &le; 0.01</dd>
+                    <dt>Peptides</dt><dd>Distinct peptide sequences, modifications included, among those PSMs</dd>
+                    <dt>Proteins</dt><dd>Distinct protein groups among those PSMs</dd>
+                </dl></div>
+            </div>
+            <p class="fine" style="margin-top:0.6rem">Primary: precursors (DIA) and PSMs (DDA), the purest instrument signal. Secondary: peptides. Proteins: context only; not used for leaderboards; 20% of IPS. Health: the ID-free charts below the Explorer (MS1 mass accuracy, MS1 signal, dynamic range and points across peak).</p>
+        </div>
+        <div class="card">
+            <h3>Libraries and FASTA</h3>
+            <p class="sub">One frozen FASTA and empirical HeLa libraries, one per vendor (timsTOF ~54k, Orbitrap ~170k precursors), built from real HeLa DIA runs. Download them from the <a href="https://huggingface.co/datasets/brettsp/stan-benchmark">dataset</a>.</p>
+            <dl class="kv">
+                <dt>timsTOF</dt><dd>~54,000 precursors &middot; <a class="md5" href="https://huggingface.co/datasets/brettsp/stan-benchmark/blob/main/community_library/hela_timstof_202604.parquet">hela_timstof_202604.parquet</a><br><span class="md5">md5 ad72bfb2730644c69147ba8f34bfe982</span></dd>
+                <dt>Orbitrap</dt><dd>~170,000 precursors &middot; <a class="md5" href="https://huggingface.co/datasets/brettsp/stan-benchmark/blob/main/community_library/hela_orbitrap_202604.parquet">hela_orbitrap_202604.parquet</a><br><span class="md5">md5 ac84e40f5b2f23e1286f28a7baeccec2</span></dd>
+                <dt>FASTA</dt><dd>UniProt human + contaminants &middot; <a class="md5" href="https://huggingface.co/datasets/brettsp/stan-benchmark/blob/main/community_fasta/human_hela_202604.fasta">human_hela_202604.fasta</a><br><span class="md5">md5 8de1d9bd0a052b175f88f66f82500d92</span></dd>
+            </dl>
+            <p class="status"><b>Not yet true for UC Davis's timsTOF HT and Exploris 480 cohorts.</b> Those runs were searched against subsets of these libraries built from the lab's own runs (about 51,000 and 53,000 precursors), which no outside lab has; on the same timsTOF raws the full library gives about 1.034&times; the subset's count. A re-search of those cohorts against the full frozen libraries is planned (decision 11). The Fusion Lumos cohorts already use the full Orbitrap library.</p>
+            <p class="caveat" id="lib-caveat">Counts compare within a vendor, not across: timsTOF and Orbitrap runs search different libraries, and above 90% library coverage the library rather than the instrument caps the count.</p>
+        </div>
+        <div class="card" id="ips-card">
+            <h3>IPS: Instrument Performance Score (0-100)</h3>
+            <p class="sub">
+                IPS places a run's identification depth against a fixed calibration set for
+                its instrument and SPD: 60 is the median calibration run and 90 its 90th
+                percentile. It weights
+                <strong style="color: var(--ucd-gold)">50%</strong> precursors (PSMs for DDA),
+                <strong style="color: var(--ucd-gold)">30%</strong> peptides and
+                <strong style="color: var(--ucd-gold)">20%</strong> proteins. The calibration
+                set is 359 UC Davis HeLa QC runs from April 2026.
+            </p>
+            <p class="status"><b>IPS is not shown on this page yet.</b> The stored community scores come from a reference lookup that scored Exploris and timsTOF runs against a pooled all-instrument reference instead of their own, so Exploris scores read too low and timsTOF scores too high. Even keyed correctly, typical runs on both sit near 50&ndash;54 rather than 60, so the April 2026 references also need recalibrating. Scores return here once they are recomputed and recalibrated.</p>
+        </div>
+        <div class="card">
+            <h3>The HeLa Standard</h3>
+            <p class="sub">
+                All STAN benchmarking uses the
+                <a href="https://www.thermofisher.com/order/catalog/product/88328">Pierce HeLa Protein Digest Standard</a>
+                (Thermo Scientific, cat# 88328 / 88329): a tryptic digest of the HeLa S3 cell line with
+                &gt;15,000 proteins and &lt;10% missed cleavages. One commercial standard means differences
+                reflect the instrument and LC, not sample preparation.
+            </p>
+            <p class="fine"><a href="https://www.thermofisher.com/order/catalog/product/88328">Buy 20 &mu;g (88328)</a> &middot; <a href="https://www.thermofisher.com/order/catalog/product/88329">Buy 5 x 20 &mu;g (88329)</a></p>
+        </div>
+        <div class="card">
+            <h3>Points Across Peak</h3>
+            <p class="sub">
+                The number of MS2 scans sampling each precursor's elution profile limits how
+                accurately it can be quantified. STAN's guidelines:
+                <span style="color:var(--green)">12+ points</span> reliable quantitation;
+                <span style="color:var(--yellow)">6&ndash;12 points</span> acceptable, depending on peak shape;
+                <span style="color:var(--red)">&lt;6 points</span> quantitation error grows quickly.
+                At high SPD with short columns, cycle time can exceed peak width. These are guidelines:
+                actual error depends on peak symmetry and integration method.
+            </p>
+            <p class="fine">Background: Matthews &amp; Hayes, <i>Anal. Chem.</i> 1976, 48, 1375&ndash;1382,
+                on how few sampling points bias GC-MS ratio measurements
+                (<a href="https://doi.org/10.1021/ac50003a028">doi:10.1021/ac50003a028</a>).</p>
+        </div>
+    </div>
+</div>
+
+<!-- Instrument Health Explorer: every chart in spec §A.2, in live order. -->
+<div class="section" id="explore">
     <h2>Instrument Health Explorer</h2>
     <p class="description">
-        Each point represents an anonymous submission. Distributions show the community range
-        for each instrument family. Hover for details.
+        Each point is one QC run. The charts follow the QC standard at the top of the page and the DIA / DDA tab
+        above the submissions table, and each says in its badge what it shows. Counts compare fairly within a
+        vendor: timsTOF and Orbitrap runs search different libraries (see <a href="#methods" style="color:var(--ucd-gold)">Methods</a>).
     </p>
+    <!-- Best Configurations (B6): the headline "which instrument x SPD x
+         amount gives the best data?", as one ranked table per track. -->
     <div class="chart-row">
-        <div class="chart-card">
+        <div class="chart-card chart-full" id="best">
+            <h3>Best Configurations <span id="config-leaderboard-badge" style="font-size:0.75rem; padding:0.15rem 0.5rem; border-radius:4px; background:rgba(56,189,248,0.2); color:var(--accent); margin-left:0.5rem"></span></h3>
+            <div class="chart-desc">
+                Top instrument &times; throughput &times; amount-loaded combinations. Each row is one cohort
+                (&ge;3 runs); DIA and DDA are ranked in separate tables, by precursors and by PSMs. Click any column
+                header to re-rank. The table starts at 50&nbsp;ng so a high-load cohort is not ranked against 50&nbsp;ng
+                ones. A "best" badge appears only on a row with runs from two or more labs.
+            </div>
+            <div class="card-ctl">
+                <label style="color:var(--text-muted); font-size:0.85rem">Amount loaded:
+                    <select id="config-amount-filter" onchange="renderConfigLeaderboard()" style="margin-left:0.4rem; padding:0.25rem; background:#0b1d33; color:var(--text); border:1px solid #1e3a5f; border-radius:4px; font-size:0.85rem">
+                        <option value="50" selected>50 ng (standard)</option>
+                        <option value="lt10">&lt;10 ng</option>
+                        <option value="10_49">10&ndash;49 ng</option>
+                        <option value="100_249">100&ndash;249 ng</option>
+                        <option value="ge250">&ge;250 ng</option>
+                        <option value="all">All amounts</option>
+                    </select>
+                </label>
+            </div>
+            <div id="config-leaderboard" style="overflow-x:auto"></div>
+            <p class="caveat">Ranked within a vendor only: timsTOF runs search a ~54,000-precursor library and Orbitrap runs a ~170,000-precursor library, so a timsTOF row above an Orbitrap row is not a verdict on the instruments.</p>
+        </div>
+    </div>
+    <div class="chart-row">
+        <div class="chart-card chart-full">
             <h3>Depth by Amount Loaded <span id="amount-mode-badge" style="font-size:0.75rem; padding:0.15rem 0.5rem; border-radius:4px; background:rgba(56,189,248,0.2); color:var(--accent); margin-left:0.5rem"></span></h3>
-            <div class="chart-desc">How does sample load affect identification depth? Each violin is one amount bucket, colored by instrument model. Saturation typically appears between 100–250&nbsp;ng on Orbitrap; timsTOF often climbs further. Sample type from the page filter above; DIA/DDA from the tab below.</div>
+            <div class="chart-desc">How does sample load affect identification depth? Each violin is one amount bucket, colored by instrument model. <span id="amount-share"></span> Sample type from the page filter above; DIA/DDA from the tab below.</div>
             <div id="chart-amount-depth"></div>
         </div>
-        <div class="chart-card">
+    </div>
+    <div class="chart-row">
+        <div class="chart-card chart-full">
             <h3>Identification Depth by Platform <span id="violin-mode-badge" style="font-size:0.75rem; padding:0.15rem 0.5rem; border-radius:4px; background:rgba(56,189,248,0.2); color:var(--accent); margin-left:0.5rem"></span></h3>
-            <div class="chart-desc">How many precursors (DIA) or PSMs (DDA) does each platform typically identify? Apples-to-apples comparison — pick a load amount so 5&nbsp;ng K562 isn't pooled with 200&nbsp;ng HeLa. Each violin is one instrument <em>model</em> (Pro vs Pro 2 vs HT are separate). Sample type comes from the page-level filter above.</div>
+            <div class="chart-desc">How many precursors (DIA) or PSMs (DDA) does each platform typically identify? One violin per instrument <em>model</em> and throughput cohort, so Pro, Pro 2 and HT stay apart and a 9&nbsp;SPD run is not pooled with a 67&nbsp;SPD run; DIA and DDA never share a violin. Pick a load amount so 5&nbsp;ng K562 isn't pooled with 200&nbsp;ng HeLa. Sample type comes from the page-level filter above.</div>
             <div style="margin:0.5rem 0; display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap">
                 <label style="color:var(--text-muted); font-size:0.85rem">Amount loaded:
                     <select id="violin-amount-filter" onchange="renderViolin()" style="margin-left:0.4rem; padding:0.25rem; background:#0b1d33; color:var(--text); border:1px solid #1e3a5f; border-radius:4px; font-size:0.85rem">
@@ -3376,13 +3677,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
                 <span style="color:var(--text-muted); font-size:0.75rem">Shape: ○ 50 ng · ◇ &lt;20 ng · □ &gt;100 ng</span>
             </div>
             <div id="chart-violin"></div>
+            <p class="chart-note" id="violin-note"></p>
+            <p class="caveat">Compare violins of one vendor only: timsTOF and Orbitrap runs search different libraries (~54,000 vs ~170,000 precursors).</p>
         </div>
     </div>
     <div class="chart-row">
         <div class="chart-card chart-full">
             <h3>Depth by Throughput (which SPD gives me the best data?)</h3>
-            <div class="chart-desc">Precursors/PSMs vs. samples-per-day, faceted by instrument family. Each box is one SPD bucket. Filter by amount loaded so you compare apples to apples — the optimal SPD may differ by loading.</div>
-            <div style="margin:0.5rem 0; display:flex; align-items:center; gap:0.75rem">
+            <div class="chart-desc">Precursors/PSMs vs. samples-per-day, faceted by instrument model (HT, Pro and Pro&nbsp;2 apart). Each box is one SPD bucket. Filter by amount loaded so you compare apples to apples — the optimal SPD may differ by loading.</div>
+            <div style="margin:0.5rem 0; display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap">
                 <label style="color:var(--text-muted); font-size:0.85rem">Amount loaded:
                     <select id="spd-amount-filter" onchange="renderSpdDepth()" style="margin-left:0.4rem; padding:0.25rem; background:#0b1d33; color:var(--text); border:1px solid #1e3a5f; border-radius:4px; font-size:0.85rem">
                         <option value="all">All amounts</option>
@@ -3394,51 +3697,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
                 <span style="color:var(--text-muted); font-size:0.75rem">Shape: ○ 50 ng · ◇ &lt;20 ng · □ &gt;100 ng</span>
             </div>
             <div id="chart-spd-depth"></div>
+            <p class="caveat">Compare facets of one vendor only: timsTOF and Orbitrap runs search different libraries (~54,000 vs ~170,000 precursors), so a timsTOF box above an Orbitrap box is not a verdict on the instruments.</p>
         </div>
     </div>
     <div class="chart-row" id="row-column-compare">
         <div class="chart-card chart-full">
             <h3>Column Comparison (same instrument, SPD, and amount)</h3>
-            <div class="chart-desc">How does your LC column compare to others under identical conditions? Each group shows submissions matched by instrument family, SPD, and injection amount — only the column differs.</div>
+            <div class="chart-desc">How does your LC column compare to others under identical conditions? Each group is one cohort (the same instrument model, acquisition mode, throughput tier and amount), so only the column differs. Runs that record no column are left out. Each bar gives its runs, labs and date span.</div>
+            <div class="empty-note" id="column-compare-note"></div>
             <div id="chart-column-compare"></div>
         </div>
     </div>
     <div class="chart-row">
         <div class="chart-card chart-full">
             <h3>Throughput vs. Quantitation Quality (Matthews &amp; Hayes 1976)</h3>
-            <div class="chart-desc">SPD vs. data points across peak. STAN's guideline: below 6 points quantitation error grows quickly, and 12 or more is recommended (after <a href="https://doi.org/10.1021/ac50003a028" style="color:var(--ucd-gold)">Matthews &amp; Hayes 1976</a>). Shape = LC column. Color = instrument family.</div>
+            <div class="chart-desc">SPD vs. data points across peak. STAN's guideline: below 6 points quantitation error grows quickly, and 12 or more is recommended (after <a href="https://doi.org/10.1021/ac50003a028" style="color:var(--ucd-gold)">Matthews &amp; Hayes 1976</a>). Shape = LC column (open circle: not recorded). Color = instrument model.</div>
             <div id="chart-points-peak"></div>
-        </div>
-    </div>
-    <!-- ── Real LC-health metrics from the 2024 literature survey ── -->
-    <div class="section-header" style="margin-top:2rem">
-        <h2 style="color:var(--accent)">LC / Instrument Health (ID-free metrics)</h2>
-        <p class="section-desc">These are the metrics the 2024 proteomics QC literature (NIST MSQC, QCloud2, CPTAC, PTXQC) considers the real LC-health signals — they catch failures BEFORE identifications collapse. Unlike identification counts, these don't depend on how many peptides you identified.</p>
-    </div>
-    <div class="chart-row">
-        <div class="chart-card">
-            <h3>Mass Accuracy Drift (MS1)</h3>
-            <div class="chart-desc">Median corrected MS1 mass error per run. Tracks Orbitrap / qTOF calibration stability. A rising trend signals lock-mass failure or thermal drift before IDs drop.</div>
-            <div id="chart-mass-acc"></div>
-        </div>
-    </div>
-    <div class="chart-row">
-        <div class="chart-card">
-            <h3>MS1 Signal (TIC proxy)</h3>
-            <div class="chart-desc">Total MS1 ion current per run — a proxy for ion source health. Drops of &gt;2× signal dirty emitter, low flow, or sample prep issue before IDs fall.</div>
-            <div id="chart-ms1-signal"></div>
-        </div>
-        <div class="chart-card">
-            <h3>Dynamic Range</h3>
-            <div class="chart-desc">log<sub>10</sub>(p99 / p01) of precursor intensity. Compresses when the ion source is dirty or the LC is losing pressure.</div>
-            <div id="chart-dyn-range"></div>
-        </div>
-    </div>
-    <div class="chart-row">
-        <div class="chart-card">
-            <h3>Points Across Peak</h3>
-            <div class="chart-desc">Datapoints per chromatographic peak (after <a href="https://doi.org/10.1021/ac50003a028" style="color:var(--ucd-gold)">Matthews &amp; Hayes 1976</a>). A <strong>rising trend</strong> at constant SPD signals column degradation (peaks broadening). Validated against Spectronaut (median 9 on timsTOF 100 SPD).</div>
-            <div id="chart-pts-peak"></div>
         </div>
     </div>
     <div class="chart-row">
@@ -3461,6 +3735,39 @@ INDEX_HTML = r"""<!DOCTYPE html>
                 <label style="color:var(--muted);margin-left:0.6rem;font-size:0.82rem;cursor:pointer;white-space:nowrap;"><input type="checkbox" id="tic-show-all" style="vertical-align:middle;margin-right:0.25rem;" onchange="renderCommunityTIC()">show all traces</label>
             </div>
             <div id="chart-community-tic"></div>
+        </div>
+    </div>
+</div>
+
+<!-- LC / instrument health, ID-free (spec §A.2): visible at every width,
+     one colour and one monthly-median line per instrument model. -->
+<div class="section" id="health">
+    <h2>LC / Instrument Health (ID-free metrics)</h2>
+    <p class="description">These are the metrics the 2024 proteomics QC literature (NIST MSQC, QCloud2, CPTAC, PTXQC) considers the real LC-health signals: they catch failures before identifications collapse, and they don't depend on how many peptides you identified. One colour per instrument model; each dot is a run and the line is that model's monthly median. Click a legend entry to hide a model.</p>
+    <div class="chart-row">
+        <div class="chart-card chart-full">
+            <h3>Mass Accuracy Drift (MS1)</h3>
+            <div class="chart-desc">Median corrected MS1 mass error per run. Tracks Orbitrap / qTOF calibration stability. A rising trend signals lock-mass failure or thermal drift before IDs drop.</div>
+            <div id="chart-mass-acc"></div>
+        </div>
+    </div>
+    <div class="chart-row">
+        <div class="chart-card">
+            <h3>MS1 Signal (TIC proxy)</h3>
+            <div class="chart-desc">Total MS1 ion current per run — a proxy for ion source health. Drops of &gt;2× signal dirty emitter, low flow, or sample prep issue before IDs fall. <strong>timsTOF reads about 1.5 log units lower because of its detector, not its health</strong>: compare an instrument with itself, never across detector families.</div>
+            <div id="chart-ms1-signal"></div>
+        </div>
+        <div class="chart-card">
+            <h3>Dynamic Range</h3>
+            <div class="chart-desc">log<sub>10</sub>(p99 / p01) of precursor intensity. Compresses when the ion source is dirty or the LC is losing pressure. Like MS1 signal it depends on the detector, so compare an instrument with itself, never across detector families.</div>
+            <div id="chart-dyn-range"></div>
+        </div>
+    </div>
+    <div class="chart-row">
+        <div class="chart-card chart-full">
+            <h3>Points Across Peak</h3>
+            <div class="chart-desc">Datapoints per chromatographic peak (after <a href="https://doi.org/10.1021/ac50003a028" style="color:var(--ucd-gold)">Matthews &amp; Hayes 1976</a>). A <strong>rising trend</strong> at constant SPD signals column degradation (peaks broadening). Validated against Spectronaut (median 9 on timsTOF 100 SPD).</div>
+            <div id="chart-pts-peak"></div>
         </div>
     </div>
 </div>
@@ -3592,82 +3899,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
 </div>
 
-<!-- Understanding the metrics -->
-<div class="section">
-    <h2>Understanding the Metrics</h2>
-    <div class="info-grid">
-        <div class="info-card">
-            <h3>The HeLa Standard</h3>
-            <p>
-                All STAN benchmarking uses the
-                <a href="https://www.thermofisher.com/order/catalog/product/88328" style="color:var(--ucd-gold)">Pierce HeLa Protein Digest Standard</a>
-                (Thermo Scientific, cat# 88328 / 88329). This is a tryptic digest of the
-                HeLa S3 cell line containing &gt;15,000 proteins with &lt;10% missed cleavages.<br><br>
-                Using a single, commercially available standard ensures every lab starts
-                from the same sample. Differences in metrics reflect instrument and LC
-                performance, not sample preparation variability.<br><br>
-                <a href="https://www.thermofisher.com/order/catalog/product/88328" style="color:var(--ucd-gold)">Buy 20 &mu;g (88328)</a> &middot;
-                <a href="https://www.thermofisher.com/order/catalog/product/88329" style="color:var(--ucd-gold)">Buy 5 x 20 &mu;g (88329)</a>
-            </p>
-        </div>
-        <div class="info-card" id="ips-card">
-            <h3>IPS: Instrument Performance Score (0-100)</h3>
-            <p>
-                IPS places a run's identification depth against a fixed calibration set for
-                its instrument and SPD: 60 is the median calibration run and 90 its 90th
-                percentile. It weights
-                <strong style="color: var(--ucd-gold)">50%</strong> precursors (PSMs for DDA),
-                <strong style="color: var(--ucd-gold)">30%</strong> peptides and
-                <strong style="color: var(--ucd-gold)">20%</strong> proteins. The calibration
-                set is 359 UC Davis HeLa QC runs from April 2026.<br><br>
-                <strong>IPS is not shown on this page yet.</strong> A reference-lookup error
-                scores Exploris and timsTOF runs against a pooled all-instrument reference
-                instead of their own, so a typical Exploris or timsTOF run does not sit at 60:
-                Exploris scores read too low and timsTOF scores too high. Scores return here
-                once they are recomputed.
-            </p>
-        </div>
-        <div class="info-card">
-            <h3>Why This Benchmark Works</h3>
-            <p>
-                Every community submission searches the exact same frozen, hash-verified
-                human UniProt FASTA and
-                empirical HeLa libraries, one per vendor (timsTOF ~54k, Orbitrap ~170k precursors).
-                Within a vendor, identical upstream parameters mean
-                differences in output reflect instrument performance, not search configuration;
-                across vendors the libraries differ, so compare counts within a vendor.<br><br>
-                <strong style="color: var(--ucd-gold)">Primary:</strong> Precursors (DIA) / PSMs (DDA) &mdash; purest instrument signal<br>
-                <strong style="color: var(--ucd-gold)">Secondary:</strong> Peptides &mdash; slight sensitivity to search settings<br>
-                <strong style="color: var(--ucd-gold)">Context:</strong> Proteins &mdash; context only; not used for leaderboards; 20% of IPS<br>
-                <strong style="color: var(--ucd-gold)">Health:</strong> the ID-free charts above: MS1 mass accuracy, MS1 signal, dynamic range and points across peak
-            </p>
-        </div>
-        <div class="info-card">
-            <h3>Points Across Peak</h3>
-            <p>
-                The number of MS2 scans sampling each precursor's elution profile limits how
-                accurately it can be quantified. STAN's guidelines:<br><br>
-                <span style="color:var(--green)">12+ points:</span> reliable quantitation<br>
-                <span style="color:var(--yellow)">6-12 points:</span> acceptable, depending on peak shape<br>
-                <span style="color:var(--red)">&lt;6 points:</span> quantitation error grows quickly<br><br>
-                At high SPD with short columns, cycle time can exceed peak width.
-                These are guidelines — actual error depends on peak symmetry and
-                integration method. Track this metric to find the throughput limit
-                for your setup.<br><br>
-                Background: Matthews &amp; Hayes, <i>Anal. Chem.</i> 1976, 48, 1375&ndash;1382,
-                on how few sampling points bias GC-MS ratio measurements
-                (<a href="https://doi.org/10.1021/ac50003a028" style="color:var(--ucd-gold)">doi:10.1021/ac50003a028</a>).
-            </p>
-        </div>
-    </div>
-</div>
-
 <!-- Community Submissions -->
-<div class="section">
+<div class="section" id="submissions">
     <h2>Community Submissions</h2>
     <p class="description">
         All submissions are anonymous by default. Click column headers to sort.
-        Use the export button to download as CSV.
+        Use the export button to download as CSV. The DIA / DDA / All tab also sets the
+        acquisition mode for the Explorer charts above.
     </p>
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem">
         <div class="tabs" style="margin-bottom:0">
@@ -3698,7 +3936,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
 <div class="footer">
     <p>STAN Community Benchmark &mdash; <a href="https://github.com/bsphinney/stan">open source</a>, built at the <a href="https://proteomics.ucdavis.edu">UC Davis Proteomics Core</a></p>
-    <p style="margin-top: 0.25rem;">Data: <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a> &middot; Code: <a href="https://github.com/bsphinney/stan/blob/main/LICENSE">STAN Academic License</a> (free for academic and non-profit use; commercial use by written permission) &middot; Raw files are never uploaded &middot; Anonymous by default &middot; Emails are NEVER stored (only one-way hashes for verification)</p>
+    <p style="margin-top: 0.25rem;">Data: <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a> &middot; Code: <a href="https://github.com/bsphinney/stan/blob/main/LICENSE">STAN Academic License</a> (free for academic and non-profit use; commercial use by written permission) &middot; Raw files are never uploaded &middot; Anonymous by default &middot; Emails are NEVER stored (only one-way hashes for verification) &middot; <a href="#join-fields">Every published field</a></p>
 </div>
 
 <script id="stan-esc">
@@ -3728,7 +3966,7 @@ const PC = { responsive: true, displayModeBar: false };
 // and Exploris indistinguishable on the Matthews & Hayes plot etc.
 const FC = {
     'timsTOF':       '#5cb8ff',  'timsTOF HT': '#5cb8ff',
-    'timsTOF Pro':   '#7dd3fc',  'timsTOF Pro 2': '#38bdf8',
+    'timsTOF Pro':   '#7dd3fc',  'timsTOF Pro 2': '#2dd4bf',  // Pro 2 its own hue: per-model charts (P2a)
     'Astral':        '#FFBF00',  'Orbitrap Astral': '#FFBF00',
     'Exploris':      '#c084fc',  'Exploris 480': '#c084fc',
     'Orbitrap Exploris 480': '#c084fc',
@@ -3775,26 +4013,129 @@ function _resetChart(el) {
     el.innerHTML = '';
 }
 
-let allDataRaw = [];  // unfiltered — includes flagged/failed runs
+// ── Shared formatting and cohort helpers (community redesign P2a) ────
+function fmtN(v) { return (v == null || isNaN(v)) ? '—' : Math.round(v).toLocaleString('en-US'); }
+function fmtK(n) { return n >= 1000 ? (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1).replace(/\.0$/, '') + 'k' : String(Math.round(n)); }
+// Linear-interpolated quantile of an ascending array (the mockup's q()).
+function quant(sv, p) {
+    if (!sv.length) return null;
+    if (sv.length === 1) return sv[0];
+    const x = (sv.length - 1) * p, lo = Math.floor(x), hi = Math.min(lo + 1, sv.length - 1);
+    return sv[lo] + (sv[hi] - sv[lo]) * (x - lo);
+}
+function sortedNums(arr) { return arr.filter(v => typeof v === 'number' && isFinite(v)).sort((a, b) => a - b); }
+function isNarrowView() { return typeof window !== 'undefined' && typeof window.innerWidth === 'number' && window.innerWidth < 640; }
+function shortModel(m) { return String(m || '').replace(/^Orbitrap /, ''); }
+function modelOf(s) { return s.instrument_model || s.instrument_family || 'Unknown'; }
+// The vendor decides the library a run searches (timsTOF ~54k, Orbitrap ~170k),
+// so counts compare within a vendor only (D7).
+function vendorOf(s) {
+    const m = `${s.instrument_family || ''} ${s.instrument_model || ''}`.toLowerCase();
+    return m.includes('timstof') ? 'bruker' : 'thermo';
+}
+// The SPD values a set of runs actually carries: "46–60 SPD". A cohort's
+// throughput tier (cohort_id "60spd" = 40-79 SPD) is not a gradient, so card
+// titles say what was run instead of the tier name (D5, bug 20).
+function spdSeenText(rows) {
+    const v = [...new Set(rows.map(s => +s.spd || 0).filter(x => x > 0))].sort((a, b) => a - b);
+    if (!v.length) return 'SPD not recorded';
+    return v.length === 1 ? `${v[0]} SPD` : `${v[0]}–${v[v.length - 1]} SPD`;
+}
+function amountSeenText(rows) {
+    const v = [...new Set(rows.map(s => +s.amount_ng || 50))].sort((a, b) => a - b);
+    return v.length === 1 ? `${fmtN(v[0])} ng` : `${fmtN(v[0])}–${fmtN(v[v.length - 1])} ng`;
+}
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function monthText(d) { return `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`; }
+function dateSpanText(rows) {
+    const t = rows.map(s => runDate(s).getTime()).filter(x => isFinite(x)).sort((a, b) => a - b);
+    if (!t.length) return '';
+    const a = monthText(new Date(t[0])), b = monthText(new Date(t[t.length - 1]));
+    return a === b ? a : `${a} – ${b}`;
+}
+// The LC column a run records, as a grouping key. "Unknown" is what STAN
+// writes when no column was set (3,178 of 3,305 rows), so it is not a column:
+// it made every major cohort appear twice and set unlabelled runs against
+// labelled ones in the column chart (D5).
+function colKey(s) {
+    const c = String(s.column_model || '').trim().toLowerCase();
+    return c === 'unknown' ? '' : c;
+}
+function columnName(s) {
+    const v = String(s.column_vendor || '').trim(), m = String(s.column_model || '').trim();
+    if (!colKey(s)) return '';
+    if (!v || v.toLowerCase() === 'unknown' || m.toLowerCase().startsWith(v.toLowerCase())) return m;
+    return `${v} ${m}`;
+}
+
+// ── D8 at read time: duplicate copies and implausible amounts ────────
+// Nothing stored changes: rewriting rows is gated (spec §A.6 P4).
+// A copy is the same instrument model, track and all four ID counts, with
+// acquisition instants within 2 s of each other (copies differ only in
+// sub-second precision). The file name is not in the key (D4). Of each set of
+// copies the page keeps the one from the lab with more runs, then the first
+// submitted. Reference: build_mockup.py (3,305 -> 3,061 rows on 2026-09-29).
+const DUP_WINDOW_MS = 2000;
+function _instantMs(s) {
+    if (!s.run_date) return NaN;
+    // Microseconds parse in V8 but not everywhere; keep milliseconds.
+    return Date.parse(String(s.run_date).replace(/(\.\d{3})\d+/, '$1'));
+}
+function dedupeRuns(rows) {
+    const total = {};
+    rows.forEach(r => { total[r.display_name] = (total[r.display_name] || 0) + 1; });
+    const groups = new Map();
+    rows.forEach(r => {
+        const k = [r.instrument_model, trackOf(r), r.n_precursors, r.n_peptides, r.n_proteins, r.n_psms].join('|');
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k).push(r);
+    });
+    const keep = new Set();
+    let dropped = 0;
+    const pick = (chain) => {
+        if (chain.length > 1) dropped += chain.length - 1;
+        chain.sort((a, b) => ((total[b.display_name] || 0) - (total[a.display_name] || 0))
+            || String(a.submitted_at || '').localeCompare(String(b.submitted_at || '')));
+        keep.add(chain[0]);
+    };
+    for (const g of groups.values()) {
+        const timed = g.filter(r => isFinite(_instantMs(r))).sort((a, b) => _instantMs(a) - _instantMs(b));
+        g.filter(r => !isFinite(_instantMs(r))).forEach(r => keep.add(r));   // no instant: never a copy
+        let chain = [];
+        for (const r of timed) {
+            if (chain.length && _instantMs(r) - _instantMs(chain[chain.length - 1]) <= DUP_WINDOW_MS) chain.push(r);
+            else { if (chain.length) pick(chain); chain = [r]; }
+        }
+        if (chain.length) pick(chain);
+    }
+    return { kept: rows.filter(r => keep.has(r)), dropped };
+}
+// A stored amount above 5 ug is a unit error (100,000 and 562,100 ng on
+// 2026-09-29), so the run is held back from every range and ranking until
+// its amount is confirmed. Counted under the stats row.
+const HELD_BACK_NG = 5000;
+function isHeldBack(s) { return (+s.amount_ng || 0) > HELD_BACK_NG; }
+
+let submittedRows = 0;   // rows /api/leaderboard returned
+let duplicateCopies = 0; // copies dedupeRuns() dropped
+let allDataRaw = [];  // one row per acquisition (deduplicated); includes flagged and held-back runs
 let allData = [];     // filtered — what charts and stats use
 let currentTab = 'dia';
-let hideFailed = true; // default: exclude flagged runs from charts + averages
 let currentSampleType = 'hela'; // default: show HeLa only
 let ticLoaded = false;  // /api/tic-overlay answered (or failed); until then the TIC chart says "Loading"
 
+// Rows every panel may use: not flagged, not held back. The "Hide failed
+// runs" toggle is gone (is_flagged was false on every row, so it did nothing);
+// a flagged row is always left out.
+function usableRows() { return allDataRaw.filter(s => !s.is_flagged && !isHeldBack(s)); }
+
 function applyFilters() {
-    let data = allDataRaw;
-    if (hideFailed) {
-        data = data.filter(s => !s.is_flagged);
-    }
+    let data = usableRows();
     if (currentSampleType !== 'all') {
         data = data.filter(s => (s.sample_type || 'hela') === currentSampleType);
     }
     allData = data;
 }
-
-// Backward-compat alias used by toggleFailedFilter
-function applyFailedFilter() { applyFilters(); }
 
 function changeSampleType(sel) {
     currentSampleType = sel.value;
@@ -3894,8 +4235,7 @@ async function loadData() {
     if (bar) bar.style.width = '100%';
     if (msg) msg.textContent = `Loaded ${(d.submissions || []).length} submissions`;
 
-    allDataRaw = d.submissions || [];
-    applyFailedFilter();
+    setSubmissions(d.submissions || []);
 
     // Render table FIRST so the primary content is always visible even if
     // a chart renderer throws later.
@@ -3903,6 +4243,9 @@ async function loadData() {
     try { renderTable(); }    catch (e) { console.error('[renderTable]', e); }
     try { renderRefRanges(); } catch (e) { console.error('[renderRefRanges]', e); }
     try { renderCharts(); }   catch (e) { console.error('[renderCharts]', e); }
+    try { renderPublishedFields(); } catch (e) { console.error('[renderPublishedFields]', e); }
+    try { renderLibraryCaveat(); }   catch (e) { console.error('[renderLibraryCaveat]', e); }
+    _honourHash();
 
     // Lazy-load heavy TIC traces AFTER the initial render, then merge into
     // allDataRaw by submission_id and re-render the community TIC overlay.
@@ -3924,27 +4267,46 @@ async function loadData() {
     });
 }
 
+// The rows /api/leaderboard returned, reduced to one per acquisition (D8).
+function setSubmissions(rows) {
+    submittedRows = rows.length;
+    const d = dedupeRuns(rows);
+    duplicateCopies = d.dropped;
+    allDataRaw = d.kept;
+    applyFilters();
+}
+
+function _setText(id, text) { const el = document.getElementById(id); if (el) el.textContent = text; }
+
 function updateStats() {
-    // The Submissions tile follows the QC-standard filter; the header banner
-    // describes the whole seed, so it counts every standard (it read
-    // "Seeded with 0" under E. coli). Both come from the loaded rows (D2).
-    document.getElementById('stat-submissions').textContent = allData.length.toLocaleString();
-    const bannerRuns = document.getElementById('banner-runs');
-    if (bannerRuns) bannerRuns.textContent = allDataRaw.filter(s => !s.is_flagged).length.toLocaleString();
-    document.getElementById('stat-labs').textContent = labCount(allData);
-    document.getElementById('stat-instruments').textContent = new Set(allData.map(s=>s.instrument_model)).size;
-    const nFailed = allDataRaw.filter(s => s.is_flagged).length;
-    const failedEl = document.getElementById('stat-failed');
-    if (failedEl) failedEl.textContent = `${nFailed} flagged`;
-    const cb = document.getElementById('hide-failed-cb');
-    if (cb) cb.checked = hideFailed;
+    // Every tile is the page's own array (allData): duplicate copies removed,
+    // held-back runs left out, then the QC standard (D2, D8).
+    const sampleLabel = currentSampleType === 'all' ? 'all QC standards' : currentSampleType.toUpperCase();
+    _setText('stat-submissions', fmtN(allData.length));
+    _setText('stat-runs-sub', allData.length ? `${sampleLabel} runs, one per acquisition` : `no ${sampleLabel} runs yet`);
+    const nLabs = labCount(allData);
+    const names = new Set(allData.map(s => s.display_name).filter(Boolean));
+    _setText('stat-labs', String(nLabs));
+    _setText('stat-labs-label', nLabs === 1 ? 'Contributing lab' : 'Contributing labs');
+    _setText('stat-labs-sub', names.size > nLabs ? `under ${names.size} lab names` : '');
+    const models = [...new Set(allData.map(s => s.instrument_model).filter(Boolean))].sort();
+    _setText('stat-instruments', String(models.length));
+    _setText('stat-models', models.map(shortModel).join(' · '));
+    const t = allData.map(s => runDate(s).getTime()).filter(x => isFinite(x)).sort((a, b) => a - b);
+    if (t.length) {
+        _setText('stat-latest', new Date(t[t.length - 1]).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' }));
+        _setText('stat-first', `first run ${monthText(new Date(t[0]))}`);
+    } else {
+        _setText('stat-latest', '--');
+        _setText('stat-first', '');
+    }
+    _setText('stats-note', statsNoteText());
 
     // Update sample-type count badges
     const stBadge = document.getElementById('sample-type-counts');
     if (stBadge) {
         const counts = {};
-        const base = hideFailed ? allDataRaw.filter(s => !s.is_flagged) : allDataRaw;
-        base.forEach(s => {
+        usableRows().forEach(s => {
             const st = s.sample_type || 'hela';
             counts[st] = (counts[st] || 0) + 1;
         });
@@ -3954,13 +4316,69 @@ function updateStats() {
     }
 }
 
-function toggleFailedFilter() {
-    hideFailed = !hideFailed;
-    applyFailedFilter();
-    updateStats();
-    try { renderCharts(); } catch(e) { console.error(e); }
-    try { renderTable(); }  catch(e) { console.error(e); }
-    try { renderRefRanges(); } catch(e) { console.error(e); }
+// The D8 line under the stats row: what was taken out of the submitted rows
+// before any panel counted anything. Every QC standard, not just the one shown.
+function statsNoteText() {
+    if (!submittedRows) return '';
+    const held = allDataRaw.filter(isHeldBack).length;
+    const flagged = allDataRaw.filter(s => s.is_flagged && !isHeldBack(s)).length;
+    const parts = [];
+    if (duplicateCopies) {
+        parts.push(`${fmtN(duplicateCopies)} duplicate cop${duplicateCopies === 1 ? 'y' : 'ies'} removed `
+            + '(same instrument, acquisition mode and all four ID counts, acquired within 2 seconds of each other; '
+            + 'the copy from the lab with more runs is kept)');
+    }
+    if (held) {
+        parts.push(`${fmtN(held)} run${held === 1 ? '' : 's'} held back from every range and ranking because the `
+            + `stored amount is above 5,000 ng, most likely a unit error`);
+    }
+    if (flagged) parts.push(`${fmtN(flagged)} flagged run${flagged === 1 ? '' : 's'} left out`);
+    if (!parts.length) return `Built from all ${fmtN(submittedRows)} submitted rows: no duplicate copies or implausible amounts found.`;
+    return `Built from ${fmtN(submittedRows)} submitted rows: ${parts.join('; ')}.`;
+}
+
+// The Join card's exact field list: the keys the API actually served, so it
+// cannot drift from what is published. The two TIC fields come from
+// /api/tic-overlay; keys the page adds for itself start with "_".
+function publishedFields(rows) {
+    const keys = new Set(['tic_rt_bins', 'tic_intensity']);
+    rows.forEach(r => Object.keys(r).forEach(k => { if (!k.startsWith('_')) keys.add(k); }));
+    return [...keys].sort();
+}
+function renderPublishedFields() {
+    const list = document.getElementById('fl-list');
+    if (!list) return;
+    const fields = publishedFields(allDataRaw);
+    _setText('fl-sum', `Every published field, by API name (${fields.length})`);
+    list.innerHTML = fields.map(f => `<code>${esc(f)}</code>`).join(' ');
+}
+
+// Library coverage on timsTOF, from the rows (D7): above 90% the library,
+// not the instrument, caps the count.
+function renderLibraryCaveat() {
+    const cov = sortedNums(usableRows().filter(s => vendorOf(s) === 'bruker' && trackOf(s) === 'DIA')
+        .map(s => +s.library_coverage_pct).filter(v => v > 0));
+    if (!cov.length) return;
+    const hi = cov.filter(v => v > 90).length;
+    _setText('lib-caveat', `timsTOF runs cover a median ${Math.round(quant(cov, 0.5))}% of their library `
+        + `(highest ${Math.round(cov[cov.length - 1])}%). Above 90% the library rather than the instrument caps the count; `
+        + `${hi} run${hi === 1 ? ' is' : 's are'} there today. Counts therefore compare within a vendor, not across.`);
+}
+
+// A deep link (#join, #methods, #explore, ...) lands before the data has
+// drawn the cards and charts above it; once they have, re-align the reader
+// unless they have moved already. #peg has its own handler in its script.
+let _mainReaderMoved = false;
+if (typeof window !== 'undefined' && window.addEventListener) {
+    ['wheel', 'touchmove', 'keydown', 'mousedown'].forEach(ev =>
+        window.addEventListener(ev, () => { _mainReaderMoved = true; }, { passive: true, once: true }));
+}
+function _honourHash() {
+    if (_mainReaderMoved || typeof location === 'undefined') return;
+    const id = (location.hash || '').slice(1);
+    if (!id || id === 'peg' || !/^[\w-]+$/.test(id)) return;
+    const el = document.getElementById(id);
+    if (el && el.scrollIntoView) setTimeout(() => el.scrollIntoView({ block: 'start' }), 0);
 }
 
 // ── Reference ranges ────────────────────────────────────────────
@@ -3976,10 +4394,12 @@ function buildRefFilters() {
     if (refFilters.families.size === 0) families.forEach(f => refFilters.families.add(f));
     if (refFilters.modes.size === 0) modes.forEach(m => refFilters.modes.add(m));
 
+    // Family names are submitter-supplied: escaped, and passed through a
+    // data attribute rather than spliced into the onchange code.
     function checkbox(group, value, label) {
         const checked = refFilters[group].has(value) ? 'checked' : '';
         return `<label style="cursor:pointer;color:var(--text-secondary);font-size:0.85rem;display:flex;align-items:center;gap:0.3rem">
-            <input type="checkbox" ${checked} onchange="toggleRefFilter('${group}','${value}')"> ${label}
+            <input type="checkbox" ${checked} data-group="${group}" data-value="${esc(value)}" onchange="toggleRefFilter(this.dataset.group, this.dataset.value)"> ${esc(label)}
         </label>`;
     }
 
@@ -4000,27 +4420,6 @@ function toggleRefFilter(group, value) {
     renderRefRanges();
 }
 
-// Translate cohort bucket names to readable labels. Shared: the reference
-// cards and the column comparison chart both label cohorts with it (it once
-// lived inside renderRefRanges, and renderColumnComparison threw a
-// ReferenceError the moment two columns shared a cohort).
-const AMOUNT_LABELS = {
-    'ultra-low': '≤25 ng', 'low': '26-75 ng', 'mid': '76-150 ng',
-    'standard': '151-300 ng', 'high': '301-600 ng', 'very-high': '>600 ng',
-};
-const SPD_LABELS = {
-    '200+spd': '200+ SPD', '100spd': '100 SPD', '60spd': '60 SPD',
-    '30spd': '30 SPD', '15spd': '15 SPD', 'deep': 'Deep (>2h)',
-};
-function readableCohort(bid) {
-    const parts = bid.split('_');
-    const fam = parts[0] || '';
-    const spd = SPD_LABELS[parts[1]] || parts[1] || '';
-    const amt = AMOUNT_LABELS[parts[2]] || parts[2] || '';
-    const track = parts[3] ? ` · ${parts[3]}` : '';  // DIA / DDA, from cohortKey()
-    return `${fam} · ${spd} · ${amt}${track}`;
-}
-
 // Cohort key of the reference cards and the column comparison:
 // model_spd_amount_track. cohort_id is built from instrument_family
 // ("timsTOF"), so the model is substituted to keep timsTOF HT / Pro 2 / Pro /
@@ -4034,134 +4433,151 @@ function cohortKey(s) {
     return `${model}_${tail}_${trackOf(s)}`;
 }
 
+// What a cohort's runs are, from the runs themselves, never from the tier
+// name: "timsTOF HT · DIA · 46–60 SPD · 50 ng". Shared by the column chart
+// and the violins. Plain text: escape it before it reaches innerHTML.
+function cohortLabel(rows) {
+    const s = rows[0] || {};
+    return `${modelOf(s)} · ${trackOf(s)} · ${spdSeenText(rows)} · ${amountSeenText(rows)}`;
+}
+
+const MIN_FOR_COLUMN = 3;  // a column-specific card needs this many runs
+const MIN_FOR_IQR = 10;    // below this a card lists its values, not a range (D2)
+const MIN_FOR_CARD = 5;    // below this a cohort is folded under its instrument (D5)
+
+// One entry per card: the cohort itself, and a column-specific card for any
+// recorded column with MIN_FOR_COLUMN runs. A run with no column recorded
+// ("Unknown") only ever counts in its cohort's card (D5).
+function refCardsFor(rows) {
+    const broad = {};
+    rows.forEach(s => { const k = cohortKey(s); (broad[k] = broad[k] || []).push(s); });
+    const cards = [];
+    for (const subs of Object.values(broad)) {
+        const byCol = {};
+        subs.forEach(s => { const ck = colKey(s); if (ck) (byCol[ck] = byCol[ck] || []).push(s); });
+        const colGroups = Object.values(byCol).filter(g => g.length >= MIN_FOR_COLUMN).sort((a, b) => b.length - a.length);
+        const known = Object.values(byCol).reduce((a, g) => a + g.length, 0);
+        const covered = colGroups.reduce((a, g) => a + g.length, 0);
+        if (!colGroups.length) {
+            cards.push({ rows: subs, column: '', note: known
+                ? `LC column recorded for ${known} run${known === 1 ? '' : 's'}; too few per column for a column card yet`
+                : '' });
+        } else {
+            if (subs.length > covered) cards.push({ rows: subs, column: '', note: 'All columns combined' });
+            colGroups.forEach(g => cards.push({ rows: g, column: columnName(g[0]), note: '' }));
+        }
+    }
+    return cards;
+}
+
+// Top of a 0..max axis with about four round ticks (the mockup's niceTicks).
+function _niceMax(v) {
+    if (!(v > 0)) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(v / 4)));
+    const step = [1, 2, 2.5, 5, 10].map(k => k * p).find(k => v / k <= 4) || 10 * p;
+    return Math.ceil(v / step - 1e-9) * step;
+}
+
+// One reference card. The primary metric (precursors for DIA, PSMs for DDA)
+// is the large number; peptides and proteins sit below it, smaller (D5).
+function refCardHtml(card, axMax) {
+    const subs = card.rows, s0 = subs[0];
+    const isDIA = trackOf(s0) === 'DIA';
+    const prim = sortedNums(subs.map(primaryOf));
+    const pep = sortedNums(subs.map(s => +s.n_peptides || 0));
+    const prot = sortedNums(subs.map(s => +s.n_proteins || 0));
+    const pts = sortedNums(subs.map(s => +s.median_points_across_peak || 0).filter(v => v > 0));
+    const n = subs.length, nLabs = labCount(subs), few = n < MIN_FOR_IQR;
+    const colour = fc(modelOf(s0));
+    const P = (x) => (Math.min(Math.max(x, 0), axMax) / axMax * 100).toFixed(2) + '%';
+    let bar = '<div class="rbar">';
+    if (!few) {
+        const p10 = quant(prim, 0.1), p25 = quant(prim, 0.25), p50 = quant(prim, 0.5), p75 = quant(prim, 0.75), p90 = quant(prim, 0.9);
+        bar += `<span class="w" style="left:${P(p10)};width:calc(${P(p90)} - ${P(p10)})"></span>`
+            + `<span class="b" style="left:${P(p25)};width:calc(${P(p75)} - ${P(p25)});background:${colour}"></span>`
+            + `<span class="m" style="left:calc(${P(p50)} - 1.5px)"></span>`;
+    } else {
+        bar += prim.map(x => `<span class="dotv" style="left:${P(x)};background:${colour}"></span>`).join('');
+    }
+    bar += `</div><div class="rbar-ax"><span>0</span><span>${fmtK(axMax)}</span></div>`;
+    const spread = few
+        ? `<div class="rc-iqr">${n} run${n === 1 ? '' : 's'}, listed: <b>${prim.map(fmtN).join(' · ')}</b></div>`
+        : `<div class="rc-iqr">Middle half <b>${fmtN(quant(prim, 0.25))} – ${fmtN(quant(prim, 0.75))}</b></div>`;
+    const pq = (sv) => few ? `median ${fmtN(quant(sv, 0.5))}` : `${fmtN(quant(sv, 0.25))} – ${fmtN(quant(sv, 0.75))}`;
+    const rows = [['Peptides', pq(pep)], ['Proteins · context', pq(prot)]];
+    if (pts.length) rows.push(['Points per peak', `median ${quant(pts, 0.5).toFixed(1)}`]);
+    const cov = sortedNums(subs.map(s => +s.library_coverage_pct).filter(v => v > 0));
+    if (isDIA && vendorOf(s0) === 'bruker' && cov.length) {
+        const m = quant(cov, 0.5);
+        rows.push(['Library coverage', `median ${Math.round(m)}%${m > 90 ? '<span class="libhi">Library-limited</span>' : ''}`]);
+    }
+    const sub = card.column ? `Column: ${esc(card.column)}` : esc(card.note);
+    let h = `<article class="rc">`;
+    h += `<div class="rc-top"><h4>gradients seen: ${esc(spdSeenText(subs))}</h4><span class="amt">${esc(amountSeenText(subs))}</span></div>`;
+    h += `<div class="rc-sub">${modeBadge(trackOf(s0))}${sub ? `<span>${sub}</span>` : ''}</div>`;
+    h += `<div class="rc-n"><span><b>${runsLabsText(n, nLabs)}</b></span><span>${esc(dateSpanText(subs))}</span>${singleLabTag(nLabs)}</div>`;
+    h += `<div class="rc-big">${fmtN(quant(prim, 0.5))}<small>median ${isDIA ? 'precursors' : 'PSMs'}</small></div>`;
+    h += bar + spread;
+    h += `<dl>${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>`;
+    h += `</article>`;
+    return h;
+}
+
+// A cohort under MIN_FOR_CARD runs, as one line under its instrument.
+function sparseRowHtml(card) {
+    const subs = card.rows, isDIA = trackOf(subs[0]) === 'DIA';
+    const prim = sortedNums(subs.map(primaryOf));
+    const what = `${trackOf(subs[0])} · ${spdSeenText(subs)} · ${amountSeenText(subs)}${card.column ? ' · ' + card.column : ''}`;
+    return `<div><span><b>${esc(what)}</b></span><span>${runsLabsText(subs.length, labCount(subs))} · `
+        + `${isDIA ? 'precursors' : 'PSMs'} ${prim.map(fmtN).join(', ')}</span></div>`;
+}
+
 function renderRefRanges() {
     buildRefFilters();
+    const container = document.getElementById('ref-ranges-container');
 
     // Filter data by selected filters
     const filtered = allData.filter(s => {
         const mode = trackOf(s);
         return refFilters.families.has(s.instrument_family) && refFilters.modes.has(mode);
     });
-
-    // Hierarchical cohorts: column-specific when available, broad fallback
-    const MIN_FOR_COLUMN = 3;
-
-    const broadId = cohortKey;  // model_spd_amount_track, shared with renderColumnComparison
-    function colKey(s) {
-        return (s.column_model || '').trim().toLowerCase() || '';
+    if (!filtered.length) {
+        container.innerHTML = '<div class="empty-state">No data yet</div>';
+        return;
     }
 
-    // Build broad cohorts from filtered data
-    const broadCohorts = {};
-    filtered.forEach(s => {
-        const bid = broadId(s);
-        if (!broadCohorts[bid]) broadCohorts[bid] = [];
-        broadCohorts[bid].push(s);
-    });
-
-    function iqr(arr) {
-        const s = arr.slice().sort((a,b)=>a-b);
-        const q1 = s[Math.floor(s.length*0.25)] || s[0];
-        const q3 = s[Math.floor(s.length*0.75)] || s[s.length-1];
-        return `${q1.toLocaleString()} - ${q3.toLocaleString()}`;
-    }
-    function med(arr) {
-        const s = arr.slice().sort((a,b)=>a-b);
-        return s[Math.floor(s.length/2)] || 0;
-    }
-    // Below 10 runs a quartile is one of a handful of values, so the card
-    // lists them all rather than print a range such as "41,555 - 41,555" (D2).
-    const MIN_FOR_IQR = 10;
-    function spread(arr) {
-        if (arr.length >= MIN_FOR_IQR) return iqr(arr);
-        return arr.slice().sort((a,b)=>a-b).map(v => (v || 0).toLocaleString()).join(' · ');
-    }
-    function refCardHtml(title, subtitle, subs, highlight) {
-        // Every run in a cohort shares one track (cohortKey), so the first
-        // row's track is the cohort's.
-        const isDIA = trackOf(subs[0]) === 'DIA';
-        const primary = isDIA ? subs.map(s=>s.n_precursors) : subs.map(s=>s.n_psms);
-        const peps = subs.map(s=>s.n_peptides);
-        const prots = subs.map(s=>s.n_proteins);
-        const pts = subs.map(s=>s.median_points_across_peak||0).filter(v=>v>0);
-        const nLabs = labCount(subs);
-        const few = subs.length < MIN_FOR_IQR;
-        const how = few ? 'values' : 'IQR';
-
-        // Build readable description from actual submission data
-        const amounts = [...new Set(subs.map(s=>s.amount_ng||50))];
-        const amtStr = amounts.length === 1 ? `${amounts[0]} ng` : `${Math.min(...amounts)}-${Math.max(...amounts)} ng`;
-        const spds = [...new Set(subs.map(s=>s.spd||0).filter(v=>v>0))];
-        const spdStr = spds.length === 1 ? `${spds[0]} SPD` : spds.length > 0 ? `${Math.min(...spds)}-${Math.max(...spds)} SPD` : '';
-        const mode = isDIA ? 'DIA' : 'DDA';
-
-        let h = `<div class="ref-card" style="${highlight?'border-color:var(--ucd-gold-border);':''}">`;
-        h += `<h4>${esc(title)}</h4>`;
-        h += `<div class="ref-n"><span><b>${runsLabsText(subs.length, nLabs)}</b></span>${singleLabTag(nLabs)}</div>`;
-        h += `<div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:0.5rem">${mode} &middot; ${esc(spdStr)} &middot; ${esc(amtStr)}</div>`;
-        if (subtitle) h += `<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem">${esc(subtitle)}</div>`;
-        const valCls = few ? 'ref-range ref-vals' : 'ref-range';
-        h += `<div class="ref-row"><span class="ref-metric">${isDIA?'Precursors':'PSMs'} (${how})</span><span class="${valCls}">${spread(primary)}</span></div>`;
-        h += `<div class="ref-row"><span class="ref-metric">Peptides (${how})</span><span class="${valCls}">${spread(peps)}</span></div>`;
-        h += `<div class="ref-row"><span class="ref-metric">Proteins (${how})</span><span class="${valCls}">${spread(prots)}</span></div>`;
-        if (pts.length > 0) {
-            h += `<div class="ref-row"><span class="ref-metric">Points/peak median</span><span class="ref-range">${med(pts).toFixed(1)}</span></div>`;
-        }
-        h += `</div>`;
-        return h;
-    }
-
+    // Cards grouped under one heading per instrument model (D5), the model
+    // with the most runs first. On a phone only the first group starts open.
+    const byModel = {};
+    filtered.forEach(s => { const m = modelOf(s); (byModel[m] = byModel[m] || []).push(s); });
+    const models = Object.keys(byModel).sort((a, b) => byModel[b].length - byModel[a].length || a.localeCompare(b));
+    const narrow = isNarrowView();
     let html = '';
-
-    // Sort broad cohorts by submission count descending
-    const sortedBroad = Object.entries(broadCohorts).sort((a,b) => b[1].length - a[1].length);
-
-    for (const [bid, broadSubs] of sortedBroad) {
-        // Group by column within this broad cohort
-        const byColumn = {};
-        broadSubs.forEach(s => {
-            const ck = colKey(s);
-            if (!byColumn[ck]) byColumn[ck] = [];
-            byColumn[ck].push(s);
-        });
-
-        const columnGroups = Object.entries(byColumn)
-            .filter(([ck, subs]) => ck && subs.length >= MIN_FOR_COLUMN)
-            .sort((a,b) => b[1].length - a[1].length);
-
-        if (columnGroups.length > 0) {
-            // Show column-specific cards
-            for (const [ck, colSubs] of columnGroups) {
-                const colDisplay = colSubs[0].column_vendor
-                    ? `${colSubs[0].column_vendor} ${colSubs[0].column_model}`
-                    : colSubs[0].column_model;
-                html += refCardHtml(
-                    readableCohort(bid),
-                    colDisplay,
-                    colSubs,
-                    true,
-                );
-            }
-            // Also show broad cohort as fallback context
-            if (broadSubs.length > columnGroups.reduce((a,[,s])=>a+s.length, 0)) {
-                html += refCardHtml(
-                    readableCohort(bid),
-                    'All columns combined',
-                    broadSubs,
-                    false,
-                );
-            }
-        } else {
-            // No column-specific groups — show broad cohort
-            const hasColumns = broadSubs.some(s => s.column_model);
-            const subtitle = hasColumns
-                ? 'Not enough data per column yet — contribute to build column-specific ranges!'
-                : '';
-            html += refCardHtml(readableCohort(bid), subtitle, broadSubs, false);
+    models.forEach((model, gi) => {
+        const cards = refCardsFor(byModel[model])
+            .sort((a, b) => (trackOf(a.rows[0]) === 'DIA' ? 0 : 1) - (trackOf(b.rows[0]) === 'DIA' ? 0 : 1)
+                || b.rows.length - a.rows.length);
+        const big = cards.filter(c => c.rows.length >= MIN_FOR_CARD);
+        const sparse = cards.filter(c => c.rows.length < MIN_FOR_CARD);
+        const sparseRuns = sparse.reduce((a, c) => a + c.rows.length, 0);
+        // One bar scale per instrument: the largest 90th percentile (or value).
+        const tops = big.map(c => { const v = sortedNums(c.rows.map(primaryOf)); return c.rows.length >= MIN_FOR_IQR ? quant(v, 0.9) : v[v.length - 1]; });
+        const axMax = _niceMax(Math.max(1, ...tops));
+        const meta = [];
+        if (big.length) meta.push(`${big.length} cohort${big.length === 1 ? '' : 's'}`);
+        if (sparse.length) meta.push(`${sparse.length} sparse`);
+        const open = !narrow || gi === 0;
+        html += `<details class="mgroup"${open ? ' open' : ''}><summary><h3><span class="mdot" style="background:${fc(model)}"></span>${esc(model)}</h3>`
+            + `<span class="mg-meta">${meta.join(' + ')} · ${runsLabsText(byModel[model].length, labCount(byModel[model]))}</span></summary>`;
+        if (big.length) html += `<div class="refgrid">${big.map(c => refCardHtml(c, axMax)).join('')}</div>`;
+        if (sparse.length) {
+            html += `<details class="sparse"${big.length ? '' : ' open'}><summary>${big.length ? 'Show' : 'Only'} ${sparse.length} sparse cohort${sparse.length === 1 ? '' : 's'}`
+                + ` (${sparseRuns} run${sparseRuns === 1 ? '' : 's'}, fewer than ${MIN_FOR_CARD} each)</summary>`
+                + `<div class="sparse-list">${sparse.map(sparseRowHtml).join('')}</div></details>`;
         }
-    }
-
-    document.getElementById('ref-ranges-container').innerHTML = html || '<div class="empty-state">No data yet</div>';
+        html += '</details>';
+    });
+    container.innerHTML = html;
 }
 
 // ── Charts ──────────────────────────────────────────────────────
@@ -4191,11 +4607,12 @@ function renderCharts() {
 }
 
 // ── Literature-survey LC-health charts ──────────────────────────────
-// Each chart renders a single ID-free metric across the cohort, grouped
-// by instrument family. Empty-state message if the field is unpopulated.
+// Each chart renders a single ID-free metric over time, one colour per
+// instrument MODEL (HT, Pro and Pro 2 apart): a point per run and a line
+// through that model's monthly medians, so one instrument's drift can be
+// followed (spec §A.2). Empty-state message if the field is unpopulated.
 
-function _lcScatterByFamily(divId, field, yTitle, transform, layoutOverrides) {
-    // Generic helper: scatter of submitted_at vs `field`, colored by family.
+function _lcScatterByModel(divId, field, yTitle, transform, layoutOverrides) {
     const el = document.getElementById(divId);
     if (!el) return;
     _resetChart(el);
@@ -4207,32 +4624,61 @@ function _lcScatterByFamily(divId, field, yTitle, transform, layoutOverrides) {
     const data = allData.filter(s => s[field] != null);
     if (data.length < 3) {
         el.innerHTML = `<div class="empty-state" style="padding:2rem;text-align:center">
-            Not yet populated. This metric will appear once the STAN watcher has
-            processed runs that include this field in DIA-NN's output.</div>`;
+            No runs in view carry this metric yet.</div>`;
         return;
     }
-    const families = [...new Set(data.map(s => s.instrument_family))].sort();
-    const traces = families.map(fam => {
-        const sub = data.filter(s => s.instrument_family === fam);
-        return {
+    const val = (s) => transform ? transform(s[field]) : s[field];
+    const models = [...new Set(data.map(modelOf))].sort();
+    // Points first, every model's median line after them, so no model's
+    // points hide another model's line.
+    const points = [], lines = [];
+    models.forEach(model => {
+        const sub = data.filter(s => modelOf(s) === model);
+        points.push({
             type: 'scatter', mode: 'markers',
-            name: fam,
+            name: `${esc(model)} (${runsLabsText(sub.length, labCount(sub))})`, legendgroup: model,
             x: sub.map(s => runDate(s).toISOString().slice(0,10)),
-            y: sub.map(s => transform ? transform(s[field]) : s[field]),
-            marker: { color: fc(fam), size: 7, opacity: 0.8, line: {color:'#fff',width:0.3} },
+            y: sub.map(val),
+            marker: { color: fc(model), size: 5, opacity: 0.35, line: { width: 0 } },
             // Instrument, date and SPD: file names never reach the page (D4).
             text: sub.map(s => `${esc(s.instrument_model)}<br>${runDay(s)}<br>${s.spd||'?'} SPD`),
             hovertemplate: `%{text}<br>${yTitle}: %{y:.2f}<extra></extra>`,
-        };
+        });
+        // Monthly medians; a gap of more than three months breaks the line.
+        const byMonth = new Map();
+        sub.forEach(s => {
+            const v = val(s);
+            if (v == null || !isFinite(v)) return;
+            const k = runDate(s).toISOString().slice(0, 7);
+            if (!byMonth.has(k)) byMonth.set(k, []);
+            byMonth.get(k).push(v);
+        });
+        const lx = [], ly = [];
+        let prev = null;
+        [...byMonth.keys()].sort().forEach(k => {
+            const mi = (+k.slice(0, 4)) * 12 + (+k.slice(5, 7));
+            if (prev != null && mi - prev > 3) { lx.push(null); ly.push(null); }
+            lx.push(k + '-15'); ly.push(quant(sortedNums(byMonth.get(k)), 0.5));
+            prev = mi;
+        });
+        lines.push({
+            type: 'scatter', mode: 'lines', name: `${esc(model)} monthly median`, legendgroup: model, showlegend: false,
+            x: lx, y: ly, connectgaps: false, line: { color: fc(model), width: 2.8 },
+            hovertemplate: `${esc(model)} · %{x|%b %Y}<br>monthly median: %{y:.2f}<extra></extra>`,
+        });
     });
+    const traces = points.concat(lines);
+    const narrow = isNarrowView();
     const layout = {
         ...PL,
-        xaxis: { ...PL.xaxis, title: 'Acquisition date', type: 'date', showticklabels: true,
+        xaxis: { ...PL.xaxis, title: narrow ? '' : 'Acquisition date', type: 'date', showticklabels: true,
                  tickformat: '%b %Y', tickfont: { size: 10, color: '#8aa4c0' } },
-        yaxis: { ...PL.yaxis, title: yTitle },
-        height: 320,
+        yaxis: { ...PL.yaxis, title: yTitle, automargin: true },
+        height: narrow ? 560 : 360,
         showlegend: true,
-        legend: { font: { color: '#a0b4cc' }, orientation: 'h', y: -0.15 },
+        // Below the axis title, not on it (the live legend sat on "Acquisition date").
+        legend: { font: { color: '#a0b4cc', size: narrow ? 10 : 11 }, orientation: 'h', x: 0, y: narrow ? -0.1 : -0.3, yanchor: 'top' },
+        margin: { ...PL.margin, b: narrow ? 170 : 110 },
     };
     if (layoutOverrides) {
         if (layoutOverrides.yaxis) layout.yaxis = { ...layout.yaxis, ...layoutOverrides.yaxis };
@@ -4244,22 +4690,22 @@ function _lcScatterByFamily(divId, field, yTitle, transform, layoutOverrides) {
 function renderMassAccuracy() {
     // Mass accuracy values in the Excel backfill are stored as corrected
     // ppm. Absolute value for the plot (direction doesn't matter).
-    _lcScatterByFamily('chart-mass-acc', 'median_mass_acc_ms1_ppm', 'MS1 mass error (ppm)',
+    _lcScatterByModel('chart-mass-acc', 'median_mass_acc_ms1_ppm', 'MS1 mass error (ppm)',
         v => Math.abs(v), { yaxis: { dtick: 5, range: [0, 25] } });
 }
 
 function renderMs1Signal() {
     // MS1.Signal is raw ion current in arbitrary units. Log10 for readability.
-    _lcScatterByFamily('chart-ms1-signal', 'ms1_signal', 'log10(MS1 TIC signal)',
+    _lcScatterByModel('chart-ms1-signal', 'ms1_signal', 'log10(MS1 TIC signal)',
         v => (v > 0 ? Math.log10(v) : null));
 }
 
 function renderPtsPerPeak() {
-    _lcScatterByFamily('chart-pts-peak', 'median_points_across_peak', 'Datapoints per peak');
+    _lcScatterByModel('chart-pts-peak', 'median_points_across_peak', 'Datapoints per peak');
 }
 
 function renderDynamicRange() {
-    _lcScatterByFamily('chart-dyn-range', 'dynamic_range_log10', 'log10 dynamic range',
+    _lcScatterByModel('chart-dyn-range', 'dynamic_range_log10', 'log10 dynamic range',
         null, { yaxis: { rangemode: 'tozero' } });
 }
 
@@ -4874,10 +5320,12 @@ function renderParetoVariability(instrument) {
 }
 
 // Depth-by-SPD: which throughput produces the best data on each instrument?
-// One subplot per instrument family. X = SPD bucket, Y = precursors/PSMs.
+// One subplot per instrument MODEL (HT, Pro and Pro 2 apart; spec §A.2), and
+// under the "All" tab one per model and acquisition mode, so precursors and
+// PSMs never share a box. X = SPD bucket, Y = the track's primary metric.
 // Amount-filtered: dropdown selects which loading tier to show so you compare
 // apples-to-apples across SPDs. Shape encodes amount bucket for the "All"
-// view so off-standard amounts pop visually.
+// view so off-standard amounts pop visually. On a phone the facets stack.
 function renderSpdDepth() {
     const el = document.getElementById('chart-spd-depth');
     if (!el) return;
@@ -4893,9 +5341,9 @@ function renderSpdDepth() {
     };
 
     let data = allData;
-    if (currentTab === 'dia') data = data.filter(s => s.acquisition_mode.toLowerCase().includes('dia'));
-    else if (currentTab === 'dda') data = data.filter(s => s.acquisition_mode.toLowerCase().includes('dda'));
-    data = data.filter(s => (s.n_precursors || s.n_psms) && s.spd);
+    if (currentTab === 'dia') data = data.filter(s => trackOf(s) === 'DIA');
+    else if (currentTab === 'dda') data = data.filter(s => trackOf(s) === 'DDA');
+    data = data.filter(s => primaryOf(s) > 0 && s.spd);
 
     // Apply amount filter
     if (amtFilter === '50')   data = data.filter(s => (s.amount_ng || 50) >= 20 && (s.amount_ng || 50) <= 100);
@@ -4910,10 +5358,10 @@ function renderSpdDepth() {
 
     const BUCKET_ORDER = ['deep','medium','fast','ultra'];
     const BUCKET_LABEL = {
-        deep:   'deep (≤15 SPD)',
-        medium: 'medium (16–40)',
-        fast:   'fast (41–80)',
-        ultra:  'ultra (>80)',
+        deep:   'deep<br>(≤15 SPD)',
+        medium: 'medium<br>(16–40)',
+        fast:   'fast<br>(41–80)',
+        ultra:  'ultra<br>(>80)',
     };
     const spdBucket = (spd) => {
         if (!spd || spd <= 0) return 'medium';
@@ -4922,30 +5370,41 @@ function renderSpdDepth() {
         if (spd <= 80) return 'fast';
         return 'ultra';
     };
-    const depth = (s) => Math.max(s.n_precursors || 0, s.n_psms || 0);
-
-    const families = [...new Set(data.map(s => s.instrument_family))].sort();
+    const tracks = new Set(data.map(trackOf));
+    const mixed = tracks.size > 1;
+    const facetOf = s => mixed ? `${modelOf(s)} · ${trackOf(s)}` : modelOf(s);
+    const groups = {};
+    data.forEach(s => { const f = facetOf(s); (groups[f] = groups[f] || []).push(s); });
+    // timsTOF facets first, then Orbitrap: the within-vendor caveat sits under the chart.
+    const facets = Object.keys(groups).sort((a, b) =>
+        (vendorOf(groups[a][0]) === 'bruker' ? 0 : 1) - (vendorOf(groups[b][0]) === 'bruker' ? 0 : 1) || a.localeCompare(b));
+    const nf = facets.length;
+    const narrow = isNarrowView();
+    const amtLabel = amtFilter === 'all' ? '' : `, ${amtFilter === '50' ? '50 ng' : amtFilter === 'low' ? '<20 ng' : '>100 ng'}`;
     const traces = [];
     const annotations = [];
+    const layout = { ...PL, showlegend: false };
+    const ROW = 250, area = nf * ROW;
 
-    families.forEach((fam, fi) => {
-        const famRuns = data.filter(s => s.instrument_family === fam);
+    facets.forEach((facet, fi) => {
+        const runs0 = groups[facet];
+        const model = modelOf(runs0[0]);
         const axisSuffix = fi === 0 ? '' : (fi + 1);
         const xaxisRef = 'x' + axisSuffix;
         const yaxisRef = 'y' + axisSuffix;
 
         // One box per bucket that actually has runs
-        const bucketsPresent = BUCKET_ORDER.filter(b => famRuns.some(s => spdBucket(s.spd) === b));
+        const bucketsPresent = BUCKET_ORDER.filter(b => runs0.some(s => spdBucket(s.spd) === b));
         bucketsPresent.forEach(b => {
-            const runs = famRuns.filter(s => spdBucket(s.spd) === b);
+            const runs = runs0.filter(s => spdBucket(s.spd) === b);
             traces.push({
                 type: 'box',
-                y: runs.map(depth),
+                y: runs.map(primaryOf),
                 x: runs.map(() => BUCKET_LABEL[b]),
                 name: BUCKET_LABEL[b],
                 boxpoints: false,
-                line: { color: fc(fam) },
-                fillcolor: fc(fam) + '20',
+                line: { color: fc(model) },
+                fillcolor: fc(model) + '20',
                 showlegend: false,
                 xaxis: xaxisRef, yaxis: yaxisRef,
                 hoverinfo: 'skip',
@@ -4953,61 +5412,57 @@ function renderSpdDepth() {
         });
 
         // Scatter overlay — color by SPD (consistent with violin), shape by amount
+        const showBar = !narrow && fi === nf - 1;
         traces.push({
             type: 'scatter', mode: 'markers',
-            x: famRuns.map(s => BUCKET_LABEL[spdBucket(s.spd)]),
-            y: famRuns.map(depth),
+            x: runs0.map(s => BUCKET_LABEL[spdBucket(s.spd)]),
+            y: runs0.map(primaryOf),
             xaxis: xaxisRef, yaxis: yaxisRef,
             showlegend: false,
             marker: {
-                color: famRuns.map(s => s.spd || 30),
+                color: runs0.map(s => s.spd || 30),
                 colorscale: [[0,'#5cb8ff'],[0.3,'#34d399'],[0.6,'#FFBF00'],[1,'#f87171']],
                 cmin: 5, cmax: 200,
                 size: 6, opacity: 0.8,
-                symbol: famRuns.map(amountShape),
+                symbol: runs0.map(amountShape),
                 line: { color: '#fff', width: 0.3 },
-                showscale: fi === families.length - 1,
-                colorbar: fi === families.length - 1 ? {
+                showscale: showBar,
+                colorbar: showBar ? {
                     title: 'SPD', tickfont:{color:'#a0b4cc'},
                     titlefont:{color:'#DAAA00'}, len: 0.5, thickness: 10, x: 1.02,
                 } : undefined,
             },
-            text: famRuns.map(s => `${s.instrument_model}<br>${s.spd} SPD, ${s.amount_ng||50} ng<br>${s.acquisition_mode.toUpperCase()}`),
-            hovertemplate: '%{text}<br>IDs: %{y:,}<extra></extra>',
+            text: runs0.map(s => `${esc(s.instrument_model)}<br>${esc(s.spd)} SPD, ${esc(s.amount_ng||50)} ng<br>${trackOf(s)}`),
+            hovertemplate: `%{text}<br>${trackOf(runs0[0]) === 'DDA' ? 'PSMs' : 'Precursors'}: %{y:,}<extra></extra>`,
         });
 
-        const amtLabel = amtFilter === 'all' ? '' : `, ${amtFilter === '50' ? '50 ng' : amtFilter === 'low' ? '<20 ng' : '>100 ng'}`;
-        annotations.push({
-            text: `<b>${fam}</b> (n=${famRuns.length}${amtLabel})`,
-            xref: 'paper', yref: 'paper',
-            x: (fi + 0.5) / families.length, y: 1.02,
-            xanchor: 'center', yanchor: 'bottom',
-            showarrow: false,
-            font: { color: fc(fam), size: 13 },
-        });
+        const xKey = 'xaxis' + axisSuffix, yKey = 'yaxis' + axisSuffix;
+        const head = `${runsLabsText(runs0.length, labCount(runs0))}${amtLabel}`;
+        if (narrow) {
+            // Stacked: each facet its own row with its title above it.
+            const top = 1 - (fi * ROW + 34) / area, bot = 1 - ((fi + 1) * ROW - 40) / area;
+            layout[xKey] = { ...PL.xaxis, anchor: yaxisRef, domain: [0, 1], categoryorder: 'array',
+                categoryarray: BUCKET_ORDER.map(b => BUCKET_LABEL[b]), tickfont: { size: 10 } };
+            layout[yKey] = { ...PL.yaxis, anchor: xaxisRef, domain: [bot, top], matches: fi === 0 ? undefined : 'y',
+                tickfont: { size: 10 }, automargin: true };
+            annotations.push({ text: `<b>${esc(facet)}</b> (${head})`, xref: 'paper', yref: 'paper', x: 0, y: top + 0.004,
+                xanchor: 'left', yanchor: 'bottom', showarrow: false, font: { color: fc(model), size: 12 } });
+        } else {
+            const left = fi / nf + 0.015;
+            const right = (fi + 1) / nf - 0.015;
+            layout[xKey] = { ...PL.xaxis, domain: [left, Math.min(right, 1)], categoryorder: 'array',
+                categoryarray: BUCKET_ORDER.map(b => BUCKET_LABEL[b]), title: '', tickfont: { size: 10 } };
+            layout[yKey] = { ...PL.yaxis, anchor: xaxisRef, matches: fi === 0 ? undefined : 'y',
+                showticklabels: fi === 0, automargin: true,
+                title: fi === 0 ? (mixed ? 'Precursors / PSMs' : tracks.has('DDA') ? 'PSMs' : 'Precursors') : '' };
+            annotations.push({ text: `<b>${esc(shortModel(facet))}</b><br>${head}`, xref: 'paper', yref: 'paper',
+                x: (left + right) / 2, y: 1.02, xanchor: 'center', yanchor: 'bottom', showarrow: false,
+                font: { color: fc(model), size: 11 } });
+        }
     });
-
-    // Build subplot layout
-    const layout = { ...PL, height: 420, showlegend: false, annotations };
-    families.forEach((fam, fi) => {
-        const xKey = 'xaxis' + (fi === 0 ? '' : (fi + 1));
-        const yKey = 'yaxis' + (fi === 0 ? '' : (fi + 1));
-        const left = fi / families.length + 0.02;
-        const right = (fi + 1) / families.length - 0.02;
-        layout[xKey] = {
-            ...PL.xaxis,
-            domain: [left, Math.min(right, 1)],
-            categoryorder: 'array',
-            categoryarray: BUCKET_ORDER.map(b => BUCKET_LABEL[b]),
-            title: '',
-        };
-        layout[yKey] = {
-            ...PL.yaxis,
-            anchor: 'x' + (fi === 0 ? '' : (fi + 1)),
-            title: fi === 0 ? 'Precursors / PSMs' : '',
-            matches: fi === 0 ? undefined : 'y',
-        };
-    });
+    layout.annotations = annotations;
+    if (narrow) { layout.height = area + 40; layout.margin = { t: 10, r: 10, b: 40, l: 50 }; }
+    else { layout.height = 460; layout.margin = { ...PL.margin, t: 60, b: 70 }; }
 
     Plotly.newPlot('chart-spd-depth', traces, layout, PC);
 }
@@ -5072,19 +5527,34 @@ function renderConfigLeaderboard() {
                             ? currentSampleType.toUpperCase() : 'all samples';
         const sorted = tracks.map(t => (tracks.length > 1 ? `${t} ` : '') + configSort[t].col).join(', ');
         const modeLabel = tracks.length > 1 ? 'DIA and DDA tables' : tracks[0];
-        badge.textContent = `${sampleLabel} · ${modeLabel} · sorted by ${sorted}`;
+        badge.textContent = `${sampleLabel} · ${CONFIG_AMOUNTS[configAmount()].label} · ${modeLabel} · sorted by ${sorted}`;
     }
+}
+
+// Amount select (B6): the table opens on 50 ng, so a >=250 ng cohort is not
+// ranked against 50 ng ones. Keys map to _configAmountBucket() labels.
+const CONFIG_AMOUNTS = {
+    '50':      { label: '50 ng',      bucket: '50 ng' },
+    'lt10':    { label: '<10 ng',     bucket: '<10 ng' },
+    '10_49':   { label: '10-49 ng',   bucket: '10-49 ng' },
+    '100_249': { label: '100-249 ng', bucket: '100-249 ng' },
+    'ge250':   { label: '≥250 ng',    bucket: '≥250 ng' },
+    'all':     { label: 'all amounts', bucket: null },
+};
+function configAmount() {
+    const v = (document.getElementById('config-amount-filter') || {}).value;
+    return CONFIG_AMOUNTS[v] ? v : '50';
 }
 
 function _configTableHtml(track, withHeading) {
     const pm = CONFIG_PRIMARY[track];
     const pmLabel = track === 'DDA' ? 'PSMs' : 'Precursors';
-    const data = allData.filter(s => trackOf(s) === track);
+    const want = CONFIG_AMOUNTS[configAmount()].bucket;
+    const data = allData.filter(s => trackOf(s) === track && (!want || _configAmountBucket(s.amount_ng) === want));
     const heading = withHeading
         ? `<h4 style="color:var(--ucd-gold-dark); font-size:0.9rem; margin:${track === 'DIA' ? '0.25rem' : '1.25rem'} 0 0.5rem">${track} · ranked by ${pmLabel.toLowerCase()}</h4>`
         : '';
 
-    const modelOf = s => s.instrument_model || s.instrument_family || 'Unknown';
     const cohorts = {};
     data.forEach(s => {
         const key = [modelOf(s), _configSpdTier(s.spd), _configAmountBucket(s.amount_ng)].join('|');
@@ -5154,13 +5624,15 @@ function _configTableHtml(track, withHeading) {
     let html = heading + '<table style="width:100%; border-collapse:collapse; font-size:0.9rem">';
     html += '<thead><tr>';
     html += '<th style="padding:0.5rem 0.75rem; text-align:right; color:#6b82a0">#</th>';
+    // The track's primary metric comes right after Instrument, so a phone
+    // shows the count without scrolling the table sideways (B6).
     html += thLeft('model',     'Instrument');
+    if (track === 'DIA') html += th('precursors', 'Precursors');
+    if (track === 'DDA') html += th('psms', 'PSMs');
     html += thLeft('spd',       'SPD');
     html += thLeft('amount',    'Amount');
-    if (track === 'DIA') html += th('precursors', 'Precursors');
     html += th('peptides',   'Peptides');
     html += th('proteins',   'Proteins');
-    if (track === 'DDA') html += th('psms', 'PSMs');
     html += th('ms1ppm',     'MS1 ppm');
     html += th('n',          'Runs');
     html += th('labs',       'Labs');
@@ -5177,12 +5649,12 @@ function _configTableHtml(track, withHeading) {
         html += `<tr style="background:${rowBg}">`;
         html += cell(i+1);
         html += cell(`<span style="color:${typeof fc==='function' ? fc(r.model) : '#a0b4cc'}; font-weight:600">${esc(r.model)}</span>${badgeDepth}${badgeMs1}`, false);
+        if (track === 'DIA') html += cell(`<strong>${fmt(r.precursors)}</strong>`);
+        if (track === 'DDA') html += cell(`<strong>${fmt(r.psms)}</strong>`);
         html += cell(esc(r.spd), false);
         html += cell(esc(r.amount), false);
-        if (track === 'DIA') html += cell(fmt(r.precursors));
         html += cell(fmt(r.peptides));
         html += cell(fmt(r.proteins));
-        if (track === 'DDA') html += cell(fmt(r.psms));
         html += cell(fmtPpm(r.ms1ppm));
         html += cell(r.n.toLocaleString());
         html += cell(`${r.labs}${r.labs < 2 ? ' ' + singleLabTag(r.labs) : ''}`);
@@ -5229,6 +5701,15 @@ function renderAmountDepth() {
         badge.style.background = warn ? 'rgba(234,179,8,0.2)' : 'rgba(56,189,248,0.2)';
         badge.style.color = warn ? 'var(--warn)' : 'var(--accent)';
     }
+    // What the data can show (D8): nearly every run is at 50 ng, so the other
+    // buckets hold few runs. Said in place of the old saturation claim.
+    const share = document.getElementById('amount-share');
+    if (share) {
+        const n50 = plotData.filter(s => _amountBucket(s.amount_ng) === 'standard').length;
+        share.textContent = plotData.length
+            ? `${Math.round(100 * n50 / plotData.length)}% of the ${fmtN(plotData.length)} runs in view are at 50 ng, so the other buckets hold few runs and cannot show where depth levels off.`
+            : '';
+    }
 
     if (plotData.length === 0) {
         const el = document.getElementById('chart-amount-depth');
@@ -5254,7 +5735,7 @@ function renderAmountDepth() {
         if (!xs.length) continue;
         traces.push({
             type: 'violin',
-            x: xs, y: ys, name: model,
+            x: xs, y: ys, name: `${esc(model)} · ${runsLabsText(subs.length, labCount(subs))}`,
             box: { visible: true },
             meanline: { visible: true },
             line: { color: fc(model) },
@@ -5265,41 +5746,64 @@ function renderAmountDepth() {
             marker: { size: 4, color: fc(model), opacity: 0.6 },
             spanmode: 'hard',
             scalemode: 'count',
-            hovertemplate: `${model}<br>%{x}<br>IDs: %{y:,}<extra></extra>`,
+            hovertemplate: `${esc(model)}<br>%{x}<br>IDs: %{y:,}<extra></extra>`,
         });
     }
 
+    // On a phone the rotated amount labels need the room the legend took.
+    const narrow = isNarrowView();
     Plotly.newPlot('chart-amount-depth', traces, {
         ...PL,
         violinmode: 'group',
         xaxis: {
             ...PL.xaxis,
-            title: 'Amount loaded',
+            title: narrow ? '' : 'Amount loaded',
             type: 'category',
             categoryorder: 'array',
             categoryarray: AMOUNT_BUCKETS.map(b => b.label),
+            automargin: true,
         },
-        yaxis: { ...PL.yaxis, title: 'Precursors / PSMs' },
+        yaxis: { ...PL.yaxis, automargin: true,
+                 title: currentTab === 'dia' ? 'Precursors' : currentTab === 'dda' ? 'PSMs' : 'Precursors / PSMs' },
         legend: {
-            orientation: 'h', x: 0, y: -0.18,
-            font: { color: '#a0b4cc', size: 11 },
+            orientation: 'h', x: 0, y: narrow ? -0.3 : -0.24, yanchor: 'top',
+            font: { color: '#a0b4cc', size: narrow ? 10 : 11 },
         },
-        height: 380,
+        height: narrow ? 480 : 400,
+        margin: { ...PL.margin, b: narrow ? 150 : 100 },
     }, PC);
 }
 
+// The throughput tier a run's cohort uses (cohort_id "timsTOF_60spd_low"
+// -> "60spd", 40-79 SPD), the same tier as the reference cards.
+function spdTierOf(s) {
+    const t = (s.cohort_id || '').split('_')[1];
+    if (t) return t;
+    const spd = +s.spd || 0;
+    return spd >= 200 ? '200+spd' : spd >= 80 ? '100spd' : spd >= 40 ? '60spd' : spd >= 25 ? '30spd' : spd >= 10 ? '15spd' : 'deep';
+}
+const VENDOR_LIB = { bruker: 'timsTOF · ~54k-precursor library', thermo: 'Orbitrap · ~170k-precursor library' };
+
+// Identification Depth by Platform (spec §A.2): one violin per SPD cohort
+// (model × throughput tier × acquisition mode), not one per model, so a
+// 9 SPD run is not pooled with a 67 SPD run and DIA never shares a violin
+// with DDA. Only cohorts of 5 or more runs get a violin; the rest are counted
+// under the chart. Violins are grouped by vendor with its library named on the
+// chart. When a violin would get under 70 px (phones) the chart turns
+// horizontal, so its labels no longer clip.
 function renderViolin() {
-    _resetChart(document.getElementById('chart-violin'));
+    const el = document.getElementById('chart-violin');
+    _resetChart(el);
     // Only show data matching the active tab to avoid mixing precursors and PSMs
     let plotData = allData;
-    if (currentTab === 'dia') plotData = plotData.filter(s=>s.acquisition_mode.toLowerCase().includes('dia'));
-    else if (currentTab === 'dda') plotData = plotData.filter(s=>s.acquisition_mode.toLowerCase().includes('dda'));
+    if (currentTab === 'dia') plotData = plotData.filter(s => trackOf(s) === 'DIA');
+    else if (currentTab === 'dda') plotData = plotData.filter(s => trackOf(s) === 'DDA');
 
     // Amount-bucket filter — pooling 5 ng K562 with 200 ng HeLa makes
     // apples-to-oranges comparisons. Default 50 ng (the canonical UCD
     // standard); user can switch via the dropdown.
     const amountSel = document.getElementById('violin-amount-filter');
-    const amountVal = amountSel ? amountSel.value : '50';
+    const amountVal = (amountSel && amountSel.value) || '50';
     const inAmtBucket = (a) => {
         a = (a == null) ? 50 : a;
         switch (amountVal) {
@@ -5331,272 +5835,254 @@ function renderViolin() {
     if (badge) {
         const modeLabel = currentTab === 'dia' ? 'DIA (precursors)'
                         : currentTab === 'dda' ? 'DDA (PSMs)'
-                        : 'ALL modes (⚠ precursors + PSMs)';
+                        : 'DIA and DDA violins (precursors / PSMs)';
         const sampleLabel = (typeof currentSampleType !== 'undefined' && currentSampleType !== 'all')
                             ? currentSampleType.toUpperCase()
                             : 'all samples';
-        const modeWarn = currentTab === 'all' || !currentTab;
         const amtWarn  = amountVal === 'all';
-        const warn = modeWarn || amtWarn;
         badge.textContent = `${sampleLabel} · ${amountLabel} · ${modeLabel}`;
-        badge.style.background = warn ? 'rgba(234,179,8,0.2)' : 'rgba(56,189,248,0.2)';
-        badge.style.color = warn ? 'var(--warn)' : 'var(--accent)';
+        badge.style.background = amtWarn ? 'rgba(234,179,8,0.2)' : 'rgba(56,189,248,0.2)';
+        badge.style.color = amtWarn ? 'var(--warn)' : 'var(--accent)';
     }
+    const note = document.getElementById('violin-note');
+    if (note) note.textContent = '';
 
     if (plotData.length === 0) {
-        const el = document.getElementById('chart-violin');
         if (el) el.innerHTML = '<div class="empty-state" style="padding:2rem; text-align:center; color:var(--text-muted)">No submissions match these filters yet. Try a wider amount range or different sample type.</div>';
         return;
     }
 
-    // Group by instrument MODEL, not family — keeps timsTOF HT / Pro / Pro 2
-    // visually distinct. Falls back to family for legacy rows missing model.
-    const modelKey = s => s.instrument_model || s.instrument_family || 'unknown';
-    const groups = [...new Set(plotData.map(modelKey))].sort();
-    const families = groups;  // alias for downstream code expecting `families`
-    // Color channel is SPD (throughput). Different load amounts/sample
-    // types are now guaranteed-comparable by the filter above, so SPD is
-    // the meaningful per-point dimension to visualize.
-    const SPD_COLORSCALE = [[0,'#5cb8ff'],[0.3,'#34d399'],[0.6,'#FFBF00'],[1,'#f87171']];
-    const famIndex = Object.fromEntries(groups.map((f,i) => [f, i]));
+    const groups = {};
+    plotData.forEach(s => { const k = [modelOf(s), spdTierOf(s), trackOf(s)].join('|'); (groups[k] = groups[k] || []).push(s); });
+    const all = Object.values(groups);
+    const cohorts = all.filter(g => g.length >= MIN_FOR_CARD);
+    const small = all.filter(g => g.length < MIN_FOR_CARD);
+    const mixed = new Set(plotData.map(trackOf)).size > 1;
+    const medSpd = g => quant(sortedNums(g.map(s => +s.spd || 0)), 0.5) || 0;
+    cohorts.sort((a, b) => (vendorOf(a[0]) === 'bruker' ? 0 : 1) - (vendorOf(b[0]) === 'bruker' ? 0 : 1)
+        || modelOf(a[0]).localeCompare(modelOf(b[0])) || medSpd(a) - medSpd(b)
+        || trackOf(a[0]).localeCompare(trackOf(b[0])));
+    if (note && small.length) {
+        const nSmall = small.reduce((t, g) => t + g.length, 0);
+        note.textContent = `${small.length} cohort${small.length === 1 ? '' : 's'} with fewer than ${MIN_FOR_CARD} runs `
+            + `(${nSmall} run${nSmall === 1 ? '' : 's'}) ha${small.length === 1 ? 's' : 've'} no violin; `
+            + `${small.length === 1 ? 'it is' : 'they are'} listed under Reference ranges.`;
+    }
+    if (!cohorts.length) {
+        if (el) el.innerHTML = `<div class="empty-state" style="padding:2rem; text-align:center; color:var(--text-muted)">No cohort in view has ${MIN_FOR_CARD} or more runs. Try a wider amount range.</div>`;
+        return;
+    }
 
-    // Use NUMERIC x on both traces so they share the same linear axis.
-    // Mixing categorical (violin) + numeric (scatter) on the same axis made
-    // Plotly fall back to categorical, which dropped the scatter points at
-    // the wrong categorical positions and broke the per-point color map.
-    const depth = s => Math.max(s.n_precursors || 0, s.n_psms || 0);
+    const n = cohorts.length;
+    const width = (el && el.clientWidth) || (typeof window !== 'undefined' && window.innerWidth) || 1200;
+    const horiz = width / n < 70;
+    const V = horiz ? 'x' : 'y', Pz = horiz ? 'y' : 'x';
+    const vendors = [...new Set(cohorts.map(g => vendorOf(g[0])))];
+    // Horizontal: one empty row above each vendor group carries its label.
+    const P = (i) => horiz ? i + 1 + vendors.indexOf(vendorOf(cohorts[i][0])) : i;
+    const tick = (g) => {
+        const m = esc(shortModel(modelOf(g[0]))), sp = esc(spdSeenText(g)), t = mixed ? trackOf(g[0]) : '';
+        return horiz ? `${m} · ${sp}${t ? ' · ' + t : ''}` : `${m}<br>${sp}${t ? '<br>' + t : ''}`;
+    };
 
-    // 1. Violin trace per family — shape only (no points), centered on the
-    //    family's numeric index
-    const violinTraces = families.map((fam, i) => {
-        const sub = plotData.filter(s => modelKey(s) === fam);
-        return {
-            type: 'violin',
-            y: sub.map(depth),
-            x: sub.map(() => i),                // numeric, not the family name
-            name: fam,
-            box: { visible: true },
-            meanline: { visible: true },
-            line: { color: fc(fam) },
-            fillcolor: fc(fam) + '20',
-            points: false,
-            hoverinfo: 'skip',
-            showlegend: false,
-            spanmode: 'hard',
-            width: 0.8,
-        };
-    });
+    const violinTraces = cohorts.map((g, i) => ({
+        type: 'violin', orientation: horiz ? 'h' : 'v',
+        [V]: g.map(primaryOf), [Pz]: g.map(() => P(i)),
+        name: esc(cohortLabel(g)),
+        box: { visible: true }, meanline: { visible: true },
+        line: { color: fc(modelOf(g[0])) }, fillcolor: fc(modelOf(g[0])) + '20',
+        points: false, hoverinfo: 'skip', showlegend: false, spanmode: 'hard', width: 0.8,
+    }));
 
-    // 2. Deterministic jitter (so points don't jump on re-render)
+    // Deterministic jitter (so points don't jump on re-render)
     const jitter = s => {
         let h = 0;
         const id = s.submission_id || '';
         for (let k = 0; k < id.length; k++) h = (((h << 5) - h) + id.charCodeAt(k)) | 0;
         return ((h % 1000) / 1000 - 0.5) * 0.5;  // [-0.25, 0.25]
     };
-
-    // 3. Scatter overlay — only shown when the family has ≤100 points.
-    //    At 669 Lumos rows (post-backfill), individual points are noise —
-    //    the violin shape already tells the distribution story. For sparse
-    //    families (new lab just joining, <100 submissions) individual points
-    //    are still valuable, so we cap per family and subsample the rest.
-    const MAX_POINTS_PER_FAMILY = 80;
     const amountShape = s => {
         const a = s.amount_ng || 50;
         if (a < 20)  return 'diamond';
         if (a > 100) return 'square';
         return 'circle';
     };
-
-    // Subsample: keep all points for small families, random subset for large ones
-    let scatterData = [];
-    for (const fam of families) {
-        const sub = plotData.filter(s => modelKey(s) === fam);
-        if (sub.length <= MAX_POINTS_PER_FAMILY) {
-            scatterData.push(...sub);
-        } else {
-            // Deterministic subsample: pick every N-th point sorted by depth
-            const sorted = [...sub].sort((a, b) => depth(a) - depth(b));
-            const step = sorted.length / MAX_POINTS_PER_FAMILY;
-            for (let i = 0; i < MAX_POINTS_PER_FAMILY; i++) {
-                scatterData.push(sorted[Math.floor(i * step)]);
-            }
+    // At most 80 points per violin, every k-th by depth, so a large cohort
+    // is not a blur of points and a small one keeps all of them.
+    const MAX_POINTS_PER_VIOLIN = 80;
+    const pos = [], val = [], spd = [], sym = [], txt = [];
+    cohorts.forEach((g, i) => {
+        const sorted = g.slice().sort((a, b) => primaryOf(a) - primaryOf(b));
+        const k = Math.min(MAX_POINTS_PER_VIOLIN, sorted.length), step = sorted.length / k;
+        for (let j = 0; j < k; j++) {
+            const s = sorted[Math.floor(j * step)];
+            pos.push(P(i) + jitter(s)); val.push(primaryOf(s)); spd.push(s.spd || 30); sym.push(amountShape(s));
+            const col = columnName(s) ? `<br>${esc(columnName(s))}` : '';
+            txt.push(`${esc(s.instrument_model)}<br>${trackOf(s)}<br>${esc(s.spd)} SPD, ${esc(s.amount_ng || 50)} ng${col}`);
         }
-    }
-
+    });
     const scatterTrace = {
-        type: 'scatter', mode: 'markers',
-        x: scatterData.map(s => famIndex[modelKey(s)] + jitter(s)),
-        y: scatterData.map(depth),
-        showlegend: false,
+        type: 'scatter', mode: 'markers', [Pz]: pos, [V]: val, showlegend: false,
+        text: txt, hovertemplate: '%{text}<br>IDs: %{' + V + ':,}<extra></extra>',
         marker: {
-            color: scatterData.map(s => s.spd || 30),
-            colorscale: SPD_COLORSCALE,
-            cmin: 5, cmax: 200,
-            size: 5, opacity: 0.55,
-            symbol: scatterData.map(amountShape),
-            line: { color: '#fff', width: 0.3 },
-            colorbar: {
-                title: 'SPD',
-                tickfont: { color: '#a0b4cc' },
-                titlefont: { color: '#DAAA00' },
-                len: 0.5, thickness: 10, x: 1.02,
-            },
+            color: spd, colorscale: [[0,'#5cb8ff'],[0.3,'#34d399'],[0.6,'#FFBF00'],[1,'#f87171']],
+            cmin: 5, cmax: 200, size: 5, opacity: 0.55, symbol: sym, line: { color: '#fff', width: 0.3 },
+            showscale: !horiz,
+            colorbar: horiz ? undefined : { title: 'SPD', tickfont: { color: '#a0b4cc' }, titlefont: { color: '#DAAA00' }, len: 0.5, thickness: 10, x: 1.02 },
         },
-        text: scatterData.map(s => {
-            const col = s.column_model ? `<br>${s.column_vendor} ${s.column_model}` : '';
-            return `${s.instrument_model}<br>${s.acquisition_mode.toUpperCase()}<br>${s.spd} SPD, ${s.amount_ng||50} ng${col}`;
-        }),
-        hovertemplate: '%{text}<br>IDs: %{y:,}<extra></extra>',
     };
 
-    Plotly.newPlot('chart-violin', [...violinTraces, scatterTrace], {
-        ...PL,
-        xaxis: {
-            ...PL.xaxis,
-            type: 'linear',
-            autorange: false,
-            range: [-0.6, families.length - 0.4],
-            tickmode: 'array',
-            tickvals: families.map((_, i) => i),
-            ticktext: families,
-        },
-        yaxis: { ...PL.yaxis, title: 'Precursors / PSMs' },
-        showlegend: false,
-        height: 380,
-        annotations: [{
-            x: 0.02, y: 0.98, xref: 'paper', yref: 'paper', showarrow: false,
-            align: 'left',
-            text: `Color: SPD &nbsp;·&nbsp; n=${plotData.length} (${scatterData.length} shown)`,
-            font: { color: 'var(--text-muted)', size: 10 },
-        }],
-    }, PC);
+    // Vendor groups: a dotted divider and the library each group searched.
+    const shapes = [], annotations = [];
+    const firstThermo = cohorts.findIndex(g => vendorOf(g[0]) === 'thermo');
+    if (firstThermo > 0) {
+        shapes.push(horiz
+            ? { type: 'line', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: P(firstThermo) - 1.5, y1: P(firstThermo) - 1.5, line: { color: 'rgba(218,170,0,0.5)', dash: 'dot', width: 1 } }
+            : { type: 'line', xref: 'x', yref: 'paper', x0: firstThermo - 0.5, x1: firstThermo - 0.5, y0: 0, y1: 1, line: { color: 'rgba(218,170,0,0.5)', dash: 'dot', width: 1 } });
+    }
+    const vendorTicks = [];
+    vendors.forEach(v => {
+        const idx = cohorts.map((g, i) => vendorOf(g[0]) === v ? i : -1).filter(i => i >= 0);
+        if (horiz) vendorTicks.push([P(idx[0]) - 1, `<b>${VENDOR_LIB[v]}</b>`]);
+        else annotations.push({ xref: 'x', yref: 'paper', x: (idx[0] + idx[idx.length - 1]) / 2, y: 0.99, xanchor: 'center', yanchor: 'top',
+                                text: VENDOR_LIB[v], showarrow: false, font: { size: 10, color: '#DAAA00' } });
+    });
+    annotations.push({
+        x: horiz ? 1 : 0, y: 1.01, xref: 'paper', yref: 'paper', xanchor: horiz ? 'right' : 'left', yanchor: 'bottom',
+        showarrow: false, align: horiz ? 'right' : 'left',
+        text: `Color: SPD &nbsp;·&nbsp; n=${plotData.length - small.reduce((t, g) => t + g.length, 0)} (${pos.length} shown)`,
+        font: { color: 'var(--text-muted)', size: 10 },
+    });
+    const valTitle = mixed ? 'Precursors (DIA) / PSMs (DDA)' : (trackOf(plotData[0]) === 'DDA' ? 'PSMs' : 'Precursors');
+    const posAxis = {
+        ...PL.xaxis, type: 'linear', autorange: false, tickmode: 'array', showgrid: false, zeroline: false,
+        tickvals: cohorts.map((_, i) => P(i)).concat(vendorTicks.map(t => t[0])),
+        ticktext: cohorts.map(tick).concat(vendorTicks.map(t => t[1])),
+        tickfont: { size: 10 }, tickangle: 0, automargin: true,
+    };
+    const valAxis = { ...PL.yaxis, title: valTitle, automargin: true, zeroline: false };
+    const layout = horiz
+        ? { ...PL, xaxis: valAxis, yaxis: { ...posAxis, range: [P(n - 1) + 0.6, -0.6] },
+            height: 130 + 44 * (n + vendors.length), margin: { t: 40, r: 12, b: 50, l: 10 },
+            shapes, annotations, showlegend: false }
+        : { ...PL, xaxis: { ...posAxis, range: [-0.6, n - 0.4] }, yaxis: valAxis,
+            height: 460, margin: { ...PL.margin, t: 40, b: 70, r: 70 }, shapes, annotations, showlegend: false };
+
+    Plotly.newPlot('chart-violin', [...violinTraces, scatterTrace], layout, PC);
 }
 
+// Column Comparison (spec §A.2): kept visible. Each group is one of the
+// reference cards' cohorts (model × SPD tier × amount × mode), so only the
+// column differs, and a run that records no column ("Unknown") is not a
+// column (D5): it once set unlabelled runs from one lab and era against
+// labelled runs from another. Each bar gives its runs, labs and date span.
+// Until one cohort holds two known columns there is nothing to compare, and
+// the chart says so while drawing each cohort's one known column.
 function renderColumnComparison() {
-    // The Column Comparison panel only makes sense when at least one
-    // (instrument, SPD, amount) cohort has 2+ distinct columns. Until
-    // a second lab joins or one of Brett's instruments swaps columns,
-    // there's nothing to compare — hide the whole row instead of
-    // rendering an empty-state placeholder.
     const row = document.getElementById('row-column-compare');
-    const setVisible = on => { if (row) row.style.display = on ? '' : 'none'; };
-    _resetChart(document.getElementById('chart-column-compare'));
+    if (row && row.style) row.style.display = '';
+    const el = document.getElementById('chart-column-compare');
+    const note = document.getElementById('column-compare-note');
+    _resetChart(el);
+    if (note) note.innerHTML = '';
 
-    // Group by broad cohort, then compare columns within each group
-    const withCol = allData.filter(s => s.column_model && s.column_model.trim());
-    if (withCol.length < 3) {
-        setVisible(false);
-        return;
-    }
-
-    // Build broad cohorts: the reference cards' key, track included, so a
-    // bar never averages DDA PSMs with DIA precursors (D1).
-    const broadId = cohortKey;
-
+    // Follows the DIA / DDA tab like the other Explorer charts.
+    let data = allData;
+    if (currentTab === 'dia') data = data.filter(s => trackOf(s) === 'DIA');
+    else if (currentTab === 'dda') data = data.filter(s => trackOf(s) === 'DDA');
+    const withCol = data.filter(s => colKey(s));
+    const unknown = data.length - withCol.length;
     const groups = {};
     withCol.forEach(s => {
-        const bid = broadId(s);
+        const bid = cohortKey(s), ck = colKey(s);
         if (!groups[bid]) groups[bid] = {};
-        const col = `${s.column_vendor||''} ${s.column_model}`.trim();
-        if (!groups[bid][col]) groups[bid][col] = [];
-        groups[bid][col].push(s);
+        (groups[bid][ck] = groups[bid][ck] || []).push(s);
     });
-
-    // Find groups with 2+ different columns
-    const validGroups = Object.entries(groups)
-        .filter(([bid, cols]) => Object.keys(cols).length >= 2)
-        .sort((a,b) => {
-            const nA = Object.values(a[1]).reduce((s,arr)=>s+arr.length, 0);
-            const nB = Object.values(b[1]).reduce((s,arr)=>s+arr.length, 0);
-            return nB - nA;
-        });
-
-    if (!validGroups.length) {
-        setVisible(false);
-        return;
-        // Below kept for the case where we re-enable the explainer.
-        // eslint-disable-next-line no-unreachable
-        const cohortCounts = Object.entries(groups).map(([bid, cols]) => ({
-            bid, n_cols: Object.keys(cols).length,
-            n_runs: Object.values(cols).reduce((a, arr) => a + arr.length, 0),
-        }));
-        const cohortList = cohortCounts
-            .sort((a, b) => b.n_runs - a.n_runs)
-            .slice(0, 5)
-            .map(c => `<li>${readableCohort(c.bid)}: ${c.n_runs} runs on ${c.n_cols} column${c.n_cols===1?'':'s'}</li>`)
-            .join('');
-        document.getElementById('chart-column-compare').innerHTML =
-            '<div class="empty-state" style="padding:2rem;text-align:left">' +
-            '<p>Column comparison needs <b>≥2 different columns</b> sharing the same ' +
-            '(instrument, SPD, amount) combination. The current cohort has one column per instrument:</p>' +
-            '<ul style="margin:0.75rem 0;padding-left:1.25rem">' + cohortList + '</ul>' +
-            '<p style="margin-top:0.75rem">This panel will populate once external labs with different columns submit. ' +
-            'Set your LC column in <code>stan setup</code> to contribute.</p>' +
-            '</div>';
-        return;
+    const size = cols => Object.values(cols).reduce((t, arr) => t + arr.length, 0);
+    const entries = Object.entries(groups).sort((a, b) => size(b[1]) - size(a[1]));
+    const multi = entries.filter(([, cols]) => Object.keys(cols).length >= 2);
+    const single = !multi.length;
+    // Nothing to compare: draw each cohort's one known column, where it has
+    // enough runs for a column card (MIN_FOR_COLUMN); count the rest.
+    const show = single ? entries.filter(([, cols]) => size(cols) >= MIN_FOR_COLUMN) : multi;
+    const lead = '<b>Nothing to compare yet.</b> Column comparison needs a second known column in one cohort';
+    if (single && note) {
+        const rest = entries.length - show.length;
+        note.innerHTML = entries.length
+            ? `${lead}, and today every cohort that records a column has only one. `
+              + `${fmtN(unknown)} of ${fmtN(data.length)} runs in view record no column and are left out. `
+              + (show.length ? `Shown: the ${show.length} cohort${show.length === 1 ? '' : 's'} with ${MIN_FOR_COLUMN} or more runs on a recorded column, with runs, labs and dates on each bar.` : '')
+              + (rest ? ` ${rest} cohort${rest === 1 ? '' : 's'} with fewer ${rest === 1 ? 'is' : 'are'} not drawn.` : '')
+            : `${lead}, and no run in view records its LC column`
+              + `${unknown ? ` (${fmtN(unknown)} run${unknown === 1 ? '' : 's'} record none)` : ''}. `
+              + 'Set the column in <code>stan setup</code> to contribute.';
     }
+    if (!show.length) return;
 
-    // Build grouped bar chart: one group per broad cohort, bars for each column
-    // Use the primary metric (precursors for DIA, PSMs for DDA)
-    const traces = [];
+    const narrow = isNarrowView();
+    const horiz = narrow || show.length > 6;
+    const mixed = new Set(withCol.map(trackOf)).size > 1;
+    const label = (rows) => {
+        const s0 = rows[0], m = esc(shortModel(modelOf(s0))), t = ` · ${trackOf(s0)}`;
+        const rest = `${esc(spdSeenText(rows))} · ${esc(amountSeenText(rows))}`;
+        return horiz && !narrow ? `${m}${t} · ${rest}` : `${m}${t}<br>${rest}`;
+    };
+    // On a phone there is no room right of a bar: with one bar per group the
+    // runs, labs and dates go on the group's label instead.
+    const inLabel = narrow && single;
+    const cats = show.map(([, cols]) => {
+        const rows = [].concat(...Object.values(cols));
+        return inLabel ? `${label(rows)}<br>${runsLabsText(rows.length, labCount(rows))} · ${esc(dateSpanText(rows))}` : label(rows);
+    });
+    const barText = (rows) => horiz
+        ? `${runsLabsText(rows.length, labCount(rows))} · ${esc(dateSpanText(rows))}`
+        : `${runsLabsText(rows.length, labCount(rows))}<br>${esc(dateSpanText(rows))}`;
     const COL_COLORS = ['#FFBF00', '#5cb8ff', '#c084fc', '#34d399', '#f87171', '#fb923c'];
-    const allColumns = new Set();
-
-    setVisible(true);
-
-    validGroups.forEach(([bid]) => {
-        Object.keys(groups[bid]).forEach(col => allColumns.add(col));
-    });
-
-    const colList = [...allColumns];
-
-    colList.forEach((col, ci) => {
-        const x = [];
-        const y = [];
-        const texts = [];
-
-        validGroups.forEach(([bid, cols]) => {
-            const subs = cols[col] || [];
-            if (subs.length > 0) {
-                const vals = subs.map(primaryOf);  // one track per cohort
-                const avg = vals.reduce((a,b)=>a+b, 0) / vals.length;
-                x.push(`${readableCohort(bid)}`);
-                y.push(Math.round(avg));
-                texts.push(`${esc(col)}<br>${runsLabsText(subs.length, labCount(subs))}, avg=${Math.round(avg).toLocaleString()}`);
-            } else {
-                x.push(`${readableCohort(bid)}`);
-                y.push(0);
-                texts.push('');
-            }
+    const colKeys = [...new Set([].concat(...show.map(([, cols]) => Object.keys(cols))))];
+    const traces = colKeys.map((ck, ci) => {
+        const cat = [], val = [], text = [], hover = [];
+        let name = '';
+        show.forEach(([, cols], gi) => {
+            const rows = cols[ck];
+            if (!rows) return;
+            name = name || columnName(rows[0]);
+            const avg = rows.reduce((t, s) => t + primaryOf(s), 0) / rows.length;
+            cat.push(cats[gi]); val.push(Math.round(avg));
+            text.push(barText(rows));
+            hover.push(`${esc(columnName(rows[0]))}<br>${esc(cohortLabel(rows))}<br>${runsLabsText(rows.length, labCount(rows))}`
+                + ` · ${esc(dateSpanText(rows))}<br>avg ${fmtN(avg)} ${trackOf(rows[0]) === 'DDA' ? 'PSMs' : 'precursors'}`);
         });
-
-        // Shorten column name for legend
-        const shortCol = col.length > 35 ? col.substring(0, 32) + '...' : col;
-
-        traces.push({
-            x, y, text: texts,
-            name: shortCol,
-            type: 'bar',
+        const shortName = name.length > 35 ? name.slice(0, 32) + '…' : name;
+        return {
+            type: 'bar', orientation: horiz ? 'h' : 'v',
+            [horiz ? 'y' : 'x']: cat, [horiz ? 'x' : 'y']: val,
+            name: esc(shortName), text, textposition: inLabel ? 'none' : narrow ? 'auto' : 'outside', cliponaxis: false,
+            textfont: { size: 10, color: '#a0b4cc' }, customdata: hover, hovertemplate: '%{customdata}<extra></extra>',
             marker: { color: COL_COLORS[ci % COL_COLORS.length], opacity: 0.85 },
-            hovertemplate: '%{text}<extra></extra>',
-        });
+        };
     });
 
-    Plotly.newPlot('chart-column-compare', traces, {
-        ...PL,
-        barmode: 'group',
-        yaxis: { ...PL.yaxis, title: 'Avg Precursors (DIA) / PSMs (DDA)' },
-        xaxis: { ...PL.xaxis, tickangle: -20 },
-        legend: { font: { color: '#a0b4cc', size: 10 }, orientation: 'h', y: -0.25 },
-        height: 420,
-        margin: { ...PL.margin, b: 100 },
-    }, PC);
+    const title = mixed ? 'Avg Precursors (DIA) / PSMs (DDA)' : (trackOf(withCol[0]) === 'DDA' ? 'Avg PSMs' : 'Avg Precursors');
+    const maxVal = Math.max(...traces.map(t => Math.max(...t[horiz ? 'x' : 'y'])));
+    const layout = horiz
+        ? { ...PL, barmode: 'group',
+            // Room on the right for each bar's "n runs · n labs · dates".
+            xaxis: { ...PL.xaxis, title, range: [0, maxVal * (narrow ? 1.1 : 1.45)] },
+            yaxis: { ...PL.yaxis, type: 'category', categoryorder: 'array', categoryarray: cats.slice().reverse(), automargin: true, tickfont: { size: 10 } },
+            legend: { font: { color: '#a0b4cc', size: 10 }, orientation: 'h', x: 0, y: 1.02, yanchor: 'bottom' },
+            height: 120 + (single ? 1 : colKeys.length) * 22 * show.length + (narrow ? 44 : 30) * show.length,
+            margin: { ...PL.margin, t: 50, l: 10, r: 10 } }
+        : { ...PL, barmode: 'group',
+            yaxis: { ...PL.yaxis, title, automargin: true, range: [0, maxVal * 1.25] },
+            xaxis: { ...PL.xaxis, type: 'category', categoryorder: 'array', categoryarray: cats, automargin: true, tickfont: { size: 10 } },
+            legend: { font: { color: '#a0b4cc', size: 10 }, orientation: 'h', x: 0, y: 1.12 },
+            height: 440, margin: { ...PL.margin, t: 40, b: 60 } };
+    Plotly.newPlot('chart-column-compare', traces, layout, PC);
 }
 
 function renderPointsAcrossPeak() {
     // SPD vs points across peak — the quantitation quality cliff
-    // Shape by column vendor, color by instrument family
+    // Shape by column vendor, color by instrument model
     _resetChart(document.getElementById('chart-points-peak'));
     const withPts = allData.filter(s => (s.median_points_across_peak || 0) > 0);
 
@@ -5610,28 +6096,36 @@ function renderPointsAcrossPeak() {
         return;
     }
 
-    // Group by column vendor for different marker symbols
-    const SYMBOLS = {'Evosep':'circle','IonOpticks':'diamond','PepSep':'square','Thermo':'triangle-up','':'circle','other':'cross'};
-    const families = [...new Set(withPts.map(s=>s.instrument_family))];
+    // Shape by LC column vendor; a run that records no column ("Unknown") is
+    // an open circle, not an Evosep circle (D5). Colour by instrument model.
+    const SYMBOLS = {'evosep':'circle','ionopticks':'diamond','pepsep':'square','thermo':'triangle-up'};
+    const symbolOf = s => colKey(s) ? (SYMBOLS[String(s.column_vendor || '').trim().toLowerCase()] || 'cross') : 'circle-open';
+    const models = [...new Set(withPts.map(modelOf))].sort();
 
-    const traces = families.map(fam => {
-        const sub = withPts.filter(s=>s.instrument_family===fam);
+    const traces = models.map(model => {
+        const sub = withPts.filter(s => modelOf(s) === model);
         return {
             x: sub.map(s=>s.spd||30),
             y: sub.map(s=>s.median_points_across_peak),
             text: sub.map(s=> {
-                const col = s.column_model ? `${s.column_vendor} ${s.column_model}` : 'Column not specified';
-                return `${s.instrument_model}<br>${col}<br>Peak width: ${(s.median_peak_width_sec||0).toFixed(1)}s`;
+                const col = columnName(s) || 'Column not recorded';
+                return `${esc(s.instrument_model)}<br>${esc(col)}<br>Peak width: ${(s.median_peak_width_sec||0).toFixed(1)}s`;
             }),
-            mode:'markers', type:'scatter', name:fam,
+            mode:'markers', type:'scatter', name: `${esc(model)} (${runsLabsText(sub.length, labCount(sub))})`,
             marker: {
-                color: fc(fam), size: 14, opacity: 0.85,
-                symbol: sub.map(s => SYMBOLS[s.column_vendor] || 'circle'),
-                line: {color:'#fff', width:1.5},
+                color: fc(model), size: 12, opacity: 0.85,
+                symbol: sub.map(symbolOf),
+                line: {color:'#fff', width:1.2},
             },
             hovertemplate: '%{text}<br>SPD: %{x}<br>Points/peak: %{y:.1f}<extra></extra>',
         };
     });
+    // Legend keys for the shapes actually drawn.
+    const shapeKey = (symbol, name) => ({ x: [null], y: [null], mode: 'markers', type: 'scatter', name,
+        marker: { symbol, size: 10, color: '#a0b4cc', line: { color: '#a0b4cc', width: 1.5 } }, hoverinfo: 'skip' });
+    const vendorsSeen = [...new Set(withPts.filter(s => colKey(s)).map(s => String(s.column_vendor || '').trim()))].sort();
+    vendorsSeen.forEach(v => traces.push(shapeKey(SYMBOLS[v.toLowerCase()] || 'cross', `${esc(v || 'Other')} column`)));
+    if (withPts.some(s => !colKey(s))) traces.push(shapeKey('circle-open', 'Column not recorded'));
 
     // STAN guideline lines at 6 and 12 points. They cite Matthews & Hayes
     // 1976 (doi:10.1021/ac50003a028), a GC-MS sampling study; the thresholds
@@ -5657,15 +6151,22 @@ function renderPointsAcrossPeak() {
     const maxSpd = Math.max(...withPts.map(s => s.spd || 0));
     const xMax = Math.max(60, maxSpd * 1.5);
 
+    // On a phone the legend goes below the plot; at its side it left the
+    // plot a sliver of the card.
+    const narrow = isNarrowView();
     Plotly.newPlot('chart-points-peak', traces, {
         ...PL,
         xaxis: {...PL.xaxis, title:'Samples per Day (SPD)', type:'linear',
                 range: [0, xMax]},
-        yaxis: {...PL.yaxis, title:'Data Points Across Peak'},
-        legend: {font:{color:'#a0b4cc', size:11}},
-        height: 400,
+        yaxis: {...PL.yaxis, title:'Data Points Across Peak', automargin: true},
+        legend: narrow ? { orientation: 'h', x: 0, y: -0.22, yanchor: 'top', font: { color: '#a0b4cc', size: 10 } }
+                       : { font: { color: '#a0b4cc', size: 11 } },
+        height: narrow ? 620 : 400,
+        margin: narrow ? { ...PL.margin, b: 230 } : PL.margin,
         annotations: [
-            {x:0.02, y:0.08, xref:'paper', yref:'paper', text:'Below the dashed line, quantitation error grows quickly (STAN guideline, after Matthews & Hayes 1976)',
+            {x:0.02, y:0.08, xref:'paper', yref:'paper', xanchor: 'left',
+             text: narrow ? 'Below the dashed line: error grows (STAN guideline)'
+                          : 'Below the dashed line, quantitation error grows quickly (STAN guideline, after Matthews & Hayes 1976)',
              showarrow:false, font:{color:'rgba(248,113,113,0.7)',size:10}},
         ],
     }, PC);
@@ -5691,6 +6192,8 @@ function showTab(tab) {
     try { renderConfigLeaderboard(); } catch(e) { console.error(e); }
     try { renderAmountDepth(); }       catch(e) { console.error(e); }
     try { renderViolin(); }            catch(e) { console.error(e); }
+    try { renderSpdDepth(); }          catch(e) { console.error(e); }
+    try { renderColumnComparison(); }  catch(e) { console.error(e); }
     renderTable();
 }
 
@@ -5869,7 +6372,8 @@ function renderTable() {
         } else {
             h += `<td style="color:var(--text-muted)">--</td>`;
         }
-        const col = s.column_model ? `${s.column_vendor||''} ${s.column_model}`.trim() : '';
+        // "Unknown" is what STAN records when no column was set: not a column (D5).
+        const col = columnName(s);
         h += `<td style="font-size:0.8rem;color:var(--text-muted)">${esc(col||'--')}</td>`;
         h += `<td>${esc(s.spd||'-')}</td>`;
         h += `<td>${esc(s.amount_ng||50)}ng</td>`;

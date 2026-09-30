@@ -11,6 +11,94 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.12] — 2026-09-30
+
+Community site redesign, phase P2a ("layout and cards"), in the relay
+(`hf_space/app.py`, Space **1.3.0**). Approved by Brett 2026-09-29 (mockup
+v3.1); spec
+`docs/superpowers/specs/2026-09-29-community-redesign-and-precursor-lookup-design.md`
+§A.1, §A.2, §A.3 D5–D8 and B6, §A.6 P2. No STAN client behaviour changes;
+the bump carries the relay release. No schema change and no stored row
+changes. Every chart §A.2 keeps is still on the page; PEG Watch, the TIC
+overlay and the lab trend are byte-identical to 1.2.3.
+
+### Changed
+- **Page order (§A.1).** Header with the purpose line ("Compare your QC HeLa
+  against reference ranges from labs running the same frozen search.") and
+  the one-facility disclosure; nav Join · Where do I stand · Instrument
+  Health Explorer · Methods · PEG Watch · Dataset · API · GitHub · Museum ·
+  Arcade, the first five in-page anchors (`#join`, `#where`, `#explore`,
+  `#methods`, `#peg`; "Where do I stand" lands on the reference ranges until
+  the P2c lookup). Then stats, glossary (SPD, IQR, IPS), reference ranges,
+  Join, How the numbers are made, the Instrument Health Explorer (Best
+  Configurations moved in as its first card), LC / instrument health
+  (ID-free), lab trend, PEG Watch, submissions, footer. The "Seeded with …"
+  banner and the "Understanding the Metrics" section are gone; their
+  content moved to the stats row and the Methods section.
+- **Stats row.** Runs · labs · instrument models · latest run, all from one
+  array, and a Join tile in place of the inert "Hide failed runs · 0
+  flagged" card (flagged rows are always left out).
+- **Reference cards (D5).** Grouped under instrument-model headings (on a
+  phone only the first opens), primary metric large as the median with the
+  middle half and a range bar, peptides and proteins smaller, "n runs · n
+  labs" and the single-lab tag kept, cohorts of fewer than 5 runs folded
+  behind "Show N sparse cohorts". Titles read "gradients seen: 46–60 SPD"
+  from the runs, not the tier name. `colKey()` returns '' for "Unknown", so
+  unlabelled runs never form a column card (and the table shows "--").
+  Library coverage on timsTOF DIA cards, "Library-limited" above 90%.
+- **Join the benchmark (D6).** Three steps (install STAN and inject Pierce
+  HeLa 88328; `stan community-claim`; `community_submit: true` then `stan
+  submit-all`), a link to `INSTALL_FOR_AGENTS.md`, "appears after the
+  nightly rebuild at 04:00 UTC", what is published, what is sent but not
+  shown (the file name, which the public dataset parquet still carries until
+  decision 5b), what never leaves the lab, and the exact published field
+  list, read at runtime from what `/api/leaderboard` served.
+- **How the numbers are made (D7 + D3).** DIA-NN 2.3.x (pinned 2.3.0, 2.3.x
+  accepted and asset-verified) and Sage 0.14.x (pinned 0.14.7) with their
+  frozen parameters, SEARCH_PARAMS_VERSION v1.0.0, what each count is
+  (unique `Precursor.Id` at run-level `Q.Value` ≤ 0.01, from
+  `stan/metrics/extractor.py`), the two empirical libraries and the FASTA
+  with md5s, and plainly that UC Davis's timsTOF HT and Exploris 480 cohorts
+  were searched against instrument subsets of those libraries with a full-
+  library re-search planned (decision 11). IPS v2 definition, still hidden
+  until the scores are recomputed and recalibrated. Within-vendor caveat.
+- **Charts (§A.2).** Identification Depth by Platform: one violin per SPD
+  cohort and acquisition mode (5+ runs), grouped by vendor with its library
+  named, horizontal when a violin would get under 70 px. Depth by
+  Throughput: one facet per instrument model (HT, Pro, Pro 2 apart), per
+  mode under "All", stacked on phones, within-vendor caveat. Column
+  Comparison: always visible, "Unknown" not a column, runs · labs · date span
+  on each bar, and the empty state "needs a second known column in one
+  cohort". The four ID-free charts: one colour and a monthly-median line per
+  instrument model, detector-family note on MS1 signal and dynamic range,
+  legends below the axis. Throughput vs. Quantitation Quality: colour by
+  model, "Column not recorded" an open circle. Depth by Amount: the
+  saturation sentence is replaced by the share of runs at 50 ng. Phone
+  layouts no longer clip labels.
+- **Best Configurations (B6).** Amount select, default 50 ng; the primary
+  metric column right after Instrument; within-vendor caveat.
+
+### Fixed
+- **D8 at read time.** The page counts each acquisition once: rows with the
+  same instrument, mode and all four ID counts, run dates within 2 s, are one
+  run, keeping the larger contributor's copy (3,305 → 3,061 on the
+  2026-09-29 snapshot). Stored amounts above 5,000 ng are held back from
+  every range and ranking (2 rows). A note under the stats row says both.
+- Bug 21: the site icon is served inline and at `/favicon.ico`, and
+  `mobile-web-app-capable` is set.
+- Reference-card filter checkboxes escaped the family name only in text;
+  it now goes through `esc()` and a data attribute.
+
+### Tests
+- `tests/test_relay_community_p2a.py`: SPACE_VERSION, favicon, nav and
+  anchors, page order, stats and glossary, Join card, Methods checked
+  against `community_params`, `validate` and the extractor, and in node:
+  card grouping and folding, `colKey()`, escaping, dedupe, held-back
+  amounts, the Best Configurations amount select, violins, facets, column
+  comparison, ID-free charts, the 50 ng share, the field list.
+- `tests/test_relay_community_p1.py`, `tests/test_relay_peg.py`: version
+  1.3.0 and the new card, badge and label markup.
+
 ## [1.2.11] — 2026-09-30
 
 ### Added
