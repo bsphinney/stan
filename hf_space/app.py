@@ -3691,7 +3691,18 @@ function trackOf(s) { return (s.acquisition_mode || '').toLowerCase().includes('
 function primaryOf(s) { return trackOf(s) === 'DDA' ? (s.n_psms || 0) : (s.n_precursors || 0); }
 // Labs are counted by pseudonym until submissions carry a facility id; the
 // header disclosure says that today nearly every run is one facility's (D2).
-function labCount(rows) { return new Set(rows.map(s => s.display_name).filter(Boolean)).size; }
+// Labs, counted conservatively until submissions carry a facility id (P3).
+// 'Anonymous Lab' is the relay's default name for any unnamed submitter, so
+// it is not a lab of its own: today every such row is UC Davis (the same
+// facility as 'Clogged PeakTail'), and tomorrow it could be anyone. It counts
+// as one lab only when a cohort holds nothing else, so an unnamed row can
+// never turn a single-lab cohort into a "2 labs" one or unlock a "best" badge.
+const DEFAULT_LAB_NAME = 'Anonymous Lab';
+function labCount(rows) {
+    const names = new Set(rows.map(s => s.display_name).filter(Boolean));
+    const anon = names.delete(DEFAULT_LAB_NAME);
+    return names.size || (anon ? 1 : 0);
+}
 function runsLabsText(nRuns, nLabs) {
     return `${nRuns.toLocaleString()} run${nRuns === 1 ? '' : 's'} · ${nLabs} lab${nLabs === 1 ? '' : 's'}`;
 }
@@ -3865,7 +3876,7 @@ function updateStats() {
     document.getElementById('stat-submissions').textContent = allData.length.toLocaleString();
     const bannerRuns = document.getElementById('banner-runs');
     if (bannerRuns) bannerRuns.textContent = allData.length.toLocaleString();
-    document.getElementById('stat-labs').textContent = new Set(allData.map(s=>s.display_name)).size;
+    document.getElementById('stat-labs').textContent = labCount(allData);
     document.getElementById('stat-instruments').textContent = new Set(allData.map(s=>s.instrument_model)).size;
     const nFailed = allDataRaw.filter(s => s.is_flagged).length;
     const failedEl = document.getElementById('stat-failed');

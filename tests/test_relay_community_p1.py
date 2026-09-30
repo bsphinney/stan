@@ -577,3 +577,16 @@ def test_banner_and_stats_count_the_same_rows(client, tmp_path):
         return [els['banner-runs'].textContent, els['stat-submissions'].textContent];
     }})()"""
     assert _run(client, tmp_path, scenario) == ["3", "3"]
+
+
+@needs_node
+def test_default_lab_name_is_not_a_second_lab(client, tmp_path):
+    """'Anonymous Lab' is the default name for any unnamed submitter: it must
+    never turn a one-lab cohort into "2 labs" (which unlocks "best" badges)."""
+    scenario = """[
+      labCount([{display_name:'Clogged PeakTail'},{display_name:'Anonymous Lab'}]),
+      labCount([{display_name:'Anonymous Lab'},{display_name:'Anonymous Lab'}]),
+      labCount([{display_name:'Clogged PeakTail'},{display_name:'Nimble Edman'},{display_name:'Anonymous Lab'}]),
+      labCount([])
+    ]"""
+    assert _run(client, tmp_path, scenario) == [1, 1, 2, 0]
