@@ -53,7 +53,7 @@ These come from Brett's feedback this session and are also in memory.
 | 8 | One-facility disclosure wording | **Approved 2026-09-29** | The mockup's line, see D2 below |
 | 9 | Engine-calibration panel compute on Hive (Part B) | **One go/no-go**, required by the pipeline skill | See §B.5 |
 | 10 | Spectronaut arm of the panel | **Brett runs it** on the licensed machine | See §B.5 |
-| 11 | **Which library defines STAN's reference count** (research finding M2, §B.10) | **Brett to decide, before any fit** | Recommended: the frozen community library for both cohorts and S; re-search the cohort rows (0.2–1 core-h each). Today timsTOF and Exploris cohorts use per-instrument subset libraries that no outside lab can reproduce |
+| 11 | **Which library defines STAN's reference count** (research finding M2, §B.10) | **Decided 2026-09-29: frozen community library** for cohorts and S; re-search cohort rows, before/after to Brett before any PG write | Recommended: the frozen community library for both cohorts and S; re-search the cohort rows (0.2–1 core-h each). Today timsTOF and Exploris cohorts use per-instrument subset libraries that no outside lab can reproduce |
 
 ---
 

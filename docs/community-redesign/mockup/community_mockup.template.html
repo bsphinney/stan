@@ -8,7 +8,7 @@
   --text: #e8eef5; --text-2: #a0b4cc; --muted: #7d93b0;
   --card: rgba(2,40,81,.6); --card-line: rgba(255,191,0,.12); --rule: rgba(255,191,0,.08); --inset: rgba(1,26,58,.6);
   --good: #34d399; --warn: #fbbf24; --bad: #f87171;
-  --m0: #60a5fa; --m1: #7dd3fc; --m2: #a5b4fc; --m3: #c084fc; --m4: #f87171;
+  --m0: #5cb8ff; --m1: #7dd3fc; --m2: #2dd4bf; --m3: #c084fc; --m4: #f87171; /* live FC colours per model; Pro 2 gets its own hue */
   --ann: #ff7ac6; --ann-bg: rgba(255,122,198,.08); --ann-line: rgba(255,122,198,.55);
   --grid: rgba(160,180,204,.13);
   --tic: #ff7a45; --tic-b1: rgba(255,122,69,.13); --tic-b2: rgba(255,122,69,.32); --tic-trace: rgba(125,211,252,.26);
@@ -254,29 +254,11 @@ td.prim { font-weight: 700; }
 .lg-ln { width: 18px; height: 3px; border-radius: 2px; background: var(--gold); }
 .lg-band { width: 16px; height: 10px; background: rgba(255,191,0,.16); border: 1px solid rgba(255,191,0,.35); }
 .lg-ring { width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--warn); }
-.plat { display: grid; gap: 10px; }
-.prow { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr) minmax(0, 118px); gap: 12px; align-items: center; font-size: .84rem; }
-.prow .nm { font-weight: 650; display: flex; align-items: center; gap: 7px; min-width: 0; }
-.prow .n { color: var(--muted); font-size: .76rem; text-align: right; font-variant-numeric: tabular-nums; }
-.ptrack { position: relative; height: 22px; background: rgba(160,180,204,.05); border-radius: 4px; }
-.ptrack .w { position: absolute; top: 10px; height: 2px; background: var(--text-2); opacity: .6; }
-.ptrack .b { position: absolute; top: 3px; height: 16px; border-radius: 3px; opacity: .55; }
-.ptrack .m { position: absolute; top: 0; height: 22px; width: 3px; background: var(--text); border-radius: 2px; }
-.pax { position: relative; height: 16px; margin-left: calc(150px + 12px); margin-right: calc(118px + 12px); font-size: .68rem; color: var(--muted); }
-.pax span { position: absolute; transform: translateX(-50%); font-variant-numeric: tabular-nums; }
-@media (max-width: 560px) { .prow { grid-template-columns: minmax(0, 1fr) auto; } .prow .ptrack { grid-column: 1 / -1; grid-row: 2; } .pax { margin-left: 0; margin-right: 0; } }
 .tic-desc { margin: 0 0 10px; color: var(--text-2); font-size: .86rem; max-width: 75ch; }
 .tic-ctrl { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; font-size: .82rem; color: var(--text-2); margin-bottom: 8px; }
 .tic-ctrl label { font-weight: 650; letter-spacing: .03em; }
 .tic-ctrl #tic-spd { min-width: 0; max-width: 100%; }
 .tic-ctrl .chk { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; letter-spacing: 0; cursor: pointer; white-space: nowrap; }
-.tic-med { stroke: var(--tic); stroke-width: 2.6; stroke-dasharray: 7 4; fill: none; }
-.tic-b1 { fill: var(--tic-b1); stroke: none; }
-.tic-b2 { fill: var(--tic-b2); stroke: none; }
-.tic-tr { stroke: var(--tic-trace); stroke-width: .9; fill: none; }
-.tic-tr.solo { stroke-width: 1.4; stroke: var(--m1); stroke-opacity: .75; }
-.lg-med { width: 20px; height: 0; border-top: 2.6px dashed var(--tic); }
-.lg-tr { width: 18px; height: 0; border-top: 1.4px solid var(--m1); opacity: .75; }
 .gone { display: grid; gap: 4px; font-size: .82rem; color: var(--text-2); }
 .gone s { color: var(--muted); }
 
@@ -288,26 +270,10 @@ td.prim { font-weight: 700; }
 .trend-sum b { color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* ---------- peg + history ---------- */
-.pegsum { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 360px); gap: 18px; align-items: center; }
-@media (max-width: 760px) { .pegsum { grid-template-columns: 1fr; } }
-.pegsum .big { font-size: 1.6rem; font-weight: 750; font-variant-numeric: tabular-nums; }
-.pegsum .big small { font-size: .8rem; color: var(--muted); font-weight: 500; margin-left: 6px; }
 .spark { display: block; width: 100%; height: 64px; }
 .spark path { fill: none; stroke: var(--gold); stroke-width: 1.8; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
 .spark .area { fill: rgba(255,191,0,.10); stroke: none; }
 .parts { margin: 8px 0 0; padding-left: 18px; color: var(--text-2); font-size: .84rem; display: grid; gap: 2px; }
-.hist-grid { display: grid; grid-template-columns: minmax(0, 130px) repeat(4, minmax(0, 1fr)); gap: 10px 14px; align-items: stretch; margin-top: 10px; }
-.hist-grid .hd { font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 650; align-self: end; }
-.hist-grid .rowh { font-weight: 650; font-size: .86rem; display: grid; gap: 2px; align-content: center; }
-.hist-grid .rowh small { color: var(--muted); font-weight: 500; font-size: .74rem; }
-.hcell { background: var(--inset); border: 1px solid var(--rule); border-radius: 8px; padding: 6px 8px; display: grid; gap: 2px; min-width: 0; }
-.hcell .spark { height: 42px; }
-.hcell .spark path { stroke-width: 1.4; }
-.hcell .v { font-size: .78rem; color: var(--text-2); display: flex; justify-content: space-between; gap: 6px; font-variant-numeric: tabular-nums; }
-.hcell .v b { color: var(--text); }
-.hist-grid .mhd { display: none; }
-@media (max-width: 760px) { .hist-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .hist-grid .hd { display: none; } .hist-grid .rowh { grid-column: 1 / -1; margin-top: 6px; } .hist-grid .mhd { display: block; font-size: .7rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; } }
-
 /* ---------- submissions table ---------- */
 .tbl-tools { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .tbl-tools .left { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: .82rem; color: var(--text-2); }
@@ -326,6 +292,148 @@ td.prim { font-weight: 700; }
 .footer { margin-top: 56px; text-align: center; color: var(--muted); font-size: .85rem; display: grid; gap: 6px; justify-items: center; }
 .footer a { color: var(--text-2); }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* ---------- Evosep PEG Watch: live 1.2.1's #peg rules, mapped onto this page's tokens ---------- */
+#peg { --peg-clean: #34d399; --peg-heavy: #f87171; --peg-other: #60a5fa; }
+#peg .peg-card { background: var(--card); border: 1px solid var(--card-line); border-radius: 12px; padding: 1rem 1.1rem; margin-bottom: 1.5rem; min-width: 0; }
+#peg .peg-card h3, #peg .peg-icard h3 { font-size: .95rem; color: var(--gold-dk); margin: 0 0 .25rem; }
+#peg .peg-sub { font-size: .82rem; color: var(--muted); line-height: 1.5; max-width: 72ch; margin: 0; }
+#peg .peg-muted { color: var(--muted); }
+#peg .peg-fine { font-size: .8rem; color: var(--muted); line-height: 1.5; margin: .6rem 0 0; }
+#peg .peg-bar { display: flex; justify-content: space-between; align-items: flex-end; gap: .75rem 1.25rem; flex-wrap: wrap; margin-bottom: .85rem; }
+#peg .peg-ctrls { display: flex; flex-direction: column; gap: .5rem; align-items: flex-end; }
+#peg .peg-chips { display: flex; flex-wrap: wrap; gap: .35rem; justify-content: flex-end; }
+#peg .peg-chip { font: inherit; font-size: .78rem; padding: .3rem .8rem; border-radius: 999px; border: 1px solid var(--card-line); background: rgba(1,26,58,.6); color: var(--text-2); cursor: pointer; white-space: nowrap; }
+#peg .peg-chip:hover { border-color: var(--gold-line); color: var(--text); }
+#peg .peg-chip[aria-pressed="true"] { background: var(--gold); border-color: var(--gold); color: var(--navy-0); font-weight: 600; }
+#peg .peg-seg { display: inline-flex; border: 1px solid var(--card-line); border-radius: 8px; overflow: hidden; background: rgba(1,26,58,.6); }
+#peg .peg-seg button { font: inherit; font-size: .78rem; color: var(--text-2); background: none; border: 0; border-right: 1px solid var(--card-line); padding: .3rem .8rem; cursor: pointer; }
+#peg .peg-seg button:last-child { border-right: 0; }
+#peg .peg-seg button:hover:not([aria-pressed="true"]) { color: var(--text); }
+#peg .peg-seg button[aria-pressed="true"] { background: var(--gold); color: var(--navy-0); font-weight: 600; }
+#peg .peg-empty { border: 1px dashed var(--gold-line); border-radius: 10px; padding: 1.1rem 1.25rem; color: var(--text-2); font-size: .88rem; line-height: 1.6; }
+#peg .peg-empty b { color: var(--text); }
+#peg table.peg-board { min-width: 840px; font-size: .88rem; }
+#peg .peg-board th { white-space: nowrap; padding: .6rem .7rem; font-size: .72rem; }
+#peg .peg-board td { padding: .6rem .7rem; vertical-align: middle; }
+#peg .peg-board .r { text-align: right; font-variant-numeric: tabular-nums; }
+#peg .peg-rank { font-weight: 800; font-size: 1.05rem; width: 2.5rem; font-variant-numeric: tabular-nums; color: var(--text-2); }
+#peg .peg-rank.r1 { color: var(--gold); }
+#peg .peg-lab { font-weight: 650; color: var(--text); }
+#peg .peg-ok { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; background: rgba(52,211,153,.18); color: var(--peg-clean); font-size: .66rem; font-weight: 800; margin-left: .35rem; vertical-align: 1px; cursor: help; }
+#peg .peg-unv { font-size: .62rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; border: 1px dashed var(--muted); color: var(--muted); margin-left: .4rem; vertical-align: 1px; cursor: help; white-space: nowrap; }
+#peg .peg-badge { display: inline-block; font-size: .66rem; font-weight: 700; padding: 1px 7px; border-radius: 999px; border: 1px solid; margin-left: .4rem; vertical-align: 1px; white-space: nowrap; }
+#peg .peg-b-clean { color: var(--peg-clean); border-color: rgba(52,211,153,.5); }
+#peg .peg-b-impr { color: #7dd3fc; border-color: rgba(125,211,252,.5); }
+#peg .peg-meter { display: flex; align-items: center; gap: .5rem; min-width: 180px; }
+#peg .peg-track { flex: 1; height: 8px; border-radius: 4px; background: rgba(160,180,204,.12); position: relative; overflow: hidden; }
+#peg .peg-fill { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: linear-gradient(90deg, #DAAA00, #FFBF00); }
+#peg .peg-val { width: 3.4rem; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text); }
+#peg .peg-down { color: var(--peg-clean); font-weight: 650; }
+#peg .peg-up { color: var(--peg-heavy); font-weight: 650; }
+#peg svg.peg-spark { display: block; overflow: visible; }
+#peg .peg-spark path { fill: none; stroke: #a0b4cc; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+#peg .peg-spark circle { fill: var(--text); }
+#peg .peg-unranked { color: var(--muted); font-size: .82rem; margin-top: .75rem; line-height: 1.6; }
+#peg .peg-unranked:empty { display: none; }
+#peg .peg-foot { display: flex; justify-content: space-between; gap: .4rem 1rem; flex-wrap: wrap; color: var(--muted); font-size: .8rem; margin-top: .75rem; }
+#peg .peg-foot b { color: var(--text); }
+#peg .peg-h4 { font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 650; margin: 0 0 .6rem; }
+#peg .peg-lcgroups { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: .75rem; }
+#peg .peg-lcg { border: 1px solid var(--card-line); border-radius: 10px; padding: .8rem .9rem; background: rgba(1,26,58,.45); display: grid; gap: .45rem; min-width: 0; }
+#peg .peg-lcg-top { display: flex; justify-content: space-between; align-items: center; gap: .5rem; font-size: .78rem; flex-wrap: wrap; }
+#peg .peg-lcchip { font-size: .66rem; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+#peg .peg-lc-evosep { background: rgba(255,191,0,.16); color: var(--gold); }
+#peg .peg-lc-other { background: rgba(96,165,250,.16); color: var(--peg-other); }
+#peg .peg-big { font-size: 1.5rem; font-weight: 750; font-variant-numeric: tabular-nums; color: var(--text); }
+#peg .peg-big small { font-size: .75rem; font-weight: 500; color: var(--muted); margin-left: .35rem; }
+#peg .peg-iqr { position: relative; height: 10px; border-radius: 5px; background: rgba(160,180,204,.1); }
+#peg .peg-iqr .b { position: absolute; top: 0; bottom: 0; border-radius: 5px; opacity: .55; }
+#peg .peg-iqr .m { position: absolute; top: -3px; bottom: -3px; width: 3px; border-radius: 2px; background: var(--text); }
+#peg .peg-iqr-axis { display: flex; justify-content: space-between; color: var(--muted); font-size: .66rem; margin-top: -.2rem; }
+#peg .peg-lcg-meta { display: flex; justify-content: space-between; gap: .5rem; color: var(--muted); font-size: .78rem; }
+#peg .peg-lcg-meta b { color: var(--text); font-variant-numeric: tabular-nums; }
+#peg .peg-lcg-wk { display: grid; gap: .2rem; font-size: .7rem; color: var(--muted); }
+#peg .peg-lcg-wk svg.peg-spark { width: 100%; height: auto; }
+#peg .peg-lcg-empty { border: 1px dashed var(--gold-line); background: transparent; grid-template-rows: auto 1fr; }
+#peg .peg-lcg-join { display: grid; align-content: center; justify-items: start; gap: .45rem; padding: .6rem 0; color: var(--text-2); font-size: .85rem; line-height: 1.55; }
+#peg .peg-lcg-join p { margin: 0; }
+#peg .peg-lcg-join a { font-size: .8rem; }
+#peg .peg-note { margin: .85rem 0 0; font-size: .8rem; color: var(--warn); display: flex; gap: .5rem; align-items: flex-start; line-height: 1.5; }
+#peg .peg-note::before { content: '!'; flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1px solid currentColor; display: grid; place-items: center; font-size: .66rem; font-weight: 800; margin-top: 1px; }
+#peg .peg-trend-badge { font-size: .75rem; padding: .15rem .5rem; border-radius: 4px; background: var(--gold-glow); color: var(--gold); margin-left: .5rem; font-weight: 600; }
+#peg .peg-chart { margin-bottom: 1.5rem; }
+#peg .peg-info { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+#peg .peg-icard { background: var(--card); border: 1px solid var(--card-line); border-radius: 12px; padding: 1.25rem; min-width: 0; }
+#peg .peg-icard h3 { margin-bottom: .75rem; }
+#peg .peg-icard p { color: var(--text-2); font-size: .9rem; line-height: 1.6; margin: 0; }
+#peg .peg-icard p.peg-fine { font-size: .8rem; color: var(--muted); margin-top: .6rem; }
+#peg ol.peg-steps { list-style: none; counter-reset: pegstep; display: grid; gap: .6rem; margin: .7rem 0 .2rem; padding: 0; }
+#peg ol.peg-steps li { display: grid; grid-template-columns: 26px minmax(0,1fr); gap: .6rem; counter-increment: pegstep; color: var(--text-2); font-size: .88rem; line-height: 1.55; }
+#peg ol.peg-steps li::before { content: counter(pegstep); width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--gold-dk); color: var(--gold); display: grid; place-items: center; font-weight: 750; font-size: .8rem; }
+#peg ol.peg-steps b, #peg .peg-method b { color: var(--text); }
+#peg .peg-method p + p { margin-top: .65rem; }
+#peg .peg-snap { font-size: .72rem; color: var(--muted); font-style: italic; }
+@media (max-width: 768px) {
+  #peg .peg-ctrls { align-items: flex-start; }
+  #peg .peg-chips { justify-content: flex-start; }
+  #peg .peg-info { grid-template-columns: 1fr; }
+}
+
+/* ---------- v3: Plotly chart cards (live look), fullscreen, engine fields ---------- */
+.xp, .chart-card { position: relative; }
+.xp > summary { padding-right: 58px; }
+.chart-card { background: var(--card); border: 1px solid var(--card-line); border-radius: 12px; padding: 14px 18px 12px; min-width: 0; }
+.chart-card > h3 { margin: 0 0 2px; font-size: .98rem; color: var(--gold-dk); padding-right: 50px; }
+.chart-card > h3 .badge-c { margin-left: 6px; vertical-align: 1px; }
+.cdesc { color: var(--muted); font-size: .82rem; margin: 2px 0 8px; max-width: 95ch; }
+.cdesc b { color: var(--text-2); }
+.plot { min-width: 0; min-height: 120px; }
+.plot .empty { margin: 8px 0; }
+.chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 16px; }
+.fs-btn { position: absolute; top: 10px; right: 10px; z-index: 6; background: rgba(255,191,0,.15); border: 1px solid rgba(255,191,0,.4); color: var(--gold); border-radius: 6px; padding: 3px 9px; font-size: 1.05rem; line-height: 1; cursor: pointer; font-family: inherit; }
+.fs-btn:hover { background: rgba(255,191,0,.28); }
+.fs { position: fixed !important; inset: 0; z-index: 9999; margin: 0; border-radius: 0 !important; overflow: auto; padding: 2.6rem .5rem .5rem !important; background: linear-gradient(160deg, #011a3a 0%, #022851 50%, #03396c 100%) !important; }
+.fs > summary, .fs > h3, .fs > .cdesc, .fs > .anns, .fs > .legend, .fs > .fine, .fs > .ctl, .fs > .caveat, .fs > .empty,
+.fs .xp-body > *:not(.plot):not(.fs-btn) { display: none !important; }
+html.fs-open, html.fs-open body { overflow: hidden; }
+.ctl { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: .82rem; color: var(--text-2); margin: 0 0 6px; }
+.ctl label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.ctl .shape { color: var(--muted); font-size: .76rem; }
+.ctl select:disabled, .ctl input:disabled { opacity: .45; cursor: not-allowed; }
+.ctl .chk { font-weight: 500; cursor: pointer; }
+.pair { display: inline-flex; gap: 6px; align-items: center; min-width: 0; max-width: 100%; }
+.pair select { min-width: 0; max-width: 100%; }
+.take .tag1 { margin-left: 2px; }
+.section-desc { color: var(--text-2); font-size: .9rem; margin: 0 0 14px; max-width: 85ch; }
+/* lookup: engine fields + log drop */
+.engbox { display: grid; gap: 11px; border-top: 1px dashed var(--card-line); padding-top: 11px; }
+.engbox[hidden] { display: none; }
+.drop { position: relative; display: block; border: 1.5px dashed var(--gold-line); border-radius: 10px; padding: 9px 11px; font-size: .8rem; color: var(--text-2); cursor: pointer; background: rgba(255,191,0,.04); }
+.drop.over { background: rgba(255,191,0,.14); border-color: var(--gold); }
+.drop u { color: var(--gold); }
+.vh { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; opacity: 0; }
+.logread { font-size: .78rem; color: var(--text-2); background: var(--inset); border-radius: 8px; padding: 7px 9px; }
+.logread b { color: var(--text); }
+.warnbox { border-left: 3px solid var(--warn); background: rgba(251,191,36,.08); padding: 7px 10px; border-radius: 0 8px 8px 0; font-size: .82rem; color: var(--text); }
+.refuse { border: 1px dashed var(--warn); border-radius: 10px; padding: 10px 12px; display: grid; gap: 6px; font-size: .86rem; color: var(--text-2); }
+.refuse ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; }
+.refuse b { color: var(--text); }
+.ws-pct.range { font-size: 1.9rem; }
+.demo { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: .78rem; color: var(--ann); margin: 0 0 10px; }
+.demo button { font: inherit; font-size: .76rem; color: var(--ann); background: var(--ann-bg); border: 1px dashed var(--ann-line); border-radius: 999px; padding: 2px 10px; cursor: pointer; }
+.demo button:hover { background: rgba(255,122,198,.18); }
+.dec .stat-ok { display: inline-block; font-size: .7rem; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; color: var(--good); border: 1px solid rgba(52,211,153,.5); border-radius: 999px; padding: 0 8px; margin-left: auto; white-space: nowrap; }
+.dec .dnum { flex: none; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--ann); color: var(--ann); display: grid; place-items: center; font-size: .76rem; font-weight: 800; }
+.decisions.v3 .dec h3::before { content: none; }
+.dec .gated { color: var(--warn); }
+.dec h3 .dt { flex: 1; min-width: 0; font-style: normal; }
+.dec h3 .dt small { display: block; color: var(--muted); font-weight: 600; font-size: .74rem; margin-top: 1px; }
+.dec h3 { align-items: flex-start; }
+.dec h3 .stat-ok { margin-top: 3px; }
+.dec h3 { flex-wrap: wrap; }
+.dec h3 .dt { flex: 1 1 220px; }
+.field .drop { display: block; font-weight: 400; }
 
 /* ---------- v2: narrow tables, not-ranked lists, privacy groups, methods split ---------- */
 .n-only { display: none; }
@@ -369,7 +477,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
 </style>
 
 <div class="mockbar">
-  <span>Mockup of community.stan-proteomics.org · <b>real numbers</b> from the 29 Sep 2026 snapshot (3,305 rows, relay 1.2.0) · nothing here is live</span>
+  <span>Mockup v3 of community.stan-proteomics.org · <b>real numbers</b> from the 29 Sep 2026 snapshot (3,305 rows, relay 1.2.0) · every live chart kept · nothing here is live</span>
   <button type="button" class="rv-switch" id="rv-top" role="switch" aria-checked="true"><i></i><span>Review notes on</span></button>
 </div>
 
@@ -378,12 +486,12 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   <!-- ======================= REVIEW PANEL ======================= -->
   <section class="review review-only" aria-labelledby="rv-h" id="review">
     <header>
-      <h2 id="rv-h">Review notes for Brett</h2>
-      <p>Pink dashed chips mark every changed or new part of the page. Click a chip for the reason. Switch <b>Review notes</b> off (top bar or bottom-right) to see the page as a visitor would. Every number is computed from the 29 Sep snapshot by <code>build_mockup.py</code>.</p>
+      <h2 id="rv-h">Review notes for Brett · version 3</h2>
+      <p><b style="color:var(--text)">v3 restores the charts.</b> Version 2 collapsed or replaced charts you use. This version draws every chart you are keeping in its live form, with Plotly 2.35 as on the live site (hover, zoom, legend clicks, the ⛶ fullscreen button), from the real snapshot data, in the live order. Only the fixes listed in the spec's chart inventory are applied inside them. The only charts removed are the two you approved dropping. Pink dashed chips mark every kept, changed or new part; click one for what was fixed. Switch <b>Review notes</b> off (top bar or bottom-right) to see the page as a visitor would. Every number is computed from the 29 Sep snapshot by <code>build_mockup.py</code>.</p>
     </header>
     <div>
-      <h3 style="margin:0 0 10px;font-size:1rem;color:var(--text)">Decisions only you can make</h3>
-      <div class="decisions" id="decisions"></div>
+      <h3 style="margin:0 0 10px;font-size:1rem;color:var(--text)">Decisions: all recorded on 29 Sep 2026</h3>
+      <div class="decisions v3" id="decisions"></div>
     </div>
     <div class="review-row">
       <div class="idx">
@@ -456,7 +564,11 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     <div class="anns">
       <details class="ann"><summary><b>NEW</b> · B1</summary><p><b>Answers the question a visiting core director arrives with</b> ("I get 38k precursors on a 60 SPD timsTOF HT at 50 ng. Where is that?"). Before, the answer meant scanning 31 cards, 11 ranking rows and 15 charts, each bucketed differently. This works now: edit any field. The model list covers every family the relay recognises (timsTOF, Astral, Exploris, Lumos, Eclipse, other Orbitraps), so an Astral or timsTOF Ultra visitor gets an honest "not in the benchmark yet" instead of no option. Evosep users pick a method; nanoLC users type gradient minutes, which snap to the nearest cohort by SPD. The form has its own DIA/DDA switch (the same switch as the bar at the top); its amount no longer re-filters the page. "Show this cohort's card" scrolls to and highlights the matching reference card. <b>Deferred:</b> collapsing the reference cards to the matched cohort by default.</p></details>
       <details class="ann"><summary><b>CHANGED</b> · B4 amount</summary><p id="ann-b4"></p></details>
+      <details class="ann"><summary><b>NEW</b> · Part B engine fields</summary><p id="ann-eng"></p></details>
+      <details class="ann"><summary><b>NEW</b> · log drop</summary><p id="ann-log"></p></details>
+      <details class="ann"><summary><b>DECISION 11</b> · reference library</summary><p id="ann-d11"></p></details>
     </div>
+    <div class="demo review-only" id="ws-demo"><span>Show a lookup state:</span></div>
     <div class="card">
       <div class="ws">
         <form id="ws-form" autocomplete="off">
@@ -467,6 +579,17 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
           <div class="field"><label for="ws-amt">Amount loaded</label><select id="ws-amt"></select></div>
           <div class="field"><label for="ws-val"><span id="ws-val-l">Precursors at 1% FDR</span> <span class="exval" id="ws-ex">Example value</span></label><input class="big" id="ws-val" type="number" inputmode="numeric" min="0" step="1"></div>
           <div class="field"><label for="ws-pep">Peptides <span class="muted" style="font-weight:500">(optional)</span></label><input id="ws-pep" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 34,000"></div>
+          <div class="field" id="ws-eng-f"><label for="ws-eng">Search engine</label><select id="ws-eng"></select><span class="hint" id="ws-eng-h"></span></div>
+          <div class="field" id="ws-log-f"><span style="font-size:.78rem;color:var(--text-2);font-weight:600">Fill from a DIA-NN log <span class="muted" style="font-weight:500">(optional)</span></span>
+            <label class="drop" id="ws-drop" for="ws-log">Drop your DIA-NN <code>report.log.txt</code> here, or <u>choose the file</u>. It is read in your browser and never uploaded.<input type="file" id="ws-log" class="vh" accept=".txt,.log,text/plain"></label>
+            <div class="logread hidden" id="ws-log-out" aria-live="polite"></div></div>
+          <div class="engbox" id="ws-engbox" hidden>
+            <div class="field"><label for="ws-ver">Version</label><select id="ws-ver"></select></div>
+            <div class="field"><label for="ws-lib">Library</label><select id="ws-lib"></select><span class="hint">Library-free means DIA-NN <code>--fasta-search --predictor</code>, or Spectronaut directDIA.</span></div>
+            <div class="field"><label for="ws-mbr">Searched with other runs?</label><select id="ws-mbr"></select></div>
+            <div class="field"><label for="ws-fdr">Precursor FDR</label><select id="ws-fdr"></select><span class="hint">Run-specific: DIA-NN <code>Q.Value</code>, Spectronaut run-wise. Global: <code>Global.Q.Value</code>.</span></div>
+            <div class="field"><label for="ws-cnt">What was counted</label><select id="ws-cnt"></select><span class="hint">STAN counts unique modified sequence + charge (DIA-NN <code>Precursor.Id</code> / Spectronaut <code>EG.PrecursorId</code>) at q ≤ 0.01.</span><div class="warnbox hidden" id="ws-cnt-w"></div></div>
+          </div>
         </form>
         <div class="ws-out" id="ws-out" aria-live="polite"></div>
       </div>
@@ -543,6 +666,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     <div class="anns">
       <details class="ann"><summary><b>NEW</b> · D7</summary><p id="ann-d7"></p></details>
       <details class="ann"><summary><b>CHANGED</b> · D3 IPS</summary><p id="ann-d3"></p></details>
+      <details class="ann"><summary><b>DECISION 11</b> · libraries</summary><p><b>These cards describe the state after decision 11.</b> Today only the Lumos cohorts are searched against the frozen ~170,000-precursor Orbitrap library. timsTOF HT and Exploris cohorts were searched against per-instrument subset libraries (~51k and ~53k precursors) built from this lab's own runs, and on the same timsTOF raws the full library gives 1.034× the subset count. Decision 11 (29 Sep 2026): re-search the cohort rows against the frozen community libraries, with the before/after to you before any PG write. The library-coverage figures below are from today's data.</p></details>
       <details class="ann"><summary><b>FIXED</b> · points across peak</summary><p><b>Both Matthews &amp; Hayes links pointed at unrelated papers</b> (an archaeometry paper and a 1977 editor's column). They now go to 10.1021/ac50003a028. That paper is a GC-MS isotope-ratio sampling study, so the 6 and 12 point thresholds are presented as STAN guidelines that cite it, not as its findings. Please check that wording.</p></details>
     </div>
     <div class="grid2">
@@ -620,17 +744,17 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     </div>
   </section>
 
-  <!-- ======================= EXPLORE ======================= -->
+  <!-- ======================= EXPLORE (every live chart kept, live order) ======================= -->
   <section class="section" id="explore" aria-labelledby="explore-h">
-    <h2 id="explore-h">Explore further</h2>
-    <p class="desc">Comparisons across cohorts. They follow the filter bar. Counts compare fairly within a vendor; across vendors the search spaces differ.</p>
+    <h2 id="explore-h">Instrument Health Explorer</h2>
+    <p class="desc">Each point is one QC run. Every chart follows the filter bar and says in its badge what it follows. Counts compare fairly within a vendor: timsTOF and Orbitrap runs search different libraries.</p>
     <div class="anns">
-      <details class="ann"><summary><b>CHANGED</b> · B5 trimmed</summary><p><b>From 15 charts (5,200 px on desktop, 7,063 px on phone) to four.</b> Kept: Best Configurations, Depth by Throughput, the platform comparison and the TIC overlay (still broken out by SPD and LC). Each is a collapsible panel with a one-line takeaway. Best Configurations and the TIC overlay open by default at every width; the other two start closed on phones. Removed, moved and hidden charts are listed at the bottom of this section.</p></details>
+      <details class="ann"><summary><b>KEPT</b> · every chart (v3)</summary><p><b>Every live chart you are keeping is back, drawn as on the live site with Plotly 2.35</b>: hover, drag-zoom, legend clicks and the ⛶ fullscreen button on every card, and the modebar on the TIC overlay as live. They follow the live order: Best Configurations, Depth by Amount Loaded next to Identification Depth by Platform, Depth by Throughput, Column Comparison, Throughput vs. Quantitation Quality and the TIC overlay, then the four ID-free charts in their own visible section. At desktop width every chart is open. On a phone each is a panel with a one-line summary; Depth by Throughput, Throughput vs. Quantitation Quality and the TIC overlay stay open at every width. v2's "Main cohort per instrument" rows and its collapsed month-by-month table are gone. Each chart's own chips say what was fixed inside it.</p></details>
     </div>
     <div class="stack">
       <!-- best configurations -->
       <details class="xp" id="best" open>
-        <summary><h3>Best configurations <span class="badge-c" id="best-badge"></span></h3><span class="take" id="best-take"></span></summary>
+        <summary><h3>Best Configurations <span class="badge-c" id="best-badge"></span></h3><span class="take" id="best-take"></span></summary>
         <div class="xp-body">
           <div class="anns">
             <details class="ann"><summary><b>CHANGED</b> · B6 + D1</summary><p id="ann-b6"></p></details>
@@ -640,54 +764,147 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
           <p class="fine" id="best-note" style="margin:10px 0 0"></p>
         </div>
       </details>
+
+        <!-- depth by amount -->
+        <details class="xp" id="x-amount">
+          <summary><h3>Depth by Amount Loaded <span class="badge-c" id="amount-badge"></span></h3><span class="take" id="amount-take"></span></summary>
+          <div class="xp-body">
+            <button type="button" class="fs-btn" data-fs="plot-amount" aria-label="Toggle full screen">⛶</button>
+            <div class="anns">
+              <details class="ann"><summary><b>KEPT</b> · live form</summary><p>Same chart as live: one violin per amount bucket (&lt;10, 10–49, 50, 100–249, ≥250 ng), coloured by instrument model, with the box and mean line inside, and every point drawn when a model has 12 or fewer runs in a bucket.</p></details>
+              <details class="ann"><summary><b>CHANGED</b> · D8 + B4 + D1</summary><p id="ann-amount"></p></details>
+            </div>
+            <p class="cdesc" id="amount-desc"></p>
+            <div class="plot" id="plot-amount"></div>
+          </div>
+        </details>
+        <!-- platform violins -->
+        <details class="xp" id="x-violin">
+          <summary><h3>Identification Depth by Platform <span class="badge-c" id="violin-badge"></span></h3><span class="take" id="violin-take"></span></summary>
+          <div class="xp-body">
+            <button type="button" class="fs-btn" data-fs="plot-violin" aria-label="Toggle full screen">⛶</button>
+            <div class="anns">
+              <details class="ann"><summary><b>KEPT</b> · violins</summary><p>Violins with box and mean line, points coloured by SPD on the live colour scale (at most 80 per violin, spread across the depth range as live), amount shapes, the SPD colour bar and the "Color: SPD · n" note, as live.</p></details>
+              <details class="ann"><summary><b>CHANGED</b> · B2 + D7 + phone</summary><p><b>One violin per SPD cohort (model × gradient), not one per model</b>, which is why this chart and Depth by Amount now each take a full row instead of sharing one: twelve violins do not fit half a row. The live Exploris violin pooled every gradient from 9 to 67 SPD in one shape. DIA and DDA never mix. Violins are grouped by vendor with the library caveat drawn on the chart. Only ranked cohorts get a violin (5+ runs, a real Evosep method or a recorded nanoLC run length); the rest are counted under the chart. The amount select mirrors the filter bar. <b>When a violin would get less than 70 px (phones) the chart turns horizontal</b>, so the labels no longer clip (live cut "Orbitrap Exploris 480" to "Orbitrap Explori…" even on desktop).</p></details>
+            </div>
+            <p class="cdesc">How many precursors (DIA) or PSMs (DDA) does each platform identify? One violin per instrument <em>model</em> and gradient, so Pro, Pro 2 and HT stay apart and a 9 SPD run is not pooled with a 67 SPD run.</p>
+            <div class="ctl"><label>Amount loaded: <select data-amt aria-label="Amount loaded (same as the filter bar)"></select></label><span class="shape">Shape: ○ 50 ng · ◇ &lt;20 ng · □ &gt;100 ng · same select as the bar at the top</span></div>
+            <div class="plot" id="plot-violin"></div>
+            <p class="caveat" style="margin:6px 0 0">Compare violins of one vendor only. timsTOF and Orbitrap runs search different libraries (~54,000 vs ~170,000 precursors).</p>
+            <p class="fine" id="violin-note" style="margin:4px 0 0"></p>
+          </div>
+        </details>
+
       <!-- depth by throughput -->
-      <details class="xp" id="depth">
-        <summary><h3>Depth by throughput <span class="badge-c" id="depth-badge"></span></h3><span class="take" id="depth-take"></span></summary>
+      <details class="xp" id="x-spd" open>
+        <summary><h3>Depth by Throughput (which SPD gives me the best data?) <span class="badge-c" id="spd-badge"></span></h3><span class="take" id="spd-take"></span></summary>
         <div class="xp-body">
+          <button type="button" class="fs-btn" data-fs="plot-spd" aria-label="Toggle full screen">⛶</button>
           <div class="anns">
-            <details class="ann"><summary><b>CHANGED</b> · B2 + D7</summary><p><b>One mark per ranked cohort, on the shared cohort definition.</b> The old chart pooled the whole instrument family across all SPDs, which gave 1,341 runs for a "60 SPD timsTOF HT". Hover a mark for its runs and facilities. Not-ranked cohorts (fewer than 5 runs, no LC recorded at an Evosep SPD, unverified Evosep SPD) are left out and counted below the chart. The summary line names the deepest cohort per vendor, not one overall winner, because it is all a phone reader sees while the panel is closed.</p></details>
+            <details class="ann"><summary><b>KEPT</b> · title and form</summary><p>Same title and question. A box per SPD with every run drawn as a point, the live SPD colour scale, amount shapes (○ 50 ng · ◇ &lt;20 ng · □ &gt;100 ng), one facet per instrument with its own title, and an amount select inside the card.</p></details>
+            <details class="ann"><summary><b>CHANGED</b> · facets + SPD + D1</summary><p><b>Faceted by instrument model</b> (HT, Pro and Pro 2 apart; live pooled them as "timsTOF"), and <b>one box per SPD</b> instead of four SPD buckets, so 60 and 100 SPD are no longer one "fast"/"ultra" box and a 9 SPD Lumos run is no longer pooled with 15 SPD. DIA and DDA never mix (live's box read "Precursors / PSMs"). A box needs 5 runs; a smaller group shows its points only. Runs recorded as Evosep at a non-method SPD get their own box ("36 unv."), and runs with no LC recorded at an Evosep SPD get theirs ("60 no LC"), so neither joins an Evosep box. Facet titles read "n runs · n labs". The within-vendor caveat sits under the chart. At phone width the facets stack instead of squeezing side by side.</p></details>
           </div>
-          <p class="caveat" style="margin:0 0 8px">Compare marks of one vendor only. timsTOF and Orbitrap runs search different libraries (~54,000 vs ~170,000 precursors), so a timsTOF mark above an Orbitrap mark is not a verdict on the instruments.</p>
-          <div class="chartbox" id="depth-box"></div>
-          <div class="legend" id="depth-legend"></div>
-          <p class="fine" id="depth-note" style="margin:6px 0 0"></p>
+          <p class="cdesc">Precursors (DIA) or PSMs (DDA) against samples per day, one facet per instrument model. Each box is one SPD. Pick the amount loaded so you compare like with like: the best SPD may differ by load.</p>
+          <div class="ctl"><label>Amount loaded: <select data-amt aria-label="Amount loaded (same as the filter bar)"></select></label><span class="shape">Shape: ○ 50 ng · ◇ &lt;20 ng · □ &gt;100 ng · same select as the bar at the top</span></div>
+          <div class="plot" id="plot-spd"></div>
+          <p class="caveat" style="margin:6px 0 0">Compare facets of one vendor only. timsTOF and Orbitrap runs search different libraries (~54,000 vs ~170,000 precursors), so a timsTOF box above an Orbitrap box is not a verdict on the instruments.</p>
         </div>
       </details>
-      <!-- platform -->
-      <details class="xp" id="plat">
-        <summary><h3>Main cohort per instrument <span class="badge-c" id="plat-badge"></span></h3><span class="take" id="plat-take"></span></summary>
+
+      <!-- column comparison -->
+      <details class="xp" id="x-cols">
+        <summary><h3>Column Comparison (same instrument, SPD, and amount) <span class="badge-c" id="cols-badge"></span></h3><span class="take" id="cols-take"></span></summary>
         <div class="xp-body">
+          <button type="button" class="fs-btn" data-fs="plot-cols" aria-label="Toggle full screen">⛶</button>
           <div class="anns">
-            <details class="ann"><summary><b>CHANGED</b> · B2 + D2 + D7</summary><p><b>Replaces the platform violins.</b> Those pooled every gradient for a model and, drawn as they were, labelled each row "2 labs" by counting two UC Davis pseudonyms. Each row is now that instrument's largest ranked cohort, one gradient only, grouped by vendor, with runs · facilities and the single-lab tag. Box plots read on a phone; the live violins' axis labels clip at 400 px.</p></details>
+            <details class="ann"><summary><b>KEPT</b> · visible</summary><p><b>Live hides this whole row when nothing can be compared</b>, so the chart looked removed. It stays visible here, with an honest empty state, and draws what exists in the live grouped-bar form.</p></details>
+            <details class="ann"><summary><b>CHANGED</b> · D5 Unknown</summary><p id="ann-cols"></p></details>
           </div>
-          <div class="plat" id="plat-body"></div>
-          <p class="caveat">One gradient per row. Compare within a vendor: timsTOF and Orbitrap runs search different libraries.</p>
+          <p class="cdesc">How does your LC column compare with others under identical conditions? Each group is one cohort (same instrument model, track, LC and gradient, and amount); only the column differs.</p>
+          <div class="empty hidden" id="cols-empty" style="margin-bottom:8px"></div>
+          <div class="plot" id="plot-cols"></div>
         </div>
       </details>
+
+      <!-- throughput vs quantitation quality -->
+      <details class="xp" id="x-mh" open>
+        <summary><h3>Throughput vs. Quantitation Quality (Matthews &amp; Hayes 1976) <span class="badge-c" id="mh-badge"></span></h3><span class="take" id="mh-take"></span></summary>
+        <div class="xp-body">
+          <button type="button" class="fs-btn" data-fs="plot-mh" aria-label="Toggle full screen">⛶</button>
+          <div class="anns">
+            <details class="ann"><summary><b>KEPT</b> · live form</summary><p>Same scatter: samples per day against data points across peak, one colour per instrument, shape by LC column, a dashed line at 6 points and a dotted line at 12, with the live x range (up to 1.5 × the highest SPD).</p></details>
+            <details class="ann"><summary><b>CHANGED</b> · bug 6 + D5</summary><p><b>Colour by instrument model</b>, not family. <b>"Column not recorded" is an open circle</b>: on live it fell through to the same filled circle as Evosep, so 3,178 unlabelled runs looked like Evosep columns. The 6 and 12 point lines are labelled as STAN guidelines that cite Matthews &amp; Hayes 1976 through the corrected link, doi:10.1021/ac50003a028 (live linked two unrelated papers). The paper is a GC-MS sampling study, so the "&lt;6 points, error above 1%" wording is kept as STAN's guideline until someone confirms the paper states it. Follows DIA/DDA and amount; hover shows the cohort and peak width, never a file name.</p></details>
+          </div>
+          <p class="cdesc">Samples per day against data points across each chromatographic peak. STAN's guideline: below 6 points quantitation error grows quickly; 12 or more is recommended (after <a href="https://doi.org/10.1021/ac50003a028">Matthews &amp; Hayes 1976</a>). Shape = LC column. Colour = instrument model.</p>
+          <div class="plot" id="plot-mh"></div>
+        </div>
+      </details>
+
       <!-- TIC -->
-      <details class="xp" id="tic" open>
-        <summary><h3>Community TIC overlay by SPD and LC <span class="badge-c" id="tic-badge"></span></h3><span class="take" id="tic-take"></span></summary>
+      <details class="xp" id="x-tic" open>
+        <summary><h3>Community TIC Overlay by SPD <span class="badge-c" id="tic-badge"></span></h3><span class="take" id="tic-take"></span></summary>
         <div class="xp-body">
+          <button type="button" class="fs-btn" data-fs="plot-tic" aria-label="Toggle full screen">⛶</button>
           <div class="anns">
-            <details class="ann"><summary><b>KEPT</b> · SPD and LC breakdown</summary><p><b>This panel works as it does on the live site.</b> It keeps the SPD menu, the LC menu (All, Evosep only, Custom / nanoLC only), the median line with middle-half and 10–90% bands, each run scaled to its own peak, and the switch for individual traces. The only control that moved is DIA/DDA: it now sits in the filter bar, which every panel follows. The panel is open by default at every width.</p></details>
-            <details class="ann"><summary><b>CHANGED</b> · bug 11</summary><p id="ann-tic-open"></p></details>
-            <details class="ann"><summary><b>CHANGED</b> · B5 page weight</summary><p id="ann-tic-size"></p></details>
-            <details class="ann"><summary><b>CHANGED</b> · time axis</summary><p id="ann-tic-axis"></p></details>
+            <details class="ann"><summary><b>KEPT</b> · SPD and LC breakdown</summary><p><b>Works as on the live site</b>: the SPD menu, the LC menu (All LC systems, Evosep only, Custom / nanoLC only), each run scaled to its own peak, the dashed median with the IQR and 10–90% bands, "show all traces", and Plotly zoom, pan, legend clicks and PNG download in the modebar, plus the ⛶ fullscreen button. What changed: DIA/DDA now follows the filter bar (live had its own select, including a mixed "DIA + DDA" option, moot because no DDA traces exist), and "show all traces" draws 40 runs spread evenly through time, each on its own time axis (live draws every trace; production would fetch them on demand).</p></details>
+            <details class="ann"><summary><b>CHANGED</b> · §A.4.1 what it plots</summary><p id="ann-tic-what"></p></details>
+            <details class="ann"><summary><b>CHANGED</b> · §A.4.5 LC rule</summary><p id="ann-tic-lc"></p></details>
+            <details class="ann"><summary><b>CHANGED</b> · §A.4.4–8 menus</summary><p id="ann-tic-open"></p></details>
+            <details class="ann"><summary><b>CHANGED</b> · §A.4.3 time axis</summary><p id="ann-tic-axis"></p></details>
+            <details class="ann"><summary><b>CHANGED</b> · §A.4.2 page weight</summary><p id="ann-tic-size"></p></details>
           </div>
-          <p class="tic-desc">Identified-ion TIC from DIA runs, grouped by throughput and LC system. Each run is scaled to its own peak, so the chart compares shape, not signal. An Evosep gradient is fixed, so a run whose shape leaves the band points at the instrument or the column rather than the method.</p>
-          <div class="tic-ctrl">
-            <label for="tic-spd">SPD</label><select id="tic-spd"></select>
-            <label for="tic-lc">LC</label><select id="tic-lc"><option value="all">All LC systems</option><option value="evosep">Evosep only</option><option value="custom">Custom / nanoLC only</option></select>
-            <label class="chk" for="tic-all"><input type="checkbox" id="tic-all">show individual traces</label>
+          <p class="cdesc">MS1 total-ion chromatograms read from the raw file, grouped by throughput and LC system, for the track in the filter bar. Each run is scaled to its own peak, so the chart compares shape, not signal. For Evosep the gradient is fixed, so a run whose shape leaves the band points at the instrument or the column rather than the method.</p>
+          <div class="ctl">
+            <span class="pair"><label for="tic-spd">SPD</label><select id="tic-spd"></select></span>
+            <span class="pair"><label for="tic-lc">LC</label><select id="tic-lc"><option value="all">All LC systems</option><option value="evosep">Evosep only</option><option value="custom">Custom / nanoLC only</option></select></span>
+            <label class="chk" for="tic-all"><input type="checkbox" id="tic-all">show all traces</label>
           </div>
-          <div class="chartbox" id="tic-box"></div>
-          <div class="legend" id="tic-legend"></div>
+          <div class="plot" id="plot-tic"></div>
           <p class="fine" id="tic-note" style="margin:6px 0 0"></p>
         </div>
       </details>
+
       <div class="card review-only" style="border-style:dashed;border-color:var(--ann-line)">
-        <h3 style="color:var(--ann)">Removed, moved or hidden from this section</h3>
+        <h3 style="color:var(--ann)">Removed from the page</h3>
         <div class="gone" id="gone"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= LC / INSTRUMENT HEALTH (ID-free) ======================= -->
+  <section class="section" id="health" aria-labelledby="health-h">
+    <h2 id="health-h">LC / Instrument Health (ID-free metrics)</h2>
+    <p class="section-desc">The metrics the proteomics QC literature (NIST MSQC, QCloud2, CPTAC, PTXQC) treats as LC-health signals: they catch failures before identifications collapse, and they do not depend on how many peptides were identified. One colour per instrument: each dot is a run and the line is that instrument's monthly median. They follow the filter bar.</p>
+    <div class="anns">
+      <details class="ann"><summary><b>KEPT</b> · visible, live order</summary><p><b>All four live ID-free charts are back, visible at every width</b>, in live order and with live axes (mass accuracy on 0–25 ppm, dynamic range from zero, dates as "Jan 2024"). v2 had folded them into a collapsed table of sparklines, which you read as a removal.</p></details>
+      <details class="ann"><summary><b>CHANGED</b> · per instrument</summary><p id="ann-health"></p></details>
+    </div>
+    <div class="stack">
+      <div class="chart-card" id="c-ppm">
+        <h3>Mass Accuracy Drift (MS1) <span class="badge-c" id="ppm-badge"></span></h3>
+        <button type="button" class="fs-btn" data-fs="plot-ppm" aria-label="Toggle full screen">⛶</button>
+        <p class="cdesc">Median corrected MS1 mass error per run (absolute ppm). Tracks Orbitrap and qTOF calibration stability: a rising line signals lock-mass failure or thermal drift before IDs drop.</p>
+        <div class="plot" id="plot-ppm"></div>
+      </div>
+      <div class="chart-row">
+        <div class="chart-card" id="c-ms1">
+          <h3>MS1 Signal (TIC proxy) <span class="badge-c" id="ms1-badge"></span></h3>
+          <button type="button" class="fs-btn" data-fs="plot-ms1" aria-label="Toggle full screen">⛶</button>
+          <p class="cdesc">Total MS1 ion current per run, a proxy for ion-source health. A drop of more than 2× points at a dirty emitter, low flow or a sample-prep problem before IDs fall. <b>timsTOF reads about 1.5 log units lower because of its detector, not its health</b>: compare an instrument with itself.</p>
+          <div class="plot" id="plot-ms1"></div>
+        </div>
+        <div class="chart-card" id="c-dr">
+          <h3>Dynamic Range <span class="badge-c" id="dr-badge"></span></h3>
+          <button type="button" class="fs-btn" data-fs="plot-dr" aria-label="Toggle full screen">⛶</button>
+          <p class="cdesc">log<sub>10</sub>(p99 / p01) of precursor intensity. Compresses when the ion source is dirty or the LC is losing pressure. Like MS1 signal it depends on the detector, so compare an instrument with itself.</p>
+          <div class="plot" id="plot-dr"></div>
+        </div>
+      </div>
+      <div class="chart-card" id="c-pts">
+        <h3>Points Across Peak <span class="badge-c" id="pts-badge"></span></h3>
+        <button type="button" class="fs-btn" data-fs="plot-pts" aria-label="Toggle full screen">⛶</button>
+        <p class="cdesc">Data points per chromatographic peak (after <a href="https://doi.org/10.1021/ac50003a028">Matthews &amp; Hayes 1976</a>). A <b>rising trend</b> at constant SPD signals column degradation (peaks broadening). Validated against Spectronaut (median 9 on timsTOF 100 SPD).</p>
+        <div class="plot" id="plot-pts"></div>
       </div>
     </div>
   </section>
@@ -719,46 +936,74 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     </div>
   </section>
 
-  <!-- ======================= PEG ======================= -->
+  <!-- ======================= PEG (as on live 1.2.1: app.py ~3440-3525 and #peg-watch-js) ======================= -->
   <section class="section" id="peg" aria-labelledby="peg-h">
     <h2 id="peg-h">Evosep PEG Watch</h2>
+    <p class="desc" style="max-width:none">Polyethylene glycol (PEG) from tips, solvents and plastics shows up in MS1 as a ladder of ions 44.026&nbsp;Da apart, and it can cost identifications. STAN measures it in QC runs. Evosep labs that opt in share their per-run PEG here, so you can see whether your level is normal and whether a fix worked. PEG needs no database search, so this board is separate from the benchmark above and the filters at the top of the page do not apply to it.</p>
     <div class="anns">
-      <details class="ann"><summary><b>UNCHANGED</b></summary><p><b>This section stays exactly as it is on the live site</b> (leaderboard, week-by-week chart, Evosep vs other LC, join steps, ranking rules). It is shown here as a one-card summary so the mockup stays short. Its honest sample-size wording and join card are the pattern the rest of the page now copies.</p></details>
+      <details class="ann"><summary><b>KEPT</b> · unchanged from live</summary><p id="ann-peg"></p></details>
     </div>
-    <div class="card">
-      <div class="pegsum">
-        <div>
-          <div class="big" id="peg-big"></div>
-          <p class="sub" style="margin:4px 0 0" id="peg-line"></p>
-          <ul class="parts">
-            <li>Community PEG leaderboard, by instrument family and Evosep method</li>
-            <li>Community PEG, week by week</li>
-            <li>Evosep vs other LC</li>
-            <li>Put your lab on the board</li>
-            <li>How the ranking works</li>
-          </ul>
-        </div>
-        <div>
-          <svg class="spark" id="peg-spark" viewBox="0 0 300 64" preserveAspectRatio="none" role="img" aria-label="Weekly median PEG share of MS1"></svg>
-          <div class="fine" id="peg-spark-l"></div>
-        </div>
-      </div>
-    </div>
-  </section>
 
-  <!-- ======================= HISTORY ======================= -->
-  <section class="section" id="history" aria-labelledby="hist-h">
-    <h2 id="hist-h">UC Davis instrument history</h2>
-    <div class="anns">
-      <details class="ann"><summary><b>MOVED</b> · B5</summary><p><b>The four ID-free series (mass accuracy, MS1 signal, dynamic range, points per peak) moved here, one row per instrument, collapsed by default.</b> They are one facility's three instruments since 2018. Coloured by family on one axis, they could not show any single instrument's drift, and MS1 signal mostly ranked the detector. The Fingerprint radar is dropped for the same reason.</p></details>
-    </div>
-    <details class="xp" id="hist-x">
-      <summary><h3>Month-by-month medians for three instruments</h3><span class="take">ID-free metrics from one facility. Use a row to spot drift on that instrument; do not compare rows across detector families.</span></summary>
-      <div class="xp-body">
-        <div class="hist-grid" id="hist-grid"></div>
-        <p class="caveat">MS1 signal and dynamic range depend on the detector. timsTOF MS1 signal sits about 1.5 log units below the Orbitraps because of how it counts ions, not because of instrument health.</p>
+    <div class="peg-card">
+      <div class="peg-bar">
+        <div>
+          <h3>Community PEG leaderboard</h3>
+          <p class="peg-sub">Evosep labs ranked by median PEG share of MS1 across their QC runs. Lower is cleaner. Labs are compared only within one instrument family and Evosep method.</p>
+        </div>
+        <div class="peg-ctrls">
+          <div class="peg-chips" id="peg-coh" role="group" aria-label="Cohort: instrument family and Evosep method"></div>
+          <div class="peg-seg" id="peg-win" role="group" aria-label="Window">
+            <button type="button" data-win="30" aria-pressed="true">30 days</button>
+            <button type="button" data-win="90" aria-pressed="false">90 days</button>
+            <button type="button" data-win="365" aria-pressed="false">1 year</button>
+          </div>
+        </div>
       </div>
-    </details>
+      <div id="peg-board-wrap"></div>
+      <div class="peg-unranked" id="peg-unranked"></div>
+      <div class="peg-foot"><span id="peg-community"></span><span>A lab needs 5 QC runs in the window to be ranked.</span></div>
+    </div>
+
+    <div class="chart-card peg-chart" id="c-peg-trend">
+      <h3>Community PEG, week by week <span class="peg-trend-badge" id="peg-trend-badge"></span></h3>
+      <button type="button" class="fs-btn" data-fs="plot-peg-trend" aria-label="Toggle full screen">⛶</button>
+      <p class="cdesc">Every shared QC run in the selected cohort, pooled across labs into 7-day buckets over the last year. Gold line = median; shaded band = the middle half of runs (25th to 75th percentile). Gaps are weeks with no runs.</p>
+      <div class="plot" id="plot-peg-trend"></div>
+      <p class="cdesc" id="peg-trend-note" style="margin:6px 0 0"></p>
+    </div>
+
+    <div class="peg-card">
+      <div class="peg-bar">
+        <div>
+          <h3>Evosep vs other LC</h3>
+          <p class="peg-sub">Does the LC front end change how much PEG reaches the MS? Shared QC runs from Evosep and non-Evosep labs on the same instrument family over the last 90 days, all gradients pooled. Shown for comparison, never ranked.</p>
+        </div>
+        <div class="peg-ctrls"><div class="peg-chips" id="peg-lcfam" role="group" aria-label="Instrument family"></div></div>
+      </div>
+      <div id="peg-lc-body"></div>
+      <p class="peg-note"><span>Compare LC systems within one instrument family only. PEG share depends on the detector (STAN counts MS1 peaks above an absolute 10<sup>4</sup> intensity floor), so comparisons across instrument families, such as an Evosep timsTOF against a nanoLC Orbitrap, are not like-for-like.</span></p>
+    </div>
+
+    <div class="peg-info">
+      <div class="peg-icard" id="peg-join">
+        <h3>Put your lab on the board</h3>
+        <p>Any lab running STAN 1.2 or later can join. PEG is read straight from raw MS1, so it needs no community search.</p>
+        <ol class="peg-steps">
+          <li><div><b>Claim your lab name.</b> Run <code>stan community-claim</code> to prove it with an emailed code. Do this first: an unclaimed name can be claimed by anyone, who then takes over its place on the board. Unclaimed names show as <span class="peg-unv" title="This name is not claimed, so anyone could submit under it">unverified</span>.</div></li>
+          <li><div><b>Opt in.</b> Add <code>peg_share: true</code> to <code>~/.stan/community.yml</code>. Sharing stays off until you do.</div></li>
+          <li><div><b>Sync.</b> Run <code>stan peg-sync</code>. It sends every QC run that has a PEG measurement, and the relay keeps only what changed, so it is safe to run again at any time.</div></li>
+        </ol>
+        <p class="peg-fine">Lab names are pseudonyms. Shared per QC run: date, instrument model, LC system, Evosep method (SPD), acquisition mode, sample type and amount, and the PEG share, score, ion count and class. File and sample names, raw data, spectra and serial numbers never leave your lab.</p>
+        <p class="peg-fine">Found PEG? <a href="https://github.com/bsphinney/stan/blob/main/docs/PEG_EVOSEP_DIAGNOSTIC.md">Isolate the source in one night</a> with STAN's Evosep PEG diagnostic.</p>
+      </div>
+      <div class="peg-icard peg-method">
+        <h3>How the ranking works</h3>
+        <p><b>PEG share of MS1.</b> STAN reads 80 MS1 scans spread across the gradient and matches peaks within 5&nbsp;ppm to the PEG ladder: PEG1&ndash;20 as [M+H]<sup>+</sup>, [M+NH<sub>4</sub>]<sup>+</sup> and [M+Na]<sup>+</sup>, spaced 44.026&nbsp;Da (C<sub>2</sub>H<sub>4</sub>O). The share is the matched intensity over all MS1 peaks above 10<sup>4</sup> counts. Unlike the 0&ndash;100 PEG score, it keeps rising with contamination, so it still separates labs that all score 100.</p>
+        <p><b>Cohorts.</b> Labs are ranked only against the same instrument family and Evosep method, because detector response and gradient length change the number. Only Evosep runs are ranked.</p>
+        <p><b>Rank.</b> Median over the window's QC runs, lowest first, with at least 5 runs; ties go to more clean runs, then more runs. <b>Clean</b> means a PEG score below 20. Runs with no PEG measurement are left out; they never count as clean.</p>
+        <p><b>Badges.</b> <span class="peg-badge peg-b-clean" style="margin-left:0">Cleanest</span> is rank 1 once two or more labs are ranked. <span class="peg-badge peg-b-impr" style="margin-left:0">Most improved</span> is the biggest fall in median against the previous window, if it fell by 15% or more and by at least 0.5 percentage points, also once two or more labs are ranked. <b>Change</b> stays blank when the previous window had fewer than 5 runs or a median below 0.1%, where a percent change is noise.</p>
+      </div>
+    </div>
   </section>
 
   <!-- ======================= SUBMISSIONS ======================= -->
@@ -790,13 +1035,14 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     <div>STAN Community Benchmark, open source, built at the UC Davis Proteomics Core</div>
     <div>Data: <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a> · Code: <a href="https://github.com/bsphinney/stan/blob/main/LICENSE">STAN Academic License</a> (free for academic and non-profit use; commercial use by written permission) · Raw data never leaves your lab; file names are used to catch duplicates and are never published · <a href="#join-fields">Every published field</a></div>
     <div class="anns" style="justify-content:center">
-      <details class="ann"><summary><b>CHANGED</b> · D6 license</summary><p><b>The footer said "Code: MIT"</b> and linked opensource.org, but LICENSE is the STAN Academic License ("Any use of the Software for commercial purposes requires prior written permission"). A CRO or pharma core reading the old footer would be misled. Wording pending Decision 3. The privacy line says what the Join card and Decision 1 say: file names reach the server for de-duplication but are never published, so it no longer claims they "never leave your lab".</p></details>
+      <details class="ann"><summary><b>CHANGED</b> · D6 license</summary><p><b>The footer said "Code: MIT"</b> and linked opensource.org, but LICENSE is the STAN Academic License ("Any use of the Software for commercial purposes requires prior written permission"). A CRO or pharma core reading the old footer would be misled. Wording approved (Decision 3, 29 Sep 2026). The privacy line says what the Join card and Decision 1 say: file names reach the server for de-duplication but are never published, so it no longer claims they "never leave your lab".</p></details>
     </div>
   </footer>
 </div>
 
 <button type="button" class="rv-switch rv-float" id="rv-float" role="switch" aria-checked="true"><i></i><span>Review notes</span></button>
 
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js"></script>
 <script>
 /*__DATA__*/
 </script>
@@ -851,6 +1097,52 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   D.runs.forEach((r) => byCoh[r[2]].push(r));
   const vendorsIn = (cs) => ['bruker', 'thermo'].filter((v) => cs.some((c) => vend(c) === v));
 
+  // ================= Plotly plumbing: the live site's PL / PC / FC (app.py ~3640-3662) =================
+  // Colours per instrument MODEL (live's FC map; Pro 2 gets its own hue because live reused a blue).
+  const MCOL = ['#5cb8ff', '#7dd3fc', '#2dd4bf', '#c084fc', '#f87171'];
+  const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
+  const isNarrow = () => window.innerWidth < 640;
+  const AXL = { gridcolor: 'rgba(255,191,0,0.08)', zerolinecolor: 'rgba(255,191,0,0.15)' };
+  const PL = () => ({
+    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(2,40,81,0.3)',
+    font: { color: '#a0b4cc', family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: isNarrow() ? 11 : 12 },
+    margin: isNarrow() ? { t: 30, r: 12, b: 50, l: 50 } : { t: 30, r: 30, b: 50, l: 60 },
+    hoverlabel: { bgcolor: '#011a3a', bordercolor: '#DAAA00', font: { color: '#e8eef5' } },
+  });
+  const PC = { responsive: true, displayModeBar: false };
+  const SPD_CS = [[0, '#5cb8ff'], [0.3, '#34d399'], [0.6, '#FFBF00'], [1, '#f87171']];
+  const SPD_BAR = { title: { text: 'SPD', font: { color: '#DAAA00' } }, tickfont: { color: '#a0b4cc' } };
+  const amountShape = (a) => { a = a || 50; return a < 20 ? 'diamond' : a > 100 ? 'square' : 'circle'; };
+  const ABBR = (m) => ({ 'timsTOF HT': 'HT', 'timsTOF Pro': 'Pro', 'timsTOF Pro 2': 'Pro 2', 'Orbitrap Exploris 480': 'Exploris', 'Orbitrap Fusion Lumos': 'Lumos' }[m] || m);
+  const lenOf = (c) => c.g.split(' (')[0].replace(/ runs?$/, '').replace(/^Evosep, /, '');
+  const gShort = (c) => c.lc === 'evosep' ? `Evosep ${c.spd} SPD` : c.lc === 'evosep_unv' ? `Evosep ${c.spd} SPD (unverified)` : c.lc === 'unrec' ? `${c.spd} SPD, LC not recorded` : `~${c.spd} SPD · ${lenOf(c)}`;
+  // one object per valid run (build_mockup.py documents the columns)
+  const RUNS = D.runs.map((r, idx) => ({ idx, d: r[0], lab: r[1], ci: r[2], c: C[r[2]], prec: r[3], pep: r[4], prot: r[5], psm: r[6], pts: r[7], ppm: r[8], ms1: r[9], dr: r[10], amt: r[11], col: r[12], pw: r[13] }));
+  const byCohRuns = C.map(() => []);
+  RUNS.forEach((o) => byCohRuns[o.ci].push(o));
+  const pv = (o) => o.c.t === 'DIA' ? o.prec : o.psm;
+  const viewRuns = (useAmt) => RUNS.filter((o) => o.c.s === st.sample && o.c.t === st.track && (!useAmt || st.amount === 'all' || o.c.a === st.amount));
+  const nFacR = (rs) => new Set(rs.map((o) => D.labFac[o.lab])).size;
+  const rlTxt = (rs) => { const f = nFacR(rs); return `${runsTxt(rs.length)} · ${f} lab${f === 1 ? '' : 's'}`; };
+  const amtBadge = (useAmt) => `${SAMPLE[st.sample]} · ${st.track} (${prim()}) · ${!useAmt || st.amount === 'all' ? 'all amounts' : AMT[st.amount]}`;
+  const spanTxt = (ds) => { const s = ds.slice().sort(), a = fmtMo(s[0].slice(0, 7)), b = fmtMo(s[s.length - 1].slice(0, 7)); return a === b ? a : `${a} – ${b}`; };
+
+  // chart registry: draw only what is on screen; closed panels draw when opened
+  const CH = {};
+  const defChart = (id, draw) => { CH[id] = { draw, dirty: true }; };
+  const shown = (el) => !!el && el.offsetParent !== null && el.clientWidth > 0;
+  function drawChart(id) {
+    const el = $(id), ch = CH[id];
+    if (!el || !ch) return;
+    if (!shown(el)) { ch.dirty = true; return; }
+    if (typeof window.Plotly === 'undefined') { el.innerHTML = '<div class="empty">Plotly did not load from cdn.jsdelivr.net, so this chart cannot be drawn.</div>'; return; }
+    try { ch.draw(el); ch.dirty = false; } catch (e) { console.error('[chart ' + id + ']', e); }
+  }
+  function drawCharts() { Object.keys(CH).forEach((id) => { CH[id].dirty = true; drawChart(id); }); }
+  function plot(el, traces, layout, cfg) { if (el.dataset.empty) { el.innerHTML = ''; delete el.dataset.empty; } Plotly.react(el, traces, layout, cfg || PC); }
+  function noPlot(el, html) { if (window.Plotly && el.classList.contains('js-plotly-plot')) Plotly.purge(el); el.innerHTML = `<div class="empty">${html}</div>`; el.dataset.empty = '1'; }
+  const hFor = (el, h) => el.closest('.fs') ? Math.max(360, Math.round(window.innerHeight * 0.86)) : h;
+
   // ================= review layer =================
   function setReview(on) {
     document.documentElement.classList.toggle('clean', !on);
@@ -863,40 +1155,44 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
 
   const pctHeld = F.flag_amount + F.flag_mismatch;
   const expLow = Math.round(100 * (1 - F.expl38_med / F.expl_ref_med));
+  // Decisions: all four earlier ones approved on 29 Sep 2026; decision 11 recorded (spec §1).
   $('decisions').innerHTML = [
-    `<div class="dec"><h3>Take file names, and the fingerprint built from them, out of the public data <span>D4</span></h3>
-      <p><b>${fmtN(F.rows_with_name)} of ${fmtN(F.rows_api)}</b> rows in <code>/api/leaderboard</code> carry the raw file name, and three chart hovers print it. Names include operator initials and notes. The public <code>fingerprint</code> field is an unsalted 16-hex hash of pseudonym, model, file name, amount and SPD (<code>fingerprint_dedup.py</code>), so anyone can confirm a guessed file name with it. Both contradict the user guide ("No filenames") and the PEG card.</p>
-      <div class="rec"><b>Recommended:</b> drop the file name and <code>fingerprint</code> from <code>/api/leaderboard</code>, <code>/api/cohorts</code>, the hovers and the published parquet (one HF commit). Keep the name on the server only, for de-duplication, the amount check and <code>/api/update</code>, and say exactly that on the page: "sent, never published" (Join card and footer do). Accept an empty name at submit so the client's <code>STAN_STRIP_RUN_NAME</code> opt-out works.</div>
-      <p class="alt">Alternative: hash the name in the client so it never leaves the lab. The promise becomes "never leaves your lab", but <code>/api/update</code> and the server-side amount check need reworking. Either way, anyone who already downloaded the parquet keeps the names.</p></div>`,
-    `<div class="dec"><h3>IPS: fix the reference lookup first, then decide on recalibration <span>D3</span></h3>
-      <p>The relay looks up references by <code>(instrument_family, SPD bucket)</code>. Rows carry the family <b>"Exploris"</b> or <b>"timsTOF"</b>, but <code>IPS_REFERENCES</code> is keyed "Exploris 480" and "timsTOF HT" (app.py:780–791, lookup at 846–856; the client's <code>chromatography.py::_get_reference</code> keys the same way). Those rows fall through to the pooled global reference (median ${fmtN(F.global_ref_med)} precursors): all ${fmtN(I.Exploris.n)} stored Exploris and all ${fmtN(I.timsTOF.n)} stored timsTOF HeLa DIA scores equal that fallback exactly. Keyed correctly, the Exploris median goes from <b>${I.Exploris.med_stored}</b> to <b>${I.Exploris.med_fixed}</b> and timsTOF from <b>${I.timsTOF.med_stored}</b> to <b>${I.timsTOF.med_fixed}</b>. So Exploris is scored too low today and timsTOF too high; only Lumos reaches its own references. Recalibrating the "Exploris 480" entries alone would not change a single score, because that key is never reached.</p>
-      <div class="rec"><b>Recommended:</b> map family to reference key ("Exploris" → "Exploris 480", "timsTOF" → "timsTOF HT") in the relay and the client, recompute the stored <code>ips_score</code>, then decide on recalibration from the corrected distribution. The Exploris 38 SPD median is ${fmtN(F.expl38_med)} precursors against the ${fmtN(F.expl_ref_med)} reference, about ${expLow}% low. Until the fix ships, keep IPS off the public page. This mockup hides the IPS column and the band table.</div>
-      <p class="alt">Alternative: show IPS for Lumos only, with one line: "IPS for Exploris and timsTOF is being recomputed; a fix is pending."</p></div>`,
-    `<div class="dec"><h3>Footer license wording <span>D6</span></h3>
-      <p>The footer says <b>"Code: MIT"</b>; LICENSE is the STAN Academic License, which requires written permission for commercial use.</p>
-      <div class="rec"><b>Recommended:</b> <span class="quote">"Code: STAN Academic License (free for academic and non-profit use; commercial use by written permission)"</span>, linked to LICENSE.</div>
-      <p class="alt">Pending: UC ownership is still to be confirmed with UC Davis tech transfer. If UC owns the code, the one-line summary may need their wording.</p></div>`,
-    `<div class="dec"><h3>One-facility disclosure wording <span>D2</span></h3>
-      <p>Both lab pseudonyms (Clogged PeakTail, Anonymous Lab) are UC Davis runs. After separating DIA/DDA and LC, <b>no cohort has runs from two facilities</b>, so every card reads "single-lab reference" and every "best" badge stays off.</p>
-      <div class="rec"><b>Recommended</b> (shown under the header): <span class="quote">"Today essentially every run here comes from one facility, the UC Davis Proteomics Core (timsTOF HT, Exploris 480, Fusion Lumos). The ranges below are that facility's longitudinal ranges until more labs join."</span></div>
-      <p class="alt">Alternative: a shorter line with the count, "All ${fmtN(F.valid)} runs so far come from the UC Davis Proteomics Core." Either way, drop "established by the community" and "cross-lab" until a cohort has two labs.</p></div>`,
-  ].join('');
+    ['1', 'Take file names, and the fingerprint built from them, out of the public data', 'D4 · spec #5', 'Approved 29 Sep',
+      `<p><b>${fmtN(F.rows_with_name)} of ${fmtN(F.rows_api)}</b> rows in <code>/api/leaderboard</code> carry the raw file name, three chart hovers print it, and the public <code>fingerprint</code> is an unsalted hash of pseudonym, model, file name, amount and SPD, so a guessed name can be confirmed with it.</p>
+      <div class="rec"><b>Approved:</b> drop <code>run_name</code> and <code>fingerprint</code> from <code>/api/leaderboard</code>, <code>/api/cohorts</code> and the hovers. Keep the name on the server only, for de-duplication, the amount check and <code>/api/update</code>, and accept an empty name at submit so <code>STAN_STRIP_RUN_NAME</code> works. The Join card and footer say "sent, never published".</div>
+      <p class="alt gated">Still gated (spec 5b): scrubbing the published parquet history is a data rewrite. It waits for your explicit go, with a backup first.</p>`],
+    ['2', 'IPS: fix the reference lookup, then recompute', 'D3 · spec #6', 'Approved 29 Sep',
+      `<p>Rows carry the family "Exploris" or "timsTOF", but <code>IPS_REFERENCES</code> is keyed "Exploris 480" and "timsTOF HT" (app.py:780–791, lookup 846–856), so all ${fmtN(I.Exploris.n)} Exploris and ${fmtN(I.timsTOF.n)} timsTOF HeLa DIA scores fall through to the pooled global reference. Keyed correctly, the Exploris median moves <b>${I.Exploris.med_stored} → ${I.Exploris.med_fixed}</b> and timsTOF <b>${I.timsTOF.med_stored} → ${I.timsTOF.med_fixed}</b>.</p>
+      <div class="rec"><b>Approved:</b> map family to reference key in the relay and the client, recompute the stored <code>ips_score</code>, and show you the before/after (these medians plus the per-run table) before anything is written. IPS stays off the public page until then. Exploris recalibration is decided from the corrected distribution: its 38 SPD median is ${fmtN(F.expl38_med)} precursors against the ${fmtN(F.expl_ref_med)} reference, about ${expLow}% low.</div>
+      <p class="alt gated">Gated (spec 6): the recompute rewrites stored scores, so it waits for your go on the before/after.</p>`],
+    ['3', 'Footer license wording', 'D6 · spec #7', 'Approved 29 Sep',
+      `<div class="rec"><b>Approved:</b> <span class="quote">"Code: STAN Academic License (free for academic and non-profit use; commercial use by written permission)"</span>, linked to LICENSE. It is in the footer below.</div>
+      <p class="alt">Still open: UC ownership, to confirm with UC Davis tech transfer. If UC owns the code, the one-line summary may need their wording.</p>`],
+    ['4', 'One-facility disclosure', 'D2 · spec #8', 'Approved 29 Sep',
+      `<div class="rec"><b>Approved</b> and shown under the header: <span class="quote">"Today essentially every run here comes from one facility, the UC Davis Proteomics Core (timsTOF HT, Exploris 480, Fusion Lumos). The ranges below are that facility's longitudinal ranges until more labs join."</span></div>
+      <p class="alt">"Established by the community" and "cross-lab" stay off the page until a cohort has runs from two facilities. After separating DIA/DDA and LC, none does today.</p>`],
+    ['11', 'Which library defines STAN\'s reference count', 'research M2 · spec #11', 'Decided 29 Sep',
+      `<p>STAN's cohorts are not all searched against one frozen library. timsTOF HT and Exploris runs use per-instrument subset libraries (~51k and ~53k precursors) built from this lab's own runs; only Lumos uses the frozen ~170k Orbitrap library. On the same timsTOF raws the full library gives 1.034× the subset count, and an outside lab cannot reproduce either subset.</p>
+      <div class="rec"><b>Decided:</b> the frozen community library defines both the cohorts and the lookup's reference count S. The cohort rows are re-searched (0.2–1 core-hour each) and you see the before/after before any PG write. Methods on this page already describes that end state; the lookup's preliminary example is refit after the re-search.</div>`],
+  ].map(([n, t, tag, stt, body]) => `<div class="dec"><h3><b class="dnum">${n}</b><i class="dt">${t}<small>${tag}</small></i><em class="stat-ok">${stt}</em></h3>${body}</div>`).join('');
 
   const IDX = [
-    ['D1', 'DIA and DDA kept apart everywhere', '#refs'], ['D2', 'One-facility disclosure; labs counted as facilities', '#top'],
-    ['D3', 'IPS described correctly; hidden until rescored', '#methods-ips'], ['D4', 'No file names in table or API', '#subs'],
-    ['D5', 'Reference cards grouped, titled from recorded data', '#refs'], ['D6', 'Join card, privacy groups, license', '#join'],
+    ['D1', 'DIA and DDA kept apart in every chart', '#refs'], ['D2', 'One-facility disclosure; labs counted as facilities', '#top'],
+    ['D3', 'IPS described correctly; hidden until rescored', '#methods-ips'], ['D4', 'No file names in table, hovers or API', '#subs'],
+    ['D5', 'Cards grouped; "Unknown" is not a column', '#refs'], ['D6', 'Join card, privacy groups, license', '#join'],
     ['D7', 'How the numbers are made, DIA and DDA apart', '#methods'], ['D8', 'Duplicates removed, bad amounts held back', '#stats'],
-    ['B1', 'Where does my run sit?', '#where'], ['B2', 'One cohort key, one filter bar', '#filters'],
+    ['B1', 'Where does my run sit? With engine fields', '#where'], ['B2', 'One cohort key, one filter bar', '#filters'],
     ['B3', 'Lab trend vs. reference', '#trend'], ['B4', 'Amount source and FAIMS', '#where'],
-    ['B5', 'Explore trimmed, TIC kept by SPD and LC, history moved', '#tic'], ['B6', 'Best configurations, ranked within vendor', '#best'],
+    ['B5', 'Every live chart kept, in live form', '#explore'], ['B6', 'Best configurations, ranked within vendor', '#best'],
+    ['A.4', 'TIC overlay: raw MS1, LC rule, n · facility', '#x-tic'], ['ID', 'LC / instrument health, visible', '#health'],
   ];
   $('rv-index').innerHTML = IDX.map(([k, t, h]) => `<li><code>${k}</code><a href="${h}">${t}</a></li>`).join('');
   $('rv-fixed').innerHTML = [
-    '<b>Matthews &amp; Hayes DOI</b> now 10.1021/ac50003a028 in both places (the old links resolved to unrelated papers).',
+    '<b>Matthews &amp; Hayes DOI</b> now 10.1021/ac50003a028 everywhere (the old links resolved to unrelated papers).',
     '<b>Ordinals</b> read 1st, 2nd, 3rd, 11th–13th, 21st (the table said "93th", "82th", "62th").',
-    '<b>Stale empty-state box</b> ("Not enough community data") no longer survives under a drawn chart; the B3 rewrite clears it on every draw.',
-    `<b>TIC overlay</b> keeps its SPD and LC menus and opens on ${F.tic_default} (${fmtN(F.tic_default_n)} runs), not "7 SPD (2 runs)"; bands need 5+ runs; DDA says "No DDA TIC traces have been submitted yet".`,
+    '<b>Stale empty-state box</b> ("Not enough community data") no longer survives under a drawn chart.',
+    `<b>TIC overlay</b> opens on ${F.tic_default} Evosep (${fmtN(F.tic_default_n)} runs), not "7 SPD (2 runs)"; bands need 5+ runs; DDA disables its controls and says so once.`,
+    '<b>Clipped and overlapping labels:</b> the platform violins turn horizontal on phones; the ID-free legends no longer sit on the x-axis title; Depth by Throughput facets stack on phones.',
     '<b>Favicon</b> served (was 404 on every page); <code>mobile-web-app-capable</code> meta added.',
     '<b>"3,800+" banner</b> replaced by counts computed from the same array as the stats row.',
     '<b>Unsupported sentences removed:</b> "saturation between 100–250 ng on Orbitrap" (99% of rows are 50 ng), "populated going forward" above eight years of dynamic-range data, and Astral in a legend with no Astral data.',
@@ -904,7 +1200,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
 
   // ================= header + stats =================
   $('disclose-text').textContent = 'Today essentially every run here comes from one facility, the UC Davis Proteomics Core (timsTOF HT, Exploris 480, Fusion Lumos). The ranges below are that facility\'s longitudinal ranges until more labs join.';
-  $('ann-d2').innerHTML = `<b>Says on the first screen that this is one facility's data.</b> The old banner hard-coded "Seeded with 3,800+ longitudinal QC runs" above a stats row reading 3,279, called the ranges "established by the community", and showed "2 Contributing Labs" that are two UC Davis pseudonyms. The disclosure wording is Decision 4.`;
+  $('ann-d2').innerHTML = `<b>Says on the first screen that this is one facility's data.</b> The old banner hard-coded "Seeded with 3,800+ longitudinal QC runs" above a stats row reading 3,279, called the ranges "established by the community", and showed "2 Contributing Labs" that are two UC Davis pseudonyms. The disclosure wording was approved as Decision 4 (29 Sep 2026).`;
   $('stats-row').innerHTML = [
     `<div class="stat"><div class="v">${fmtN(F.valid)}</div><div class="k">QC runs in the benchmark</div><div class="d">${fmtN(F.dup_extra)} duplicate copies removed · ${fmtN(pctHeld)} held back</div></div>`,
     `<div class="stat"><div class="v">${F.facilities}</div><div class="k">Contributing lab</div><div class="d">UC Davis, under ${F.labs} pseudonyms</div></div>`,
@@ -976,14 +1272,16 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     $('ws-min-f').classList.toggle('hidden', ws.lc !== 'nano');
     $('ws-min').value = ws.mins == null ? '' : ws.mins;
     $('ws-amt').innerHTML = AMT_OPTS.filter(([k]) => k !== 'all').map(([k, l]) => `<option value="${k}"${k === ws.a ? ' selected' : ''}>${l}${wsMatch(k) ? '' : ' · no runs yet'}</option>`).join('');
-    $('ws-val-l').textContent = `${Prim()} at 1% FDR`;
+    $('ws-val-l').textContent = st.track === 'DIA' && eng.e !== 'stan' ? `${Prim()} from your search` : `${Prim()} at 1% FDR`;
+    engForm();
     $('ws-val').value = ws.val == null ? '' : ws.val;
     $('ws-pep').value = ws.pep;
     $('ws-ex').classList.toggle('hidden', !ws.example);
   }
-  let wsCoh = null;
+  let wsCoh = null, wsBand = null;
   function wsResult() {
     const out = $('ws-out');
+    wsBand = null;
     const pool = wsPool(), c = wsMatch();
     wsCoh = c;
     const gtxt = ws.lc === 'nano' ? (ws.mins > 0 ? `a ${fmtN(ws.mins)} min gradient (~${Math.round(spdOfMins(ws.mins))} SPD)` : 'nanoLC') : D.evosep[ws.lc.slice(1)];
@@ -1006,6 +1304,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
       const b = $('ws-alt'); if (b) b.onclick = () => { ws.a = b.dataset.a; if (ws.example) exampleVal(); wsForm(); wsResult(); };
       return;
     }
+    if (st.track === 'DIA' && eng.e !== 'stan') { engRender(c, mapLine); return; }
     const v = c.v, val = ws.val, idx = C.indexOf(c);
     const lines = [];
     let head;
@@ -1046,8 +1345,8 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   }
   function drawStrip() {
     const box = $('ws-strip'); if (!box || !wsCoh) return;
-    const v = wsCoh.v, val = ws.val, W = Math.max(260, Math.round(box.clientWidth)), H = 128, m = { l: 14, r: 14, t: 30, b: 26 };
-    const lo = Math.min(v[0], val || v[0]), hi = Math.max(v[v.length - 1], val || 0);
+    const Bd = wsBand, v = wsCoh.v, val = Bd ? null : ws.val, W = Math.max(260, Math.round(box.clientWidth)), H = 128, m = { l: 14, r: 14, t: 30, b: 26 };
+    const lo = Math.min(v[0], val || v[0], Bd ? Bd.lo : v[0]), hi = Math.max(v[v.length - 1], val || 0, Bd ? (Bd.one ? Bd.cap : Bd.hi) : 0);
     const tk = niceTicks(lo - (hi - lo) * 0.03, hi + (hi - lo) * 0.03, W < 420 ? 4 : 6), x0 = tk[0], x1 = tk[tk.length - 1];
     const X = (x) => m.l + (x - x0) / ((x1 - x0) || 1) * (W - m.l - m.r);
     const yc = m.t + (H - m.t - m.b) / 2, bh = H - m.t - m.b;
@@ -1061,6 +1360,14 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     g += `<line x1="${X(p50)}" x2="${X(p50)}" y1="${m.t - 4}" y2="${H - m.b + 4}" style="stroke:var(--text);stroke-width:2"/>`;
     const medLbl = `<text class="ax" x="${X(p50)}" y="${m.t - 10}" text-anchor="middle">median</text>`;
     let showMed = true;
+    if (Bd) {
+      const xa = X(Bd.lo), xb = X(Bd.one ? Bd.cap : Bd.hi), xs = X(Bd.s);
+      g += `<rect x="${xa.toFixed(1)}" y="${m.t - 12}" width="${Math.max(3, xb - xa).toFixed(1)}" height="${bh + 16}" rx="4" style="fill:rgba(255,191,0,.2);stroke:var(--gold);stroke-width:1.5${Bd.one ? ';stroke-dasharray:5 3' : ''}"/>`;
+      if (!Bd.one) g += `<line x1="${xs}" x2="${xs}" y1="${m.t - 12}" y2="${H - m.b + 4}" style="stroke:var(--gold);stroke-width:2.5"/>`;
+      const lx = Bd.one ? xa : xs, anc = lx > W - 150 ? 'end' : lx < 150 ? 'start' : 'middle';
+      g += `<text class="ax-s" x="${lx + (anc === 'start' ? 4 : anc === 'end' ? -4 : 0)}" y="${m.t - 16}" text-anchor="${anc}" style="fill:var(--gold)">${Bd.one ? `STAN count at least ~${fmtN(Bd.lo)} →` : `≈ ${fmtN(Bd.s)} on STAN's scale`}</text>`;
+      if (Math.abs((Bd.one ? xa : xs) - X(p50)) < 90) showMed = false;
+    }
     if (val) {
       const xv = X(val), anc = xv > W - 90 ? 'end' : xv < 90 ? 'start' : 'middle';
       g += `<line x1="${xv}" x2="${xv}" y1="${m.t - 16}" y2="${H - m.b + 4}" style="stroke:var(--gold);stroke-width:2.5"/><circle cx="${xv}" cy="${yc}" r="5.5" style="fill:var(--gold);stroke:var(--navy-0);stroke-width:2"/>`;
@@ -1068,7 +1375,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
       if (Math.abs(xv - X(p50)) < 70) showMed = false;
     }
     if (showMed) g += medLbl;
-    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc(`${v.length} runs in the cohort; your value marked in gold`)}">${g}</svg><div class="legend" style="margin-top:2px"><span><i class="lg-dot" style="background:${col};opacity:.7"></i>one run</span><span><i class="lg-band" style="background:rgba(160,180,204,.10);border-color:rgba(160,180,204,.35)"></i>middle half</span><span>line: 10th–90th percentile</span></div>`;
+    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc(`${v.length} runs in the cohort; your value marked in gold`)}">${g}</svg><div class="legend" style="margin-top:2px"><span><i class="lg-dot" style="background:${col};opacity:.7"></i>one run</span><span><i class="lg-band" style="background:rgba(160,180,204,.10);border-color:rgba(160,180,204,.35)"></i>middle half</span><span>line: 10th–90th percentile</span>${Bd ? `<span><i class="lg-band" style="background:rgba(255,191,0,.2);border-color:var(--gold)"></i>${Bd.one ? `lower bound only (above the calibrated range), up to the ${fmtN(Bd.cap)}-precursor library` : 'estimated STAN count, ±8% (Example, preliminary)'}</span>` : ''}</div>`;
   }
   $('ws-model').addEventListener('change', (e) => {
     ws.m = e.target.value;
@@ -1083,13 +1390,191 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   $('ws-val').addEventListener('input', (e) => { ws.val = e.target.value === '' ? null : +e.target.value; ws.example = false; $('ws-ex').classList.add('hidden'); wsResult(); });
   $('ws-pep').addEventListener('input', (e) => { ws.pep = e.target.value; wsResult(); });
   $('ws-form').addEventListener('submit', (e) => e.preventDefault());
-  // test hook for the screenshot script: set lookup fields, return the result text
-  window.__stanLookup = (o) => {
-    if (o.track && o.track !== st.track) { st.track = o.track; renderAll(true); }
-    Object.assign(ws, o, { example: false }); delete ws.track;
-    wsForm(); wsResult();
-    return $('ws-out').innerText.replace(/\s+/g, ' ').trim();
+  // ================= Part B: search-engine fields (spec §B.2, §B.4, §B.8, §B.10) =================
+  // Nothing is calibrated yet. One path is an Example (preliminary) built from the only existing
+  // pairs (research table, not the site snapshot): DIA-NN 2.7.0 library-free, MBR off, timsTOF HT.
+  const EX = D.example;
+  const eng = { e: 'stan', ver: EX.version, lib: 'free', mbr: 'single_off', fdr: 'run', cnt: 'prid' };
+  const ENG = [['stan', 'I ran STAN on this raw'], ['diann', 'DIA-NN'], ['sn', 'Spectronaut'], ['other', 'Other (AlphaDIA, MaxDIA, FragPipe, …)']];
+  const NC = ' · not calibrated yet';
+  const VER = {
+    diann: [[EX.version, `${EX.version} · Example (preliminary)`], ['new', 'newer than 2.7' + NC], ['2.7', 'other 2.7 builds' + NC], ['2.6', '2.6.x' + NC], ['2.5', '2.5.x' + NC], ['2.3', '2.3.x' + NC], ['2.2', '2.2.x' + NC], ['2.1', '2.1.x' + NC], ['2.0', '2.0.x' + NC], ['1.9', '1.9.x' + NC], ['1.8', '1.8.x' + NC], ['old', '1.7 or older' + NC]],
+    sn: [['20', '20' + NC], ['19', '19' + NC], ['18', '18' + NC], ['old', '17 or older' + NC]],
   };
+  const LIB = [['free', 'Library-free / predicted', 'library-free'], ['proj', 'Project / empirical library', 'project library'], ['stan', 'STAN community library', 'STAN community library']];
+  const MBR = [['single_off', 'Single run, MBR off', 'single run, MBR off'], ['single_on', 'Single run, MBR on', 'single run, MBR on'], ['b10', 'Batch with MBR: 2–10 runs', 'MBR batch of 2–10'], ['b50', 'Batch with MBR: 11–50 runs', 'MBR batch of 11–50'], ['b50p', 'Batch with MBR: more than 50 runs', 'MBR batch of more than 50']];
+  const FDR = [['run', '1%, run-specific', '1% run FDR'], ['global', '1%, global (experiment-wide)', '1% global FDR'], ['other', 'Other, or not sure', 'other FDR']];
+  const CNT = [['prid', 'Unique Precursor.Id, Q.Value ≤ 0.01'], ['rows', 'Rows of the main report as written'], ['stats', 'Precursors.Identified (stats.tsv / log)'], ['matrix', 'Rows of the precursor matrix']];
+  const pick = (arr, k, i) => (arr.find((x) => x[0] === k) || [k, k, k])[i || 1];
+  const verNum = (v) => ({ old: 1.7, new: 2.8 }[v] || parseFloat(v));
+  const ge25 = () => eng.e === 'diann' && verNum(eng.ver) >= 2.5;
+  const verTxt = () => eng.e === 'other' ? '' : ' ' + pick(VER[eng.e], eng.ver).split(' · ')[0];
+  const cfgTxt = () => `${eng.e === 'diann' ? 'DIA-NN' : eng.e === 'sn' ? 'Spectronaut' : 'another engine'}${verTxt()}, ${pick(LIB, eng.lib, 2)}, ${pick(MBR, eng.mbr, 2)}, ${pick(FDR, eng.fdr, 2)}`;
+  const opts = (arr, cur) => arr.map((x) => `<option value="${x[0]}"${x[0] === cur ? ' selected' : ''}>${esc(x[1])}</option>`).join('');
+  function engForm() {
+    const dia = st.track === 'DIA';
+    $('ws-eng-f').classList.toggle('hidden', !dia);
+    $('ws-log-f').classList.toggle('hidden', !dia);
+    $('ws-eng').innerHTML = opts(ENG, eng.e);
+    $('ws-eng-h').textContent = eng.e === 'stan' ? 'No conversion: STAN\'s own count is already on the benchmark\'s scale.' : 'A count from another search is converted only where a calibration exists; otherwise no percentile is given.';
+    const show = dia && eng.e !== 'stan';
+    $('ws-engbox').hidden = !show;
+    if (!show) return;
+    $('ws-ver').closest('.field').classList.toggle('hidden', eng.e === 'other');
+    if (eng.e !== 'other') { if (!VER[eng.e].some((x) => x[0] === eng.ver)) eng.ver = VER[eng.e][0][0]; $('ws-ver').innerHTML = opts(VER[eng.e], eng.ver); }
+    $('ws-lib').innerHTML = opts(LIB, eng.lib); $('ws-mbr').innerHTML = opts(MBR, eng.mbr); $('ws-fdr').innerHTML = opts(FDR, eng.fdr); $('ws-cnt').innerHTML = opts(CNT, eng.cnt);
+    const w = ge25() && eng.cnt === 'rows';
+    $('ws-cnt-w').classList.toggle('hidden', !w);
+    $('ws-cnt-w').innerHTML = w ? '<b>DIA-NN 2.5 and later write the main report at 5% FDR by default.</b> Counting its rows gives about 28% more precursors than a 1% count. Count only rows with Q.Value ≤ 0.01.' : '';
+  }
+  function engCheck(c) {
+    const why = [];
+    if (eng.e === 'other') why.push('<b>Other engines are not calibrated yet</b> (rule 6).');
+    if (eng.e === 'sn') why.push('<b>Spectronaut is not calibrated yet</b> (rule 1). Its arm runs on the licensed Windows machine. directDIA counts move with experiment size (0.65–0.79× a DIA-NN count in multi-run searches, 1.56–1.74× single-run), so batch size matters.');
+    if (eng.e === 'diann' && eng.ver !== EX.version) why.push(`<b>DIA-NN${esc(verTxt())} is not calibrated yet</b> (rule 1).`);
+    if (eng.e !== 'other' && eng.lib !== 'free') why.push(eng.lib === 'proj' ? '<b>A project or empirical library</b> is built from your own runs, so its effect cannot be calibrated in general (rules 1 and 4).' : '<b>The STAN community library with another engine or version</b> is not calibrated yet (rule 1).');
+    if (eng.mbr !== 'single_off') why.push(`<b>${esc(pick(MBR, eng.mbr))}</b> is not calibrated yet. MBR alone moves a single-file count from about 0.80× to 1.03–1.05× STAN's (rules 1 and 4).`);
+    if (eng.fdr !== 'run') why.push(eng.fdr === 'global' ? '<b>A global (experiment-wide) 1% FDR</b> is not calibrated yet (rule 3).' : '<b>The FDR is not 1%, or its scope is unknown</b> (rule 3).');
+    if (eng.cnt !== 'prid') why.push(eng.cnt === 'rows' ? (ge25() ? '<b>Rows of a DIA-NN 2.5+ main report</b> are filtered at 5% by default, about 28% above a 1% count. Count unique Precursor.Id at Q.Value ≤ 0.01.' : '<b>Rows of the main report</b> can repeat a precursor; count unique Precursor.Id at Q.Value ≤ 0.01.') : eng.cnt === 'stats' ? '<b>Precursors.Identified</b> reads 1–4% below a unique Precursor.Id count, and up to 9% on weak runs; count Precursor.Id at Q.Value ≤ 0.01.' : '<b>A precursor matrix</b> is filtered with global and library q-values, not the run-level count STAN uses.');
+    if (st.sample !== 'hela') why.push('<b>The calibration pairs are HeLa runs</b>; other QC standards are not calibrated.');
+    if (ws.m !== 'timsTOF HT') why.push(`<b>No calibration for ${esc(ws.m)} yet</b>; the only example is a timsTOF HT (rule 5).`);
+    else if (!(c.lc === 'evosep' && EX.spds.includes(c.spd))) why.push(`<b>The example's pairs are Evosep ${EX.spds.join(' and ')} SPD runs</b>; this cohort is ${esc(c.g)} (rule 5).`);
+    const N = ws.val;
+    let side = 'two';
+    if (!why.length && N != null && !isNaN(N)) {
+      if (N < EX.n_lo * 0.9 || N > EX.n_hi * 1.1) why.push(`<b>${fmtN(N)} is outside the calibrated range by more than 10%</b>: the example's inputs run from ${fmtN(EX.n_lo)} to ${fmtN(EX.n_hi)} (rule 2).`);
+      else if (N > EX.n_hi) side = 'one';
+    }
+    return { why, side };
+  }
+  const r100 = (x) => Math.round(x / 100) * 100;
+  const pctTxt = (x, v) => x > v[v.length - 1] ? 'above all' : x < v[0] ? 'below all' : ordinal(Math.min(99, Math.max(1, Math.round(pctOf(x, v)))));
+  function engRender(c, mapLine) {
+    const out = $('ws-out'), N = ws.val, { why, side } = engCheck(c), v = c.v, cohLine = `${runsTxt(c.n)} in <b>${esc(cohTitle(c))}</b>`;
+    const meta = `<div class="ws-meta"><span><b>${labsTxt(c)}</b></span>${singleTag(c)}<span>${fmtMo(c.d0)}${c.d0 === c.d1 ? '' : ' – ' + fmtMo(c.d1)}</span><button type="button" class="linkbtn" id="ws-go">Show this cohort's card ↓</button></div>`;
+    const foot = `<div class="ws-foot"><span>Nothing leaves your browser.</span><a href="#join">Track this run over time: join the benchmark →</a></div>`;
+    const typed = N == null || isNaN(N) ? `your ${prim()}` : `<b>${fmtN(N)}</b> ${prim()}`;
+    if (N == null || isNaN(N)) { out.innerHTML = `${mapLine}<div class="ws-head"><div class="ws-pct">—<small>enter your ${prim()}</small></div></div>${foot}`; return; }
+    if (why.length) {
+      const rangeOnly = why.length === 1 && /calibrated range/.test(why[0]);
+      out.innerHTML = `${mapLine}<div class="ws-head"><div class="ws-pct" style="font-size:1.45rem">Not on STAN's scale yet<small>calibration in progress</small></div></div>
+        <div class="refuse"><div>You entered ${typed} (${esc(cfgTxt())}). No percentile is given: ${rangeOnly ? `this configuration is the preliminary example, but ${fmtN(N)} lies well outside the inputs it was calibrated on.` : 'the same raw file can give a count 30–50% or more away from STAN\'s under another search, and this configuration has no calibration yet.'}</div>
+        <ul>${why.map((w) => `<li>${w}</li>`).join('')}</ul>
+        <div>Nearest calibrated configuration: <b>DIA-NN ${EX.version} · library-free · single run, MBR off · 1% run FDR · timsTOF HT, Evosep ${EX.spds.join(' or ')} SPD</b> <span class="exval">Example (preliminary)</span> <button type="button" class="linkbtn" id="ws-use-ex">Use it</button></div>
+        <div><b>For an exact placement, run STAN on the raw file.</b></div></div>
+        <div class="ws-meta"><span>Your cohort would be ${cohLine}</span></div>${foot}`;
+      $('ws-use-ex').onclick = () => { setEx(N, true); wsForm(); wsResult(); };
+      return;
+    }
+    const s = Math.min(N / EX.ratio, EX.lib), lo = Math.min(s * (1 - EX.band), EX.lib), hi = Math.min(s * (1 + EX.band), EX.lib);
+    const where = `Within the <b>${fmtN(c.n)} QC injections (failed runs included) from one timsTOF HT at UC Davis</b>, ${esc(c.g)}, ${AMT[c.a]}`;
+    const calib = `<div class="fine">Calibrated on one instrument at UC Davis: ${EX.n_pairs} raws searched both ways (Evosep ${EX.spds.join(' and ')} SPD), median N/S ${EX.ratio}, band ±${Math.round(EX.band * 100)}%. A lower STAN number is expected on timsTOF: STAN's library holds ~${Math.round(EX.lib / 1000)}k precursors, so near the top STAN's count flattens against it while a library-free count keeps rising.</div>`;
+    let head, lines;
+    if (side === 'one') {
+      wsBand = { s: r100(lo), lo: r100(lo), hi: null, one: true, cap: EX.lib };
+      const p = pctTxt(lo, v);
+      head = `<div class="ws-pct range">≥ ${p}<small>percentile</small></div>`;
+      lines = [`You entered ${typed} (${esc(cfgTxt())}).`,
+        `That is above the calibrated range (inputs ${fmtN(EX.n_lo)}–${fmtN(EX.n_hi)}), so only a lower bound is given: on STAN's search of the same file it would be at least about <b>${fmtN(r100(lo))}</b>.`,
+        `${where}, that is <b>at least the ${p} percentile</b>.`];
+    } else {
+      wsBand = { s: r100(s), lo: r100(lo), hi: r100(hi), one: false };
+      const pa = pctTxt(lo, v), pb = pctTxt(hi, v);
+      head = `<div class="ws-pct range">${pa === pb ? pa : `${pa}–${pb}`}<small>percentile</small></div>`;
+      lines = [`You entered ${typed} (${esc(cfgTxt())}).`,
+        `On STAN's search of the same file that would be about <b>${fmtN(r100(s))}</b> (${fmtN(r100(lo))}–${fmtN(r100(hi))}).`,
+        `${where}, that sits ${pa === pb ? `at the <b>${pa}</b> percentile` : `between the <b>${pa}</b> and <b>${pb}</b> percentile`}.`];
+    }
+    out.innerHTML = `${mapLine}<div class="ws-head">${head}<span class="exval">Example (preliminary)</span></div>
+      <div class="ws-coh">of ${cohLine}</div>${meta}
+      <div class="chartbox" id="ws-strip"></div>
+      <div class="ws-lines">${lines.map((l) => `<div>${l}</div>`).join('')}${calib}</div>${foot}`;
+    $('ws-go').onclick = () => goCard(C.indexOf(c));
+    drawStrip();
+  }
+  function setEx(n, keepEngineOnly) {
+    if (st.sample !== 'hela' || st.track !== 'DIA') { st.sample = 'hela'; st.track = 'DIA'; renderAll(false); }
+    Object.assign(eng, { e: 'diann', ver: EX.version, lib: 'free', mbr: 'single_off', fdr: 'run', cnt: 'prid' });
+    if (!keepEngineOnly || !(ws.m === 'timsTOF HT' && /^e(60|100)$/.test(ws.lc))) Object.assign(ws, { m: 'timsTOF HT', lc: 'e60', a: '50' });
+    Object.assign(ws, { val: n, pep: '', example: false });
+  }
+  const engSel = (id, key) => $(id).addEventListener('change', (e) => { eng[key] = e.target.value; wsForm(); wsResult(); });
+  engSel('ws-eng', 'e'); engSel('ws-ver', 'ver'); engSel('ws-lib', 'lib'); engSel('ws-mbr', 'mbr'); engSel('ws-fdr', 'fdr'); engSel('ws-cnt', 'cnt');
+
+  // ---- drop in a DIA-NN report.log.txt: the version banner and the command line fill the fields (§B.10 item 9)
+  function parseLog(txt) {
+    const o = {};
+    const v = txt.match(/^\s*DIA-NN\s+(\d+(?:\.\d+){1,2})/m);
+    if (v) o.version = v[1];
+    const cmd = txt.split(/\r?\n/).find((l) => /(^|\s)--(f|fasta|lib|out|dir)\s/.test(l)) || '';
+    o.cmd = !!cmd;
+    const has = (f) => new RegExp('(^|\\s)' + f + '(\\s|$)').test(cmd);
+    o.fastaSearch = has('--fasta-search'); o.predictor = has('--predictor'); o.reanalyse = has('--reanalyse');
+    const qv = cmd.match(/(?:^|\s)--qvalue\s+([0-9.eE+-]+)/); o.qvalue = qv ? +qv[1] : null;
+    const lib = cmd.match(/(?:^|\s)--lib\s+("([^"]*)"|(\S+))/);
+    o.lib = lib ? ((lib[2] != null ? lib[2] : lib[3]) || '').replace(/^--.*/, '') : null;
+    const fp = txt.match(/(\d+) files? will be processed/);
+    o.nfiles = fp ? +fp[1] : ((cmd.match(/(^|\s)--f\s/g) || []).length || null);
+    return o;
+  }
+  function verKey(v) {
+    if (v === EX.version) return EX.version;
+    const [a, b] = v.split('.').map(Number);
+    if (a < 1 || (a === 1 && b < 8)) return 'old';
+    if (a > 2 || (a === 2 && b > 7)) return 'new';
+    const k = `${a}.${b}`;
+    return VER.diann.some((x) => x[0] === k) ? k : (a === 2 && b === 4 ? '2.3' : 'old');
+  }
+  function applyLog(o) {
+    const out = $('ws-log-out');
+    out.classList.remove('hidden');
+    if (!o.version && !o.cmd) { out.innerHTML = 'That does not look like a DIA-NN log: no version banner and no command line were found.'; return; }
+    const got = [];
+    eng.e = 'diann';
+    if (o.version) { eng.ver = verKey(o.version); got.push(`version <b>${esc(o.version)}</b>`); }
+    if (o.cmd) {
+      if (o.fastaSearch) { eng.lib = 'free'; got.push(`<code>--fasta-search</code>${o.predictor ? ' <code>--predictor</code>' : ''} → library-free`); }
+      else if (o.lib) { const stanLib = /hela_(timstof|orbitrap)_\d{6}|stan_community_assets|instrument_library\.parquet/i.test(o.lib); eng.lib = stanLib ? 'stan' : 'proj'; got.push(`<code>--lib</code> → ${stanLib ? 'a STAN library' : 'a project or empirical library'}`); }
+      const nf = o.nfiles || 1;
+      if (o.reanalyse) { eng.mbr = nf <= 1 ? 'single_on' : nf <= 10 ? 'b10' : nf <= 50 ? 'b50' : 'b50p'; got.push(`<code>--reanalyse</code> on ${nf} file${nf === 1 ? '' : 's'} → MBR on`); }
+      else { eng.mbr = 'single_off'; got.push(`no <code>--reanalyse</code>${nf > 1 ? ` (${nf} files, each searched without MBR)` : ''} → single run, MBR off`); }
+      if (o.qvalue != null) { eng.fdr = Math.abs(o.qvalue - 0.01) < 1e-9 ? 'run' : 'other'; got.push(`<code>--qvalue ${o.qvalue}</code> → ${eng.fdr === 'run' ? '1% run-specific' : 'not 1%'}`); }
+      else { const v25 = verNum(eng.ver) >= 2.5; eng.fdr = v25 ? 'other' : 'run'; got.push(v25 ? 'no <code>--qvalue</code>: DIA-NN 2.5+ filters the main report at <b>5%</b> by default' : 'no <code>--qvalue</code> → the 1% default'); }
+    }
+    const isStan = o.version === '2.3.0' && eng.lib === 'stan' && o.qvalue === 0.01 && !o.reanalyse;
+    if (isStan) eng.e = 'stan';
+    out.innerHTML = `Read from the log: ${got.join(' · ')}.${isStan ? ' <b>This is STAN\'s standard search</b> (DIA-NN 2.3.0, STAN library, 1% FDR), so the engine is set to "I ran STAN on this raw".' : ' Check the fields below, then enter your precursor count.'}`;
+    wsForm(); wsResult();
+  }
+  function readLog(f) {
+    const r = new FileReader();
+    r.onload = () => applyLog(parseLog(String(r.result)));
+    r.onerror = () => { const out = $('ws-log-out'); out.classList.remove('hidden'); out.textContent = 'That file could not be read.'; };
+    r.readAsText(f.slice(0, 400000));
+  }
+  const dz = $('ws-drop');
+  ['dragenter', 'dragover'].forEach((t) => dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach((t) => dz.addEventListener(t, (e) => { e.preventDefault(); dz.classList.remove('over'); }));
+  dz.addEventListener('drop', (e) => { const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) readLog(f); });
+  $('ws-log').addEventListener('change', (e) => { const f = e.target.files[0]; if (f) readLog(f); });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => e.preventDefault());
+
+  // ---- review-only buttons that set each lookup state (they replace v2's hidden test hook)
+  const DEMO = [
+    ['STAN search (default)', () => { eng.e = 'stan'; if (st.sample !== 'hela' || st.track !== 'DIA') { st.sample = 'hela'; st.track = 'DIA'; renderAll(true); } else wsReset(); }],
+    ['Example: DIA-NN 2.7.0 · 40,000', () => setEx(40000)],
+    ['One-sided: 45,000', () => setEx(45000)],
+    ['Refusal: DIA-NN 2.3, MBR on', () => { setEx(40000); eng.ver = '2.3'; eng.mbr = 'single_on'; }],
+    ['Refusal: Spectronaut 19', () => { setEx(40000); eng.e = 'sn'; eng.ver = '19'; }],
+    ['Refusal: 52,000 (out of range)', () => setEx(52000)],
+    ['DIA-NN 2.6 + counted report rows', () => { setEx(40000); eng.ver = '2.6'; eng.cnt = 'rows'; }],
+  ];
+  $('ws-demo').insertAdjacentHTML('beforeend', DEMO.map(([l], i) => `<button type="button" data-i="${i}">${esc(l)}</button>`).join(''));
+  $('ws-demo').addEventListener('click', (e) => { const b = e.target.closest('button[data-i]'); if (!b) return; $('ws-log-out').classList.add('hidden'); DEMO[+b.dataset.i][1](); wsForm(); wsResult(); });
+  $('ann-eng').innerHTML = `<b>The spec's §B.2 fields, with the §B.10 findings.</b> Engine ("I ran STAN on this raw", DIA-NN, Spectronaut, Other), version, library, whether it was searched with other runs (single run with MBR off or on, MBR batches of 2–10, 11–50 or more than 50), precursor FDR and its scope, and what was counted. <b>Nothing is calibrated yet</b>, so every non-STAN setting gets the §B.4 refusal: the typed number, "not on STAN's scale yet; calibration in progress", the reasons by rule, the nearest calibrated configuration and "run STAN on the raw file". <b>One path is badged Example (preliminary)</b>: DIA-NN ${EX.version}, library-free, single run, MBR off, 1% run FDR, unique Precursor.Id, HeLa on a timsTOF HT at Evosep ${EX.spds.join(' or ')} SPD. It uses the only existing pairs: ${EX.n_pairs} raws searched both ways (four files per job, no MBR), median N/S ${EX.ratio}. So Ŝ = N / ${EX.ratio}, with a ±${Math.round(EX.band * 100)}% band, capped at the ${fmtN(EX.lib)}-precursor library, placed as a percentile range. Inputs from ${fmtN(EX.n_lo)} to ${fmtN(EX.n_hi)} are the calibrated range. Up to 10% above it (${fmtN(Math.round(EX.n_hi * 1.1))}) the result is one-sided, "at least the Nth percentile"; beyond 10% either way it is refused (§B.4 rule 2). DIA-NN 2.5 or later with "rows of the main report" warns that the report is filtered at 5% by default. Uncalibrated versions stay selectable so a dropped log can land on them; production would list them greyed out. DDA hides these fields: Part B covers DIA precursor counts only. Use the pink buttons above for each state.`;
+  $('ann-log').innerHTML = `<b>§B.10 item 9: typed settings err by more than the model does</b>, so the lookup reads DIA-NN's <code>report.log.txt</code> in the browser: the version banner ("DIA-NN 2.7.0 Academia") and the command line (<code>--fasta-search</code>, <code>--predictor</code>, <code>--reanalyse</code>, <code>--qvalue</code>, <code>--lib</code> and the number of files). It fills the fields and says what it read. A log that matches STAN's own search (DIA-NN 2.3.0, a STAN library, <code>--qvalue 0.01</code>, no MBR) switches the engine to "I ran STAN on this raw". Nothing is uploaded. <b>Not done here:</b> reading <code>report.stats.tsv</code>, and filling the precursor count from the log.`;
+  $('ann-d11').innerHTML = `<b>"Run STAN on the raw file for an exact placement" becomes true when decision 11 lands.</b> Today the timsTOF HT and Exploris cohorts were searched against per-instrument subset libraries (~51k and ~53k precursors) that no outside lab has, so an outside STAN search would not reproduce them. After the re-search against the frozen community libraries it is true, and this preliminary example is refit against the new reference.`;
 
   // ================= reference ranges =================
   function refCard(c, axMax) {
@@ -1145,7 +1630,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     }
     $('refs-body').innerHTML = html;
   }
-  $('ann-d5').innerHTML = `<b>Cards are grouped by instrument, lead with the primary metric, and fold what cannot be ranked.</b> The old page had 31 cards in one flat grid (2,578 px on desktop, 8,824 px on phone). The literal column "Unknown" (3,178 rows) was treated as a real column, so every major cohort appeared twice with identical numbers; unlabelled runs now get only the cohort card. <b>Titles come from what was recorded:</b> Evosep runs by method, nanoLC runs by the run length recorded with the files plus the stored SPD ("44 min run (~38 SPD)"), so a title never contradicts the run length on the card. <b>Missing metadata never defines a ranked cohort:</b> ${F.nolc_merged} runs with no LC recorded at a non-Evosep SPD join that SPD's nanoLC cohort (the card counts them), and ${F.unrec_runs} at an Evosep-method SPD are listed as not ranked. Evosep runs at 36 and 46 SPD (${F.unv_runs} runs) are not Evosep methods, so they are marked "SPD unverified" and not ranked. Column Comparison stays hidden until a cohort has two known columns; today ${F.two_col_cohorts} do.`;
+  $('ann-d5').innerHTML = `<b>Cards are grouped by instrument, lead with the primary metric, and fold what cannot be ranked.</b> The old page had 31 cards in one flat grid (2,578 px on desktop, 8,824 px on phone). The literal column "Unknown" (3,178 rows) was treated as a real column, so every major cohort appeared twice with identical numbers; unlabelled runs now get only the cohort card. <b>Titles come from what was recorded:</b> Evosep runs by method, nanoLC runs by the run length recorded with the files plus the stored SPD ("44 min run (~38 SPD)"), so a title never contradicts the run length on the card. <b>Missing metadata never defines a ranked cohort:</b> ${F.nolc_merged} runs with no LC recorded at a non-Evosep SPD join that SPD's nanoLC cohort (the card counts them), and ${F.unrec_runs} at an Evosep-method SPD are listed as not ranked. Evosep runs at 36 and 46 SPD (${F.unv_runs} runs) are not Evosep methods, so they are marked "SPD unverified" and not ranked. Column Comparison is visible again below, with an honest empty state: today ${F.two_col_cohorts} cohorts have two known columns.`;
 
   // ================= best configurations =================
   function renderBest() {
@@ -1169,149 +1654,359 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   }
   $('ann-b6').innerHTML = `<b>Ranked within each vendor, by the active track's primary metric, with Runs and Labs columns.</b> Under DDA the old table stayed "sorted by precursors", showed "—" in every precursor cell, and put "best depth" on 24,636 PSMs while 52,085 sat in row 3. It also ranked a ≥250 ng Lumos cohort against 50 ng cohorts; the amount filter now defaults to 50 ng. Only ranked cohorts appear, so a cohort defined by missing LC metadata or an unverified Evosep SPD cannot top the list. timsTOF and Orbitrap rows never share a ranking. On a phone, gradient · amount · runs · labs sit under the instrument name instead of off-screen. Badges are suppressed below 2 labs, which today is every row.`;
 
-  // ================= depth by throughput =================
-  const SHAPE = { evosep: 'circle', nanolc: 'diamond' };
-  function drawDepth() {
-    const box = $('depth-box');
-    const cs = C.filter((c) => inView(c) && ranked(c)), small = C.filter((c) => inView(c) && c.why);
-    $('depth-badge').textContent = `${SAMPLE[st.sample]} · ${st.track} · ${st.amount === 'all' ? 'all amounts' : AMT[st.amount]}`;
-    if (!cs.length) { box.innerHTML = '<div class="empty">No ranked cohort in view.</div>'; $('depth-take').textContent = 'No ranked cohort in view.'; $('depth-legend').innerHTML = ''; $('depth-note').textContent = ''; return; }
-    const vs = vendorsIn(cs);
-    $('depth-take').textContent = vs.map((v) => { const d = cs.filter((c) => vend(c) === v).sort((a, b) => q(b.v, .5) - q(a.v, .5))[0]; return `Deepest ${VNAME[v]}: ${short(M[d.m])} · ${d.g} (median ${fmtN(q(d.v, .5))})`; }).join('. ') + '. Compare within a vendor only.';
-    if (!box.clientWidth) return;
-    const W = Math.max(300, Math.round(box.clientWidth)), H = W < 560 ? 300 : 350, m = { l: 50, r: 16, t: 16, b: 44 };
-    const spds = cs.map((c) => c.spd), x0 = Math.min(...spds) / 1.3, x1 = Math.max(...spds) * 1.3;
-    const L = Math.log10, X = (v) => m.l + (L(v) - L(x0)) / (L(x1) - L(x0)) * (W - m.l - m.r);
-    const yt = niceTicks(0, Math.max(...cs.map((c) => q(c.v, .9))), 5), y1 = yt[yt.length - 1];
-    const Y = (v) => m.t + (1 - v / y1) * (H - m.t - m.b);
-    let g = '';
-    yt.forEach((t) => { g += `<line class="gl" x1="${m.l}" x2="${W - m.r}" y1="${Y(t)}" y2="${Y(t)}"/><text class="ax" x="${m.l - 7}" y="${Y(t) + 4}" text-anchor="end">${fmtK(t)}</text>`; });
-    [5, 7, 10, 15, 20, 30, 40, 60, 100, 150, 200].filter((t) => t >= x0 && t <= x1).forEach((t) => { g += `<line class="gl" x1="${X(t)}" x2="${X(t)}" y1="${m.t}" y2="${H - m.b}"/><text class="ax" x="${X(t)}" y="${H - m.b + 16}" text-anchor="middle">${t}</text>`; });
-    g += `<text class="ax" x="${(m.l + W - m.r) / 2}" y="${H - 6}" text-anchor="middle">Samples per day (log scale)</text>`;
-    g += `<text class="ax" transform="translate(12 ${(m.t + H - m.b) / 2}) rotate(-90)" text-anchor="middle">Median ${prim()}</text>`;
-    const present = [...new Set(cs.map((c) => c.m))];
-    cs.forEach((c) => {
-      const off = (present.indexOf(c.m) - (present.length - 1) / 2) * 7, x = X(c.spd) + off, col = mcol(c.m);
-      const p10 = q(c.v, .1), p25 = q(c.v, .25), p50 = q(c.v, .5), p75 = q(c.v, .75), p90 = q(c.v, .9);
-      const tip = `${cohTitle(c)}\nmedian ${fmtN(p50)} ${prim()} · middle half ${fmtN(p25)}–${fmtN(p75)}\n${runsTxt(c.n)} · ${labsTxt(c)}`;
-      g += `<g><title>${esc(tip)}</title><line x1="${x}" x2="${x}" y1="${Y(p10)}" y2="${Y(p90)}" style="stroke:${col};stroke-opacity:.55;stroke-width:1.5"/><line x1="${x}" x2="${x}" y1="${Y(p25)}" y2="${Y(p75)}" style="stroke:${col};stroke-opacity:.55;stroke-width:7;stroke-linecap:round"/>`;
-      const y = Y(p50);
-      if (SHAPE[c.lc] === 'circle') g += `<circle cx="${x}" cy="${y}" r="5" style="fill:${col};stroke:var(--navy-0);stroke-width:1.5"/>`;
-      else g += `<path d="M${x} ${y - 6.5} L${x + 6.5} ${y} L${x} ${y + 6.5} L${x - 6.5} ${y} Z" style="fill:${col};stroke:var(--navy-0);stroke-width:1.5"/>`;
-      g += `</g>`;
-    });
-    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="Median ${prim()} by samples per day for ${cs.length} ranked cohorts">${g}</svg>`;
-    $('depth-legend').innerHTML = present.map((i) => `<span><i class="lg-dot" style="background:${mcol(i)}"></i>${esc(M[i])}</span>`).join('') +
-      `<span><i class="lg-dot" style="background:var(--text-2)"></i>Evosep</span><span><i class="lg-dia"></i>nanoLC</span><span>thick bar: middle half · thin: 10th–90th</span>`;
-    $('depth-note').textContent = small.length ? `${small.length} not-ranked cohort${small.length === 1 ? '' : 's'} (${runsTxt(small.reduce((s, c) => s + c.n, 0))}) left out.` : '';
+  // ================= restored live charts (Plotly), live order =================
+  // ---- amount mirrors: the in-card amount selects are the filter bar's amount
+  function amtMirrors() {
+    document.querySelectorAll('select[data-amt]').forEach((sel) => { sel.innerHTML = AMT_OPTS.map(([k, l]) => `<option value="${k}"${k === st.amount ? ' selected' : ''}>${l}</option>`).join(''); });
   }
+  document.addEventListener('change', (e) => { const s = e.target.closest && e.target.closest('select[data-amt]'); if (!s) return; st.amount = s.value; renderAll(false); });
 
-  // ================= main cohort per instrument =================
-  function renderPlat() {
-    const vis = C.filter((c) => inView(c) && ranked(c));
-    $('plat-badge').textContent = `${SAMPLE[st.sample]} · ${st.track} · ${st.amount === 'all' ? 'all amounts' : AMT[st.amount]}`;
-    const rows = [];
-    for (let m = 0; m < M.length; m++) {
-      const c = vis.filter((x) => x.m === m).sort((a, b) => b.n - a.n)[0];
-      if (c) rows.push(c);
-    }
-    if (!rows.length) { $('plat-body').innerHTML = '<div class="empty">No ranked cohort in view.</div>'; $('plat-take').textContent = 'No ranked cohort in view.'; return; }
-    $('plat-take').textContent = rows.map((c) => `${short(M[c.m])} (${c.g}) ${fmtN(q(c.v, .5))}`).join(' · ') + '. One gradient per instrument; compare within a vendor.';
-    let h = '';
-    vendorsIn(rows).forEach((v) => {
-      const vr = rows.filter((c) => vend(c) === v);
-      const ax = niceTicks(0, Math.max(...vr.map((c) => q(c.v, .9))), 4), mx = ax[ax.length - 1];
-      const P = (x) => (Math.min(x, mx) / mx * 100).toFixed(2) + '%';
-      h += `<div class="vcav" style="margin-top:4px"><b style="color:var(--gold-dk)">${VNAME[v]}</b> · ${VLIB[v]}</div>`;
-      h += vr.map((c) => {
-        const p10 = q(c.v, .1), p25 = q(c.v, .25), p50 = q(c.v, .5), p75 = q(c.v, .75), p90 = q(c.v, .9);
-        return `<div class="prow" title="${esc(`${cohTitle(c)}: median ${fmtN(p50)}, middle half ${fmtN(p25)}–${fmtN(p75)}, 10th–90th ${fmtN(p10)}–${fmtN(p90)}`)}"><span class="nm" style="display:block"><span><span class="mdot" style="background:${mcol(c.m)};margin-right:7px"></span>${esc(short(M[c.m]))}</span><div class="sub2">${esc(c.g)} · ${AMT[c.a]} · median <b>${fmtN(p50)}</b></div></span>
-          <div class="ptrack"><span class="w" style="left:${P(p10)};width:calc(${P(p90)} - ${P(p10)})"></span><span class="b" style="left:${P(p25)};width:calc(${P(p75)} - ${P(p25)});background:${mcol(c.m)}"></span><span class="m" style="left:calc(${P(p50)} - 1.5px)"></span></div>
-          <span class="n">${runsTxt(c.n)} · ${labsTxt(c)}<br>${singleTag(c)}</span></div>`;
-      }).join('') + `<div class="pax">${ax.map((t) => `<span style="left:${(t / mx * 100).toFixed(2)}%">${fmtK(t)}</span>`).join('')}</div>`;
+  // ---- Depth by Amount Loaded (live renderAmountDepth): violins per model x amount bucket
+  const ABK = [['<10 ng', (a) => a < 10], ['10–49 ng', (a) => a >= 10 && a < 50], ['50 ng', (a) => a >= 50 && a < 100], ['100–249 ng', (a) => a >= 100 && a < 250], ['≥250 ng', (a) => a >= 250]];
+  const abk = (a) => { a = a == null ? 50 : a; return (ABK.find((b) => b[1](a)) || ABK[2])[0]; };
+  defChart('plot-amount', (el) => {
+    const rs = viewRuns(false);
+    if (!rs.length) return noPlot(el, `No ${SAMPLE[st.sample]} ${st.track} runs yet.`);
+    const ms = [...new Set(rs.map((o) => o.c.m))].sort((a, b) => a - b), nar = isNarrow();
+    const tr = ms.map((m) => {
+      const sub = rs.filter((o) => o.c.m === m);
+      return { type: 'violin', x: sub.map((o) => abk(o.amt)), y: sub.map(pv), name: `${M[m]} · ${rlTxt(sub)}`,
+        box: { visible: true }, meanline: { visible: true }, line: { color: MCOL[m] }, fillcolor: rgba(MCOL[m], 0.19),
+        points: sub.length <= 12 ? 'all' : false, pointpos: 0, jitter: 0.2, marker: { size: 4, color: MCOL[m], opacity: 0.6 },
+        spanmode: 'hard', scalemode: 'count', hovertemplate: `${M[m]}<br>%{x}<br>${Prim()}: %{y:,}<extra></extra>` };
     });
-    $('plat-body').innerHTML = h;
-  }
+    const base = PL();
+    plot(el, tr, { ...base, violinmode: 'group',
+      xaxis: { ...AXL, title: { text: 'Amount loaded' }, type: 'category', categoryorder: 'array', categoryarray: ABK.map((b) => b[0]) },
+      yaxis: { ...AXL, title: { text: `${Prim()} (1% FDR)` } },
+      legend: { orientation: 'h', x: 0, y: nar ? -0.3 : -0.26, font: { color: '#a0b4cc', size: 11 } },
+      height: hFor(el, nar ? 460 : 420), margin: { ...base.margin, b: nar ? 150 : 120 } });
+  });
 
-  // ================= TIC overlay: SPD x LC, as on the live site =================
-  const TIC = D.tic, LCNAME = { evosep: 'Evosep', custom: 'nanoLC', all: 'Evosep + nanoLC' };
+  // ---- Identification Depth by Platform (live renderViolin): one violin per ranked SPD cohort
+  const vOrder = (a, b) => (vend(a) === vend(b) ? 0 : vend(a) === 'bruker' ? -1 : 1) || a.m - b.m || a.spd - b.spd || LC_RANK[a.lc] - LC_RANK[b.lc];
+  const LC_RANK = { evosep: 0, nanolc: 1, evosep_unv: 2, unrec: 3 };
+  const violinCohorts = () => C.filter((c) => inView(c) && ranked(c)).sort(vOrder);
+  defChart('plot-violin', (el) => {
+    const cs = violinCohorts();
+    if (!cs.length) return noPlot(el, `No ranked ${SAMPLE[st.sample]} ${st.track} cohort at ${st.amount === 'all' ? 'any amount' : AMT[st.amount]}. Cohorts under 5 runs are listed under Reference ranges.`);
+    const n = cs.length, nar = el.clientWidth / n < 70, V = nar ? 'x' : 'y', Pz = nar ? 'y' : 'x';   // horizontal when a violin would get under 70 px
+    const vIdx = vendorsIn(cs), P = (i) => nar ? i + 1 + vIdx.indexOf(vend(cs[i])) : i;   // horizontal: one empty row above each vendor group holds its label
+    const vt = cs.map((c, i) => { const rs = byCohRuns[C.indexOf(c)]; return { type: 'violin', orientation: nar ? 'h' : 'v', [V]: rs.map(pv), [Pz]: rs.map(() => P(i)), name: cohTitle(c), box: { visible: true }, meanline: { visible: true }, line: { color: MCOL[c.m] }, fillcolor: rgba(MCOL[c.m], 0.13), points: false, hoverinfo: 'skip', showlegend: false, spanmode: 'hard', width: 0.8 }; });
+    // points: at most 80 per violin, every k-th by depth (live's deterministic subsample), deterministic jitter
+    const pos = [], val = [], spd = [], sym = [], txt = [];
+    let tot = 0;
+    cs.forEach((c, i) => {
+      const rs = byCohRuns[C.indexOf(c)].slice().sort((a, b) => pv(a) - pv(b)); tot += rs.length;
+      const k = Math.min(80, rs.length), step = rs.length / k;
+      for (let j = 0; j < k; j++) { const o = rs[Math.floor(j * step)]; pos.push(P(i) + jit(o.idx) * 0.5); val.push(pv(o)); spd.push(c.spd); sym.push(amountShape(o.amt)); txt.push(`${M[c.m]}<br>${c.g} · ${o.amt} ng<br>${Prim()}: ${fmtN(pv(o))}`); }
+    });
+    const sc = { type: 'scatter', mode: 'markers', [Pz]: pos, [V]: val, showlegend: false, text: txt, hovertemplate: '%{text}<extra></extra>',
+      marker: { color: spd, colorscale: SPD_CS, cmin: 5, cmax: 200, size: 5, opacity: 0.55, symbol: sym, line: { color: '#fff', width: 0.3 },
+        showscale: !nar, colorbar: nar ? undefined : { ...SPD_BAR, len: 0.5, thickness: 10, x: 1.02 } } };
+    const ticks = cs.map((c) => nar ? `${ABBR(M[c.m])} · ${c.lc === 'evosep' ? `Evosep ${c.spd}` : `~${c.spd} SPD, ${lenOf(c)}`}` : `${short(M[c.m])}<br>${c.lc === 'evosep' ? 'Evosep' : `~${c.spd} SPD`}<br>${c.lc === 'evosep' ? `${c.spd} SPD` : lenOf(c)}`);
+    // vendor groups: dotted divider and a library label per group (the within-vendor caveat, on the chart)
+    const shapes = [], ann = [];
+    const bi = cs.findIndex((c) => vend(c) === 'thermo');
+    const groups = vendorsIn(cs).map((v) => { const idx = cs.map((c, i) => vend(c) === v ? i : -1).filter((i) => i >= 0); return { v, a: idx[0], b: idx[idx.length - 1] }; });
+    if (bi > 0) shapes.push(nar ? { type: 'line', xref: 'paper', yref: 'y', x0: 0, x1: 1, y0: P(bi) - 1.5, y1: P(bi) - 1.5, line: { color: 'rgba(218,170,0,.5)', dash: 'dot', width: 1 } } : { type: 'line', xref: 'x', yref: 'paper', x0: bi - 0.5, x1: bi - 0.5, y0: 0, y1: 1, line: { color: 'rgba(218,170,0,.5)', dash: 'dot', width: 1 } });
+    groups.forEach((g) => {
+      const t = `${VNAME[g.v]} · ${g.v === 'bruker' ? '~54k' : '~170k'}-precursor library`;
+      if (nar) return;   // horizontal: the label is the tick of the group's empty row (below)
+      ann.push({ xref: 'x', yref: 'paper', x: (g.a + g.b) / 2, y: 0.99, xanchor: 'center', yanchor: 'top', text: t, showarrow: false, font: { size: 10, color: '#DAAA00' } });
+    });
+    ann.push({ x: nar ? 1 : 0, y: 1.01, xref: 'paper', yref: 'paper', xanchor: nar ? 'right' : 'left', yanchor: 'bottom', showarrow: false, align: nar ? 'right' : 'left', text: nar ? `Color: SPD, blue 5 → gold → red 200<br>n=${fmtN(tot)} (${fmtN(pos.length)} shown)` : `Color: SPD · n=${fmtN(tot)} (${fmtN(pos.length)} shown)`, font: { color: '#7d93b0', size: 10 } });
+    const base = PL();
+    const gTicks = nar ? groups.map((g) => [P(g.a) - 1, `<b><span style="color:#DAAA00">${VNAME[g.v]} · ${g.v === 'bruker' ? '~54k' : '~170k'} library</span></b>`]) : [];
+    const posAx = { ...AXL, type: 'linear', autorange: false, tickmode: 'array', tickvals: cs.map((_, i) => P(i)).concat(gTicks.map((x) => x[0])), ticktext: ticks.concat(gTicks.map((x) => x[1])), tickfont: { size: 10 }, tickangle: 0, showgrid: false, zeroline: false };
+    const valAx = { ...AXL, title: { text: `${Prim()} (1% FDR)` }, zeroline: false };
+    plot(el, [...vt, sc], nar
+      ? { ...base, xaxis: valAx, yaxis: { ...posAx, range: [P(n - 1) + 0.6, -0.6], automargin: true }, height: hFor(el, 130 + 44 * (n + vIdx.length)), margin: { ...base.margin, t: 44, l: 10 }, shapes, annotations: ann, showlegend: false }
+      : { ...base, xaxis: { ...posAx, range: [-0.6, n - 0.4] }, yaxis: valAx, height: hFor(el, 440), margin: { ...base.margin, t: 40, b: 64, r: 70 }, shapes, annotations: ann, showlegend: false });
+  });
+
+  // ---- Depth by Throughput (live renderSpdDepth): facet per MODEL, box per SPD, points by SPD colour + amount shape
+  const catOf = (c) => c.lc === 'evosep_unv' ? `${c.spd} unv.` : c.lc === 'unrec' ? `${c.spd} no LC` : String(c.spd);
+  defChart('plot-spd', (el) => {
+    const rs = viewRuns(true).filter((o) => pv(o) > 0);
+    if (!rs.length) return noPlot(el, `No ${SAMPLE[st.sample]} ${st.track} runs at ${st.amount === 'all' ? 'any amount' : AMT[st.amount]}. Try "All amounts".`);
+    const nar = isNarrow(), amtLbl = st.amount === 'all' ? '' : `, ${AMT[st.amount]}`;
+    const fac = [...new Set(rs.map((o) => o.c.m))].sort((a, b) => a - b).map((m) => {
+      const sub = rs.filter((o) => o.c.m === m);
+      const cats = [...new Map(sub.map((o) => [catOf(o.c), o.c])).entries()].sort((a, b) => a[1].spd - b[1].spd || LC_RANK[a[1].lc] - LC_RANK[b[1].lc]).map((e) => e[0]);
+      return { m, sub, cats };
+    });
+    const nf = fac.length, traces = [], ann = [], base = PL(), layout = { ...base, showlegend: false };
+    const ROW = 250, area = nf * ROW;
+    const FW = (f) => Math.max(3.4, f.cats.length), W = fac.reduce((s, f) => s + FW(f), 0);
+    let acc = 0;
+    fac.forEach((f, i) => {
+      const xa = i ? 'x' + (i + 1) : 'x', ya = i ? 'y' + (i + 1) : 'y';
+      f.cats.forEach((cat) => {
+        const cr = f.sub.filter((o) => catOf(o.c) === cat);
+        if (cr.length < 5) return;          // a box needs 5 runs; smaller groups show their points only
+        traces.push({ type: 'box', y: cr.map(pv), x: cr.map(() => cat), name: cat, boxpoints: false, line: { color: MCOL[f.m] }, fillcolor: rgba(MCOL[f.m], 0.125), showlegend: false, xaxis: xa, yaxis: ya, hoverinfo: 'skip' });
+      });
+      traces.push({ type: 'scatter', mode: 'markers', x: f.sub.map((o) => catOf(o.c)), y: f.sub.map(pv), xaxis: xa, yaxis: ya, showlegend: false,
+        text: f.sub.map((o) => `${M[f.m]}<br>${o.c.g} · ${o.amt} ng<br>${o.c.t}`), hovertemplate: `%{text}<br>${Prim()}: %{y:,}<extra></extra>`,
+        marker: { color: f.sub.map((o) => o.c.spd), colorscale: SPD_CS, cmin: 5, cmax: 200, size: 6, opacity: 0.8, symbol: f.sub.map((o) => amountShape(o.amt)), line: { color: '#fff', width: 0.3 },
+          showscale: !nar && i === nf - 1, colorbar: !nar && i === nf - 1 ? { ...SPD_BAR, len: 0.5, thickness: 10, x: 1.02 } : undefined } });
+      const title = nar ? `<b>${M[f.m]}</b> (${rlTxt(f.sub)}${amtLbl})` : `<b>${short(M[f.m])}</b><br>${rlTxt(f.sub)}${amtLbl}`;
+      if (nar) {
+        const top = 1 - (i * ROW + 30) / area, bot = 1 - ((i + 1) * ROW - 36) / area;
+        layout[i ? 'xaxis' + (i + 1) : 'xaxis'] = { ...AXL, anchor: ya, domain: [0, 1], type: 'category', categoryorder: 'array', categoryarray: f.cats, tickfont: { size: 10 } };
+        layout[i ? 'yaxis' + (i + 1) : 'yaxis'] = { ...AXL, anchor: xa, domain: [bot, top], matches: i ? 'y' : undefined, tickfont: { size: 10 } };
+        ann.push({ text: title, xref: 'paper', yref: 'paper', x: 0, y: top + 0.004, xanchor: 'left', yanchor: 'bottom', showarrow: false, font: { color: MCOL[f.m], size: 12 } });
+      } else {
+        const w = FW(f) / W, d0 = acc + (i ? 0.018 : 0), d1 = acc + w - (i < nf - 1 ? 0.018 : 0);
+        acc += w;
+        layout[i ? 'xaxis' + (i + 1) : 'xaxis'] = { ...AXL, anchor: ya, domain: [d0, d1], type: 'category', categoryorder: 'array', categoryarray: f.cats, tickfont: { size: 10 }, title: { text: i === 0 ? 'SPD' : '' } };
+        layout[i ? 'yaxis' + (i + 1) : 'yaxis'] = { ...AXL, anchor: xa, matches: i ? 'y' : undefined, showticklabels: i === 0, title: { text: i === 0 ? `${Prim()} (1% FDR)` : '' } };
+        ann.push({ text: title, xref: 'paper', yref: 'paper', x: (d0 + d1) / 2, y: 1.01, xanchor: 'center', yanchor: 'bottom', showarrow: false, font: { color: MCOL[f.m], size: 11 } });
+      }
+    });
+    layout.annotations = ann;
+    if (nar) { layout.height = hFor(el, area + 50); layout.margin = { t: 10, r: 10, b: 36, l: 44 }; }
+    else { layout.height = hFor(el, 460); layout.margin = { ...base.margin, t: 52, r: 70, b: 60 }; }
+    plot(el, traces, layout);
+  });
+
+  // ---- Column Comparison (live renderColumnComparison): "Unknown" is not a column; honest empty state
+  const COLC = ['#FFBF00', '#5cb8ff', '#c084fc', '#34d399', '#f87171', '#fb923c'];
+  function colGroups() {
+    const g = new Map();
+    viewRuns(true).filter((o) => o.col >= 0).forEach((o) => { if (!g.has(o.ci)) g.set(o.ci, new Map()); const m = g.get(o.ci); if (!m.has(o.col)) m.set(o.col, []); m.get(o.col).push(o); });
+    return [...g.entries()].map(([ci, cols]) => ({ c: C[ci], cols, n: [...cols.values()].reduce((s, a) => s + a.length, 0) })).sort((a, b) => b.n - a.n);
+  }
+  defChart('plot-cols', (el) => {
+    const gs = colGroups(), multi = gs.filter((g) => g.cols.size >= 2), show = multi.length ? multi : gs;
+    if (!gs.length) return noPlot(el, `No ${SAMPLE[st.sample]} ${st.track} run at ${st.amount === 'all' ? 'any amount' : AMT[st.amount]} records its LC column, so there is nothing to draw. Set the column in <code>stan setup</code> to contribute.`);
+    const nar = isNarrow(), single = !multi.length;
+    const glab = (g) => {
+      const a = [...g.cols.values()][0];
+      const sub = single ? `${runsTxt(a.length)} · ${rlTxt(a).split(' · ')[1]} · ${spanTxt(a.map((o) => o.d))}` : '';
+      return nar ? `${ABBR(M[g.c.m])} · ${gShort(g.c)}${single ? `<br>${sub}` : ''}` : `${short(M[g.c.m])} · ${gShort(g.c)}${st.amount === 'all' ? ' · ' + AMT[g.c.a] : ''}${single ? `<br>${sub}` : ''}`;
+    };
+    const cats = show.map(glab);
+    const colIds = [...new Set(show.flatMap((g) => [...g.cols.keys()]))];
+    const traces = colIds.map((cid, k) => {
+      const xs = [], ys = [], tx = [], hv = [];
+      show.forEach((g, gi) => { const a = g.cols.get(cid); if (!a) return; const avg = a.reduce((s, o) => s + pv(o), 0) / a.length; xs.push(cats[gi]); ys.push(Math.round(avg)); tx.push(single ? '' : `${runsTxt(a.length)} · ${rlTxt(a).split(' · ')[1]}<br>${spanTxt(a.map((o) => o.d))}`); hv.push(`${D.cols[cid]}<br>${cohTitle(g.c)}<br>${rlTxt(a)} · ${spanTxt(a.map((o) => o.d))}<br>avg ${fmtN(avg)} ${prim()}`); });
+      const name = D.cols[cid].length > 35 ? D.cols[cid].slice(0, 32) + '…' : D.cols[cid];
+      return { type: 'bar', orientation: nar ? 'h' : 'v', [nar ? 'y' : 'x']: xs, [nar ? 'x' : 'y']: ys, name, text: tx, textposition: single ? 'none' : 'outside', cliponaxis: false, textfont: { size: 10, color: '#a0b4cc' }, customdata: hv, hovertemplate: '%{customdata}<extra></extra>', marker: { color: COLC[k % COLC.length], opacity: 0.85 } };
+    });
+    const base = PL(), ttl = { text: `Avg ${prim()} (1% FDR)` };
+    plot(el, traces, nar
+      ? { ...base, barmode: 'group', xaxis: { ...AXL, title: ttl }, yaxis: { ...AXL, type: 'category', categoryorder: 'array', categoryarray: cats.slice().reverse(), automargin: true, tickfont: { size: 10 } }, legend: { orientation: 'h', x: 0, y: -0.25, font: { color: '#a0b4cc', size: 10 } }, height: hFor(el, 150 + 54 * show.length), margin: { ...base.margin, l: 10, b: 110 } }
+      : { ...base, barmode: 'group', yaxis: { ...AXL, title: ttl }, xaxis: { ...AXL, type: 'category', categoryorder: 'array', categoryarray: cats, tickangle: show.length > 5 ? -25 : 0, automargin: true, tickfont: { size: 10 } }, legend: { orientation: 'h', x: 0, y: 1.12, font: { color: '#a0b4cc', size: 10 } }, height: hFor(el, 460), margin: { ...base.margin, t: 40, b: 60 } });
+  });
+
+  // ---- Throughput vs. Quantitation Quality (live renderPointsAcrossPeak)
+  const COLSYM = (o) => { if (o.col < 0) return 'circle-open'; return { evosep: 'circle', ionopticks: 'diamond', pepsep: 'square', thermo: 'triangle-up' }[D.cols[o.col].split(' ')[0].toLowerCase()] || 'cross'; };
+  defChart('plot-mh', (el) => {
+    const rs = viewRuns(true).filter((o) => o.pts > 0);
+    if (!rs.length) return noPlot(el, `No ${SAMPLE[st.sample]} ${st.track} runs with points across peak at this amount.`);
+    const nar = isNarrow(), ms = [...new Set(rs.map((o) => o.c.m))].sort((a, b) => a - b);
+    const tr = ms.map((m) => {
+      const sub = rs.filter((o) => o.c.m === m);
+      return { type: 'scatter', mode: 'markers', name: `${M[m]} (${rlTxt(sub)})`, x: sub.map((o) => o.c.spd), y: sub.map((o) => o.pts),
+        marker: { color: MCOL[m], size: nar ? 8 : 11, opacity: 0.8, symbol: sub.map(COLSYM), line: { color: 'rgba(255,255,255,.75)', width: 1 } },
+        text: sub.map((o) => `${M[m]}<br>${o.c.g} · ${o.amt} ng<br>${o.col < 0 ? 'Column not recorded' : D.cols[o.col]}<br>Peak width: ${o.pw == null ? '—' : o.pw.toFixed(1) + ' s'}`),
+        hovertemplate: '%{text}<br>SPD: %{x}<br>Points/peak: %{y:.1f}<extra></extra>' };
+    });
+    const xMax = Math.max(60, Math.max(...rs.map((o) => o.c.spd)) * 1.5);
+    tr.push({ x: [0, xMax], y: [6, 6], mode: 'lines', type: 'scatter', name: '6 points: STAN minimum', line: { color: 'rgba(248,113,113,0.6)', width: 2, dash: 'dash' }, hoverinfo: 'skip' });
+    tr.push({ x: [0, xMax], y: [12, 12], mode: 'lines', type: 'scatter', name: '12+: STAN recommended', line: { color: 'rgba(52,211,153,0.5)', width: 1.5, dash: 'dot' }, hoverinfo: 'skip' });
+    if (rs.some((o) => o.col >= 0)) tr.push({ x: [null], y: [null], mode: 'markers', type: 'scatter', name: 'PepSep column', marker: { symbol: 'square', size: 10, color: '#a0b4cc' }, hoverinfo: 'skip' });
+    if (rs.some((o) => o.col < 0)) tr.push({ x: [null], y: [null], mode: 'markers', type: 'scatter', name: 'Column not recorded', marker: { symbol: 'circle-open', size: 10, color: '#a0b4cc', line: { width: 1.5 } }, hoverinfo: 'skip' });
+    const base = PL();
+    plot(el, tr, { ...base,
+      xaxis: { ...AXL, title: { text: 'Samples per Day (SPD)' }, type: 'linear', range: [0, xMax] },
+      yaxis: { ...AXL, title: { text: 'Data Points Across Peak' } },
+      legend: nar ? { orientation: 'h', x: 0, y: -0.25, font: { color: '#a0b4cc', size: 10 } } : { font: { color: '#a0b4cc', size: 11 } },
+      height: hFor(el, nar ? 500 : 420), margin: nar ? { ...base.margin, b: 170 } : base.margin,
+      annotations: [{ x: 0.02, y: 0.02, xref: 'paper', yref: 'paper', xanchor: 'left', yanchor: 'bottom', showarrow: false, text: nar ? 'Below the dashed line: error grows (STAN guideline)' : 'Below the dashed line, quantitation error grows quickly (STAN guideline, after Matthews &amp; Hayes 1976)', font: { color: 'rgba(248,113,113,0.8)', size: 10 } }] });
+  });
+
+  // ---- Community TIC overlay (live renderCommunityTIC), spec §A.4
+  const TIC = D.tic;
+  const LCN = { evosep: 'Evosep', evosep_unv: 'Evosep', nanolc: 'nanoLC', unrec: 'LC not recorded' };
   const ts = { spd: null, lc: 'all', all: false };
-  function ticPick(spd, lc) {
-    const xs = TIC.filter((c) => c.s === st.sample && c.t === st.track && c.spd === spd);
-    if (lc !== 'all') return xs.find((c) => c.lc === lc) || null;
-    return xs.find((c) => c.lc === 'all') || (xs.length === 1 ? xs[0] : null);
+  let ticCur = null;
+  const rl = (x) => x.replace(/ runs?$/, '');
+  const partLong = (p, spd) => p[0] === 'evosep_unv' ? `Evosep, ${p[3]} (${spd} SPD unverified)` : `${LCN[p[0]]} · ${p[3]}`;
+  const partShort = (p) => p[0] === 'evosep_unv' ? `Evosep ${rl(p[3])} (unverified)` : `${LCN[p[0]]} ${rl(p[3])}`;
+  const ticDesc = (c) => c.parts.length > 1 ? c.parts.map(partShort).join(' + ') : partLong(c.parts[0], c.spd);
+  const ticCount = (c) => c.n ? `${runsTxt(c.n)}${c.nid ? ` +${c.nid} identified-ion` : ''}${c.n < 5 ? ' (no bands)' : ''}` : `${c.nid} identified-ion only`;
+  const ticAny = () => TIC.some((c) => c.s === st.sample && c.t === st.track);
+  function ticOpts() {
+    const xs = TIC.filter((c) => c.s === st.sample && c.t === st.track);
+    if (ts.lc === 'all') return [...new Set(xs.map((c) => c.spd))].sort((a, b) => a - b).map((spd) => xs.find((c) => c.spd === spd && c.lc === 'all') || xs.find((c) => c.spd === spd));
+    const want = ts.lc === 'evosep' ? ['evosep', 'evosep_unv'] : ['nanolc'];
+    return xs.filter((c) => want.includes(c.lc)).sort((a, b) => a.spd - b.spd);
   }
-  function ticOptions() {
-    const spds = [...new Set(TIC.filter((c) => c.s === st.sample && c.t === st.track).map((c) => c.spd))].sort((a, b) => a - b);
-    return spds.map((spd) => ({ spd, c: ticPick(spd, ts.lc) })).filter((o) => o.c);
-  }
-  const ticHow = (c) => c.lc === 'custom' ? `${c.len} min nanoLC` : LCNAME[c.lc];
-  const ticLabel = (c) => `${c.spd} SPD · ${ticHow(c)} · ${runsTxt(c.n)}${c.b ? '' : ' (too few for bands)'}`;
-  function renderTic() {
-    const opts = ticOptions(), sel = $('tic-spd');
-    $('tic-badge').textContent = `${SAMPLE[st.sample]} · ${st.track}`;
-    if (!opts.length) {
-      const msg = st.track === 'DDA' ? `No DDA TIC traces have been submitted yet. All ${fmtN(F.tic_total)} traces are DIA.` : `No ${SAMPLE[st.sample]} TIC traces for this LC system yet.`;
-      sel.innerHTML = '<option>none</option>'; sel.disabled = true;
-      $('tic-take').textContent = msg; $('tic-box').innerHTML = `<div class="empty">${esc(msg)}</div>`;
-      $('tic-legend').innerHTML = ''; $('tic-note').textContent = '';
+  function ticControls() {
+    const sel = $('tic-spd'), lcSel = $('tic-lc'), chk = $('tic-all');
+    $('tic-badge').textContent = `${SAMPLE[st.sample]} · ${st.track} · all amounts`;
+    ticCur = null;
+    if (!ticAny()) {   // e.g. DDA: nothing to choose, so every control is off and the message appears once, in the chart box
+      sel.innerHTML = '<option>none</option>'; sel.disabled = true; lcSel.disabled = true; chk.checked = false; chk.disabled = true; ts.all = false;
+      $('tic-take').innerHTML = ''; $('tic-note').textContent = '';
       return;
     }
+    lcSel.disabled = false; chk.disabled = false;
+    const opts = ticOpts();
+    if (!opts.length) { sel.innerHTML = '<option>none</option>'; sel.disabled = true; $('tic-take').innerHTML = ''; $('tic-note').textContent = ''; return; }
     sel.disabled = false;
-    if (!opts.some((o) => o.spd === ts.spd)) ts.spd = opts.slice().sort((a, b) => b.c.n - a.c.n)[0].spd;
-    sel.innerHTML = opts.map((o) => `<option value="${o.spd}"${o.spd === ts.spd ? ' selected' : ''}>${esc(ticLabel(o.c))}</option>`).join('');
-    const c = ticPick(ts.spd, ts.lc);
-    $('tic-take').textContent = `${c.spd} SPD on ${ticHow(c)}: the median shape of ${runsTxt(c.n)}. ${opts.length} SPD cohorts to choose from.`;
-    drawTic();
+    if (!opts.some((c) => c.spd === ts.spd)) ts.spd = opts.slice().sort((a, b) => (b.n - a.n) || (b.nid - a.nid))[0].spd;
+    sel.innerHTML = opts.map((c) => `<option value="${c.spd}"${c.spd === ts.spd ? ' selected' : ''}>${esc(`${c.spd} SPD · ${ticDesc(c)} · ${ticCount(c)}`)}</option>`).join('');
+    const c = ticCur = opts.find((x) => x.spd === ts.spd);
+    const facT = `${c.fac} facilit${c.fac === 1 ? 'y' : 'ies'}`, tag = c.fac < 2 ? ' <span class="tag1">Single-lab reference</span>' : '';
+    let take;
+    if (c.n >= 5) take = `<b>${runsTxt(c.n)} · ${facT}</b>${tag} · ${c.spd} SPD, ${esc(ticDesc(c))}: the median shape with its middle half and 10–90% band.`;
+    else if (c.n) take = `<b>${c.n === 1 ? 'the one run' : `each of ${c.n} runs`} (too few for a median) · ${facT}</b>${tag} · ${c.spd} SPD, ${esc(ticDesc(c))}.`;
+    else take = `<b>${c.nid} identified-ion trace${c.nid === 1 ? '' : 's'} only · ${facT}</b>${tag} · ${c.spd} SPD, ${esc(ticDesc(c))}. No raw MS1 trace exists here; these come from STAN ${esc(c.iver.join(' and '))}.`;
+    const mixedRaw = c.parts.filter((p) => p[1] > 0);
+    if (c.parts.length > 1) take += ` <b>All mixes gradients here:</b> ${c.parts.map((p) => `${esc(partShort(p))} (${p[1] + p[2]})`).join(' + ')}${mixedRaw.length === 1 ? `; only ${esc(partShort(mixedRaw[0]))} has raw MS1 traces, the others are identified-ion only` : ''}.`;
+    $('tic-take').innerHTML = take;
+    $('tic-note').textContent = `${c.n ? 'Trace: the MS1 total-ion chromatogram read from the raw file, scaled to its own peak.' : 'These are identified-ion traces, which start at the first identification rather than at acquisition start; no raw MS1 trace was submitted for this cohort. Each is scaled to its own peak.'} Instruments: ${(c.n ? c.inst : c.iinst).map(([mn, k]) => `${mn} ${fmtN(k)}`).join(' · ')}.${c.rt ? ` Time axis: the cohort's typical run, ${c.rt[0]}–${c.rt[c.rt.length - 1]} min.` : ' Each run is drawn on its own time axis.'}${c.nid && c.n ? ` ${c.nid} identified-ion trace${c.nid === 1 ? '' : 's'} from STAN ${c.iver.join(' and ')} ${c.nid === 1 ? 'is' : 'are'} kept out of the median; click "Identified-ion traces" in the legend to show ${c.nid === 1 ? 'it' : 'them'}.` : ''}${ts.all && c.b ? ` "Show all traces" draws ${c.tr.length} of the ${fmtN(c.n)} runs, spread evenly through time, each on its own time axis.` : ''}`;
   }
-  function drawTic() {
-    const box = $('tic-box'), c = ts.spd == null ? null : ticPick(ts.spd, ts.lc);
-    if (!c || !box.clientWidth) return;
-    const W = Math.max(300, Math.round(box.clientWidth)), H = W < 560 ? 260 : 330, m = { l: 56, r: 14, t: 12, b: 42 };
-    const X = (t) => m.l + (t - c.t0) / ((c.t1 - c.t0) || 1) * (W - m.l - m.r);
-    const Y = (v) => m.t + (1 - v / 1.05) * (H - m.t - m.b);
-    const pts = (xs, ys, k) => { let d = '', pen = false; xs.forEach((x, j) => { const y = ys[j]; if (y == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${X(x).toFixed(1)} ${Y(y / k).toFixed(1)}`; pen = true; }); return d; };
-    const area = (lo, hi) => {
-      let d = '', run = [];
-      const flush = () => { if (run.length > 1) d += 'M' + run.map((j) => `${X(c.rt[j]).toFixed(1)} ${Y(hi[j] / 1000).toFixed(1)}`).join('L') + 'L' + run.slice().reverse().map((j) => `${X(c.rt[j]).toFixed(1)} ${Y(lo[j] / 1000).toFixed(1)}`).join('L') + 'Z'; run = []; };
-      c.rt.forEach((_, j) => { if (lo[j] == null || hi[j] == null) flush(); else run.push(j); });
-      flush(); return d;
-    };
-    let g = '';
-    [0, .25, .5, .75, 1].forEach((t) => { g += `<line class="gl" x1="${m.l}" x2="${W - m.r}" y1="${Y(t)}" y2="${Y(t)}"/><text class="ax" x="${m.l - 7}" y="${Y(t) + 4}" text-anchor="end">${t}</text>`; });
-    niceTicks(c.t0, c.t1, W < 560 ? 5 : 8).filter((t) => t >= c.t0 - 1e-9 && t <= c.t1 + 1e-9).forEach((t) => { g += `<line class="gl" x1="${X(t)}" x2="${X(t)}" y1="${m.t}" y2="${H - m.b}"/><text class="ax" x="${X(t)}" y="${H - m.b + 16}" text-anchor="middle">${t}</text>`; });
-    g += `<text class="ax" x="${(m.l + W - m.r) / 2}" y="${H - 6}" text-anchor="middle">Retention time (min)</text>`;
-    g += `<text class="ax" transform="translate(12 ${(m.t + H - m.b) / 2}) rotate(-90)" text-anchor="middle">Share of the run's peak</text>`;
-    const tgrid = c.tr.length ? c.tr[0].map((_, j) => c.t0 + (c.t1 - c.t0) * j / (c.tr[0].length - 1)) : [];
-    const solo = !c.b;
-    if (ts.all || solo) c.tr.forEach((tr) => { g += `<path class="tic-tr${solo ? ' solo' : ''}" d="${pts(tgrid, tr, 100)}"/>`; });
-    if (c.b) {
-      g += `<path class="tic-b1" d="${area(c.b.p10, c.b.p90)}"/><path class="tic-b2" d="${area(c.b.p25, c.b.p75)}"/>`;
-      g += `<path class="tic-med" d="${pts(c.rt, c.b.p50, 1000)}"/>`;
+  defChart('plot-tic', (el) => {
+    const c = ticCur;
+    if (!c) {
+      const msg = ticAny() ? `No ${SAMPLE[st.sample]} TIC traces for this LC choice. Switch LC to "All LC systems".`
+        : st.track === 'DDA' ? `No DDA TIC traces have been submitted yet. All ${fmtN(F.tic_total)} traces in the benchmark are DIA.` : `No ${SAMPLE[st.sample]} TIC traces yet.`;
+      return noPlot(el, esc(msg));
     }
-    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc(`TIC shape for ${c.spd} SPD on ${ticHow(c)}: ${solo ? 'each of' : 'median and bands from'} ${runsTxt(c.n)}`)}">${g}</svg>`;
-    $('tic-legend').innerHTML = (c.b ? `<span><i class="lg-med"></i>median of ${runsTxt(c.n)}</span><span><i class="lg-band" style="background:var(--tic-b2);border-color:var(--tic)"></i>middle half (25–75%)</span><span><i class="lg-band" style="background:var(--tic-b1);border-color:var(--tic-b2)"></i>10–90%</span>` : '') +
-      (ts.all || solo ? `<span><i class="lg-tr"></i>${solo ? 'one run' : `individual runs (${c.tr.length} of ${fmtN(c.n)}, evenly spaced through the cohort)`}</span>` : '');
-    $('tic-note').textContent = `${solo ? 'Fewer than 5 runs, so no bands: each run is drawn on its own. ' : ''}Instruments: ${c.inst.map(([mn, k]) => `${mn} ${fmtN(k)}`).join(' · ')}. Time axis: the cohort's typical run, ${c.t0}–${c.t1} min.`;
+    const nar = isNarrow(), tr = [], seen = new Set();
+    const first = (k) => { if (seen.has(k)) return false; seen.add(k); return true; };
+    const cnt = (arr, m) => arr.filter((t) => t[0] === m).length;
+    if (c.b) {
+      if (ts.all) c.tr.forEach(([m, a, b, y]) => tr.push({ x: y.map((_, j) => a + (b - a) * j / (y.length - 1)), y: y.map((v) => v / 100), type: 'scatter', mode: 'lines', line: { width: 0.8, color: rgba(MCOL[m], 0.3) }, name: `${M[m]} runs (${cnt(c.tr, m)} shown)`, legendgroup: 'r' + m, showlegend: first('r' + m), hoverinfo: 'skip' }));
+      const idx = c.b.p50.map((v, j) => v == null ? -1 : j).filter((j) => j >= 0), j0 = idx[0], j1 = idx[idx.length - 1];
+      const X = c.rt.slice(j0, j1 + 1), B = (k) => c.b[k].slice(j0, j1 + 1).map((v) => v == null ? null : v / 1000);
+      const band = (y, fill, fc, name, grp, show) => ({ x: X, y, type: 'scatter', mode: 'lines', line: { width: 0, color: 'rgba(0,0,0,0)' }, fill: fill || 'none', fillcolor: fc, name, legendgroup: grp, showlegend: show, hoverinfo: 'skip' });
+      // order matters for 'tonexty': each lower edge right before its upper edge (as live)
+      tr.push(band(B('p10'), null, 'rgba(255,107,53,0)', '10–90th pct', 'b1', false));
+      tr.push(band(B('p90'), 'tonexty', 'rgba(255,107,53,0.12)', '10–90th pct', 'b1', true));
+      tr.push(band(B('p25'), null, 'rgba(255,107,53,0)', '25–75th pct (IQR)', 'b2', false));
+      tr.push(band(B('p75'), 'tonexty', 'rgba(255,107,53,0.28)', '25–75th pct (IQR)', 'b2', true));
+      tr.push({ x: X, y: B('p50'), type: 'scatter', mode: 'lines', line: { width: 3, color: '#ff6b35', dash: 'dash' }, name: `Median (${fmtN(c.n)} runs · ${c.fac} facility)`, hovertemplate: '%{x:.2f} min · %{y:.2f}<extra>median</extra>' });
+    } else c.solo.forEach(([m, rt, y]) => tr.push({ x: rt, y: y.map((v) => v / 1000), type: 'scatter', mode: 'lines', line: { width: 1.6, color: MCOL[m] }, name: `${M[m]} (${runsTxt(cnt(c.solo, m))})`, legendgroup: 's' + m, showlegend: first('s' + m), hovertemplate: `${M[m]}<br>%{x:.1f} min · %{y:.2f}<extra></extra>` }));
+    c.idt.forEach(([m, rt, y]) => tr.push({ x: rt, y: y.map((v) => v / 1000), type: 'scatter', mode: 'lines', line: { width: c.n ? 1 : 1.6, color: c.n ? 'rgba(203,213,225,.8)' : MCOL[m], dash: 'dot' }, name: `Identified-ion traces, STAN ${c.iver.join('/')} (${c.nid})`, legendgroup: 'id', showlegend: first('id'), visible: c.n ? 'legendonly' : true, hovertemplate: `identified-ion · ${M[m]}<br>%{x:.1f} min · %{y:.2f}<extra></extra>` }));
+    plot(el, tr, {
+      paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: { color: '#a0b4cc', family: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', size: nar ? 11 : 12 },
+      xaxis: { title: { text: 'Retention Time (min)' }, color: '#94a3b8', gridcolor: '#1e293b', zeroline: false },
+      yaxis: { title: { text: 'Normalized Signal' }, color: '#94a3b8', gridcolor: '#1e293b', range: [0, 1.05], zeroline: false },
+      margin: nar ? { t: 10, b: 130, l: 48, r: 8 } : { t: 10, b: 50, l: 60, r: 20 }, height: hFor(el, nar ? 420 : 350),
+      legend: nar ? { orientation: 'h', x: 0, y: -0.3, font: { color: '#e2e8f0', size: 10 } } : { x: 0.7, y: 0.95, bgcolor: 'rgba(0,0,0,0.5)', font: { color: '#e2e8f0' } },
+      hoverlabel: { bgcolor: '#011a3a', bordercolor: '#DAAA00', font: { color: '#e8eef5' } },
+    }, { responsive: true });   // live passes only {responsive:true} here, so this chart keeps the modebar (zoom, pan, PNG)
+  });
+  $('tic-spd').addEventListener('change', (e) => { ts.spd = +e.target.value; ticControls(); drawChart('plot-tic'); });
+  $('tic-lc').addEventListener('change', (e) => { ts.lc = e.target.value; ticControls(); drawChart('plot-tic'); });
+  $('tic-all').addEventListener('change', (e) => { ts.all = e.target.checked; ticControls(); drawChart('plot-tic'); });
+
+  // ---- LC / instrument health, ID-free (live _lcScatterByFamily): points per run + one monthly-median line per instrument
+  function idFree(id, key, ytitle, fmt, yx) {
+    defChart(id, (el) => {
+      const rs = viewRuns(true).filter((o) => o[key] != null && (key !== 'pts' || o.pts > 0));
+      if (!rs.length) return noPlot(el, st.track === 'DDA' && key !== 'pts' ? '<b>Not measured for DDA runs.</b> STAN reads this metric from DIA-NN output; the DDA search (Sage) does not report it.' : `No ${SAMPLE[st.sample]} ${st.track} run in view carries this metric.`);
+      const ms = [...new Set(rs.map((o) => o.c.m))].sort((a, b) => a - b), nar = isNarrow(), tr = [];
+      ms.forEach((m) => {
+        const sub = rs.filter((o) => o.c.m === m);
+        tr.push({ type: 'scatter', mode: 'markers', name: `${M[m]} (${rlTxt(sub)})`, legendgroup: 'm' + m, x: sub.map((o) => o.d), y: sub.map((o) => o[key]),
+          marker: { color: MCOL[m], size: nar ? 4 : 5, opacity: 0.45, line: { width: 0 } }, text: sub.map((o) => `${o.c.g} · ${o.amt} ng`),
+          hovertemplate: `${M[m]}<br>%{text}<br>%{x|%b %d, %Y}<br>${ytitle}: %{y:${fmt}}<extra></extra>` });
+        const by = new Map();
+        sub.forEach((o) => { const k = o.d.slice(0, 7); if (!by.has(k)) by.set(k, []); by.get(k).push(o[key]); });
+        const lx = [], ly = []; let prev = null;
+        [...by.keys()].sort().forEach((k) => { const mi = (+k.slice(0, 4)) * 12 + (+k.slice(5, 7)); if (prev != null && mi - prev > 3) { lx.push(null); ly.push(null); } lx.push(k + '-15'); ly.push(median(by.get(k))); prev = mi; });
+        tr.push({ type: 'scatter', mode: 'lines', name: `${M[m]} monthly median`, legendgroup: 'm' + m, showlegend: false, x: lx, y: ly, connectgaps: false, line: { color: MCOL[m], width: 2.4 },
+          hovertemplate: `${M[m]} · %{x|%b %Y}<br>monthly median: %{y:${fmt}}<extra></extra>` });
+      });
+      const base = PL();
+      plot(el, tr, { ...base,
+        xaxis: { ...AXL, title: { text: 'Acquisition date' }, type: 'date', tickformat: '%b %Y', tickfont: { size: 10, color: '#8aa4c0' } },
+        yaxis: { ...AXL, title: { text: ytitle }, ...(yx || {}) },
+        height: hFor(el, nar ? 380 : 340), showlegend: true,
+        legend: { orientation: 'h', x: 0, y: nar ? -0.42 : -0.34, font: { color: '#a0b4cc', size: 11 } },
+        margin: { ...base.margin, b: nar ? 130 : 105 } });
+    });
   }
-  $('tic-spd').addEventListener('change', (e) => { ts.spd = +e.target.value; renderTic(); });
-  $('tic-lc').addEventListener('change', (e) => { ts.lc = e.target.value; renderTic(); });
-  $('tic-all').addEventListener('change', (e) => { ts.all = e.target.checked; drawTic(); });
-  $('tic').addEventListener('toggle', drawTic);
+  idFree('plot-ppm', 'ppm', 'MS1 mass error (ppm)', '.2f', { dtick: 5, range: [0, 25] });
+  idFree('plot-ms1', 'ms1', 'log10(MS1 TIC signal)', '.2f');
+  idFree('plot-dr', 'dr', 'log10 dynamic range', '.2f', { rangemode: 'tozero' });
+  idFree('plot-pts', 'pts', 'Datapoints per peak', '.1f');
+
+  // ---- badges, one-line summaries and descriptions (set even while a panel is closed)
+  function chartMeta() {
+    const rsA = viewRuns(false), rs = viewRuns(true);
+    const n50 = rsA.filter((o) => o.amt >= 50 && o.amt < 100).length, p50 = rsA.length ? Math.round(100 * n50 / rsA.length) : 0;
+    $('amount-badge').textContent = amtBadge(false);
+    $('amount-take').textContent = rsA.length ? `${p50}% of the ${fmtN(rsA.length)} runs are at 50 ng, so the other buckets hold few runs.` : 'No runs in view.';
+    $('amount-desc').innerHTML = `How does sample load affect identification depth? Each violin is one amount bucket, coloured by instrument model. <b>${p50}% of the ${fmtN(rsA.length)} ${SAMPLE[st.sample]} ${st.track} runs are at 50 ng</b>, so the other buckets hold few runs and cannot show where depth levels off. QC standard and DIA/DDA follow the filter bar; this chart always shows every amount.`;
+    const vc = violinCohorts(), nrv = C.filter((c) => inView(c) && c.why);
+    $('violin-badge').textContent = amtBadge(true);
+    $('violin-take').textContent = vc.length ? `${vc.length} SPD cohorts on ${new Set(vc.map((c) => c.m)).size} instruments · ${runsTxt(vc.reduce((s, c) => s + c.n, 0))} · 1 lab. Compare within a vendor.` : 'No ranked cohort in view.';
+    $('violin-note').textContent = nrv.length ? `${nrv.length} not-ranked cohort${nrv.length === 1 ? '' : 's'} (${runsTxt(nrv.reduce((s, c) => s + c.n, 0))}: fewer than 5 runs, LC not recorded, or SPD unverified) have no violin; they are listed under Reference ranges.` : '';
+    $('spd-badge').textContent = amtBadge(true);
+    const best = [...new Set(C.filter((c) => inView(c) && ranked(c)).map((c) => c.m))].sort((a, b) => a - b).map((m) => { const b = C.filter((c) => inView(c) && ranked(c) && c.m === m).sort((x, y) => q(y.v, 0.5) - q(x.v, 0.5))[0]; return `${ABBR(M[m])} ${gShort(b)} (${fmtK(Math.round(q(b.v, 0.5) / 100) * 100)})`; });
+    { const nv = viewRuns(true).length; $('spd-take').textContent = best.length ? `Highest median per instrument: ${best.join(' · ')}. Compare within a vendor.` : nv ? `${runsTxt(nv)} at this amount, none in a cohort of 5 or more, so each run is drawn as a point without a box.` : 'No runs at this amount.'; }
+    const gs = colGroups(), multi = gs.filter((g) => g.cols.size >= 2);
+    $('cols-badge').textContent = amtBadge(true);
+    $('cols-take').textContent = multi.length ? `${multi.length} cohort${multi.length === 1 ? '' : 's'} with two or more known columns.` : 'Nothing to compare yet: no cohort in view has two known columns.';
+    const ce = $('cols-empty');
+    ce.classList.toggle('hidden', !!multi.length);
+    ce.innerHTML = multi.length ? '' : `<b>Nothing to compare yet.</b> Column comparison needs a second known column in one cohort, and today every cohort that records a column has only one. ${fmtN(F.cols_unknown)} of ${fmtN(F.rows_api)} rows record no column ("Unknown") and are left out. ${gs.length ? `Shown: the ${gs.length} ${SAMPLE[st.sample]} ${st.track} cohort${gs.length === 1 ? '' : 's'} in view that record${gs.length === 1 ? 's' : ''} one column, with runs, labs and dates under each bar.` : ''}`;
+    const rp = rs.filter((o) => o.pts > 0), lo6 = rp.filter((o) => o.pts < 6).length;
+    $('mh-badge').textContent = amtBadge(true);
+    $('mh-take').textContent = rp.length ? `${Math.round(100 * lo6 / rp.length)}% of ${fmtN(rp.length)} runs sample a peak fewer than 6 times; median ${median(rp.map((o) => o.pts)).toFixed(1)} points per peak · ${nFacR(rp)} lab.` : 'No runs in view.';
+    ['ppm', 'ms1', 'dr', 'pts'].forEach((k) => { $(k + '-badge').textContent = amtBadge(true); });
+  }
+
+  // ---- panels, fullscreen (live _stanInjectExpand) and phone behaviour
+  document.querySelectorAll('details.xp').forEach((d) => d.addEventListener('toggle', () => {
+    if (!d.open) return;
+    d.querySelectorAll('.plot').forEach((el) => { const ch = CH[el.id]; if (!ch) return; if (ch.dirty || !el.classList.contains('js-plotly-plot')) drawChart(el.id); else Plotly.Plots.resize(el); });
+  }));
+  function fsSet(card, on) {
+    card.classList.toggle('fs', on);
+    document.documentElement.classList.toggle('fs-open', on);
+    const b = card.querySelector('.fs-btn');
+    if (b) { b.textContent = on ? '✕' : '⛶'; b.setAttribute('aria-pressed', String(on)); setTimeout(() => drawChart(b.dataset.fs), 60); }
+  }
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('.fs-btn'); if (!b) return;
+    e.preventDefault();
+    const card = b.closest('.xp, .chart-card'), on = !card.classList.contains('fs');
+    fsSet(card, on);
+    try {
+      if (on) { const req = card.requestFullscreen || card.webkitRequestFullscreen; if (req && (!navigator.userActivation || navigator.userActivation.isActive)) { const pr = req.call(card); if (pr && pr.catch) pr.catch(() => {}); } }
+      else if (document.fullscreenElement) { const pr = document.exitFullscreen(); if (pr && pr.catch) pr.catch(() => {}); }
+    } catch (x) { /* iPhone Safari: stays a CSS overlay, as live */ }
+  });
+  document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement) document.querySelectorAll('.fs').forEach((card) => fsSet(card, false)); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.querySelectorAll('.fs').forEach((card) => fsSet(card, false)); });
+
+  // ---- review chips for the restored charts
   {
     const big = TIC.filter((c) => c.s === 'hela' && c.t === 'DIA').sort((a, b) => b.n - a.n)[0];
-    const low = TIC.filter((c) => c.s === 'hela' && c.t === 'DIA' && c.lc !== 'all').sort((a, b) => a.spd - b.spd)[0];
-    $('ann-tic-open').innerHTML = `<b>Opens on the SPD with the most runs</b> (${big.spd} SPD, ${fmtN(big.n)} runs), not the lowest SPD (${low.spd} SPD, ${runsTxt(low.n)}). Bands need 5 or more runs; below that each run is drawn on its own. The SPD menu names the LC and, for nanoLC, the run length ("38 SPD · 30 min nanoLC"), because a nanoLC SPD is derived from the run length rather than naming a method. Duplicate copies are removed (${fmtN(F.tic_dups)} of ${fmtN(F.tic_raw_total)} traces), as in every other panel.`;
-    $('ann-tic-size').innerHTML = `<b>The live page downloads all ${fmtN(F.tic_raw_total)} raw traces at load:</b> 3.0 MB gzipped (8.7 MB raw), 60% of the cold load, for one chart. This panel draws from per-cohort summaries that cover every SPD × LC choice in ${F.tic_summary_kb} KB. Proposal: the relay serves those summaries, and fetches raw traces only when "show individual traces" is ticked.`;
-    $('ann-tic-axis').innerHTML = `<b>Percentiles are taken at the same minute in every run.</b> The live chart takes them at the same bin index and labels the axis from the first run in the list. The two agree when runs share an acquisition length, which ${Math.round(100 * (1 - F.tic_off_axis / F.tic_total))}% do; the other ${fmtN(F.tic_off_axis)} runs start or end more than 5% of the run away from the cohort's typical run.`;
+    const kb = (x) => Math.round(x / 1024), mb = (x) => (x / 1e6).toFixed(1), S = F.tic_size;
+    const share50 = Math.round(100 * RUNS.filter((o) => o.amt >= 50 && o.amt < 100).length / RUNS.length);
+    $('ann-amount').innerHTML = `<b>Built from the deduplicated runs with the ${fmtN(pctHeld)} held-back runs removed</b>, so the FAIMS runs loaded at 1 µg but stored as 50 ng no longer top the 50 ng violin. DIA and DDA follow the filter bar (live mixed precursors and PSMs under "All"). Violins are per instrument model. <b>The saturation sentence is gone</b>: ${share50}% of all runs are at 50 ng, so the data cannot show where depth saturates; the description states that share instead. Legend entries read "runs · labs".`;
+    $('ann-cols').innerHTML = `<b>"Unknown" is no longer a column.</b> ${fmtN(F.cols_unknown)} of ${fmtN(F.rows_api)} rows record no column, and live's <code>colKey()</code> kept "Unknown Unknown" as one, so its bars set unlabelled runs against labelled ones from another lab and era. Groups use the page's cohort key (model × track × LC and gradient × amount) and follow the filter bar. Each bar gives its runs, labs and date span. <b>Today no cohort has two known columns</b>, so the chart draws each cohort's one known column, compares nothing, and says so above the bars.`;
+    $('ann-health').innerHTML = `<b>One colour per instrument model, and one monthly-median line per instrument</b> over the run points. Live coloured by family, so HT, Pro and Pro 2 shared a colour and no single instrument's drift could be followed. Click a legend entry to hide an instrument. Built from the deduplicated runs; follows QC standard, DIA/DDA and amount, so DIA and DDA runs never share a chart. DDA shows an honest "not measured" state for mass accuracy, MS1 signal and dynamic range, which Sage does not report. MS1 Signal and Dynamic Range carry the detector note; "Populated going forward by the STAN watcher" is deleted (eight years of data sit under it); the Points Across Peak link now goes to Matthews &amp; Hayes (doi:10.1021/ac50003a028). Live drew its legend over the x-axis title; it now sits below. Hovers give the cohort and amount, never a file name.`;
+    $('ann-tic-what').innerHTML = `<b>Says what it plots: the MS1 total-ion chromatogram from the raw file.</b> Live's "Identified (DIA) or raw (DDA)" is wrong. ${fmtN(F.tic_total - F.tic_idion)} of the ${fmtN(F.tic_total)} traces start within 0.07 min of acquisition start, which only a raw TIC can do (the Hive pipeline calls <code>extract_tic_bruker/thermo</code>, and <code>baseline.py</code> prefers raw). The other ${F.tic_idion}, all from STAN ${F.tic_idion_ver.map((v) => v[0]).join(' and ')}, start at the first identification (1.6–20.7 min in), so they are identified-ion traces, a different quantity. They no longer feed any median: each cohort lists them as their own legend entry, hidden until clicked. Where a cohort has nothing else (several 10–22 SPD nanoLC cohorts and the K562 60 SPD runs) they are drawn on their own and labelled.`;
+    $('ann-tic-lc').innerHTML = `<b>Grouped with the page's LC rule</b> (<code>lc_class</code>), not live's <code>inferLcSystem</code>: Evosep only at a real Evosep method; runs recorded as Evosep at 36 and 46 SPD read "SPD unverified"; runs with no LC recorded are never put into Evosep and appear only under All LC systems, labelled "LC not recorded". Live's rule put Exploris and Lumos runs into its 30 and 60 SPD "Evosep" cohorts. <b>Built from the same ${fmtN(F.valid)} runs as every other panel</b>: ${fmtN(F.tic_dups)} duplicate copies and ${F.tic_held} held-back runs are out, so the ${fmtN(F.tic_total)} traces never outnumber the benchmark's runs.`;
+    $('ann-tic-open').innerHTML = `<b>Opens on the largest cohort</b> (${big.spd} SPD Evosep, ${fmtN(big.n)} runs), not live's "7 SPD (2 runs)". Menu labels use the stored run length ("Evosep · 11 min run", "nanoLC · 44 min run"), the source every card uses, not the trace end, and small cohorts say "(no bands)". When All mixes gradients the label says so ("30 SPD · Evosep 44 min + nanoLC 44 min") and the summary line spells it out. Under 5 runs there is no median: the line reads "each of N runs (too few for a median)" and every run is drawn on its own full time axis, coloured by instrument. The summary line reads "N runs · 1 facility" with the single-lab tag, because this "community" band is one facility's history. The DDA empty state disables both menus and the checkbox and says its message once. Like live, it ignores the amount filter, and its badge says "all amounts".`;
+    $('ann-tic-axis').innerHTML = `<b>Percentiles are taken at the same minute in every run</b>: each trace is interpolated onto the cohort's median time axis. Live takes them at the same bin index and labels the axis from the first run in the list. The two differ only for runs that start or end more than 5% of the run away from the cohort's typical run: <b>${F.tic_off_own} runs</b>, counted once each within their own LC cohort, so ${Math.floor(1000 * (1 - F.tic_off_own / F.tic_total)) / 10}% agree. ${F.tic_off_own_id} of the ${F.tic_off_own} are identified-ion traces, which start at the first identification; the rest are raw traces of unusual length. Counting the combined All LC views as well, which mix Evosep and nanoLC runs at 30 and 46 SPD, gives ${F.tic_off_union} distinct runs.`;
+    $('ann-tic-size').innerHTML = `<b>The live page downloads all ${fmtN(F.tic_raw_total)} raw traces at load</b>: ${mb(F.tic_live_gz)} MB gzipped (${mb(F.tic_live_raw)} MB raw), 60% of the cold load, for one chart. This panel draws from per-cohort summaries. The bands and axes for every SPD × LC choice are <b>${kb(S.bands_gz)} KB gzipped (${kb(S.bands_raw)} KB raw)</b>; adding the 40-run samples behind "show all traces" and the full traces of small cohorts makes ${kb(S.all_gz)} KB gzipped (${kb(S.all_raw)} KB raw). Proposal: the relay serves the summaries, and fetches raw traces only when "show all traces" is ticked.`;
   }
   $('gone').innerHTML = [
-    '<div><s>Identification Depth vs. IPS</s> removed (D3): IPS is built from precursor counts, so the scatter showed only diagonal bands. Its legend also listed Astral, which has no data.</div>',
-    '<div><s>Instrument Health Fingerprint</s> radar dropped (B5): it min-max scaled medians across mixed SPD tiers and its MS1 ppm axis mostly ranked the analyser.</div>',
-    '<div><s>Platform violins</s> replaced by "Main cohort per instrument" (one gradient per row, grouped by vendor).</div>',
-    `<div><s>Column Comparison</s> hidden (D5) until a cohort has two known columns. Today ${F.two_col_cohorts} do; the old bars compared two labs from two eras.</div>`,
-    '<div><s>Mass accuracy, MS1 signal, dynamic range, points across peak</s> moved to UC Davis instrument history, one row per instrument (B5).</div>',
-    '<div>Depth by Amount and Throughput vs. Quantitation Quality stay as today and are not redrawn here. The Depth by Amount caption loses its saturation sentence (D8).</div>',
+    '<div><s>Identification Depth vs. IPS</s>: dropped by your decision of 29 Sep 2026 (spec decision 3). IPS is built half from the precursor count, so the scatter showed only diagonal bands; its legend also listed Astral, which has no data.</div>',
+    '<div><s>Instrument Health Fingerprint</s> (radar): dropped by your decision of 29 Sep 2026 (spec decision 4). It min-max scaled medians across mixed SPD tiers, and its MS1 ppm axis mostly ranked the analyser type.</div>',
+    '<div class="fine" style="margin-top:4px">Nothing else is removed. v2\'s stand-ins ("Main cohort per instrument" and the collapsed month-by-month table) are gone and the live charts are back in their place.</div>',
   ].join('');
   $('ann-d7').innerHTML = `<b>Answers "precursors at what FDR, searched how, against whose library?", separately for DIA-NN and Sage</b>, because the two differ. DIA-NN filters precursors and protein groups at 1%. Sage filters PSMs only; its peptide count is distinct modified sequences and its protein count is distinct protein groups among those PSMs, with no protein-level FDR (extractor.py). The old card said every run searches the same "predicted" library. There are two <b>empirical</b> HeLa libraries of very different size, so timsTOF runs report a median ${F.tims_lib_med}% library coverage (max ${F.tims_lib_max}%) while Orbitraps sit near 15%. Engine versions, FDR and the checksums were on every API row but nowhere on the page.`;
   $('lib-caveat').innerHTML = `timsTOF runs cover a median ${F.tims_lib_med.toFixed(0)}% of their library (max ${F.tims_lib_max.toFixed(0)}%). Above 90%, the library rather than the instrument caps the count; ${F.tims_lib_gt90} runs are there today. Counts therefore compare within a vendor, not across.`;
@@ -1408,38 +2103,186 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   }
   $('ann-b3').innerHTML = `<b>Replaces "Your Lab vs. Community".</b> Its band was mean ± 1/2/3σ over the whole instrument family (every SPD from 7 to 200, any model or mode) and included the selected lab's own runs: for Clogged PeakTail on Exploris, 1,008 of the band's 1,026 runs were its own, and ±3σ spanned 3,509 to 42,749 precursors. Now the reference comes from other labs in the same ranked cohort, as percentile bands (none exist yet, and the page says so). <b>Problems are judged against a fixed baseline</b>: median ± 3 MAD of the lab's first ${BASE_WIN} runs in the cohort, drawn only once there are ${BASE_MIN}. Later runs never feed it, so a 13-run series gets no band at all and a bad stretch (timsTOF HT, Evosep 60 SPD, May–Jun 2026) is ringed instead of widening the band, which a rolling window did. Slow drift shows as the white line (median of the last ${RECENT} runs) moving away from the gold one, and the summary gives the gap in percent. A lab-set reset point, for after a column change, is the natural next step and is not drawn. The panel opens on the lab with the most recent runs, offers peptides instead of proteins, and has readable axis titles.`;
 
-  // ================= PEG summary =================
-  (function peg() {
-    const P = D.peg;
-    $('peg-big').innerHTML = `${P.med.toFixed(1)}%<small>median PEG share of MS1</small>`;
-    $('peg-line').innerHTML = `${P.family} · ${P.spd} SPD · last ${P.window} days: ${P.n_labs} lab · ${P.n_runs} QC runs · middle half ${P.p25.toFixed(1)}% to ${P.p75.toFixed(1)}%. The filters at the top do not apply to this section.`;
-    const w = P.weeks, n = w.length, mx = Math.max(...w.filter((x) => x != null)) * 1.05;
-    let d = '', pen = false;
-    w.forEach((v, i) => { const x = i / (n - 1) * 300; if (v == null) { pen = false; return; } const y = 62 - v / mx * 58; d += (pen ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1); pen = true; });
-    $('peg-spark').innerHTML = `<path d="${d}"/>`;
-    $('peg-spark-l').textContent = `Weekly median, ${fmtDay(P.w0)} – ${fmtDay(P.w1)} · peak ${Math.max(...w.filter((x) => x != null)).toFixed(0)}%`;
-  })();
-
-  // ================= instrument history =================
-  (function hist() {
-    const MET = [['ppm', 'MS1 mass accuracy (ppm)', (v) => v.toFixed(2)], ['sig', 'MS1 signal (log10)', (v) => v.toFixed(1)], ['dr', 'Dynamic range (log10)', (v) => v.toFixed(2)], ['pts', 'Points per peak', (v) => v.toFixed(1)]];
-    let h = '<div class="hd"></div>' + MET.map((mm) => `<div class="hd">${mm[1]}</div>`).join('');
-    Object.keys(D.hist).forEach((name) => {
-      const S = D.hist[name], mi = M.indexOf(name);
-      h += `<div class="rowh"><span><span class="mdot" style="background:${mcol(mi)};margin-right:6px"></span>${esc(short(name))}</span><small>${fmtMo(S.mo[0])} – ${fmtMo(S.mo[S.mo.length - 1])} · ${fmtN(S.n.reduce((a, b) => a + b, 0))} runs</small></div>`;
-      MET.forEach(([k, label, f]) => {
-        const v = S[k], vals = v.filter((x) => x != null);
-        if (!vals.length) { h += `<div class="hcell"><span class="mhd">${label}</span><div class="v">no data</div></div>`; return; }
-        const idx = (ym) => (+ym.slice(0, 4)) * 12 + (+ym.slice(5, 7)), a = idx(S.mo[0]), b = idx(S.mo[S.mo.length - 1]) || a + 1;
-        const lo = Math.min(...vals), hi = Math.max(...vals), sp = (hi - lo) || 1;
-        let d = '', pen = false, prev = null;
-        S.mo.forEach((ym, i) => { const val = v[i]; if (val == null) { pen = false; return; } const k2 = idx(ym); if (prev != null && k2 - prev > 3) pen = false; const x = (k2 - a) / Math.max(1, b - a) * 300, y = 40 - (val - lo) / sp * 36; d += (pen ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1); pen = true; prev = k2; });
-        const lastI = v.map((x, i) => x == null ? -1 : i).filter((i) => i >= 0).pop();
-        h += `<div class="hcell"><span class="mhd">${label}</span><svg class="spark" viewBox="0 0 300 42" preserveAspectRatio="none" role="img" aria-label="${esc(label + ' for ' + name)}"><path d="${d}" style="stroke:${mcol(mi)}"/></svg><div class="v"><span>${fmtMo(S.mo[lastI])}: <b>${f(v[lastI])}</b></span><span>range ${f(lo)}–${f(hi)}</span></div></div>`;
-      });
+  // ================= Evosep PEG Watch: live 1.2.1's #peg-watch-js builders, fed from the snapshot =================
+  // Same functions as app.py ~5947-6200; only the fetches are replaced by the saved payloads.
+  // The snapshot holds the default payloads, so other cohorts and windows say so instead of loading.
+  const PG = D.peg;
+  const PEG_LC_WINDOW = 90, PEG_BAR_HI = 30, PEG_IQR_HI = 20;
+  const pegState = { family: String(PG.board.family), spd: PG.board.spd, window: PG.board.window_days, lcFamily: null };
+  const pegNum = (v) => (typeof v === 'number' && isFinite(v)) ? v : null;
+  function pegPct(p) { p = pegNum(p); if (p == null) return '—'; if (p === 0) return '0%'; if (p < 0.1) return p.toFixed(2) + '%'; if (p < 10) return p.toFixed(1) + '%'; return Math.round(p) + '%'; }
+  const pegCount = (n) => { n = pegNum(n); return n == null ? '—' : n.toLocaleString('en-US'); };
+  const pegPlural = (n, word) => `${pegCount(n)} ${word}${pegNum(n) === 1 ? '' : 's'}`;
+  const pegSameFamily = (a, b) => String(a == null ? '' : a).toLowerCase() === String(b == null ? '' : b).toLowerCase();
+  function pegLogPos(p, hi) { const lg = (v) => Math.log10(Math.max(0, v) + 0.05); return Math.max(0, Math.min(100, (lg(p) - lg(0)) / (lg(hi) - lg(0)) * 100)); }
+  function pegSpark(vals, opt) {
+    opt = opt || {};
+    const w = opt.w || 96, h = opt.h || 26;
+    const v = (Array.isArray(vals) ? vals : []).map(pegNum), have = v.filter((x) => x != null);
+    if (have.length < 2) return '<span class="peg-muted">—</span>';
+    const lg = (x) => Math.log10(Math.max(0, x) + 0.05);
+    const mn = opt.lo != null ? lg(opt.lo) : Math.min(...have.map(lg)), mx = opt.hi != null ? lg(opt.hi) : Math.max(...have.map(lg));
+    const span = (mx - mn) || 1, n = v.length;
+    const X = (i) => 2 + (n > 1 ? i / (n - 1) : 0) * (w - 4), Y = (x) => h - 3 - (lg(x) - mn) / span * (h - 6);
+    let d = '', dots = '', last = -1;
+    v.forEach((x, i) => {
+      if (x == null) return;
+      const joined = i > 0 && v[i - 1] != null;
+      d += (joined ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(x).toFixed(1);
+      if (!joined && (i === n - 1 || v[i + 1] == null)) dots += `<circle cx="${X(i).toFixed(1)}" cy="${Y(x).toFixed(1)}" r="1.5"/>`;
+      last = i;
     });
-    $('hist-grid').innerHTML = h;
-  })();
+    const label = esc('Weekly median PEG share, oldest first: ' + v.map(pegPct).join(', '));
+    const size = opt.fluid ? '' : ` width="${w}" height="${h}"`;
+    return `<svg class="peg-spark"${size} viewBox="0 0 ${w} ${h}" role="img" aria-label="${label}"><title>${label}</title><path d="${d}"/>${dots}<circle cx="${X(last).toFixed(1)}" cy="${Y(v[last]).toFixed(1)}" r="2.4"/></svg>`;
+  }
+  const pegIdentityHtml = (verified) => verified === true
+    ? '<span class="peg-ok" title="Verified: sent with the token for this claimed lab name" aria-label="verified">&#10003;</span>'
+    : '<span class="peg-unv" title="This name is not claimed, so anyone could submit under it">unverified</span>';
+  function pegCohortChipsHtml(cohorts, family, spd) {
+    return (Array.isArray(cohorts) ? cohorts : []).map((c, i) => {
+      const on = pegSameFamily(c.family, family) && pegNum(c.spd) === spd;
+      const tip = `${pegPlural(c.n_labs, 'lab')} · ${pegPlural(c.n_runs_365d, 'QC run')} in the last year`;
+      return `<button type="button" class="peg-chip" data-i="${i}" aria-pressed="${on}" title="${esc(tip)}">${esc(c.family)} · ${esc(pegCount(c.spd))} SPD</button>`;
+    }).join('');
+  }
+  function pegBoardParts(board) {
+    board = board || {};
+    const ranked = Array.isArray(board.ranked) ? board.ranked : [], unranked = Array.isArray(board.unranked) ? board.unranked : [], cohorts = Array.isArray(board.cohorts) ? board.cohorts : [];
+    const days = pegCount(board.window_days), cohort = `${esc(board.family)} · ${esc(pegCount(board.spd))} SPD`;
+    const out = { main: '', unranked: '', community: '' };
+    if (!cohorts.length) { out.main = '<div class="peg-empty"><b>No Evosep lab is sharing PEG yet.</b></div>'; return out; }
+    if (!ranked.length) out.main = `<div class="peg-empty">No lab in ${cohort} has 5 or more QC runs in the last ${days} days${unranked.length ? ' (labs with fewer are listed below)' : ''}. Try a longer window or another cohort.</div>`;
+    else {
+      let h = '<div class="peg-scrollx scrollx"><table class="peg-board"><thead><tr><th>#</th><th>Lab</th><th>Instrument</th><th class="r">QC runs</th><th>PEG share of MS1 · median</th><th class="r">Clean</th><th>Last 12 weeks</th><th class="r">Change</th></tr></thead><tbody>';
+      ranked.forEach((r) => {
+        const rank = pegNum(r.rank), badges = Array.isArray(r.badges) ? r.badges : [], models = Array.isArray(r.instrument_models) ? r.instrument_models : [];
+        const med = pegNum(r.median_pct), clean = pegNum(r.clean_pct), heavy = pegNum(r.heavy_pct), chg = pegNum(r.change_pct);
+        const bar = med == null ? 0 : Math.max(2, pegLogPos(med, PEG_BAR_HI));
+        const chgHtml = chg == null ? '<span class="peg-muted">—</span>' : chg < 0 ? `<span class="peg-down">▼ ${Math.abs(chg)}%</span>` : chg > 0 ? `<span class="peg-up">▲ ${chg}%</span>` : '0%';
+        h += '<tr>' + `<td class="peg-rank${rank === 1 ? ' r1' : ''}">${pegCount(rank)}</td>`
+          + `<td><span class="peg-lab">${esc(r.display_name)}</span>${pegIdentityHtml(r.verified)}`
+          + (badges.includes('cleanest') ? '<span class="peg-badge peg-b-clean">Cleanest</span>' : '')
+          + (badges.includes('most_improved') ? '<span class="peg-badge peg-b-impr">Most improved</span>' : '') + '</td>'
+          + `<td>${esc(models.join(', ')) || '—'}</td><td class="r">${pegCount(r.n_runs)}</td>`
+          + `<td><div class="peg-meter"><div class="peg-track"><div class="peg-fill" style="width:${bar.toFixed(1)}%"></div></div><span class="peg-val">${pegPct(med)}</span></div></td>`
+          + `<td class="r" title="Heavy PEG in ${heavy == null ? '—' : heavy + '%'} of runs">${clean == null ? '—' : clean + '%'}</td>`
+          + `<td>${pegSpark(r.weekly)}</td><td class="r" title="Median vs the previous ${days} days">${chgHtml}</td></tr>`;
+      });
+      out.main = h + '</tbody></table></div>';
+    }
+    if (unranked.length) out.unranked = 'Not ranked yet, fewer than 5 QC runs in this window: ' + unranked.map((u) => `<span class="peg-lab">${esc(u.display_name)}</span>${pegIdentityHtml(u.verified)} · ${pegPlural(u.n_runs, 'run')}`).join(', ');
+    const c = board.community || {};
+    if (pegNum(c.n_runs)) out.community = `${cohort}, last ${days} days: ${pegPlural(c.n_labs, 'lab')} · ${pegPlural(c.n_runs, 'QC run')} · community median <b>${pegPct(c.median_pct)}</b> (middle half ${pegPct(c.p25_pct)} to ${pegPct(c.p75_pct)})`;
+    return out;
+  }
+  function pegLcFamilyChipsHtml(families, current) {
+    return (Array.isArray(families) ? families : []).map((f, i) => {
+      const tip = `Last ${PEG_LC_WINDOW} days: Evosep ${pegPlural(f.evosep_runs, 'run')} from ${pegPlural(f.evosep_labs, 'lab')}, other LC ${pegPlural(f.other_runs, 'run')} from ${pegPlural(f.other_labs, 'lab')}`;
+      return `<button type="button" class="peg-chip" data-i="${i}" aria-pressed="${pegSameFamily(f.family, current)}" title="${esc(tip)}">${esc(f.family)}</button>`;
+    }).join('');
+  }
+  // live 1.2.1: always two slots; an LC with no runs is a placeholder card that says how to fill it
+  function pegLcHtml(d) {
+    d = d || {};
+    const groups = Array.isArray(d.groups) ? d.groups : [];
+    const group = (lc) => groups.find((g) => g && g.lc === lc) || { lc, n_runs: 0, n_labs: 0, weekly: [] };
+    const evo = group('evosep'), oth = group('other'), fam = esc(d.family), days = pegCount(d.window_days);
+    const nE = pegNum(evo.n_runs) || 0, nO = pegNum(oth.n_runs) || 0;
+    const head = `<h4 class="peg-h4">Community · ${fam} labs · last ${days} days</h4>`;
+    if (!nE && !nO) return head + `<div class="peg-empty">No ${fam} lab has shared PEG in the last ${days} days.</div>`;
+    const placeholder = (g, label, cls, joiners) => {
+      const older = (Array.isArray(g.weekly) ? g.weekly : []).some((v) => pegNum(v) != null);
+      const status = older ? `none in the last ${days} days` : 'no lab yet';
+      const lead = older ? `No ${fam} lab ${label === 'Evosep' ? 'on an Evosep' : 'on a non-Evosep LC'} has shared PEG in the last ${days} days. ` : '';
+      return `<div class="peg-lcg peg-lcg-empty"><div class="peg-lcg-top"><span class="peg-lcchip ${cls}">${label}</span><span class="peg-muted">${status}</span></div>`
+        + `<div class="peg-lcg-join"><p>${lead}Labs running ${fam} ${joiners} can join: <code>stan peg-sync</code></p><a href="#peg-join">How to put your lab on the board</a></div></div>`;
+    };
+    const otherJoiners = pegSameFamily(d.family, 'timsTOF') ? 'with a nanoElute or other LC' : 'with a non-Evosep LC';
+    const all = [].concat(evo.weekly || [], oth.weekly || []).map(pegNum).filter((x) => x != null);
+    const lo = all.length ? Math.min(...all) : 0, hi = all.length ? Math.max(...all) : 1;
+    const card = (g, label, cls, colour) => {
+      const p25 = pegNum(g.p25_pct), med = pegNum(g.median_pct), p75 = pegNum(g.p75_pct);
+      const a = pegLogPos(p25 == null ? 0 : p25, PEG_IQR_HI), b = pegLogPos(p75 == null ? 0 : p75, PEG_IQR_HI), m = pegLogPos(med == null ? 0 : med, PEG_IQR_HI);
+      const clean = pegNum(g.clean_pct), heavy = pegNum(g.heavy_pct);
+      // mockup only: the capture kept the numbers live printed on this card, not its quartiles or weekly medians
+      const band = g.partial ? '' : `<span class="b" style="left:${a.toFixed(1)}%;width:${Math.max(1, b - a).toFixed(1)}%;background:${colour}"></span>`;
+      const wk = g.partial ? '<span class="peg-snap">The 29 Sep snapshot kept this card\'s median, clean and heavy shares but not its quartiles or weekly medians, so the bar shows the median tick only and the weekly line is not drawn.</span>' : pegSpark(g.weekly, { w: 480, h: 44, lo, hi, fluid: true });
+      return `<div class="peg-lcg"><div class="peg-lcg-top"><span class="peg-lcchip ${cls}">${label}</span><span class="peg-muted">${pegPlural(g.n_labs, 'lab')} · ${pegPlural(g.n_runs, 'run')}</span></div>`
+        + `<div class="peg-big">${pegPct(med)}<small>median PEG share</small></div>`
+        + `<div class="peg-iqr" title="25th percentile ${pegPct(p25)} · median ${pegPct(med)} · 75th percentile ${pegPct(p75)}">${band}<span class="m" style="left:calc(${m.toFixed(1)}% - 1px)"></span></div>`
+        + `<div class="peg-iqr-axis"><span>0</span><span>1%</span><span>${PEG_IQR_HI}%</span></div>`
+        + `<div class="peg-lcg-meta"><span>clean <b>${clean == null ? '—' : clean + '%'}</b></span><span>heavy <b>${heavy == null ? '—' : heavy + '%'}</b></span></div>`
+        + `<div class="peg-lcg-wk"><span>weekly median, last 26 weeks</span>${wk}</div></div>`;
+    };
+    const bar = 'Bar: the middle half of runs (25th to 75th percentile) on a log scale, tick = median.';
+    return head + '<div class="peg-lcgroups">'
+      + (nE ? card(evo, 'Evosep', 'peg-lc-evosep', '#FFBF00') : placeholder(evo, 'Evosep', 'peg-lc-evosep', 'on an Evosep'))
+      + (nO ? card(oth, 'Other LC', 'peg-lc-other', '#60a5fa') : placeholder(oth, 'Other LC', 'peg-lc-other', otherJoiners))
+      + '</div><p class="peg-fine">'
+      + (nE && nO ? `${bar} The two weekly lines share one scale.` : `Only ${fam} labs are compared here; the ${nE ? 'Other LC' : 'Evosep'} side fills in as ${fam} labs ${nE ? 'on a non-Evosep LC' : 'on an Evosep'} join. ${bar}`)
+      + '</p>';
+  }
+  function pegTrendTraces(weeks) {
+    weeks = Array.isArray(weeks) ? weeks : [];
+    const x = [], p25 = [], p50 = [], p75 = [], cd = [];
+    weeks.forEach((w) => { x.push(String(w.week_start)); p25.push(pegNum(w.p25)); p50.push(pegNum(w.p50)); p75.push(pegNum(w.p75)); cd.push([pegNum(w.n_labs) || 0, pegNum(w.n_runs) || 0, pegNum(w.p25), pegNum(w.p75)]); });
+    const traces = [];
+    let seg = [];
+    const flush = () => {
+      if (seg.length >= 2) {
+        const back = seg.slice().reverse();
+        traces.push({ type: 'scatter', mode: 'lines', fill: 'toself', fillcolor: 'rgba(255,191,0,0.16)', line: { width: 0 }, hoverinfo: 'skip', legendgroup: 'band', showlegend: traces.length === 0,
+          name: 'middle half of runs (25th–75th pct)', x: seg.map((i) => x[i]).concat(back.map((i) => x[i])), y: seg.map((i) => p75[i]).concat(back.map((i) => p25[i])) });
+      }
+      seg = [];
+    };
+    for (let i = 0; i < weeks.length; i++) { if (p25[i] != null && p75[i] != null) seg.push(i); else flush(); }
+    flush();
+    traces.push({ type: 'scatter', mode: 'lines+markers', name: 'median', x, y: p50, customdata: cd, connectgaps: false, line: { color: '#FFBF00', width: 2.4 }, marker: { color: '#FFBF00', size: 5 },
+      hovertemplate: '7 days from %{x|%b %d, %Y}<br>median %{y:.2f}%<br>middle half %{customdata[2]:.2f} to %{customdata[3]:.2f}%<br>%{customdata[1]} runs from %{customdata[0]} lab(s)<extra></extra>' });
+    const withRuns = cd.filter((c) => c[1] > 0);
+    return { traces, nWeeks: withRuns.length, maxLabs: withRuns.reduce((m, c) => Math.max(m, c[0]), 0) };
+  }
+  // ---- wiring: the saved payloads stand in for /api/peg/*
+  const pegInSnap = () => pegSameFamily(pegState.family, PG.board.family) && pegState.spd === PG.board.spd;
+  const pegNotSaved = (what, url) => `<div class="peg-empty"><b>Not in the 29 Sep snapshot.</b> The capture saved only the ${esc(PG.board.family)} · ${PG.board.spd} SPD ${what}. On the live site this choice loads <code>${esc(url)}</code>.</div>`;
+  function renderPegBoard() {
+    $('peg-coh').innerHTML = pegCohortChipsHtml(PG.board.cohorts, pegState.family, pegState.spd);
+    if (pegInSnap() && pegState.window === PG.board.window_days) {
+      const parts = pegBoardParts(PG.board);
+      $('peg-board-wrap').innerHTML = parts.main; $('peg-unranked').innerHTML = parts.unranked; $('peg-community').innerHTML = parts.community;
+    } else {
+      $('peg-board-wrap').innerHTML = pegNotSaved(`${PG.board.window_days}-day leaderboard`, `/api/peg/leaderboard?family=${pegState.family}&spd=${pegState.spd}&window=${pegState.window}`);
+      $('peg-unranked').innerHTML = ''; $('peg-community').innerHTML = '';
+    }
+  }
+  defChart('plot-peg-trend', (el) => {
+    $('peg-trend-badge').textContent = `${pegState.family} · ${pegState.spd} SPD`;
+    const note = $('peg-trend-note');
+    if (!pegInSnap()) { note.textContent = ''; return noPlot(el, pegNotSaved('52-week trend', `/api/peg/trend?family=${pegState.family}&spd=${pegState.spd}&weeks=52`).replace(/^<div class="peg-empty">|<\/div>$/g, '')); }
+    const tr = pegTrendTraces(PG.trend);
+    if (!tr.nWeeks) { note.textContent = ''; return noPlot(el, 'No shared QC runs in this cohort over the last 52 weeks.'); }
+    const base = PL();
+    const nar = isNarrow();
+    plot(el, tr.traces, { ...base, height: hFor(el, nar ? 350 : 320), margin: nar ? { t: 58, r: 12, b: 40, l: 50 } : { t: 16, r: 24, b: 40, l: 60 },
+      xaxis: { ...AXL, type: 'date', tickformat: '%b %Y' }, yaxis: { ...AXL, title: { text: 'PEG share of MS1 (%)' }, rangemode: 'tozero' },
+      showlegend: true, legend: nar ? { orientation: 'h', x: 0, y: 1.03, yanchor: 'bottom', font: { color: '#a0b4cc', size: 11 } } : { orientation: 'h', x: 0, y: 1.12, font: { color: '#a0b4cc' } }, hovermode: 'closest' });
+    note.textContent = tr.maxLabs <= 1 ? 'One lab shares in this cohort so far, so the band is that lab’s own week-to-week spread. It becomes a community range as more labs join.' : '';
+  });
+  function renderPegLc() {
+    const fams = PG.lc_families;
+    if (pegState.lcFamily == null) { const pick = fams.find((f) => (pegNum(f.evosep_runs) || 0) > 0 && (pegNum(f.other_runs) || 0) > 0) || fams[0]; pegState.lcFamily = pick ? String(pick.family) : String(PG.board.family); }
+    $('peg-lcfam').innerHTML = pegLcFamilyChipsHtml(fams, pegState.lcFamily);
+    const d = PG.lc[pegState.lcFamily];
+    $('peg-lc-body').innerHTML = d ? pegLcHtml(d) : pegNotSaved('LC comparison', `/api/peg/lc-compare?family=${pegState.lcFamily}&window=90`);
+  }
+  const pegPress = (group, button) => { for (const b of group.querySelectorAll('button')) b.setAttribute('aria-pressed', String(b === button)); };
+  $('peg-coh').addEventListener('click', (e) => { const b = e.target.closest('button[data-i]'); const c = b && PG.board.cohorts[+b.dataset.i]; if (!c) return; pegState.family = String(c.family); pegState.spd = pegNum(c.spd) || 100; renderPegBoard(); drawChart('plot-peg-trend'); });
+  $('peg-win').addEventListener('click', (e) => { const b = e.target.closest('button[data-win]'); if (!b) return; pegState.window = +b.dataset.win; pegPress($('peg-win'), b); renderPegBoard(); });
+  $('peg-lcfam').addEventListener('click', (e) => { const b = e.target.closest('button[data-i]'); const f = b && PG.lc_families[+b.dataset.i]; if (!f) return; pegState.lcFamily = String(f.family); renderPegLc(); });
+  renderPegBoard(); renderPegLc();
+  $('ann-peg').innerHTML = `<b>Drawn as on live 1.2.1, in live order and with live wording</b> (app.py ~3440–3525 and its <code>#peg-watch-js</code> builders, ported unchanged): the community PEG leaderboard with its cohort chips and 30 / 90 / 365-day switch, "Community PEG, week by week" in Plotly, "Evosep vs other LC" with the single-LC-family placeholders ("no lab yet · Labs running … can join"), "Put your lab on the board" and "How the ranking works". v2 had folded all of this into a one-card summary. The filter bar does not apply, as on live. <b>Mockup limits, not changes:</b> the snapshot saved only the default payloads (the ${esc(PG.board.family)} · ${PG.board.spd} SPD ${PG.board.window_days}-day leaderboard, its 52-week trend, and the ${esc(PG.board.family)} LC comparison), so the other cohort chips and windows say "Not in the 29 Sep snapshot" instead of loading. For Exploris and Lumos the capture kept the numbers live printed on each LC card (runs, median, clean, heavy) but not the quartiles or weekly medians; those cards say so. <b>One layout fix:</b> on a phone the week-by-week legend wraps to two lines, and live draws its "median" entry over the top of the plot; here it gets room above the plot. Desktop is as live.`;
 
   // ================= published field list (Join card) =================
   (function fields() {
@@ -1511,13 +2354,19 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   // ================= orchestration =================
   function renderAll(resetWs) {
     if (resetWs) wsReset();
-    drawFilters(); wsForm(); wsResult(); renderRefs(); renderBest(); drawDepth(); renderPlat(); renderTic(); renderTrendCtrls(); drawTrend(); tb.page = 0; renderTable();
+    drawFilters(); amtMirrors(); wsForm(); wsResult(); renderRefs(); renderBest();
+    chartMeta(); ticControls(); drawCharts();
+    renderTrendCtrls(); drawTrend(); tb.page = 0; renderTable();
   }
-  const wide = window.matchMedia('(min-width: 700px)').matches;
-  ['depth', 'plat'].forEach((id) => { $(id).open = wide; });
-  $('depth').addEventListener('toggle', drawDepth);
+  // Explore: open at desktop width; on a phone each chart is a panel with a one-line summary.
+  // Best configurations, Depth by Throughput, Throughput vs. Quantitation Quality and the TIC overlay stay open at every width.
+  const wideInit = window.matchMedia('(min-width: 700px)').matches;
+  ['x-amount', 'x-violin', 'x-cols'].forEach((id) => { $(id).open = wideInit; });
   renderAll(true);
-  let rt = null;
-  window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { drawStrip(); drawDepth(); drawTrend(); drawTic(); }, 120); });
+  let rt = null, lastNarrow = isNarrow();
+  window.addEventListener('resize', () => {
+    clearTimeout(rt);
+    rt = setTimeout(() => { drawStrip(); drawTrend(); if (isNarrow() !== lastNarrow) { lastNarrow = isNarrow(); drawCharts(); } }, 150);
+  });
 })();
 </script>

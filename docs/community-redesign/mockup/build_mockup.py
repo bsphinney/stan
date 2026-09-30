@@ -250,13 +250,42 @@ for i, k in enumerate(order):
         "cols": [c for c, _ in cols.most_common()],
     })
 
-# ---------------------------------------------------------------- runs for table, lookup, lab trend
+# ---------------------------------------------------------------- runs for table, lookup, lab trend and every restored chart
+# One row per valid run. Columns 0-7 are unchanged from v2; 8-13 feed the restored
+# Plotly charts (ID-free series, Depth by Amount, Matthews & Hayes, Column Comparison).
+#   0 date  1 lab  2 cohort  3 prec  4 pep  5 prot  6 psms  7 pts/peak
+#   8 |MS1 ppm| (null for DDA: not measured)  9 log10 MS1 signal  10 log10 dynamic range
+#  11 amount_ng  12 known-column index (-1 = column not recorded)  13 peak width (s)
+COLS: list[str] = []
+
+
+def col_index(r) -> int:
+    v, m = (r.get("column_vendor") or "").strip(), (r.get("column_model") or "").strip()
+    if not m or m.lower() == "unknown" or v.lower() == "unknown":
+        return -1                      # colKey() fix: "Unknown" is not a column
+    label = m if m.lower().startswith(v.lower()) else f"{v} {m}".strip()
+    if label not in COLS:
+        COLS.append(label)
+    return COLS.index(label)
+
+
+def rnd(x, k):
+    return None if x is None else round(x, k)
+
+
 runs = []
 for r in sorted(valid, key=lambda r: instant(r)):
+    dda = track(r) == "DDA"
+    ppm = r.get("median_mass_acc_ms1_ppm")
+    sig = r.get("ms1_signal")
     runs.append([
         instant(r).strftime("%Y-%m-%d"), LABS.index(r["display_name"]), cidx[ckey(r)],
         int(r["n_precursors"] or 0), int(r["n_peptides"] or 0), int(r["n_proteins"] or 0), int(r["n_psms"] or 0),
         round(r["median_points_across_peak"] or 0, 1),
+        None if (dda or ppm is None) else round(abs(ppm), 2),
+        None if (dda or not sig) else round(math.log10(sig), 3),
+        None if dda else rnd(r.get("dynamic_range_log10"), 3),
+        r["amount_ng"], col_index(r), rnd(r.get("median_peak_width_sec"), 1),
     ])
 flag_rows = []
 for r in sorted(flagged, key=lambda r: -primary(r)):
@@ -266,22 +295,6 @@ for r in sorted(flagged, key=lambda r: -primary(r)):
         int(r["n_precursors"] or 0), int(r["n_peptides"] or 0), int(r["n_proteins"] or 0), int(r["n_psms"] or 0),
         flag_reason[r["submission_id"]],
     ])
-
-# ---------------------------------------------------------------- B5 UC Davis instrument history (ID-free, HeLa, per instrument)
-hist = {}
-for m in ["timsTOF HT", "Orbitrap Exploris 480", "Orbitrap Fusion Lumos"]:
-    by_mo = C.defaultdict(list)
-    for r in kept:
-        if r["instrument_model"] == m and r["sample_type"] == "hela":
-            by_mo[instant(r).strftime("%Y-%m")].append(r)
-    months = sorted(by_mo)
-    ser = {"mo": months, "n": [len(by_mo[x]) for x in months]}
-    for key, f in (("ppm", lambda r: r["median_mass_acc_ms1_ppm"]),
-                   ("sig", lambda r: math.log10(r["ms1_signal"]) if r.get("ms1_signal") else None),
-                   ("dr", lambda r: r["dynamic_range_log10"]),
-                   ("pts", lambda r: r["median_points_across_peak"])):
-        ser[key] = [None if med([f(r) for r in by_mo[x]]) is None else round(med([f(r) for r in by_mo[x]]), 2) for x in months]
-    hist[m] = ser
 
 # ---------------------------------------------------------------- D3 IPS: re-derive stored scores (relay app.py:780-906)
 IPS_REF = {
@@ -354,25 +367,26 @@ two_col = sum(1 for c in cohorts if len(c["cols"]) >= 2)
 latest = max(instant(r) for r in kept)
 unranked = [c for c in cohorts if c["why"]]
 # ---------------------------------------------------------------- TIC overlay (Brett, 2026-09-29: keep it broken out by SPD and LC)
-# Same grouping as the live chart (app.py renderCommunityTIC): SPD x LC system
-# (explicit lc_system, else inferLcSystem) x acquisition mode, each trace scaled
-# to its own peak. Two differences, both annotated on the page:
-#   * percentiles are taken at the same minute across runs (each trace
-#     interpolated onto the cohort's median time axis), not at the same bin index;
-#   * bands are drawn only where at least 5 traces (and half the cohort) cover.
-# Duplicate copies are removed with the same D8 key as every other panel.
+# Spec §A.4. Same grouping as the live chart (SPD x LC x mode, each trace scaled to
+# its own peak), with these fixes:
+#   * built from `valid` (duplicates removed, held-back runs excluded), like every panel;
+#   * LC from lc_class(), the page's one rule: Evosep only at a real Evosep method,
+#     "Evosep ... (SPD unverified)" otherwise, and "LC not recorded" never put into Evosep;
+#   * the trace is the raw MS1 TIC. Traces whose first bin starts more than 0.1 min after
+#     acquisition start are identified-ion traces from STAN 0.2.282/0.2.283 (they begin at
+#     the first identification). They never feed the median and are drawn as their own series;
+#   * percentiles at the same minute (each trace interpolated onto the cohort's median axis);
+#   * bands only from 5+ runs, else every run on its own full axis;
+#   * menu labels from the stored gradient_length_min.
 import bisect
+import gzip
 
+IDION_START = 0.1          # min. Raw MS1 traces start within 0.07 min; identified-ion ones at >= 1.5 min.
 tic_raw = {x["submission_id"]: x for x in json.load(open(REV / "api_tic_overlay.json"))["traces"]}
 kept_ids = {r["submission_id"] for r in kept}
-
-
-def infer_lc(r) -> str:
-    v = (r.get("column_vendor") or "").lower()
-    m = (r.get("column_model") or "").lower()
-    if "evo" in v or "evo" in m or re.match(r"^ev\d", m):
-        return "evosep"
-    return "evosep" if r.get("spd") in (100, 60, 30) else "custom"
+valid_ids = {r["submission_id"] for r in valid}
+tic_dups = sum(1 for r in rows if r["submission_id"] in tic_raw and r["submission_id"] not in kept_ids)
+tic_held = sum(1 for r in kept if r["submission_id"] in tic_raw and r["submission_id"] not in valid_ids)
 
 
 def interp(rt, y, x):
@@ -386,65 +400,137 @@ def interp(rt, y, x):
 
 
 tic_groups: dict[tuple, list] = C.defaultdict(list)
-tic_dups = 0
-for r in rows:
+for r in valid:
     x = tic_raw.get(r["submission_id"])
     if not x:
         continue
-    if r["submission_id"] not in kept_ids:
-        tic_dups += 1
-        continue
-    if r.get("is_flagged"):
-        continue
-    rt = json.loads(x["tic_rt_bins"]); it = json.loads(x["tic_intensity"])
+    rt = json.loads(x["tic_rt_bins"])
+    it = json.loads(x["tic_intensity"])
     mx = max(it) if it else 0
-    if not rt or mx <= 0 or len(rt) != len(it):
+    if len(rt) < 2 or mx <= 0 or len(rt) != len(it):
         continue
-    lc = r.get("lc_system") or infer_lc(r)
-    lc = "evosep" if lc == "evosep" else "custom"
-    tic_groups[(r["sample_type"], track(r), int(r["spd"]), lc)].append(
-        {"rt": rt, "y": [v / mx for v in it], "m": r["instrument_model"]})
+    t_start = rt[0] - (rt[1] - rt[0]) / 2
+    tic_groups[(r["sample_type"], track(r), int(r["spd"]), lc_class(r))].append({
+        "id": r["submission_id"], "rt": rt, "y": [v / mx for v in it], "m": MODELS.index(r["instrument_model"]),
+        "d": instant(r), "idion": t_start > IDION_START, "len": int(r["gradient_length_min"]),
+        "fac": FACILITY.get(r["display_name"], r["display_name"]), "ver": r.get("stan_version") or "",
+    })
 
 TICN, TRN, TRMAX = 128, 64, 40
-tic_off_axis = 0
 
 
-def summarise(tr: list) -> dict:
-    global tic_off_axis
-    n = len(tr)
+def med_axis(tr: list) -> list:
     nb = C.Counter(len(t["rt"]) for t in tr).most_common(1)[0][0]
     same = [t for t in tr if len(t["rt"]) == nb]
     axis = [S.median(t["rt"][j] for t in same) for j in range(nb)]
     if nb != TICN:
         axis = [axis[0] + (axis[-1] - axis[0]) * j / (TICN - 1) for j in range(TICN)]
+    return axis
+
+
+def off_axis(tr: list, axis: list) -> set:
     span = axis[-1] - axis[0]
-    tic_off_axis += sum(1 for t in tr if abs(t["rt"][0] - axis[0]) > 0.05 * span or abs(t["rt"][-1] - axis[-1]) > 0.05 * span)
-    need = max(5, math.ceil(n / 2))
-    bands = {k: [] for k in ("p10", "p25", "p50", "p75", "p90")}
-    for x in axis:
-        col = sorted(v for v in (interp(t["rt"], t["y"], x) for t in tr) if v is not None)
-        ok = len(col) >= need
-        for k, p in (("p10", .1), ("p25", .25), ("p50", .5), ("p75", .75), ("p90", .9)):
-            bands[k].append(round(1000 * q(col, p)) if ok else None)
-    step = max(1, n / TRMAX)
-    pick = [tr[int(i * step)] for i in range(min(n, TRMAX))]
-    tgrid = [axis[0] + span * j / (TRN - 1) for j in range(TRN)]
-    traces = [[None if (v := interp(t["rt"], t["y"], x)) is None else round(100 * v) for x in tgrid] for t in pick]
-    return {"n": n, "inst": C.Counter(t["m"] for t in tr).most_common(),
-            "len": round(axis[-1]), "rt": [round(v, 2) for v in axis], "t0": round(axis[0], 2), "t1": round(axis[-1], 2),
-            "b": bands if n >= 5 else None, "tr": traces}
+    return {t["id"] for t in tr if abs(t["rt"][0] - axis[0]) > 0.05 * span or abs(t["rt"][-1] - axis[-1]) > 0.05 * span}
+
+
+def full(t):
+    return [t["m"], [round(v, 2) for v in t["rt"]], [round(1000 * v) for v in t["y"]]]
+
+
+def summarise(raw: list, idt: list, parts: list) -> dict:
+    """One menu entry: bands from the raw MS1 traces (5+), else each raw run on its own axis."""
+    n = len(raw)
+    base = raw or idt
+    axis = med_axis(base)
+    out = {"parts": parts, "n": n, "nid": len(idt),
+           "fac": len({t["fac"] for t in raw + idt}),
+           "inst": C.Counter(MODELS[t["m"]] for t in raw).most_common(),
+           "iinst": C.Counter(MODELS[t["m"]] for t in idt).most_common(),
+           "iver": sorted({t["ver"] for t in idt}),
+           "b": None, "rt": None, "tr": [], "solo": [], "idt": [full(t) for t in idt]}
+    if n >= 5:
+        need = max(5, math.ceil(n / 2))
+        bands = {k: [] for k in ("p10", "p25", "p50", "p75", "p90")}
+        for x in axis:
+            col = sorted(v for v in (interp(t["rt"], t["y"], x) for t in raw) if v is not None)
+            ok = len(col) >= need
+            for k, p in (("p10", .1), ("p25", .25), ("p50", .5), ("p75", .75), ("p90", .9)):
+                bands[k].append(round(1000 * q(col, p)) if ok else None)
+        out["b"] = bands
+        out["rt"] = [round(v, 2) for v in axis]
+        # "show all traces": up to 40 runs, evenly spaced in acquisition time, each on its own time axis
+        by_t = sorted(raw, key=lambda t: t["d"])
+        k = min(n, TRMAX)
+        pick = [by_t[round(i * (n - 1) / (k - 1))] if k > 1 else by_t[0] for i in range(k)]
+        for t in pick:
+            a, b = t["rt"][0], t["rt"][-1]
+            grid = [min(b, a + (b - a) * j / (TRN - 1)) for j in range(TRN)]
+            out["tr"].append([t["m"], round(a, 2), round(b, 2), [round(100 * interp(t["rt"], t["y"], x)) for x in grid]])
+    else:
+        out["solo"] = [full(t) for t in raw]
+    return out
+
+
+def part(lc: str, tr: list) -> list:
+    raw = [t for t in tr if not t["idion"]]
+    return [lc, len(raw), len(tr) - len(raw), runlen_label([t["len"] for t in tr])]
 
 
 tic_out = []
-keys3 = sorted({(k[0], k[1], k[2]) for k in tic_groups})
-for s, t, spd in keys3:
-    ev, cu = tic_groups.get((s, t, spd, "evosep"), []), tic_groups.get((s, t, spd, "custom"), [])
-    for lc, tr in (("evosep", ev), ("custom", cu), ("all", ev + cu)):
-        if not tr or (lc == "all" and not (ev and cu)):
-            continue          # "all" equals the one LC present; the page reuses it
-        tic_out.append({"s": s, "t": t, "spd": spd, "lc": lc, **summarise(tr)})
+off_own: set = set()
+off_own_id: set = set()
+off_union: set = set()
+for s, t, spd in sorted({(k[0], k[1], k[2]) for k in tic_groups}):
+    present = [lc for lc in LC_ORDER if (s, t, spd, lc) in tic_groups]
+    for lc in present:
+        tr = tic_groups[(s, t, spd, lc)]
+        raw = [x for x in tr if not x["idion"]]
+        idt = [x for x in tr if x["idion"]]
+        o = off_axis(tr, med_axis(raw or idt))
+        off_own |= o
+        off_own_id |= {x["id"] for x in idt} & o
+        tic_out.append({"s": s, "t": t, "spd": spd, "lc": lc, **summarise(raw, idt, [part(lc, tr)])})
+    if len(present) > 1:          # "All LC systems" mixes these; the label and take line say so
+        tr = [x for lc in present for x in tic_groups[(s, t, spd, lc)]]
+        raw = [x for x in tr if not x["idion"]]
+        idt = [x for x in tr if x["idion"]]
+        off_union |= off_axis(tr, med_axis(raw or idt))
+        tic_out.append({"s": s, "t": t, "spd": spd, "lc": "all",
+                        **summarise(raw, idt, [part(lc, tic_groups[(s, t, spd, lc)]) for lc in present])})
+off_union |= off_own
 tic_all = sum(len(v) for v in tic_groups.values())
+tic_idion = sum(1 for v in tic_groups.values() for x in v if x["idion"])
+tic_idion_ver = C.Counter(x["ver"] for v in tic_groups.values() for x in v if x["idion"])
 tic_big = max((c for c in tic_out if c["s"] == "hela" and c["t"] == "DIA"), key=lambda c: c["n"])
+_tic_json = json.dumps(tic_out, separators=(",", ":")).encode()
+_tic_bands = json.dumps([{k: v for k, v in c.items() if k not in ("tr", "solo", "idt")} for c in tic_out], separators=(",", ":")).encode()
+tic_size = {"all_raw": len(_tic_json), "all_gz": len(gzip.compress(_tic_json, 9)),
+            "bands_raw": len(_tic_bands), "bands_gz": len(gzip.compress(_tic_bands, 9))}
+tic_live_raw = (REV / "api_tic_overlay.json").stat().st_size
+
+# ---------------------------------------------------------------- Part B: preliminary example calibration (not from the snapshot)
+# DIA-NN 2.7.0 library-free (--fasta-search --predictor), MBR off, 1% run FDR, timsTOF HT,
+# paired with STAN's standard search of the same raw. Research table, not the site snapshot,
+# so the page badges it "Example (preliminary)". Only numbers are read; raw names never leave here.
+SCAL = HERE.parent / "scaling" / "paired_raws_vs_stan_standard.tsv"
+example = {"engine": "DIA-NN", "version": "2.7.0", "ratio": 0.913, "n_pairs": 8,
+           "n_lo": 27690, "n_hi": 40932, "s_lo": 35149, "s_hi": 44071, "spds": [60, 100], "band": 0.08, "lib": 51487}
+if SCAL.exists():
+    import csv
+    pr = [x for x in csv.DictReader(open(SCAL), delimiter="\t")
+          if x["cfg"].startswith("2.7.0|predicted.predicted.speclib") and "mbr=False" in x["cfg"]
+          and x["n_std"] and x["pg_inst"] == "timsTOF HT"]
+    if pr:
+        Nn = [float(x["n_ext"]) for x in pr]
+        Ss = [float(x["n_std"]) for x in pr]
+        example.update(ratio=round(S.median(n / s for n, s in zip(Nn, Ss)), 3), n_pairs=len(pr),
+                       n_lo=int(min(Nn)), n_hi=int(max(Nn)), s_lo=int(min(Ss)), s_hi=int(max(Ss)),
+                       spds=sorted({int(float(x["spd"])) for x in pr}))
+_log = HERE.parent / "scaling" / "stan_example_report_log.txt"
+if _log.exists():
+    _m = re.search(r"Spectral library loaded: .*? (\d+) precursors", _log.read_text())
+    if _m:
+        example["lib"] = int(_m.group(1))   # the timsTOF library STAN's standard search used for these pairs
 
 facts = {
     "snapshot": "2026-09-29",
@@ -474,23 +560,50 @@ facts = {
     "two_col_cohorts": two_col,
     "multi_fac_cohorts": sum(1 for c in cohorts if c["fac"] >= 2),
     "tic_default": f"{tic_big['spd']} SPD", "tic_default_n": tic_big["n"], "tic_total": tic_all,
-    "tic_raw_total": len(tic_raw), "tic_dups": tic_dups, "tic_off_axis": tic_off_axis, "tic_summary_kb": round(len(json.dumps(tic_out, separators=(",", ":"))) / 1024),
+    "tic_raw_total": len(tic_raw), "tic_dups": tic_dups, "tic_held": tic_held,
+    "tic_idion": tic_idion, "tic_idion_ver": sorted(tic_idion_ver.items()),
+    "tic_off_own": len(off_own), "tic_off_own_id": len(off_own_id), "tic_off_union": len(off_union),
+    "tic_size": tic_size, "tic_live_raw": tic_live_raw,
+    "tic_live_gz": 3017306,          # network.tsv: /api/tic-overlay bytes transferred (gzip) on the live cold load
+    "cols_unknown": sum(1 for r in rows if (r.get("column_model") or "Unknown").lower() == "unknown"),
 }
-pegsum = {
-    "family": peg["family"], "spd": peg["spd"], "window": peg["window_days"],
-    "n_labs": peg["community"]["n_labs"], "n_runs": peg["community"]["n_runs"],
-    "p25": peg["community"]["p25_pct"], "med": peg["community"]["median_pct"], "p75": peg["community"]["p75_pct"],
-    "cohorts": peg["cohorts"],
-    "weeks": [w["p50"] for w in pegt["weeks"]],
-    "w0": pegt["weeks"][0]["week_start"], "w1": pegt["weeks"][-1]["week_start"],
-}
+# ---------------------------------------------------------------- Evosep PEG Watch, drawn as on live 1.2.1
+# The snapshot saved the default payloads only: the timsTOF 100 SPD 30-day leaderboard,
+# its 52-week trend, and the timsTOF LC comparison. For Exploris and Lumos the capture
+# kept what live printed on each LC card (lc_v121.json): runs, labs, median, clean,
+# heavy. Their quartiles and weekly lines were not saved, so the page says so.
+pegl = json.load(open(REV / "api_peg_lc_compare.json"))
+peg_lc = {pegl["family"]: pegl}
+_v121 = json.load(open(REV / "lc_v121.json"))["desktop"]["chips"]
+for ch in _v121:
+    fam = ch["chip"]
+    if fam in peg_lc:
+        continue
+    t = ch["text"]
+    groups = []
+    for lc, label in (("evosep", "EVOSEP"), ("other", "OTHER LC")):
+        seg = t.split(label + "\n", 1)[1] if (label + "\n") in t else ""
+        m = re.match(r"(\d+) labs? · ([\d,]+) runs\n([\d.]+)%median PEG share", seg)
+        if not m:
+            groups.append({"lc": lc, "n_labs": 0, "n_runs": 0, "weekly": []})
+            continue
+        cl = re.search(r"clean (\d+)%", seg)
+        hv = re.search(r"heavy (\d+)%", seg)
+        groups.append({"lc": lc, "n_labs": int(m.group(1)), "n_runs": int(m.group(2).replace(",", "")),
+                       "median_pct": float(m.group(3)), "p25_pct": None, "p75_pct": None,
+                       "clean_pct": int(cl.group(1)) if cl else None, "heavy_pct": int(hv.group(1)) if hv else None,
+                       "weekly": None, "partial": True})
+    peg_lc[fam] = {"family": fam, "window_days": pegl["window_days"], "as_of": pegl["as_of"], "groups": groups,
+                   "families": pegl["families"], "partial": True}
+pegsum = {"board": peg, "trend": pegt["weeks"], "lc": peg_lc, "lc_families": pegl["families"]}
 # every field the public API returns today, by name only (no values)
 fields = [k for k in rows[0].keys() if k not in ("run_name", "fingerprint")]  # Decision 1 removes these two
 
 DATA = {"models": MODELS, "labs": LABS, "vendor": VENDOR, "cohorts": cohorts, "runs": runs,
-        "flagged": flag_rows, "hist": hist, "facts": facts, "peg": pegsum, "fields": fields,
+        "flagged": flag_rows, "facts": facts, "peg": pegsum, "fields": fields,
+        "labFac": [FACS.index(FACILITY.get(n, n)) for n in LABS], "cols": COLS,
         "evosep": {str(k): v for k, v in EVOSEP_METHODS.items()},
-        "libsize": {"bruker": 54000, "thermo": 170000}, "tic": tic_out}
+        "libsize": {"bruker": 54000, "thermo": 170000}, "tic": tic_out, "example": example}
 
 payload = "window.STAN_MOCK = " + json.dumps(DATA, separators=(",", ":"), ensure_ascii=False) + ";"
 # guard: no raw filename may reach the page (D4)
@@ -507,5 +620,8 @@ print("IPS:", json.dumps(ips), f"all HeLa DIA <60 {facts['ips_lt60_all']}%  Expl
 for c in cohorts:
     if c["s"] == "hela":
         print(f"  {MODELS[c['m']]:24s} {c['t']} {c['lc']:10s} {c['a']:7s} n={c['n']:4d} why={c['why'] or '-':6s} nolc={c['nolc']:3d} labs={c['labs']} {c['g']}")
-print(f"TIC: {len(tic_raw)} traces, {tic_dups} duplicate copies dropped, {tic_all} kept in {len(tic_out)} SPD x LC cohorts; default {tic_big['spd']} SPD {tic_big['lc']} n={tic_big['n']}; off-axis traces {tic_off_axis}; tic json {len(json.dumps(tic_out, separators=(',', ':')))/1024:.0f} KB")
+print(f"TIC: {len(tic_raw)} traces, {tic_dups} duplicate copies dropped, {tic_held} held back; {tic_all} valid traces ({tic_idion} identified-ion: {dict(tic_idion_ver)}) in {len(tic_out)} menu entries; default {tic_big['spd']} SPD {tic_big['lc']} n={tic_big['n']}")
+print(f"TIC off-axis (live bin-index method): {len(off_own)} distinct runs in their own LC cohort ({len(off_own_id)} identified-ion), {len(off_union)} counting the combined All views; sizes {tic_size}; live {tic_live_raw}")
+print(f"example calibration: {example}")
+print(f"known columns: {COLS}")
 print(f"payload {len(payload)/1024:.0f} KB -> {OUT.name} {OUT.stat().st_size/1024:.0f} KB")
