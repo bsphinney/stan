@@ -1,0 +1,60 @@
+
+DIA-NN 2.3.0 Academia  (Data-Independent Acquisition by Neural Networks)
+Compiled on Sep 26 2025 02:56:25
+Current date and time: Wed Jun 10 13:44:16 2026
+Logical CPU cores: 128
+/diann-2.3.0/diann-linux --f /quobyte/proteomics-grp/STAN/incoming/TIMS-HOST/01132026_HE50_60-spd-dia_S1-A1_1_19167.d --lib /quobyte/proteomics-grp/STAN/TIMS-HOST/instrument_library.parquet --fasta /data/stan_community_assets/human_hela_202604.fasta --out /quobyte/proteomics-grp/STAN/processing/01132026_HE50_60-spd-dia_S1-A1_1_19167/report.parquet --threads 8 --qvalue 0.01 --min-pep-len 7 --max-pep-len 30 --missed-cleavages 1 --min-pr-charge 2 --max-pr-charge 4 
+
+Thread number set to 8
+Output will be filtered at 0.01 FDR
+Min peptide length set to 7
+Max peptide length set to 30
+Maximum number of missed cleavages set to 1
+Min precursor charge set to 2
+Max precursor charge set to 4
+DIA-NN will automatically optimise the mass accuracy for the first run of the experiment, use this mode for preliminary analyses only
+
+1 files will be processed
+[0:00] Loading spectral library /quobyte/proteomics-grp/STAN/TIMS-HOST/instrument_library.parquet
+[0:00] Spectral library loaded: 5523 protein isoforms, 5423 protein groups and 51487 precursors in 47847 elution groups.
+[0:00] Loading protein annotations from FASTA /data/stan_community_assets/human_hela_202604.fasta
+[0:01] Annotating library proteins with information from the FASTA database
+[0:01] Gene names missing for some isoforms
+[0:01] Library contains 5511 proteins, and 5476 genes
+[0:01] Initialising library
+[0:02] Saving the library to /quobyte/proteomics-grp/STAN/TIMS-HOST/instrument_library.parquet.skyline.speclib
+
+[0:05] File #1/1
+[0:05] Loading run /quobyte/proteomics-grp/STAN/incoming/TIMS-HOST/01132026_HE50_60-spd-dia_S1-A1_1_19167.d
+WARNING: for the vast majority of timsTOF datasets it is better to manually fix both the MS1 and MS2 mass accuracies to 10-15 ppm
+[0:47] Pre-processing...
+[0:52] 1146 MS1 and 41224 MS2 scans in 1146 (inferred) and 1146 (encoded) cycles, 51099 precursors in range
+[0:52] Calibrating with mass accuracies 25 (MS1), 25 (MS2)
+[1:05] RT window set to 0.382279
+[1:05] IM window set to 0.0174206
+[1:05] Peak width: 4.648
+[1:05] Scan window radius set to 10
+[1:05] Recommended MS1 mass accuracy setting: 15 ppm
+[1:17] Optimised mass accuracy: 8 ppm
+[1:20] Main search
+[1:27] Removing low confidence identifications
+[1:33] Removing interfering precursors
+[1:34] Training neural networks on 37864 target and 21150 decoy PSMs
+[2:03] IDs at 0.01 FDR: 23354
+[2:03] Number of IDs at 0.01 FDR: 23984
+[2:03] Calculating protein q-values
+[2:03] Number of genes identified at 1% FDR: 3781 (precursor-level), 3739 (protein-level) (inference performed using proteotypic peptides only)
+[2:03] Quantification
+[2:07] Quantification information saved to /quobyte/proteomics-grp/STAN/incoming/TIMS-HOST/01132026_HE50_60-spd-dia_S1-A1_1_19167.d.quant
+
+[2:07] Cross-run analysis
+[2:07] Reading quantification information: 1 files
+[2:07] Quantifying peptides
+[2:07] Assembling protein groups
+[2:07] Quantifying proteins
+[2:07] Calculating q-values for protein and gene groups
+[2:07] Calculating global q-values for protein and gene groups
+[2:07] Protein groups with global q-value <= 0.01: 3639
+[2:18] Compressed report saved to /quobyte/proteomics-grp/STAN/processing/01132026_HE50_60-spd-dia_S1-A1_1_19167/report.parquet. Use R 'arrow' or Python 'PyArrow' package to process
+[2:30] Stats report saved to /quobyte/proteomics-grp/STAN/processing/01132026_HE50_60-spd-dia_S1-A1_1_19167/report.stats.tsv
+

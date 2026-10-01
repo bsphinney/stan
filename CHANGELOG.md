@@ -11,6 +11,113 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.14] — 2026-10-01
+
+Community site redesign, phase P2c ("Where does my run sit?"), in the relay
+(`hf_space/app.py`, Space **1.5.0**). Spec
+`docs/superpowers/specs/2026-09-29-community-redesign-and-precursor-lookup-design.md`
+§A.3 B1, Part B §B.2/§B.4/§B.10, decision 11. Brett's decision (2026-10-01):
+ship the lookup for **matching searches only**. No STAN client behaviour
+changes; the bump carries the relay release. No schema change, no endpoint
+and no stored row changes. The TIC overlay and PEG Watch are byte-identical to
+1.4.0, and so are the P2a read-time rules (the D8 dedupe, the >5,000 ng
+hold-back, `colKey()`) and the B2 cohort key, pinned by hash in the tests.
+
+### Added
+- **"Where does my run sit?" (B1)** now holds the `#where` anchor ("Where do
+  I stand" in the nav), under the filter bar; the reference ranges follow it
+  at `#ranges`. Enter one run's precursors (PSMs for DDA), how it was
+  searched (engine and version, library or database, FDR, and for DIA
+  whether it was searched alone or with other runs, and MBR), the instrument
+  model, the LC and gradient (an Evosep method, one of the instrument's
+  nanoLC cohorts, or a typed gradient length matched within 15% in SPD) and
+  the amount.
+- **Only the community search is placed.** DIA-NN 2.3.x against the frozen
+  community library (`hela_timstof_202604.parquet` /
+  `hela_orbitrap_202604.parquet`) at 1% run-level FDR, searched without MBR
+  (alone, or with other runs and MBR off, which carries a note); for DDA,
+  Sage 0.14.x against the frozen FASTA at 1% PSM FDR. Such a count gets its
+  percentile in the page's own cohort (QC standard × model × mode × gradient
+  × amount bucket, the same rows as the reference cards), the cohort median
+  and middle half, "n runs · n labs", the single-lab tag and a strip of every
+  run with the visitor's marked. The percentile is the mid-rank of the count
+  among the cohort's runs. The P2b rules hold: no percentile below 5 runs
+  (the values are listed, with how many the count is above), values listed
+  instead of a middle half below 10, and a cohort that is missing names the
+  runs at that SPD that are not ranked and why, the same gradient at other
+  amounts, and the nearest ranked cohort (without a percentile against it).
+  Every answer names its reference population ("one lab's history, not a
+  ranking of labs; failed runs included"), and DIA answers on the timsTOF HT
+  and Exploris 480 say that UC Davis's runs there used a subset library
+  (decision 11).
+- **Everything else is refused, with the reason.** Spectronaut, other
+  engines, DIA-NN other than 2.3.x, a library-free or predicted search
+  (including `--predictor` with any `--lib`), a lab-built, project or public
+  library (including STAN's own `instrument_library.parquet`, and any library
+  renamed to the frozen file name), MBR (`--reanalyse`), a global 1% filter,
+  any other FDR (a `--qvalue 0.05` log is refused as such); for DDA another
+  engine, Sage version, FASTA or FDR. A log whose frozen library belongs to
+  the other vendor than the chosen instrument asks the visitor to pick the
+  instrument they ran. Each refusal names
+  what differs, shows the exact community command (`--lib … --fasta …
+  --qvalue 0.01 --min-pep-len 7 --max-pep-len 30 --missed-cleavages 1
+  --min-pr-charge 2 --max-pr-charge 4`, as in STAN's production log) with
+  links to the library and FASTA, and says that cross-version calibration is
+  planned, nothing is scaled until it passes validation, and not to rescale
+  the number by hand. No scaling factor is applied anywhere, and the lookup
+  quotes no conversion-like magnitude: the mockup's "Example (preliminary)"
+  DIA-NN 2.7.0 library-free path is a refusal.
+- **The search fields start unchosen.** Until the visitor says how the count
+  was searched (or drops the log), the cohort is shown but the count is not
+  placed. The run's fields (mode, instrument, gradient, amount) start from
+  the filter bar and follow it until set in the form; the form never changes
+  the bar, except through "Show this cohort in the reference ranges".
+- **Drop a DIA-NN `report.log.txt`.** Read with FileReader, first 2 MB only,
+  parsed into numbers and fixed vocabulary with linear patterns, skipping any
+  line over 4,096 characters: the version banner, `--lib` (frozen, lab-built,
+  or predicted), `--fasta-search`, `--predictor`, `--reanalyse` and the "MBR
+  enabled" line, `--qvalue` or "Output will be filtered at" (no FDR stated:
+  the visitor chooses), the number of files, `--cfg` (flagged), and for a
+  one-file search the last "Number of IDs at 0.01 FDR" line as the count
+  (STAN's count). The frozen library is recognised by its file name **and**
+  the number of precursors DIA-NN reports loading from it (53,580 for
+  `hela_timstof_202604.parquet`, from real DIA-NN 2.3.2 logs on Hive;
+  170,284 for `hela_orbitrap_202604.parquet`), not by checksum, and the page
+  says so; a log without that line is "matched by name only", and a count
+  typed in without a log is labelled self-reported. When the visitor has not
+  chosen an instrument and the log's frozen library is the other vendor's,
+  the lookup takes that vendor's instrument with the most runs and says so.
+  Checked against real DIA-NN 1.9, 2.3.0, 2.3.2 and 2.7.0 logs from Hive (GUI
+  and command line, CRLF and LF) and the DIA-NN README. The library file
+  name, the only free text kept, is capped at 120 characters and escaped
+  wherever it is shown. On submit or a drop the answer is scrolled into view.
+- **Privacy.** Nothing typed or dropped leaves the page: the lookup makes no
+  network call, uses no browser storage and writes nothing to the address;
+  the form says so under its fields.
+
+### Tests
+- `tests/test_relay_community_p2c.py` (29): SPACE_VERSION 1.5.0; the `#where`
+  anchor and the ranges after it; no preliminary scaling or engine ratio in
+  the lookup; no network, storage or address call in its code; TIC, PEG,
+  `esc()`, the dedupe, hold-back, `colKey()`, cohort key and view state
+  pinned to fc5cb33; the real-log fixtures' text; and in node: the
+  percentile against a hand computation (ties, extremes), the cohort rules,
+  missing cohorts, nanoLC minutes, defaults from the bar, unchosen search
+  fields, each refusal reason (DIA and DDA), matches with their notes, the
+  five real logs parsed field by field, dropping logs through a FileReader
+  (placed and refused), hostile file contents (tags, bad versions, huge
+  counts, `__proto__`, 5 MB, over-long lines, binary), a 2 MB hostile log
+  parsed in under 200 ms, the frozen library by name and size (real, renamed,
+  name only), `--predictor`, a `--qvalue 0.05` log, the instrument moved to
+  the log's vendor, scrolling to the answer, hostile names in the data, and
+  no network call on any interaction.
+- Real DIA-NN logs of HeLa QC searches from Hive under
+  `tests/fixtures/diann_logs/`, with only identifying text replaced (user and
+  project directories, host names, project raw-file prefixes, an output
+  name); options, echo lines, counts and CRLF line ends are DIA-NN's own
+  (`.gitattributes` keeps the bytes).
+- The P1, P2a, P2b and PEG tests read SPACE_VERSION 1.5.0.
+
 ## [1.2.13] — 2026-09-30
 
 Community site redesign, phase P2b ("one cohort key, one filter bar, lab

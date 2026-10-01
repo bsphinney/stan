@@ -2,3 +2,7 @@
 # blob and GitHub Raw downloads serve them with Windows line endings.
 # Without this, Git normalizes to LF and Windows CMD can't parse them.
 *.bat -text
+
+# Real DIA-NN logs used as test fixtures: keep their bytes, CRLF included
+# (the Windows ones are CRLF, and the parser must handle both).
+tests/fixtures/diann_logs/*.txt -text

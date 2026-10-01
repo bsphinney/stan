@@ -1,0 +1,60 @@
+DIA-NN 1.9 (Data-Independent Acquisition by Neural Networks)
+Compiled on Jun  8 2024 20:00:31
+Current date and time: Mon Sep 16 10:56:37 2024
+CPU: AuthenticAMD AMD Ryzen Threadripper 2990WX 32-Core Processor
+SIMD instructions: AVX AVX2 FMA SSE4.1 SSE4.2 SSE4a 
+Logical CPU cores: 64
+diann.exe --f T:\Data\raw_data\Exploris480\sep24\Ex13sept24_HeL50-fDia_30m2.raw  --f T:\Data\raw_data\Exploris480\sep24\Ex13sept24_HeL50-fDia_30m.raw  --lib  --threads 32 --verbose 1 --out T:\Data\lab\user\HeLa\13Sept2024_Ex\report.tsv --qvalue 0.01 --matrices --out-lib T:\Data\lab\user\HeLa\Ex_HeLa30min_Lib.tsv --gen-spec-lib --predictor --fasta T:\Data\lab\user\Fasta\Human_UP000005640.fasta --fasta-search --min-fr-mz 200 --max-fr-mz 1800 --met-excision --min-pep-len 7 --max-pep-len 30 --min-pr-mz 300 --max-pr-mz 1800 --min-pr-charge 1 --max-pr-charge 4 --cut K*,R* --missed-cleavages 1 --unimod4 --reanalyse --relaxed-prot-inf --rt-profiling 
+
+Thread number set to 32
+Output will be filtered at 0.01 FDR
+Precursor/protein x samples expression level matrices will be saved along with the main report
+A spectral library will be generated
+Deep learning will be used to generate a new in silico spectral library from peptides provided
+Library-free search enabled
+Min fragment m/z set to 200
+Max fragment m/z set to 1800
+N-terminal methionine excision enabled
+Min peptide length set to 7
+Max peptide length set to 30
+Min precursor m/z set to 300
+Max precursor m/z set to 1800
+Min precursor charge set to 1
+Max precursor charge set to 4
+In silico digest will involve cuts at K*,R*
+Maximum number of missed cleavages set to 1
+Cysteine carbamidomethylation enabled as a fixed modification
+A spectral library will be created from the DIA runs and used to reanalyse them; .quant files will only be saved to disk during the first step
+Heuristic protein grouping will be used, to reduce the number of protein groups obtained; this mode is recommended for benchmarking protein ID numbers, GO/pathway and system-scale analyses
+The spectral library (if generated) will retain the original spectra but will include empirically-aligned RTs
+DIA-NN will optimise the mass accuracy automatically using the first run in the experiment. This is useful primarily for quick initial analyses, when it is not yet known which mass accuracy setting works best for a particular acquisition scheme.
+Exclusion of fragments shared between heavy and light peptides from quantification is not supported in FASTA digest mode - disabled; to enable, generate an in silico predicted spectral library and analyse with this library
+WARNING: it is strongly recommended to first generate an in silico-predicted library in a separate pipeline step and then use it to process the raw data, now without activating FASTA digest
+
+2 files will be processed
+[0:00] Loading FASTA T:\Data\lab\user\Fasta\Human_UP000005640.fasta
+[0:09] Processing FASTA
+[0:19] Assembling elution groups
+[0:31] 5025530 precursors generated
+[0:31] Gene names missing for some isoforms
+[0:31] Library contains 82454 proteins, and 20563 genes
+[0:32] [0:42] [31:46] [34:41] [34:45] [34:46] Saving the library to T:\Data\lab\user\HeLa\Ex_HeLa30min_Lib.predicted.speclib
+[39:25] Initialising library
+
+First pass: generating a spectral library from DIA data
+
+[39:40] File #1/2
+[39:40] Loading run T:\Data\raw_data\Exploris480\sep24\Ex13sept24_HeL50-fDia_30m2.raw
+[40:11] 3641077 library precursors are potentially detectable
+[40:14] Processing...
+[41:05] RT window set to 1.18343
+[41:05] Peak width: 3.992
+[41:05] Scan window radius set to 8
+[41:05] Recommended MS1 mass accuracy setting: 5.10858 ppm
+[42:10] Optimised mass accuracy: 24.1153 ppm
+[43:40] Removing low confidence identifications
+[43:41] Removing interfering precursors
+[43:46] Training neural networks: 38341 targets, 23866 decoys
+[43:51] Number of IDs at 0.01 FDR: 22269
+[43:53] Calculating protein q-values
+[43:53] Number of genes identified at 1% FDR: 3167 (precursor-level), 2756 (protein-level) (inference performed using proteotypic peptides only)

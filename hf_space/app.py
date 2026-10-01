@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.4.0"
+SPACE_VERSION = "1.5.0"
 
 # Fields a submission row keeps on the server but that no public response
 # may carry (community redesign D4, decision 5). run_name is the raw file
@@ -3445,6 +3445,67 @@ INDEX_HTML = r"""<!DOCTYPE html>
             .trend-ctl label { width: 100%; justify-content: space-between; }
             .trend-ctl select, .trend-ctl #lab-cohort { max-width: 66vw; }
         }
+
+        /* ── Community redesign P2c (relay 1.5.0) ──
+           "Where does my run sit?" (B1): the form on the left, the answer on
+           the right; stacked below 820 px. New ws- class names only. */
+        .ws { display: grid; grid-template-columns: minmax(0, 340px) minmax(0, 1fr); gap: 1.1rem; align-items: start; }
+        @media (max-width: 820px) { .ws { grid-template-columns: minmax(0, 1fr); } }
+        .ws-form { display: grid; gap: 0.7rem; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 0.9rem 1rem; min-width: 0; }
+        .ws-set { border: 0; border-top: 1px solid var(--table-border); padding: 0.55rem 0 0; margin: 0; display: grid; gap: 0.6rem; min-width: 0; }
+        .ws-set > legend { font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); font-weight: 650; padding: 0 0.4rem 0 0; }
+        .ws-field { display: grid; gap: 0.25rem; min-width: 0; }
+        .ws-field > label, .ws-lbl { font-size: 0.78rem; color: var(--text-secondary); font-weight: 600; }
+        .ws-form select, .ws-form input[type="text"], .ws-form input[type="number"] { width: 100%; min-width: 0; font: inherit; font-size: 0.88rem; color: var(--text-primary); background: rgba(1,26,58,0.85); border: 1px solid var(--card-border); border-radius: 8px; padding: 0.4rem 0.55rem; }
+        .ws-form input.ws-big { font-size: 1.15rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+        .ws-form select:focus-visible, .ws-form input:focus-visible, .ws-form button:focus-visible, .ws-out button:focus-visible { outline: 2px solid var(--ucd-gold); outline-offset: 2px; }
+        .ws-form .fseg { width: fit-content; max-width: 100%; }
+        .ws-hint { font-size: 0.74rem; color: var(--text-muted); line-height: 1.45; }
+        .ws-hint:empty { display: none; }
+        .ws-drop { position: relative; display: block; border: 1.5px dashed var(--ucd-gold-border); border-radius: 10px; padding: 0.55rem 0.7rem; font-size: 0.8rem; font-weight: 400; color: var(--text-secondary); cursor: pointer; background: rgba(255,191,0,0.04); line-height: 1.45; }
+        .ws-drop.over { background: rgba(255,191,0,0.14); border-color: var(--ucd-gold); }
+        .ws-drop u { color: var(--ucd-gold); }
+        .ws-drop:focus-within { outline: 2px solid var(--ucd-gold); outline-offset: 2px; }
+        .ws-vh { position: absolute; left: 0; top: 0; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; opacity: 0; }
+        .ws-logread { font-size: 0.78rem; color: var(--text-secondary); background: rgba(1,26,58,0.7); border-radius: 8px; padding: 0.45rem 0.6rem; line-height: 1.5; overflow-wrap: anywhere; }
+        .ws-logread:empty { display: none; }
+        .ws-logread b { color: var(--text-primary); }
+        .ws-privacy { font-size: 0.76rem; color: var(--text-muted); line-height: 1.5; border-top: 1px solid var(--table-border); padding-top: 0.55rem; }
+        .ws-out { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 1rem 1.1rem; display: grid; gap: 0.65rem; min-width: 0; align-content: start; }
+        .ws-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.9rem; }
+        .ws-pct { font-size: 2.2rem; font-weight: 800; color: var(--ucd-gold); line-height: 1.05; font-variant-numeric: tabular-nums; }
+        .ws-pct small { font-size: 0.95rem; font-weight: 600; color: var(--text-secondary); margin-left: 0.35rem; }
+        .ws-pct.no { font-size: 1.45rem; color: var(--yellow); }
+        .ws-pct.wait { font-size: 1.3rem; color: var(--text-secondary); }
+        .ws-coh { font-size: 0.9rem; color: var(--text-primary); overflow-wrap: anywhere; line-height: 1.45; }
+        .ws-coh b { color: var(--ucd-gold-dark); }
+        .ws-meta { display: flex; flex-wrap: wrap; gap: 0.3rem 0.75rem; align-items: center; font-size: 0.8rem; color: var(--text-muted); }
+        .ws-meta b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+        .ws-lines { display: grid; gap: 0.35rem; font-size: 0.86rem; color: var(--text-secondary); line-height: 1.5; overflow-wrap: anywhere; }
+        .ws-lines b { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+        .ws-note { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; overflow-wrap: anywhere; }
+        .ws-note b { color: var(--text-secondary); }
+        .ws-refuse { border: 1px dashed var(--yellow); border-radius: 10px; padding: 0.7rem 0.85rem; display: grid; gap: 0.5rem; font-size: 0.86rem; color: var(--text-secondary); line-height: 1.5; overflow-wrap: anywhere; }
+        .ws-refuse ul { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.35rem; }
+        .ws-refuse b { color: var(--text-primary); }
+        .ws-refuse a, .ws-out a, .ws-logread a { color: var(--ucd-gold); }
+        .ws-form code, .ws-out code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.86em; color: var(--text-primary); background: rgba(1,26,58,0.7); padding: 0.05rem 0.3rem; border-radius: 4px; overflow-wrap: anywhere; }
+        .ws-out code, .ws-form code { white-space: nowrap; }
+        .ws-out code.ws-file, .ws-form code.ws-file { white-space: normal; overflow-wrap: anywhere; }
+        .ws-out code.ws-cmd { white-space: normal; display: block; margin: 0.35rem 0; padding: 0.35rem 0.5rem; line-height: 1.6; overflow-wrap: normal; }
+        .ws-cmd span { white-space: nowrap; }
+        .ws-map { font-size: 0.82rem; color: var(--text-secondary); background: rgba(255,191,0,0.06); border: 1px solid var(--table-border); border-radius: 8px; padding: 0.45rem 0.65rem; line-height: 1.5; }
+        .ws-map b { color: var(--text-primary); }
+        .ws-strip { min-width: 0; }
+        .ws-strip svg { display: block; width: 100%; height: auto; }
+        .ws-strip .ws-ax { fill: var(--text-muted); font-size: 11px; }
+        .ws-strip .ws-ax-s { fill: var(--ucd-gold); font-size: 11px; font-weight: 650; }
+        .ws-legend { display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; color: var(--text-secondary); font-size: 0.76rem; margin-top: 0.2rem; }
+        .ws-legend i { display: inline-block; vertical-align: middle; margin-right: 0.35rem; }
+        .ws-foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.4rem 1rem; font-size: 0.8rem; color: var(--text-muted); border-top: 1px solid var(--table-border); padding-top: 0.55rem; }
+        .ws-foot a { color: var(--ucd-gold); }
+        .ws-link { font: inherit; font-size: inherit; color: var(--ucd-gold); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; text-align: left; }
+        .ws-hidden { display: none !important; }
     </style>
 </head>
 <body>
@@ -3531,9 +3592,61 @@ INDEX_HTML = r"""<!DOCTYPE html>
     </div>
 </div>
 
-<!-- Reference ranges (D5). The nav's "Where do I stand" lands here until the
-     P2c lookup ("Where does my run sit?") takes over the #where anchor. -->
+<!-- Where does my run sit? (B1, P2c; the nav's "Where do I stand"). Brett's
+     decision 2026-10-01: only a count from the community search is placed in
+     its cohort (DIA-NN 2.3.x with the frozen community library at 1% FDR; for
+     DDA, Sage 0.14.x with the frozen FASTA at 1% PSM FDR). Every other search
+     gets the reason it cannot be compared yet; no scaling factor is applied.
+     It runs in the browser only: nothing typed or dropped is sent, stored or
+     put in the address, and a dropped log is read with FileReader. -->
 <div class="section" id="where">
+    <h2>Where does my run sit?</h2>
+    <p class="description">
+        Enter one QC run and how it was searched. A count from the community search (DIA-NN 2.3.x against the
+        frozen community library at 1% FDR; for DDA, Sage 0.14.x against the frozen FASTA) is placed in its
+        cohort: the same QC standard, instrument model, acquisition mode, gradient and amount as the reference
+        ranges below. A count from any other search is not converted. You get the reason, and what would make
+        it comparable.
+    </p>
+    <div class="ws">
+        <form class="ws-form" id="ws-form" autocomplete="off" onsubmit="return lkSubmit(event)">
+            <div class="ws-field"><span class="ws-lbl" id="ws-mode-l">Acquisition</span>
+                <div class="fseg" id="ws-mode" role="group" aria-labelledby="ws-mode-l">
+                    <button type="button" data-lkmode="DIA" aria-pressed="true" onclick="lkSet('mode', 'DIA')">DIA &middot; precursors</button>
+                    <button type="button" data-lkmode="DDA" aria-pressed="false" onclick="lkSet('mode', 'DDA')">DDA &middot; PSMs</button>
+                </div></div>
+            <div class="ws-field"><label for="ws-val" id="ws-val-l">Precursors at 1% FDR</label>
+                <input id="ws-val" class="ws-big" type="text" inputmode="numeric" placeholder="e.g. 38,000" oninput="lkSet('val', this.value)">
+                <span class="ws-hint" id="ws-val-h"></span></div>
+            <fieldset class="ws-set" id="ws-search">
+                <legend>How it was searched</legend>
+                <div class="ws-field" id="ws-drop-f">
+                    <label class="ws-drop" id="ws-drop" for="ws-log" ondragenter="lkDrag(event, true)" ondragover="lkDrag(event, true)" ondragleave="lkDrag(event, false)" ondrop="lkDrop(event)">Optional: drop your DIA-NN <code>report.log.txt</code> here, or <u>choose the file</u>. It fills in the fields below.<input type="file" id="ws-log" class="ws-vh" accept=".txt,.log,text/plain" onchange="lkFile(this.files)"></label>
+                    <div class="ws-logread" id="ws-log-out" aria-live="polite"></div></div>
+                <div class="ws-field"><label for="ws-eng">Search engine</label><select id="ws-eng" onchange="lkSet('eng', this.value)"></select></div>
+                <div class="ws-field" id="ws-ver-f"><label for="ws-ver">Version</label><select id="ws-ver" onchange="lkSet('ver', this.value)"></select></div>
+                <div class="ws-field" id="ws-lib-f"><label for="ws-lib" id="ws-lib-l">Library</label><select id="ws-lib" onchange="lkSet('lib', this.value)"></select><span class="ws-hint" id="ws-lib-h"></span></div>
+                <div class="ws-field" id="ws-fdr-f"><label for="ws-fdr" id="ws-fdr-l">Precursor FDR</label><select id="ws-fdr" onchange="lkSet('fdr', this.value)"></select><span class="ws-hint" id="ws-fdr-h"></span></div>
+                <div class="ws-field" id="ws-runs-f"><label for="ws-runs">Searched alone or with other runs, and MBR</label><select id="ws-runs" onchange="lkSet('runs', this.value)"></select></div>
+            </fieldset>
+            <fieldset class="ws-set">
+                <legend>The run</legend>
+                <p class="ws-hint">These start from the filter bar. Changing them here does not filter the page.</p>
+                <div class="ws-field"><label for="ws-model">Instrument model</label><select id="ws-model" onchange="lkSet('model', this.value)"></select></div>
+                <div class="ws-field"><label for="ws-grad">LC and gradient</label><select id="ws-grad" onchange="lkSet('grad', this.value)"></select></div>
+                <div class="ws-field ws-hidden" id="ws-mins-f"><label for="ws-mins">Gradient length (minutes)</label>
+                    <input id="ws-mins" type="number" inputmode="decimal" min="1" step="1" oninput="lkSet('mins', this.value)">
+                    <span class="ws-hint">Converted to SPD = 1440 &divide; (minutes &times; 1.25) and matched to the nearest nanoLC cohort within 15%.</span></div>
+                <div class="ws-field"><label for="ws-amt">Amount loaded</label><select id="ws-amt" onchange="lkSet('amt', this.value)"></select></div>
+            </fieldset>
+            <p class="ws-privacy">Runs entirely in your browser: nothing you type or drop is sent anywhere or stored, and nothing goes in the page address. <button type="button" class="ws-link" onclick="lkClear()">Clear the form</button></p>
+        </form>
+        <div class="ws-out" id="ws-out" aria-live="polite"><div class="ws-note">Loading community data...</div></div>
+    </div>
+</div>
+
+<!-- Reference ranges (D5). The lookup above holds the #where anchor. -->
+<div class="section" id="ranges">
     <h2>Reference ranges</h2>
     <p class="description">
         Longitudinal performance ranges from the runs submitted so far, grouped by instrument model. Each card is
@@ -4413,6 +4526,7 @@ const _NO_GRADIENT = ['sample', 'mode', 'model', 'amount', 'column'];
 const _NO_COLUMN = ['sample', 'mode', 'model', 'gradient', 'amount'];
 const PANELS = [
     ['stats',          ['sample'],   () => updateStats()],
+    ['lookup',         _NO_COLUMN,   () => renderLookup()],   // fields the visitor has not set follow the bar (P2c)
     ['ref-ranges',     _ALL,         () => renderRefRanges()],
     ['config-leaderboard', _ALL,     () => renderConfigLeaderboard()],
     ['amount-depth',   _NO_AMOUNT,   () => renderAmountDepth()],
@@ -4686,6 +4800,7 @@ async function loadData() {
     try { renderFilterBar(); } catch (e) { console.error('[renderFilterBar]', e); }
     try { updateStats(); }    catch (e) { console.error('[updateStats]', e); }
     try { renderTable(); }    catch (e) { console.error('[renderTable]', e); }
+    try { renderLookup(); }   catch (e) { console.error('[renderLookup]', e); }
     try { renderRefRanges(); } catch (e) { console.error('[renderRefRanges]', e); }
     try { renderCharts(); }   catch (e) { console.error('[renderCharts]', e); }
     try { renderPublishedFields(); } catch (e) { console.error('[renderPublishedFields]', e); }
@@ -5000,6 +5115,730 @@ function renderRefRanges() {
     container.innerHTML = html;
 }
 
+// ── Where does my run sit? (B1, community redesign P2c) ──────────────
+// Brett's decision (2026-10-01): a count is placed in its cohort only when it
+// comes from the community search, DIA-NN 2.3.x against the frozen community
+// library at 1% run-level FDR (DDA: Sage 0.14.x against the frozen FASTA at
+// 1% PSM FDR). Every other search is refused, naming what differs and what
+// would make it comparable. No scaling factor is applied to any other engine,
+// version or library: that calibration (spec Part B) comes later, from paired
+// searches on Hive.
+// The cohort is the page's own B2 key (QC standard × instrument model × mode
+// × gradient × amount bucket) over the page's own rows (one per acquisition,
+// held-back runs out), ranked by the P2b rule: 5 or more runs, LC known. The
+// percentile is the mid-rank of the count among the cohort's runs.
+// Privacy: everything happens on this page. Nothing typed or dropped is sent
+// (no network call), stored (no browser storage) or put in the address. A
+// dropped DIA-NN log is read with FileReader, at most LK_LOG_MAX_BYTES of it,
+// and parsed into numbers and fixed vocabulary; the little echoed back from it
+// (the version, the library's file name) goes through esc().
+
+const LK_LOG_MAX_BYTES = 2 * 1024 * 1024;
+const LK_MAX_COUNT = 10000000;          // above any library or run
+const LK_NANO_TOL = Math.log(1.15);     // a typed nanoLC gradient matches a cohort within 15% in SPD
+const LK_EVOSEP_ORDER = [100, 60, 30, 200, 300, 500, 20, 40, 80, 120];
+// Models offered beyond the ones with runs, so a visitor on one of them gets
+// an honest "no cohort yet" rather than no option.
+const LK_EXTRA_MODELS = ['timsTOF Ultra 2', 'timsTOF Ultra', 'timsTOF SCP', 'timsTOF Pro 2', 'timsTOF Pro',
+    'Orbitrap Astral', 'Orbitrap Astral Zoom', 'Orbitrap Exploris 240', 'Orbitrap Eclipse', 'Orbitrap Ascend', 'Q Exactive HF-X'];
+const LK_OTHER_MODEL = 'Another model';
+// The frozen community libraries by file name, with their vendor (Methods
+// lists them with their md5). Any other library is not the community search.
+// A log that names one is checked by size as well: the precursors DIA-NN
+// reports loading from it ("Spectral library loaded: ... and N precursors"),
+// read from real DIA-NN 2.3.2 logs on Hive (three timsTOF HT searches of
+// hela_timstof_202604.parquet; the Exploris search in
+// tests/fixtures/diann_logs/). Name and size, not a checksum.
+const LK_FROZEN_LIBS = {
+    'hela_timstof_202604.parquet': { vendor: 'bruker', precursors: 53580 },
+    'hela_orbitrap_202604.parquet': { vendor: 'thermo', precursors: 170284 },
+};
+const LK_LIB_FILE = { bruker: 'hela_timstof_202604.parquet', thermo: 'hela_orbitrap_202604.parquet' };
+const LK_FASTA_FILE = 'human_hela_202604.fasta';
+const LK_DATASET = 'https://huggingface.co/datasets/brettsp/stan-benchmark/blob/main/';
+// UC Davis's cohorts on these models were searched against per-instrument
+// subsets of the frozen library (Methods; decision 11).
+const LK_SUBSET_MODELS = new Set(['timsTOF HT', 'Orbitrap Exploris 480']);
+const LK_AMOUNTS = [['50', '26–75 ng (the 50 ng standard)'], ['le25', '25 ng or less'], ['100_250', '76–250 ng'], ['gt250', 'More than 250 ng']];
+// Each option: [value, what the menu says, what the answer says].
+const LK_OPTS = {
+    DIA: {
+        eng: [['diann', 'DIA-NN', 'DIA-NN'], ['sn', 'Spectronaut', 'Spectronaut'],
+              ['other', 'Another engine (AlphaDIA, MaxDIA, FragPipe, PEAKS, …)', 'another engine']],
+        ver: [['2.3', '2.3.x (2.3.0, 2.3.1, 2.3.2)', '2.3.x'], ['2.7', '2.7.x', '2.7'], ['2.6', '2.6.x', '2.6'], ['2.5', '2.5.x', '2.5'],
+              ['2.2', '2.2.x', '2.2'], ['2.1', '2.1.x', '2.1'], ['2.0', '2.0.x', '2.0'], ['1.9', '1.9.x', '1.9'], ['1.8', '1.8.x', '1.8'],
+              ['old', '1.7 or older', '1.7 or older'], ['new', 'Newer than 2.7', 'newer than 2.7'], ['unk', 'Another version', 'another version']],
+        lib: [['frozen', 'Frozen STAN community library', 'the frozen community library'],
+              ['own', 'Lab-built, project or public library', 'a library built from your own runs, or a project or public library'],
+              ['free', 'Library-free (predicted from a FASTA)', 'library-free (predicted from a FASTA)']],
+        fdr: [['run1', '1%, run level (Q.Value ≤ 0.01)', '1% run-level FDR'],
+              ['global1', '1%, with Global.Q.Value ≤ 0.01 too', '1% global FDR'],
+              ['other', 'Another level (e.g. 5%), or not sure', 'another FDR']],
+        runs: [['alone', 'This run alone, MBR off', 'this run alone, MBR off'], ['batch', 'With other runs, MBR off', 'with other runs, MBR off'],
+               ['mbr1', 'This run alone, MBR on (--reanalyse)', 'this run alone, MBR on'], ['mbrN', 'With other runs, MBR on (--reanalyse)', 'with other runs, MBR on']],
+    },
+    DDA: {
+        eng: [['sage', 'Sage', 'Sage'], ['other', 'Another engine (MSFragger, Comet, MaxQuant, Mascot, …)', 'another engine']],
+        ver: [['0.14', '0.14.x', '0.14.x'], ['other', 'Another version', 'another version']],
+        lib: [['frozen', 'The frozen STAN FASTA (human_hela_202604.fasta)', 'the frozen community FASTA'], ['own', 'Another FASTA', 'another FASTA']],
+        fdr: [['psm1', '1%, PSM level (q ≤ 0.01)', '1% PSM-level FDR'], ['other', 'Another level, or not sure', 'another FDR']],
+    },
+};
+const LK_PLACE = ['mode', 'model', 'grad', 'mins', 'amt'];   // the run: these follow the filter bar until set here
+const LK_SEARCH = ['val', 'eng', 'ver', 'lib', 'fdr', 'runs']; // how it was searched: one set per mode, never from the bar
+function lkBlankSearch() { return { val: '', eng: '', ver: '', lib: '', fdr: '', runs: '' }; }
+const lk = { mode: 'DIA', model: '', grad: '', mins: '', amt: '50', DIA: lkBlankSearch(), DDA: lkBlankSearch() };
+const lkOwn = new Set();   // the place fields the visitor has set
+let lkLog = null;          // what the last dropped log said (plain values), or null
+let lkLogMsg = '';         // its read-back line: HTML built from escaped parts
+let lkStripData = null;    // what the strip plot draws: { v, val, model }
+
+function lkSearchState() { return lk[lk.mode]; }
+function lkOpt(field, value, i) { const o = (LK_OPTS[lk.mode][field] || []).find(x => x[0] === value); return o ? o[i == null ? 2 : i] : ''; }
+function lkWhat() { return lk.mode === 'DIA' ? 'precursors' : 'PSMs'; }
+function lkRunsText(n) { return `${fmtN(n)} run${n === 1 ? '' : 's'}`; }
+// The QC standard comes from the bar; "All standards" compares within HeLa.
+function lkSample() { return view.sample === 'all' ? 'hela' : view.sample; }
+function lkRows() { return rowsOfSample(lkSample()); }
+function lkVendor(model) {
+    const m = String(model || '').toLowerCase();
+    if (!m || model === LK_OTHER_MODEL) return null;
+    return m.includes('timstof') ? 'bruker' : 'thermo';
+}
+// A typed count: digits, with thousands separators allowed ("38,000").
+function lkCount(raw) {
+    const s = String(raw == null ? '' : raw).trim();
+    if (!s) return { v: null, bad: false };
+    const t = s.replace(/[\s,_'’]/g, '');
+    if (!/^\d{1,8}$/.test(t)) return { v: null, bad: true };
+    const v = +t;
+    return v > 0 && v <= LK_MAX_COUNT ? { v, bad: false } : { v: null, bad: true };
+}
+// Mid-rank percentile of `val` among sorted values (ties count half).
+function lkPct(val, sv) {
+    let lo = 0, eq = 0;
+    for (const x of sv) { if (x < val) lo++; else if (x === val) eq++; }
+    return 100 * (lo + eq / 2) / sv.length;
+}
+
+// ── Defaults from the filter bar ──
+// The run's fields follow the bar until the visitor sets them here: the
+// bar's mode (DIA when it shows both), its instrument (else the one with the
+// most runs), its amount (else 50 ng) and its gradient (else the instrument's
+// largest cohort at that amount).
+function lkDefaults() {
+    if (!lkOwn.has('mode') && MODE_TRACK[view.mode]) lk.mode = MODE_TRACK[view.mode];
+    const rows = lkRows();
+    if (!lkOwn.has('model')) {
+        if (view.model && rows.some(s => rowKey(s).m === view.model)) lk.model = view.model;
+        else {
+            const inMode = rows.filter(s => rowKey(s).t === lk.mode);
+            const top = [..._countBy(inMode.length ? inMode : rows, s => rowKey(s).m).entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+            lk.model = top ? top[0] : 'timsTOF HT';
+        }
+    }
+    if (!lkOwn.has('amt')) lk.amt = LK_AMOUNTS.some(([k]) => k === view.amount) ? view.amount : '50';
+    if (!lkOwn.has('grad')) lk.grad = lkDefaultGrad(rows);
+}
+function lkDefaultGrad(rows) {
+    const mine = rows.filter(s => { const k = rowKey(s); return k.m === lk.model && k.t === lk.mode && (k.lc === 'evosep' || k.lc === 'nanolc'); });
+    if (view.gradient && mine.some(s => rowKey(s).g === view.gradient)) return view.gradient;
+    const best = cohortsOf(mine).sort((a, b) => (b.amt === lk.amt) - (a.amt === lk.amt) || (b.ranked - a.ranked) || b.rows.length - a.rows.length)[0];
+    if (best) return best.grad;
+    return lkVendor(lk.model) === 'bruker' ? 'evosep:60' : 'nano';
+}
+
+// ── Input ──
+function lkSet(field, value) {
+    const v = String(value == null ? '' : value).slice(0, 200);
+    if (LK_PLACE.includes(field)) {
+        if (field === 'mode' && !LK_OPTS[v]) return;
+        lk[field] = v;
+        lkOwn.add(field);
+        lkDefaults();   // the fields still following the bar follow this one too (a new instrument, its largest cohort)
+    } else if (LK_SEARCH.includes(field)) {
+        lkSearchState()[field] = v;
+    } else {
+        return;
+    }
+    // While typing a count or minutes the form is not redrawn, so the caret stays put.
+    if (field !== 'val' && field !== 'mins') lkForm();
+    lkResult();
+}
+// The form never submits anywhere: Enter just redraws the answer.
+function lkSubmit(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    lkResult();
+    lkShowAnswer();
+    return false;
+}
+function lkClear() {
+    lkOwn.clear();
+    lk.DIA = lkBlankSearch(); lk.DDA = lkBlankSearch(); lk.mins = '';
+    lkLog = null; lkLogMsg = '';
+    const f = document.getElementById('ws-log');
+    if (f) f.value = '';
+    renderLookup();
+}
+function renderLookup() {
+    lkDefaults();
+    lkForm();
+    lkResult();
+}
+
+function lkShow(id, on) {
+    const el = document.getElementById(id);
+    if (!el || !el.classList) return;
+    if (on) el.classList.remove('ws-hidden'); else el.classList.add('ws-hidden');
+}
+function lkChoose(field, cur) {
+    return _optionsHtml([['', 'Choose…']].concat(LK_OPTS[lk.mode][field].map(o => [o[0], o[1]])), cur);
+}
+// The visitor's rows: the bar's QC standard, the chosen model and mode.
+function lkMine(rows) { return (rows || lkRows()).filter(s => { const k = rowKey(s); return k.m === lk.model && k.t === lk.mode; }); }
+
+function lkForm() {
+    const S = lkSearchState(), dia = lk.mode === 'DIA';
+    document.querySelectorAll('#ws-mode button[data-lkmode]').forEach(b => b.setAttribute('aria-pressed', String(b.getAttribute('data-lkmode') === lk.mode)));
+    _setText('ws-val-l', dia ? 'Precursors at 1% FDR' : 'PSMs at 1% FDR');
+    _setText('ws-val-h', dia
+        ? "STAN's count is unique Precursor.Id at run-level Q.Value ≤ 0.01, the last “Number of IDs at 0.01 FDR” line of the DIA-NN log. Precursors.Identified in report.stats.tsv counts fewer, so use the log line."
+        : 'Peptide-spectrum matches at q ≤ 0.01, from one run.');
+    const val = document.getElementById('ws-val');
+    if (val && val.value !== S.val) val.value = S.val;
+    lkShow('ws-drop-f', dia);
+    const lo = document.getElementById('ws-log-out');
+    if (lo) lo.innerHTML = dia ? lkLogMsg : '';
+    _setSelect('ws-eng', lkChoose('eng', S.eng), S.eng);
+    const named = S.eng === (dia ? 'diann' : 'sage');
+    ['ws-ver-f', 'ws-lib-f', 'ws-fdr-f'].forEach(id => lkShow(id, named));
+    lkShow('ws-runs-f', named && dia);
+    _setText('ws-lib-l', dia ? 'Library' : 'Database (FASTA)');
+    _setText('ws-fdr-l', dia ? 'Precursor FDR' : 'PSM FDR');
+    _setText('ws-lib-h', dia
+        ? "Frozen: hela_timstof_202604.parquet or hela_orbitrap_202604.parquet from the dataset. Lab-built includes STAN's own instrument_library.parquet. Library-free: --fasta-search, or a .predicted.speclib."
+        : 'Frozen: human_hela_202604.fasta from the dataset.');
+    _setText('ws-fdr-h', dia ? 'DIA-NN --qvalue 0.01 filters the main report at run-level Q.Value ≤ 0.01. Current DIA-NN filters at 5% by default; the community count is at 1%.' : '');
+    if (named) {
+        _setSelect('ws-ver', lkChoose('ver', S.ver), S.ver);
+        _setSelect('ws-lib', lkChoose('lib', S.lib), S.lib);
+        _setSelect('ws-fdr', lkChoose('fdr', S.fdr), S.fdr);
+        if (dia) _setSelect('ws-runs', lkChoose('runs', S.runs), S.runs);
+    }
+    // The run. Instruments with runs first (most first), then models no lab has shared yet.
+    const rows = lkRows();
+    const nByModel = _countBy(rows.filter(s => rowKey(s).t === lk.mode), s => rowKey(s).m);
+    const withRuns = [...new Set(rows.map(s => rowKey(s).m))].sort((a, b) => (nByModel.get(b) || 0) - (nByModel.get(a) || 0) || a.localeCompare(b));
+    const models = withRuns.concat(LK_EXTRA_MODELS.filter(m => !withRuns.includes(m)));
+    const modelOpts = models.map(m => { const n = nByModel.get(m) || 0; return [m, `${m} · ${n ? `${fmtN(n)} ${lk.mode} run${n === 1 ? '' : 's'}` : `no ${lk.mode} runs yet`}`]; })
+        .concat([[LK_OTHER_MODEL, `${LK_OTHER_MODEL} · no runs yet`]]);
+    _setSelect('ws-model', _optionsHtml(modelOpts, lk.model), lk.model);
+    // LC and gradient: every Evosep method, this instrument's nanoLC cohorts, or a typed gradient.
+    const mine = lkMine(rows);
+    const nAt = (g, a) => mine.filter(s => { const k = rowKey(s); return k.g === g && k.a === a; }).length;
+    const evo = LK_EVOSEP_ORDER.map(spd => { const g = `evosep:${spd}`, n = nAt(g, lk.amt); return [g, `${EVOSEP_METHODS[spd]} · ${n ? lkRunsText(n) : 'no runs yet'}`]; });
+    const nanoG = new Map();
+    mine.filter(s => rowKey(s).lc === 'nanolc').forEach(s => { const k = rowKey(s); if (!nanoG.has(k.g)) nanoG.set(k.g, { spd: k.spd, rows: [] }); nanoG.get(k.g).rows.push(s); });
+    const g0 = String(lk.grad).split(':');
+    if (g0[0] === 'nanolc' && !nanoG.has(lk.grad) && +g0[1] > 0) nanoG.set(lk.grad, { spd: +g0[1], rows: [] });
+    const nano = [...nanoG.entries()].sort((a, b) => b[1].spd - a[1].spd)
+        .map(([g, o]) => { const n = nAt(g, lk.amt); return [g, `${gradLabel('nanolc', o.spd, o.rows)} · ${n ? lkRunsText(n) : (o.rows.length ? 'none at this amount' : 'no runs yet')}`]; });
+    _setSelect('ws-grad', `<optgroup label="Evosep method">${_optionsHtml(evo, lk.grad)}</optgroup>`
+        + `<optgroup label="nanoLC or other LC">${_optionsHtml(nano.concat([['nano', 'Another gradient: enter its length']]), lk.grad)}</optgroup>`, lk.grad);
+    lkShow('ws-mins-f', lk.grad === 'nano');
+    const mins = document.getElementById('ws-mins');
+    if (mins && String(mins.value) !== String(lk.mins)) mins.value = lk.mins;
+    const amtOpts = LK_AMOUNTS.map(([k, label]) => { const n = lk.grad === 'nano' ? null : nAt(lk.grad, k); return [k, n == null ? label : `${label} · ${n ? lkRunsText(n) : 'no runs yet'}`]; });
+    _setSelect('ws-amt', _optionsHtml(amtOpts, lk.amt), lk.amt);
+}
+
+// ── The cohort ──
+// The visitor's cohort key, and the cohort when the page has one. A typed
+// nanoLC gradient becomes SPD = 1440 / (minutes × 1.25), matched to the
+// nearest nanoLC cohort at that amount within 15%.
+function lkResolve() {
+    const rows = lkRows(), mine = lkMine(rows);
+    let g = lk.grad, spdU = null;
+    if (g === 'nano') {
+        const mins = +lk.mins;
+        if (!(mins > 0 && mins < 10000)) return { mine, g: null, c: null, spdU: null, needMins: true };
+        spdU = 1440 / (mins * 1.25);
+        const near = cohortsOf(mine.filter(s => { const k = rowKey(s); return k.lc === 'nanolc' && k.a === lk.amt; }))
+            .map(c => ({ c, d: Math.abs(Math.log(c.spd / spdU)) })).sort((a, b) => a.d - b.d || b.c.rows.length - a.c.rows.length)[0];
+        g = near && near.d <= LK_NANO_TOL ? near.c.grad : null;
+    }
+    const c = g ? (cohortsOf(mine.filter(s => { const k = rowKey(s); return k.g === g && k.a === lk.amt; }))[0] || null) : null;
+    return { mine, g, c, spdU, needMins: false };
+}
+function lkGradText(R) {
+    if (lk.grad === 'nano') return R.spdU ? `a ${fmtN(+lk.mins)} min gradient (~${Math.round(R.spdU)} SPD)` : 'your gradient';
+    const [lc, spd] = String(lk.grad).split(':');
+    return lc === 'evosep' ? (EVOSEP_METHODS[+spd] || `Evosep ${+spd} SPD`) : gradLabel('nanolc', +spd, []);
+}
+function lkCohortName(c) { return `${SAMPLE_LABEL[lkSample()] || lkSample()} · ${cohortTitle(c)}`; }
+
+// ── Is it the community search? ──
+// Returns 'match', 'refuse' (with each difference) or 'incomplete' (with
+// what is still to choose). Nothing is ever scaled.
+function lkCheck() {
+    const S = lkSearchState(), dia = lk.mode === 'DIA', why = [], missing = [], notes = [], fix = [];
+    const vend = lkVendor(lk.model);
+    if (!S.eng) missing.push('the search engine');
+    else if (dia && S.eng === 'sn') {
+        why.push('<b>Spectronaut</b> is not the community search, and its directDIA counts move with the size of the experiment: on the same UC Davis HeLa raw files it read well above STAN\'s count in multi-run experiments and well below it in single-run ones.');
+    } else if (S.eng === 'other') {
+        why.push(dia ? '<b>Another engine</b> is not the community search, and no conversion between engines is published yet.'
+                     : '<b>Another DDA engine</b> is not the community search: engines score and filter PSMs differently.');
+    } else {
+        if (!S.ver) missing.push('the version');
+        else if (dia && S.ver !== '2.3') {
+            const exact = lkLog && lkLog.verKey === S.ver && lkLog.version ? lkLog.version : lkOpt('ver', S.ver);
+            why.push(`<b>DIA-NN ${esc(exact)}</b> is not the community version, 2.3.x. Scoring, calibration and defaults change between versions; current DIA-NN filters the main report at 5% FDR by default, while the community count is at 1%.`);
+        } else if (!dia && S.ver !== '0.14') why.push('<b>Another Sage version</b>: the community DDA search is Sage 0.14.x.');
+        if (!S.lib) missing.push(dia ? 'the library' : 'the database');
+        else if (dia && S.lib === 'free') {
+            why.push('<b>Library-free or predicted</b> (from a FASTA, <code>--predictor</code>, or a <code>.predicted.speclib</code>): the community search uses the frozen empirical library, and a library-free count is a different quantity, above or below STAN\'s for the same raw file depending on the version, MBR and instrument.');
+        } else if (dia && S.lib === 'own') {
+            why.push(lkLog && lkLog.renamedFrozen && S.lib === lkLog.libKind
+                ? `<b><code class="ws-file">${esc(lkLog.libName)}</code></b> here loaded ${fmtN(lkLog.libLoaded)} precursors, but the frozen library holds ${fmtN(LK_FROZEN_LIBS[lkLog.libName.toLowerCase()].precursors)}: it is another library under the frozen library's name.`
+                : lkLog && lkLog.instrumentLib && S.lib === lkLog.libKind
+                ? '<b>STAN\'s <code>instrument_library.parquet</code></b> is built from your own lab\'s runs, not the frozen community library. Its size sets the ceiling on what can be identified, so counts compare only within it.'
+                : '<b>A library from your own runs, or a project or public library</b>: its size and content set the ceiling on what can be identified, so counts compare only within one library.');
+        } else if (dia && S.lib === 'frozen' && lkLog && lkLog.libKind === 'frozen' && vend && lkLog.libVendor !== vend) {
+            fix.push(`Your log searched <code class="ws-file">${esc(lkLog.libName)}</code>, the ${lkLog.libVendor === 'bruker' ? 'timsTOF' : 'Orbitrap'} library, but the instrument chosen is ${esc(lk.model)}. Pick the instrument you ran.`);
+        } else if (!dia && S.lib === 'own') why.push('<b>Another FASTA</b>: the size of the database changes the PSM FDR. The community search uses <code>human_hela_202604.fasta</code>.');
+        if (!S.fdr) missing.push('the FDR');
+        else if (dia && S.fdr === 'global1') why.push('<b>A global 1% filter</b> (<code>Global.Q.Value</code> as well as <code>Q.Value</code>): STAN counts at run-level <code>Q.Value</code> ≤ 0.01 only, and the extra filter removes some precursors, more on weak runs.');
+        else if (S.fdr === 'other') why.push(dia ? '<b>Not 1% run-level FDR</b>: STAN counts precursors at <code>Q.Value</code> ≤ 0.01. A report filtered at a looser level, such as current DIA-NN\'s 5% default, holds more precursors.'
+                                                 : '<b>Not 1% PSM-level FDR</b>: the community search counts PSMs at q ≤ 0.01.');
+        if (dia) {
+            if (!S.runs) missing.push('whether it was searched alone, and MBR');
+            else if (S.runs === 'mbr1' || S.runs === 'mbrN') why.push('<b>Match-between-runs</b> (<code>--reanalyse</code>): a second pass searches the run against a library built from the search\'s own runs, so the count is no longer a frozen-library count. The community search runs each file alone with MBR off.');
+            else if (S.runs === 'batch') notes.push('Searched with other runs, MBR off: each run is still identified on its own, but unless the mass accuracy is fixed DIA-NN tunes it on the first run of the batch, which can move a count slightly.');
+        }
+        // How far the search details were checked.
+        const logged = dia && lkLog && lkLog.libKind === S.lib && lkLog.verKey === S.ver && (lkLog.runs || '') === S.runs && lkLog.fdr === S.fdr;
+        if (logged && S.lib === 'frozen') notes.push(lkLog.libCheck === 'name+size'
+            ? `The library was checked from your log by file name and size (${fmtN(lkLog.libLoaded)} precursors loaded), not by checksum.`
+            : 'The library was matched from your log by file name only (the log does not say how many precursors it loaded), not by checksum.');
+        else if (!logged) notes.push(dia ? 'The search details are as you entered them: self-reported, not checked. Drop the DIA-NN log to check the library by name and size.'
+                                         : 'The search details are as you entered them: self-reported, not checked.');
+    }
+    return { state: why.length ? 'refuse' : fix.length ? 'fix' : missing.length ? 'incomplete' : 'match', why, missing, notes, fix };
+}
+// "DIA-NN 2.3.2 · the frozen community library · this run alone, MBR off · 1% run-level FDR"
+function lkConfigText() {
+    const S = lkSearchState(), dia = lk.mode === 'DIA', parts = [];
+    if (!S.eng) return '';
+    let eng = lkOpt('eng', S.eng);
+    if (S.eng === (dia ? 'diann' : 'sage') && S.ver) eng += ' ' + (lkLog && dia && lkLog.verKey === S.ver ? lkLog.version : lkOpt('ver', S.ver));
+    parts.push(eng);
+    if (S.eng === (dia ? 'diann' : 'sage')) {
+        if (S.lib) parts.push(lkOpt('lib', S.lib));
+        if (dia && S.runs) parts.push(lkOpt('runs', S.runs));
+        if (S.fdr) parts.push(lkOpt('fdr', S.fdr));
+    }
+    return parts.join(' · ');
+}
+
+// ── The answer ──
+function lkResult() {
+    const out = document.getElementById('ws-out');
+    if (!out) return;
+    lkStripData = null;
+    const dia = lk.mode === 'DIA', what = lkWhat(), S = lkSearchState();
+    const n = lkCount(S.val), R = lkResolve(), chk = lkCheck(), c = R.c;
+    const typed = n.v != null ? `<b>${fmtN(n.v)}</b> ${what}` : `your ${what}`;
+    const html = [];
+    let head;
+    if (chk.state === 'refuse') head = `<div class="ws-pct no">Can't compare yet<small>not the community search</small></div>`;
+    else if (chk.state === 'fix') head = `<div class="ws-pct wait">Pick the instrument you ran</div>`;
+    else if (chk.state === 'incomplete') head = `<div class="ws-pct wait">How was it searched?</div>`;
+    else if (R.needMins) head = `<div class="ws-pct wait">Enter your gradient length</div>`;
+    else if (!c) head = `<div class="ws-pct no">No cohort yet</div>`;
+    else if (!c.ranked) head = c.why === 'sparse' ? `<div class="ws-pct no">Too few runs<small>for a percentile</small></div>` : `<div class="ws-pct no">Not ranked</div>`;
+    else if (n.bad) head = `<div class="ws-pct wait">Enter a whole number</div>`;
+    else if (n.v == null) head = `<div class="ws-pct wait">Enter your ${what}</div>`;
+    else {
+        const v = sortedNums(c.rows.map(primaryOf));
+        head = n.v > v[v.length - 1] ? `<div class="ws-pct">Above every run<small>in the cohort</small></div>`
+            : n.v < v[0] ? `<div class="ws-pct">Below every run<small>in the cohort</small></div>`
+            : `<div class="ws-pct">${ordinal(Math.min(99, Math.max(1, Math.round(lkPct(n.v, v)))))}<small>percentile</small></div>`;
+    }
+    html.push(`<div class="ws-head">${head}</div>`);
+    if (R.spdU) {
+        html.push(`<div class="ws-map">Your ${fmtN(+lk.mins)} min gradient ≈ <b>${Math.round(R.spdU)} SPD</b> (1440 ÷ (${fmtN(+lk.mins)} × 1.25)).`
+            + (c ? ` Nearest cohort: <b>${esc(cohortGradLabel(c))}</b>.` : ' No nanoLC cohort of this instrument is within 15% of it.') + '</div>');
+    }
+    if (chk.state === 'refuse') html.push(lkRefuseHtml(chk, typed));
+    else if (chk.state === 'fix') html.push(`<div class="ws-refuse">${chk.fix.map(x => `<div>${x}</div>`).join('')}</div>`);
+    else if (chk.state === 'incomplete') {
+        html.push(`<div class="ws-note">Choose ${chk.missing.join(', ')} above, or drop the DIA-NN log, to place ${typed}. Only a count from the community search is placed in a cohort; any other search is told why not.</div>`);
+    }
+    if (R.needMins) html.push('<div class="ws-note">Enter the gradient length in minutes: it is converted to SPD and matched to the nearest nanoLC cohort.</div>');
+    else if (!c) html.push(lkNoCohortHtml(R));
+    else html.push(lkCohortHtml(c, chk.state === 'match' && !n.bad ? n.v : null, chk));
+    html.push(`<div class="ws-foot"><span>Nothing you entered left this page.</span><a href="#join">Track your runs over time: join the benchmark &rarr;</a></div>`);
+    out.innerHTML = html.join('');
+    lkDrawStrip();
+}
+
+function lkRefuseHtml(chk, typed) {
+    const dia = lk.mode === 'DIA', vend = lkVendor(lk.model);
+    const cfg = lkConfigText();
+    const lib = vend ? `<a href="${LK_DATASET}community_library/${LK_LIB_FILE[vend]}">${LK_LIB_FILE[vend]}</a>`
+        : `the frozen library for your vendor (<a href="${LK_DATASET}community_library/${LK_LIB_FILE.bruker}">${LK_LIB_FILE.bruker}</a> or <a href="${LK_DATASET}community_library/${LK_LIB_FILE.thermo}">${LK_LIB_FILE.thermo}</a>)`;
+    const fasta = `<a href="${LK_DATASET}community_fasta/${LK_FASTA_FILE}">${LK_FASTA_FILE}</a>`;
+    const fix = dia
+        ? `<div><b>To place this run</b>, search the raw file again with DIA-NN 2.3.x, on its own and with MBR off, against ${lib} and ${fasta} from the dataset, as STAN does: `
+          + `<code class="ws-cmd">${[`--lib ${vend ? LK_LIB_FILE[vend] : 'hela_&lt;vendor&gt;_202604.parquet'}`, `--fasta ${LK_FASTA_FILE}`, '--qvalue 0.01',
+                '--min-pep-len 7', '--max-pep-len 30', '--missed-cleavages 1', '--min-pr-charge 2', '--max-pr-charge 4'].map(f => `<span>${f}</span>`).join(' ')}</code>`
+          + 'Then drop its <code>report.log.txt</code> here, or enter the last “Number of IDs at 0.01 FDR” line.</div>'
+        : `<div><b>To place this run</b>, search the raw file with Sage 0.14.x against ${fasta} with the parameters under <a href="#methods">Methods</a>, and count PSMs at q ≤ 0.01.</div>`;
+    const plan = dia
+        ? '<div class="ws-note">Converting counts from other engines, versions and libraries is planned: STAN is searching the same HeLa raw files both ways to calibrate it, and the conversion will appear here only once it passes validation. Until then nothing is scaled. Don\'t rescale your number by hand; calibration is planned.</div>'
+        : '<div class="ws-note">A calibration between searches is planned for DIA precursor counts first; DDA PSM counts are not covered yet. Nothing is scaled. Don\'t rescale your number by hand.</div>';
+    return `<div class="ws-refuse"><div>You entered ${typed}${cfg ? ` (${esc(cfg)})` : ''}. It is not placed in a cohort, because:</div>`
+        + `<ul>${chk.why.map(w => `<li>${w}</li>`).join('')}</ul>`
+        + (chk.missing.length ? `<div class="ws-note">Still to choose: ${chk.missing.join(', ')}.</div>` : '')
+        + fix + '</div>' + plan;
+}
+
+// A cohort: the reference population named, its spread, and the visitor's
+// place in it when `val` is a placeable count.
+function lkCohortHtml(c, val, chk) {
+    const what = lkWhat(), v = sortedNums(c.rows.map(primaryOf)), nRuns = v.length, nLabs = labCount(c.rows);
+    const placed = val != null && c.ranked;
+    const lines = [], notes = [];
+    if (c.ranked) {
+        if (placed) {
+            const p = lkPct(val, v);
+            lines.push(val > v[nRuns - 1] ? `Your <b>${fmtN(val)}</b> ${what} are above every one of the <b>${fmtN(nRuns)}</b> runs in this cohort.`
+                : val < v[0] ? `Your <b>${fmtN(val)}</b> ${what} are below every one of the <b>${fmtN(nRuns)}</b> runs in this cohort.`
+                : `Your <b>${fmtN(val)}</b> ${what} are higher than <b>${Math.round(p)}%</b> of the <b>${fmtN(nRuns)}</b> runs in this cohort.`);
+        }
+        lines.push(nRuns >= MIN_FOR_IQR
+            ? `Cohort median <b>${fmtN(quant(v, 0.5))}</b> ${what}; middle half <b>${fmtN(quant(v, 0.25))} – ${fmtN(quant(v, 0.75))}</b>.`
+            : `The ${nRuns} runs: <b>${v.map(fmtN).join(' · ')}</b> ${what} (median ${fmtN(quant(v, 0.5))}).`);
+        if (nRuns < MIN_FOR_IQR) notes.push(`Only ${nRuns} runs: one more run can move a percentile by several points.`);
+        lkStripData = { v, val: placed ? val : null, model: c.model };
+    } else {
+        lines.push(`This cohort is not ranked: ${esc(whyText(c))}. A cohort is ranked from ${MIN_FOR_CARD} runs with its LC known.`);
+        lines.push(`${nRuns === 1 ? 'Its run' : `Its ${nRuns} runs`}: <b>${v.map(fmtN).join(' · ')}</b> ${what}.`
+            + (val != null ? ` Yours is above ${v.filter(x => x < val).length} of them.` : ''));
+    }
+    if (nLabs < 2) notes.push(`All ${nRuns === 1 ? 'of it comes' : `${fmtN(nRuns)} runs come`} from one lab, so this places a run in that lab's history, not among labs. Every QC injection shared counts, failed runs included.`);
+    else notes.push('Every QC injection shared counts, failed runs included.');
+    if (lk.mode === 'DIA' && LK_SUBSET_MODELS.has(c.model)) {
+        notes.push(c.model === 'timsTOF HT'
+            ? "UC Davis's runs in this cohort were searched against a subset of the frozen library built from that lab's own runs (see Methods). On the same timsTOF raws the full library gave a slightly higher count than the subset, so a full-library count can read slightly high here until those runs are re-searched."
+            : "UC Davis's runs in this cohort were searched against a subset of the frozen library built from that lab's own runs (see Methods), so a full-library count compares closely but not exactly until those runs are re-searched.");
+    }
+    if (chk && chk.state === 'match') {
+        chk.notes.forEach(x => notes.push(x));
+        if (val != null) notes.push(`Compared as the community search: ${esc(lkConfigText())}.`);
+    }
+    const lead = chk && chk.state === 'refuse' ? 'Your cohort would be the' : placed ? 'Among the' : 'Your cohort: the';
+    return `<div class="ws-coh">${lead} ${fmtN(nRuns)} run${nRuns === 1 ? '' : 's'} in <b>${esc(lkCohortName(c))}</b></div>`
+        + `<div class="ws-meta"><span><b>${runsLabsText(nRuns, nLabs)}</b></span>${singleLabTag(nLabs)}<span>${esc(dateSpanText(c.rows))}</span>`
+        + `<button type="button" class="ws-link" onclick="lkShowCard()">Show this cohort in the reference ranges &darr;</button></div>`
+        + (lkStripData ? '<div class="ws-strip" id="ws-strip"></div>' : '')
+        + `<div class="ws-lines">${lines.map(l => `<div>${l}</div>`).join('')}</div>`
+        + notes.map(x => `<div class="ws-note">${x}</div>`).join('');
+}
+
+// No cohort for this run yet: say why, and what is near.
+function lkNoCohortHtml(R) {
+    const sample = SAMPLE_LABEL[lkSample()] || lkSample(), out = [];
+    const model = lk.model === LK_OTHER_MODEL ? 'this model' : lk.model;
+    if (!R.mine.length) out.push(`No lab has shared ${esc(model)} ${lk.mode} ${esc(sample)} runs yet.`);
+    else out.push(`No lab has shared ${esc(model)} ${lk.mode} runs at ${esc(lkGradText(R))} with ${esc(AMOUNT_LABEL[lk.amt] || lk.amt)} loaded.`);
+    const extra = [];
+    const spdT = R.spdU || +String(lk.grad).split(':')[1] || 0;
+    if (R.mine.length && spdT > 0) {
+        // Runs at this SPD whose LC makes them unranked (no LC recorded, or an unverified Evosep SPD).
+        cohortsOf(R.mine.filter(s => { const k = rowKey(s); return k.a === lk.amt && (k.lc === 'unrec' || k.lc === 'evosep_unv') && Math.abs(Math.log(k.spd / spdT)) <= LK_NANO_TOL; }))
+            .forEach(x => extra.push(`${lkRunsText(x.rows.length)} at ${x.spd} SPD exist but are not ranked: ${esc(whyText(x))}.`));
+        // The same gradient at other amounts.
+        const g = R.g || lk.grad;
+        LK_AMOUNTS.filter(([k]) => k !== lk.amt).forEach(([k, label]) => {
+            const m = R.mine.filter(s => { const r = rowKey(s); return r.g === g && r.a === k; }).length;
+            if (m) extra.push(`Same gradient at another amount: <button type="button" class="ws-link" onclick="lkSet('amt', '${k}')">${esc(label)} · ${lkRunsText(m)}</button>`);
+        });
+        const near = cohortsOf(R.mine.filter(s => rowKey(s).a === lk.amt)).filter(x => x.ranked)
+            .sort((a, b) => Math.abs(Math.log(a.spd / spdT)) - Math.abs(Math.log(b.spd / spdT)) || b.rows.length - a.rows.length)[0];
+        if (near) extra.push(`Nearest ranked ${esc(model)} cohort at ${esc(AMOUNT_LABEL[lk.amt])}: ${esc(cohortGradLabel(near))} · ${lkRunsText(near.rows.length)}. It is a different gradient, so no percentile is given against it.`);
+    }
+    return `<div class="ws-note">${out.join(' ')} <a href="#join">Join the benchmark to start this cohort &rarr;</a></div>`
+        + extra.map(x => `<div class="ws-note">${x}</div>`).join('');
+}
+
+// Set the filter bar to this cohort and scroll to its card. The visitor asks
+// for this, so the page filter changes only here.
+function lkShowCard() {
+    const R = lkResolve();
+    if (!R.c) return;
+    setView({ sample: lkSample(), mode: lk.mode.toLowerCase(), model: lk.model, gradient: R.c.grad, amount: R.c.amt, column: '' });
+    const el = document.getElementById('ranges');
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+}
+
+// ── The strip: every run in the cohort, the middle half, the median, and the visitor ──
+function lkTicks(lo, hi, n) {
+    const span = (hi - lo) || 1, p = Math.pow(10, Math.floor(Math.log10(span / Math.max(1, n))));
+    const step = [1, 2, 2.5, 5, 10].map(k => k * p).find(k => span / k <= n) || 10 * p;
+    const t = [];
+    for (let x = Math.floor(lo / step) * step; x <= Math.ceil(hi / step) * step + step * 1e-9; x += step) t.push(Math.round(x * 1e6) / 1e6);
+    return t;
+}
+function lkDrawStrip() {
+    const box = document.getElementById('ws-strip');
+    if (!box || !lkStripData) return;
+    const { v, val, model } = lkStripData;
+    const W = Math.max(280, Math.round(box.clientWidth || 0)), H = 112, m = { l: 12, r: 12, t: 28, b: 22 };
+    const lo0 = Math.min(v[0], val != null ? val : v[0]), hi0 = Math.max(v[v.length - 1], val != null ? val : v[0]);
+    const pad = (hi0 - lo0) * 0.04 || Math.max(1, hi0 * 0.05);
+    const tk = lkTicks(Math.max(0, lo0 - pad), hi0 + pad, W < 420 ? 4 : 6), x0 = tk[0], x1 = tk[tk.length - 1];
+    const X = (x) => (m.l + (x - x0) / ((x1 - x0) || 1) * (W - m.l - m.r)).toFixed(1);
+    const yc = m.t + (H - m.t - m.b) / 2, bh = H - m.t - m.b;
+    const jit = (i) => ((((i + 1) * 2654435761) >>> 0) % 1000) / 1000 - 0.5;
+    const col = fc(model), r = v.length > 300 ? 1.7 : 2.4;
+    let g = '';
+    tk.forEach(t => { g += `<line x1="${X(t)}" x2="${X(t)}" y1="${m.t - 6}" y2="${H - m.b}" style="stroke:rgba(255,191,0,0.08)"/><text class="ws-ax" x="${X(t)}" y="${H - 6}" text-anchor="middle">${fmtK(t)}</text>`; });
+    const p10 = quant(v, 0.1), p25 = quant(v, 0.25), p50 = quant(v, 0.5), p75 = quant(v, 0.75), p90 = quant(v, 0.9);
+    g += `<rect x="${X(p25)}" y="${m.t - 4}" width="${Math.max(1, X(p75) - X(p25)).toFixed(1)}" height="${bh + 8}" rx="4" style="fill:rgba(160,180,204,0.10);stroke:rgba(160,180,204,0.35)"/>`;
+    g += `<line x1="${X(p10)}" x2="${X(p90)}" y1="${yc}" y2="${yc}" style="stroke:rgba(160,180,204,0.4);stroke-width:1"/>`;
+    v.forEach((x, i) => { g += `<circle cx="${X(x)}" cy="${(yc + jit(i) * (bh - 6)).toFixed(1)}" r="${r}" style="fill:${col};fill-opacity:0.5"/>`; });
+    g += `<line x1="${X(p50)}" x2="${X(p50)}" y1="${m.t - 4}" y2="${H - m.b + 4}" style="stroke:var(--text-primary);stroke-width:2"/>`;
+    let showMed = true;
+    if (val != null) {
+        const xv = +X(val), anc = xv > W - 90 ? 'end' : xv < 90 ? 'start' : 'middle', dx = anc === 'start' ? 4 : anc === 'end' ? -4 : 0;
+        g += `<line x1="${xv}" x2="${xv}" y1="${m.t - 16}" y2="${H - m.b + 4}" style="stroke:var(--ucd-gold);stroke-width:2.5"/>`
+            + `<circle cx="${xv}" cy="${yc}" r="5.5" style="fill:var(--ucd-gold);stroke:var(--ucd-blue-dark);stroke-width:2"/>`
+            + `<text class="ws-ax-s" x="${xv + dx}" y="${m.t - 19}" text-anchor="${anc}">You · ${fmtN(val)}</text>`;
+        if (Math.abs(xv - X(p50)) < 70) showMed = false;
+    }
+    if (showMed) g += `<text class="ws-ax" x="${X(p50)}" y="${m.t - 10}" text-anchor="middle">median</text>`;
+    const label = `${v.length} runs in the cohort` + (val != null ? `; yours, ${fmtN(val)}, is marked in gold` : '');
+    box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(label)}">${g}</svg>`
+        + `<div class="ws-legend"><span><i style="width:9px;height:9px;border-radius:50%;background:${col};opacity:0.7"></i>one run</span>`
+        + '<span><i style="width:16px;height:10px;background:rgba(160,180,204,0.10);border:1px solid rgba(160,180,204,0.35)"></i>middle half</span>'
+        + '<span>line: 10th–90th percentile</span><span>white line: median</span></div>';
+}
+if (typeof window !== 'undefined' && window.addEventListener) {
+    let _lkTimer = null;
+    window.addEventListener('resize', () => { clearTimeout(_lkTimer); _lkTimer = setTimeout(lkDrawStrip, 150); });
+    // A file dropped beside the drop zone would make the browser open it in
+    // place of the page; nothing outside the zone takes a drop.
+    ['dragover', 'drop'].forEach(t => window.addEventListener(t, (e) => {
+        const types = e && e.dataTransfer && e.dataTransfer.types;
+        const files = types && Array.prototype.indexOf.call(types, 'Files') >= 0;
+        if (files && !(e.target && e.target.closest && e.target.closest('#ws-drop'))) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; }
+    }));
+}
+
+// ── A dropped DIA-NN log ──
+function lkDrag(e, on) {
+    if (e && e.preventDefault) e.preventDefault();
+    const z = document.getElementById('ws-drop');
+    if (z && z.classList) { if (on) z.classList.add('over'); else z.classList.remove('over'); }
+}
+function lkDrop(e) {
+    lkDrag(e, false);
+    const f = e && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) lkReadFile(f);
+}
+function lkFile(files) { const f = files && files[0]; if (f) lkReadFile(f); }
+// Read with FileReader only, and only the first LK_LOG_MAX_BYTES: the
+// version banner and command line are on the first lines, and a one-file
+// log is a few kB.
+function lkReadFile(f) {
+    let r;
+    try { r = new FileReader(); } catch (e) { lkLogMsg = 'This browser cannot read the file here. Nothing was changed.'; lkForm(); return; }
+    const cut = (+f.size || 0) > LK_LOG_MAX_BYTES;
+    r.onload = () => lkApplyLog(parseDiannLog(String(r.result == null ? '' : r.result)), cut);
+    r.onerror = () => { lkLogMsg = 'That file could not be read. Nothing was changed.'; lkForm(); };
+    r.readAsText(f.slice ? f.slice(0, LK_LOG_MAX_BYTES) : f);
+}
+// DIA-NN version string → the version menu's value. There is no DIA-NN 2.4.
+function lkVerKey(ver) {
+    const m = /^(\d+)\.(\d+)/.exec(ver || '');
+    if (!m) return 'unk';
+    const a = +m[1], b = +m[2];
+    if (a < 1 || (a === 1 && b < 8)) return 'old';
+    if (a > 2 || (a === 2 && b > 7)) return 'new';
+    const k = `${a}.${b}`;
+    return LK_OPTS.DIA.ver.some(o => o[0] === k) ? k : 'unk';
+}
+// Parse a DIA-NN report.log.txt into plain values. The file is untrusted:
+// only fixed patterns are read (a version of digits, numbers, known flags),
+// and the one free string kept, the library's file name, is capped and
+// escaped wherever it is shown. A line longer than LK_LOG_MAX_LINE is never
+// matched, and every pattern is linear, so no file can stall the page.
+// Checked against real 1.9, 2.3.0, 2.3.2 and 2.7.0 logs
+// (tests/fixtures/diann_logs/) and the DIA-NN README:
+//   banner      "DIA-NN 2.3.0 Academia  (Data-Independent Acquisition ...)",
+//               "DIA-NN 1.9 (Data-Independent ...)"; first non-blank line
+//   command     "/diann-2.3.0/diann-linux --f ... --lib ... --qvalue 0.01 ...",
+//               "diann.exe --f X.raw  --lib  --threads 32 ..." (GUI: an
+//               empty --lib, double spaces, paths with spaces unquoted)
+//   --lib X     the spectral library; --fasta-search a library-free search;
+//   --predictor predicted spectra; --reanalyse MBR; --qvalue X the main
+//               report's precursor FDR; --cfg settings from a file
+//   echo lines  "Output will be filtered at 0.01 FDR", "N files will be
+//               processed", "MBR enabled; ..." (2.x) or "... used to
+//               reanalyse them; ..." (1.9), "Library-free search enabled"
+//               (1.9) or "DIA-NN will carry out FASTA digest ..." (2.x),
+//               "Deep learning will be used to generate a new in silico
+//               spectral library ...", "[0:00] Loading spectral library
+//               <path>", "[0:00] Spectral library loaded: ... and 53580
+//               precursors in ..." (the size checked against LK_FROZEN_LIBS)
+//   the count   "[2:03] Number of IDs at 0.01 FDR: 23984", the last one: on a
+//               one-file search this equals STAN's count (unique
+//               Precursor.Id at Q.Value <= 0.01)
+// With no --qvalue and no "Output will be filtered at" line the FDR is left
+// for the visitor to choose: the README says only that current DIA-NN
+// filters the main report at 5% by default.
+const LK_LOG_MAX_LINE = 4096;
+const LK_NUM = /^(?:\d+(?:\.\d+)?|\.\d+)(?:e-?\d{1,2})?$/i;
+function parseDiannLog(text) {
+    const o = { ok: false, version: null, verKey: null, cmd: false, cfg: false, libs: [], libName: null, libKind: null,
+                libVendor: null, libLoaded: null, libCheck: null, renamedFrozen: false, instrumentLib: false,
+                fastaSearch: false, predictor: false, mbr: false, qvalue: null, fdr: '', nfiles: null, runs: null, count: null };
+    const s = String(text == null ? '' : text).slice(0, LK_LOG_MAX_BYTES);
+    const lines = s.split(/\r\n|\r|\n/);
+    const ok = (l) => typeof l === 'string' && l.length <= LK_LOG_MAX_LINE;
+    // The banner: the first non-blank line of the first five.
+    for (let i = 0; i < Math.min(5, lines.length); i++) {
+        if (!ok(lines[i])) break;
+        const l = lines[i].trim();
+        if (!l) continue;
+        const m = /^DIA-NN\s+(\d{1,2}\.\d{1,2}(?:\.\d{1,3})?)(?=\s|\(|$)/.exec(l);
+        if (m) { o.version = m[1]; o.verKey = lkVerKey(m[1]); o.ok = true; }
+        break;
+    }
+    if (!o.ok) return o;
+    // The header runs to the "N files will be processed" line or the first
+    // timestamped line; the command line is the first in it with options.
+    let end = Math.min(lines.length, 400);
+    for (let i = 1; i < end; i++) {
+        const l = lines[i];
+        if (!ok(l)) continue;
+        let m;
+        if (/^\[[\d:]{3,12}\]/.test(l)) { end = i; break; }
+        if ((m = /^(\d{1,7}) files? will be processed\s*$/.exec(l))) { o.nfiles = +m[1]; end = i; break; }
+        if (!o.cmd && /(^|\s)--(f|lib|fasta|out|dir|cfg|qvalue|threads)(\s|$)/.test(l)) {
+            o.cmd = true;
+            let nf = 0;
+            for (const part of (' ' + l).split(/\s--(?=[A-Za-z])/).slice(1)) {
+                const k = /^[A-Za-z][\w-]{0,40}/.exec(part);
+                if (!k) continue;
+                const key = k[0].toLowerCase(), v = part.slice(k[0].length).trim();
+                if (key === 'f') nf++;
+                else if (key === 'lib' && v) o.libs.push(v);
+                else if (key === 'fasta-search') o.fastaSearch = true;
+                else if (key === 'predictor') o.predictor = true;
+                else if (key === 'reanalyse') o.mbr = true;
+                else if (key === 'cfg') o.cfg = true;
+                else if (key === 'qvalue' && LK_NUM.test(v)) o.qvalue = +v;
+            }
+            if (nf) o.nfiles = nf;
+        }
+        if (/^MBR enabled\b/.test(l) || /used to reanalyse them/.test(l)) o.mbr = true;
+        if (/^Library-free search enabled/.test(l) || /^DIA-NN will carry out FASTA digest/.test(l)) o.fastaSearch = true;
+        if (/^Deep learning will be used to generate a new in silico spectral library/.test(l)) o.predictor = true;
+        let q;
+        if (o.qvalue == null && (q = /^Output will be filtered at (\S+) FDR\s*$/.exec(l)) && LK_NUM.test(q[1])) o.qvalue = +q[1];
+    }
+    // The library DIA-NN loaded: its path when no --lib names it (a --cfg
+    // run, or a command line too long to read), and how many precursors it held.
+    for (let i = end; i < Math.min(lines.length, end + 40); i++) {
+        const l = lines[i];
+        if (!ok(l)) continue;
+        let m;
+        if (!o.libs.length && (m = /^\[[\d:]{3,12}\] Loading spectral library (\S(?:.*\S)?)\s*$/.exec(l))) o.libs.push(m[1]);
+        if (/^\[[\d:]{3,12}\] Spectral library loaded: /.test(l) && (m = / and (\d{1,9}) precursors in /.exec(l))) { o.libLoaded = +m[1]; break; }
+    }
+    // The count: the last "Number of IDs at 0.01 FDR" line, kept for a one-file search only.
+    if (o.nfiles === 1) {
+        for (let i = lines.length - 1; i >= 0; i--) {
+            if (!ok(lines[i])) continue;
+            const m = /^\[[\d:]{3,12}\] Number of IDs at 0\.01 FDR: (\d{1,8})\s*$/.exec(lines[i]);
+            if (m) { const v = +m[1]; if (v > 0 && v <= LK_MAX_COUNT) o.count = v; break; }
+        }
+    }
+    // What kind of library. The frozen one is recognised by its file name
+    // and the number of precursors DIA-NN loaded from it, not by checksum.
+    if (o.libs.length) o.libName = String(o.libs[o.libs.length - 1]).split(/[\\/]/).pop().trim().slice(0, 120);
+    const low = (o.libName || '').toLowerCase();
+    const frozen = o.libName && Object.prototype.hasOwnProperty.call(LK_FROZEN_LIBS, low) ? LK_FROZEN_LIBS[low] : null;
+    if (o.fastaSearch || o.predictor || /\.predicted\.speclib$/.test(low)) o.libKind = 'free';
+    else if (o.libs.length > 1) o.libKind = 'own';
+    else if (frozen && o.libLoaded == null) { o.libKind = 'frozen'; o.libVendor = frozen.vendor; o.libCheck = 'name'; }
+    else if (frozen && o.libLoaded === frozen.precursors) { o.libKind = 'frozen'; o.libVendor = frozen.vendor; o.libCheck = 'name+size'; }
+    else if (frozen) { o.libKind = 'own'; o.renamedFrozen = true; o.libVendor = frozen.vendor; }
+    else if (o.libName) { o.libKind = 'own'; o.instrumentLib = low === 'instrument_library.parquet'; }
+    // FDR: only what the log states.
+    if (o.qvalue != null) o.fdr = Math.abs(o.qvalue - 0.01) < 1e-9 ? 'run1' : 'other';
+    if (o.nfiles != null) o.runs = o.mbr ? (o.nfiles > 1 ? 'mbrN' : 'mbr1') : (o.nfiles > 1 ? 'batch' : 'alone');
+    return o;
+}
+// Bring the answer into view: on a phone it sits below the whole form.
+function lkShowAnswer() {
+    const out = document.getElementById('ws-out');
+    if (out && out.scrollIntoView) out.scrollIntoView({ block: 'nearest' });
+}
+// Fill the search fields from a parsed log, and say what was read.
+function lkApplyLog(o, cut) {
+    if (!o || !o.ok) {
+        lkLog = null;
+        lkLogMsg = '<b>This does not look like a DIA-NN log</b>: no “DIA-NN x.y” banner on its first lines. Nothing was changed.';
+        lkForm();
+        return;
+    }
+    lkLog = o;
+    lk.mode = 'DIA'; lkOwn.add('mode');
+    lkDefaults();
+    const S = lk.DIA, got = [], warn = [];
+    S.eng = 'diann'; S.ver = o.verKey;
+    got.push(`DIA-NN <b>${esc(o.version)}</b>`);
+    S.lib = o.libKind || '';
+    const name = o.libName ? `<code class="ws-file">${esc(o.libName)}</code>` : '';
+    const vname = (v) => v === 'bruker' ? 'timsTOF' : 'Orbitrap';
+    if (o.libKind === 'frozen') got.push(`${name}, the frozen ${vname(o.libVendor)} community library`
+        + (o.libCheck === 'name+size' ? ` (its name and size, ${fmtN(o.libLoaded)} precursors, match; not checked by checksum)` : ' (matched by name only: the log does not say how many precursors it loaded)'));
+    else if (o.renamedFrozen) got.push(`${name}, but it loaded ${fmtN(o.libLoaded)} precursors, not the frozen library's ${fmtN(LK_FROZEN_LIBS[o.libName.toLowerCase()].precursors)}: another library under that name`);
+    else if (o.libKind === 'free') got.push(o.fastaSearch ? '<code>--fasta-search</code>: library-free'
+        : o.predictor ? `${name ? name + ' with ' : ''}<code>--predictor</code>: spectra predicted by deep learning, not the frozen empirical library`
+        : `${name}, a library predicted from a FASTA: library-free`);
+    else if (o.instrumentLib) got.push(`${name}, built from your own lab's runs`);
+    else if (o.libKind === 'own') got.push(o.libs.length > 1 ? `${o.libs.length} libraries` : `${name}, not a community library`);
+    else got.push('no spectral library named: choose the library below');
+    S.runs = o.runs || '';
+    if (o.nfiles != null) got.push(`${fmtN(o.nfiles)} file${o.nfiles === 1 ? '' : 's'}, ${o.mbr ? 'MBR on' : 'MBR off'}`);
+    else got.push(o.mbr ? 'MBR on; the number of files was not found' : 'the number of files was not found');
+    S.fdr = o.fdr;
+    got.push(o.qvalue != null ? `precursor FDR ${+(o.qvalue * 100).toFixed(4)}%` : 'no FDR stated in the log: choose it below');
+    if (o.count != null) { S.val = String(o.count); got.push(`<b>${fmtN(o.count)}</b> precursors, the last “Number of IDs at 0.01 FDR” line`); }
+    else if (o.nfiles > 1) got.push('several runs in one log: enter this run\'s own count');
+    // The frozen library of the other vendor: when the visitor has not chosen
+    // an instrument, take that vendor's instrument with the most runs here.
+    if (o.libKind === 'frozen' && o.libVendor && lkVendor(lk.model) !== o.libVendor && !lkOwn.has('model')) {
+        const n = _countBy(lkRows().filter(r => rowKey(r).t === 'DIA' && lkVendor(rowKey(r).m) === o.libVendor), r => rowKey(r).m);
+        const top = [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+        if (top) {
+            lk.model = top[0]; lkOwn.add('model'); lkDefaults();
+            warn.push(`The instrument is now ${esc(top[0])}, the ${vname(o.libVendor)} with the most runs here, because this is the ${vname(o.libVendor)} library. Change it if you ran another.`);
+        }
+    }
+    if (o.cfg) warn.push('Some settings came from a config file (<code>--cfg</code>) the log does not show: check the fields.');
+    if (cut) warn.push(`Only the first ${LK_LOG_MAX_BYTES / 1048576} MB of the file was read.`);
+    lkLogMsg = `Read from the log: ${got.join(' · ')}.${warn.length ? ' ' + warn.join(' ') : ''}`;
+    lkForm();
+    lkResult();
+    lkShowAnswer();
+}
+
 // ── Charts ──────────────────────────────────────────────────────
 
 function renderCharts() {
@@ -5007,7 +5846,7 @@ function renderCharts() {
     // and the lab trend). Each is wrapped so one broken renderer (typically a
     // Plotly version mismatch or an edge case on empty data) doesn't take down
     // the rest of the dashboard.
-    const notCharts = new Set(['stats', 'ref-ranges', 'table']);
+    const notCharts = new Set(['stats', 'lookup', 'ref-ranges', 'table']);
     for (const [name, , fn] of PANELS) {
         if (notCharts.has(name)) continue;
         try { fn(); }

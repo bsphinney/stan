@@ -44,9 +44,9 @@ SECRET_PRINT = "feedfacecafebeef"
 # ── server: SPACE_VERSION ────────────────────────────────────────────
 
 def test_space_version(client):
-    # P1 shipped as 1.2.2, P2a as 1.3.0; P2b (tests/test_relay_community_p2b.py) is 1.4.0.
-    assert client.get("/api/version").json()["version"] == "1.4.0"
-    assert "community site v1.4.0" in _page(client)
+    # P1 shipped as 1.2.2, P2a as 1.3.0, P2b as 1.4.0; P2c (tests/test_relay_community_p2c.py) is 1.5.0.
+    assert client.get("/api/version").json()["version"] == "1.5.0"
+    assert "community site v1.5.0" in _page(client)
 
 
 # ── server: D4, no file names in public responses ────────────────────

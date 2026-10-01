@@ -1,0 +1,60 @@
+
+DIA-NN 2.7.0 Academia  (Data-Independent Acquisition by Neural Networks)
+Compiled on Sep 15 2026 15:30:01
+Current date and time: Wed Sep 23 10:02:33 2026
+Logical CPU cores: 128
+/opt/diann/2.7.0/diann-2.7.0/diann-linux --qvalue 0.01 --cut K*,R* --missed-cleavages 1 --min-pep-len 7 --max-pep-len 30 --min-pr-mz 299 --max-pr-mz 1201 --min-pr-charge 2 --max-pr-charge 4 --min-fr-mz 200 --max-fr-mz 1800 --met-excision --unimod4 --var-mods 1 --var-mod UniMod:35,15.994915,M --mass-acc 15 --mass-acc-ms1 15 --cont-quant-exclude Cont_ --f /nfs/lssc0/flinders/proteomics/Data/raw_data/tTOF_HT/sep26/hel50-100spd-method-60spd_S2-C1_1_24539.d --f /nfs/lssc0/flinders/proteomics/Data/raw_data/tTOF_HT/sep26/hel50-100spd-method-60spd_S2-D1_1_24541.d --f /nfs/lssc0/flinders/proteomics/Data/raw_data/tTOF_HT/sep26/hel50-stdmethod-60spd_S2-G1_1_24544.d --f /nfs/lssc0/flinders/proteomics/Data/raw_data/tTOF_HT/sep26/hel50-stdmethod-60spd_S2-H1_1_24538.d --fasta /data/fasta/UP000005640_9606/2026_03/search.fasta --lib /data/project/predicted.predicted.speclib --matrices --out /data/project/spd60/report.parquet --threads 16 
+
+Output will be filtered at 0.01 FDR
+In silico digest will involve cuts at K*,R*
+Maximum number of missed cleavages set to 1
+Min peptide length set to 7
+Max peptide length set to 30
+Min precursor m/z set to 299
+Max precursor m/z set to 1201
+Min precursor charge set to 2
+Max precursor charge set to 4
+Min fragment m/z set to 200
+Max fragment m/z set to 1800
+N-terminal methionine excision enabled
+Cysteine carbamidomethylation enabled as a fixed modification
+Maximum number of variable modifications set to 1
+Modification UniMod:35 with mass delta 15.9949 at M will be considered as variable
+Peptides corresponding to protein sequence IDs tagged with Cont_ will be excluded from normalisation as well as quantification of protein groups that do not include proteins bearing the tag
+Precursor/protein x samples expression level matrices will be saved along with the main report
+Thread number set to 16
+Mass accuracy will be fixed to 1.5e-05 (MS2) and 1.5e-05 (MS1)
+WARNING: peptidoform scoring enabled because variable modifications have been declared; to disable, use --no-peptidoforms
+The following variable modifications will be localised: UniMod:35 
+
+4 files will be processed
+[0:00] Loading spectral library /data/project/predicted.predicted.speclib
+[0:05] Library annotated with sequence database(s): /data/fasta/UP000005640_9606/2026_03/search.fasta
+[0:06] Spectral library loaded: 21003 protein isoforms, 30066 protein groups and 4284564 precursors in 1766414 elution groups (targets and decoys).
+[0:06] Loading protein annotations from FASTA /data/fasta/UP000005640_9606/2026_03/search.fasta
+[0:06] Annotating library proteins with information from the FASTA database
+[0:06] Gene names missing for some isoforms
+[0:06] Library contains 20855 proteins, and 20430 genes
+[0:11] Initialising library
+WARNING: it is strongly recommended to enable MBR when analysing with a large library, if this is a quantitative analysis
+
+[0:25] File #1/4
+[0:25] Loading run /nfs/lssc0/flinders/proteomics/Data/raw_data/tTOF_HT/sep26/hel50-100spd-method-60spd_S2-C1_1_24539.d
+[1:05] Pre-processing...
+[1:09] 1963 MS1 and 23556 MS2 scans in 1963 (inferred) and 1963 (encoded) cycles, 4275001 precursors in range
+[1:10] Calibrating with mass accuracies 26 (MS1), 25 (MS2)
+[7:30] RT window set to 1.10899
+[7:30] IM window set to 0.037836
+[7:30] Peak width: 5.46
+[7:30] Scan window radius set to 12
+[7:30] Recommended MS1 mass accuracy setting: 7 ppm
+[10:45] Searching decoys
+[23:16] Main search
+[47:55] Removing low confidence identifications
+[48:50] Removing interfering precursors
+[49:00] Training neural networks on 84007 target and 57872 decoy PSMs
+[49:42] Training neural networks on 84007 target and 55586 decoy PSMs
+[50:20] Precursors at 1% peptidoform FDR: 39478
+[50:22] Number of IDs at 0.01 FDR: 40850
+[50:22] Calculating protein q-values
+[50:22] Number of genes identified at 1% FDR: 5280 (precursor-level), 4826 (protein-level) (inference performed using proteotypic peptides only)

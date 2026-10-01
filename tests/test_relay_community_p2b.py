@@ -133,10 +133,11 @@ def _mixed_rows() -> list[dict]:
 
 # ── server and page text ─────────────────────────────────────────────
 
-def test_space_version_is_1_4_0(client, relay):
-    assert relay.SPACE_VERSION == "1.4.0"
-    assert client.get("/api/version").json()["version"] == "1.4.0"
-    assert "community site v1.4.0" in _page(client)
+def test_space_version_is_1_4_0_or_later(client, relay):
+    # P2b shipped as 1.4.0; P2c (tests/test_relay_community_p2c.py) is 1.5.0.
+    assert relay.SPACE_VERSION == "1.5.0"
+    assert client.get("/api/version").json()["version"] == "1.5.0"
+    assert "community site v1.5.0" in _page(client)
 
 
 def test_sticky_bar_markup_and_css(client):

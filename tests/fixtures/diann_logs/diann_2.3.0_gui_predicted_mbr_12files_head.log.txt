@@ -1,0 +1,60 @@
+
+DIA-NN 2.3.0 Academia  (Data-Independent Acquisition by Neural Networks)
+Compiled on Sep 27 2025 22:03:55
+Current date and time: Thu Jan 29 11:04:26 2026
+CPU: GenuineIntel Intel(R) Core(TM) i9-14900K
+SIMD instructions: AVX AVX2 FMA SSE4.1 SSE4.2 
+Logical CPU cores: 32
+diann.exe --f B:\lab\project\HeLa50ng_DIA_100spd_S1-C2_1_18816.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-C3_1_18813.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-C4_1_18815.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-A1_1_18826.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-A2_1_18827.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-A4_1_18830.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-A7_1_18833.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-A8_1_18834.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-A9_1_18835.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-A3_1_19045.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S1-A12_1_19082.d  --f B:\lab\project\HeLa50ng_DIA_100spd_S3-D10_1_19083.d  --lib B:\lab\project\out\lib.predicted.speclib --threads 30 --verbose 1 --out B:\lab\project\out\report.parquet --qvalue 0.01 --matrices --out-lib B:\lab\project\out\lib.parquet --gen-spec-lib --fasta B:\lab\project\UniversalProteinContaminants.fasta --fasta B:\lab\project\UP000005640_9606.fasta --met-excision --min-pep-len 7 --max-pep-len 30 --min-pr-mz 300 --max-pr-mz 1800 --min-pr-charge 1 --max-pr-charge 4 --min-fr-mz 200 --max-fr-mz 1800 --cut K*,R* --missed-cleavages 1 --unimod4 --mass-acc 15 --mass-acc-ms1 15 --reanalyse --rt-profiling --no-norm 
+
+Thread number set to 30
+Output will be filtered at 0.01 FDR
+Precursor/protein x samples expression level matrices will be saved along with the main report
+A spectral library will be generated
+N-terminal methionine excision enabled
+Min peptide length set to 7
+Max peptide length set to 30
+Min precursor m/z set to 300
+Max precursor m/z set to 1800
+Min precursor charge set to 1
+Max precursor charge set to 4
+Min fragment m/z set to 200
+Max fragment m/z set to 1800
+In silico digest will involve cuts at K*,R*
+Maximum number of missed cleavages set to 1
+Cysteine carbamidomethylation enabled as a fixed modification
+MBR enabled; .quant files will only be saved to disk during the first pass
+The spectral library (if generated) will retain the original spectra but will include empirically-aligned RTs
+Normalisation disabled
+Mass accuracy will be fixed to 1.5e-05 (MS2) and 1.5e-05 (MS1)
+
+12 files will be processed
+[0:00] Loading spectral library B:\lab\project\out\lib.predicted.speclib
+[0:02] Library annotated with sequence database(s): B:\lab\project\UniversalProteinContaminants.fasta; B:\lab\project\UP000005640_9606.fasta
+[0:02] Spectral library loaded: 21011 protein isoforms, 30094 protein groups and 4338771 precursors in 1350833 elution groups.
+[0:02] Loading protein annotations from FASTA B:\lab\project\UniversalProteinContaminants.fasta
+[0:02] Loading protein annotations from FASTA B:\lab\project\UP000005640_9606.fasta
+[0:02] Annotating library proteins with information from the FASTA database
+[0:02] Gene names missing for some isoforms
+[0:02] Library contains 20863 proteins, and 20438 genes
+[0:04] Initialising library
+
+First pass: generating a spectral library from DIA data
+
+[0:09] File #1/12
+[0:09] Loading run B:\lab\project\HeLa50ng_DIA_100spd_S1-C2_1_18816.d
+[0:16] Pre-processing...
+[0:18] 627 MS1 and 22569 MS2 scans in 627 (inferred) and 627 (encoded) cycles, 3674121 precursors in range
+[0:18] Calibrating with mass accuracies 24 (MS1), 25 (MS2)
+[1:41] RT window set to 0.636594
+[1:41] IM window set to 0.0363961
+[1:41] Peak width: 3.26
+[1:41] Scan window radius set to 7
+[1:41] Recommended MS1 mass accuracy setting: 10 ppm
+[2:21] Main search
+[4:31] Removing low confidence identifications
+[4:35] Removing interfering precursors
+[4:37] Training neural networks on 45529 target and 24174 decoy PSMs
+[4:50] IDs at 0.01 FDR: 24713
+[4:51] Number of IDs at 0.01 FDR: 26775
+[4:51] Calculating protein q-values
