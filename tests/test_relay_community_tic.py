@@ -122,7 +122,7 @@ Promise.resolve(vm.runInContext(scenario, ctx)).then(
 """
 
 
-def _run(client, tmp_path: Path, scenario: str, data: str = ""):
+def _run(client, tmp_path: Path, scenario: str, data: str = "", allow_errors: tuple[str, ...] = ()):
     html = _page(client)
     esc_block = re.search(r'<script id="stan-esc">(.*?)</script>', html, re.S).group(1)
     (tmp_path / "main.js").write_text(esc_block + "\n" + _main_script(html))
@@ -135,7 +135,8 @@ def _run(client, tmp_path: Path, scenario: str, data: str = ""):
     proc = subprocess.run(args, capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, proc.stderr[-3000:]
     got = json.loads(proc.stdout)
-    assert got["errors"] == [], got["errors"]
+    errors = [e for e in got["errors"] if not e.startswith(allow_errors)] if allow_errors else got["errors"]
+    assert errors == [], errors
     return got
 
 
@@ -289,6 +290,16 @@ def test_traces_endpoint_serves_one_cohort(client, hub):
     # the old endpoint still serves every stored trace, unchanged
     old = client.get("/api/tic-overlay").json()
     assert old["count"] == 22 and set(old["traces"][0]) == {"submission_id", "tic_rt_bins", "tic_intensity"}
+
+
+def test_an_outage_is_a_503_not_an_empty_benchmark(client, hub):
+    """No benchmark table (the dataset could not be read and there is no
+    earlier copy): the page must not be told that no traces exist."""
+    hub.unreachable.add("benchmark_latest.parquet")
+    for path, params in (("/api/tic-summary", {}), ("/api/tic-traces", dict(sample="hela", mode="DIA", spd=100, lc="evosep"))):
+        r = client.get(path, params=params)
+        assert r.status_code == 503, path
+        assert r.json()["unavailable"] is True and r.json()["error"]
 
 
 def test_no_file_lab_or_submission_names_in_tic_responses(client, hub):
@@ -472,15 +483,83 @@ def test_python_port_matches_the_page_on_edge_cases(client, hub, relay, tmp_path
         _tic_row(9, run_date="2026-09-22T10:00:00Z", n_precursors=40500, spd=0),           # no SPD: not drawn
         _tic_row(10, run_date="2026-09-22T11:00:00+05:30", spd=36, start=2.0),             # identified-ion
         _tic_row(11, run_date="2026-09-22T12:00:00Z", tic_rt_bins="not json"),
+        # offsets without their colon, as V8 reads them: one acquisition
+        _tic_row(12, run_date="2026-09-23T10:00:00+0000", **dict(base, n_precursors=42000.0)),
+        _tic_row(13, run_date="2026-09-23T03:00:01-0700", **dict(base, n_precursors=42000.0)),
+        # a day past the month's end rolls over in V8 (2 March): one acquisition
+        _tic_row(14, run_date="2026-02-30T10:00:00Z", **dict(base, n_precursors=43000.0)),
+        _tic_row(15, run_date="2026-03-02T10:00:01Z", **dict(base, n_precursors=43000.0)),
+        # 24:00 is the next midnight, and a lower-case z is UTC: one acquisition
+        _tic_row(16, run_date="2026-09-20T24:00:00Z", **dict(base, n_precursors=44000.0)),
+        _tic_row(17, run_date="2026-09-21t00:00:01z", **dict(base, n_precursors=44000.0)),
+        # month 13 is NaN to V8: undated, never a copy, both kept
+        _tic_row(20, run_date="2026-13-01T10:00:00Z", **dict(base, n_precursors=45000.0)),
+        _tic_row(21, run_date="2026-13-01T10:00:00Z", **dict(base, n_precursors=45000.0)),
+        # trim() drops a BOM but keeps U+001C, which Python's strip() would drop
+        _tic_row(18, run_date="2026-09-24T10:00:00Z", lc_system="\ufeffEvosep\ufeff"),
+        _tic_row(19, run_date="2026-09-24T11:00:00Z", lc_system="\x1cEvosep"),
     ]
     _serve(hub, rows)
     js, py = _assert_parity(client, relay, tmp_path)
     assert "s3" not in py["kept"] and "s2" not in py["kept"] and "s1" in py["kept"]
-    assert "s4" in py["kept"] and "s5" not in py["kept"] and py["dropped"] == 3
+    assert "s4" in py["kept"] and "s5" not in py["kept"]
+    assert ("s12" in py["kept"]) != ("s13" in py["kept"])
+    assert ("s14" in py["kept"]) != ("s15" in py["kept"])
+    assert ("s16" in py["kept"]) != ("s17" in py["kept"])
+    assert "s20" in py["kept"] and "s21" in py["kept"] and py["dropped"] == 6
+    assert ["s18", False] in py["groups"]["hela|DIA|100|evosep"]
+    assert py["groups"]["hela|DIA|100|nanolc"] == [["s19", False]]
     assert py["groups"]["hela|DIA|60|evosep"] == [["s6", False]]
     assert py["groups"]["hela|DIA|60|unrec"] == [["s8", False]]
     assert ["s10", True] in py["groups"]["hela|DIA|36|evosep_unv"]
     assert not any("s9" in str(v) or "s11" in str(v) for v in py["groups"].values())
+
+
+# Every date-time form V8's Date.parse reads as ISO 8601, and the odd ones:
+# offsets with and without a colon, rolled-over days, 24:00, lower-case t/z,
+# a space for T, short dates, signed 6-digit years, the time-value limits,
+# and what V8 refuses. Offset-less times are left out: local to a browser,
+# UTC on the relay, and STAN always writes an offset.
+RUN_DATES = [
+    "2026-09-20T10:00:00+0700", "2026-09-20T10:00:00.123+0700", "2026-09-20T10:00:00-0730", "2026-09-20T10:00:00+07",
+    "2026-09-20T10:00:00 +00:00", "2026-02-30", "2026-02-30T10:00:00Z", "2026-02-29T10:00:00Z",
+    "2024-02-29T10:00:00Z", "2024-02-30T10:00:00Z", "2026-04-31T10:00:00+00:00", "2026-13-01T10:00:00Z",
+    "2026-00-10T10:00:00Z", "2026-09-00T10:00:00Z", "2026-09-32T10:00:00Z", "2026-09-20T24:00:00Z",
+    "2026-09-20T24:00:00.000Z", "2026-09-20T24:00Z", "2026-09-20T24:00:01Z", "2026-09-20T24:00:00.001Z",
+    "2026-09-20T25:00:00Z", "2026-09-20T10:60:00Z", "2026-09-20T10:00:60Z", "2026-09-20t10:00:00z",
+    "2026-09-20T10:00Z", "2026-09-20 10:00:00+00:00", "2026-09-20 10:00:00Z", "2026-09-20T10:00:00.5Z",
+    "2026-09-20T10:00:00.12Z", "2026-09-20T10:00:00.123456Z", "2026-09-20T10:00:00.123456+05:30", "2026-09-20T10Z",
+    "20260920", "2026-09-20T10:00:00+24:00", "2026-09-20T10:00:00+23:59", "2026-09-20T10:00:00+07:60",
+    "2026-09-20T10:00:00.Z", "2026-09-20T10:00:00,123Z", "+002026-09-20T10:00:00Z", "+002026-02-30T10:00:00Z",
+    "2026-09-20T10:00:00UTC", "2026-09-20T10:00:00 GMT", "2026-9-20T10:00:00Z", "2026-09",
+    "2026", "2026Z", "2026-09-20Z", "2026-09-20+07:00",
+    "2026T10:00Z", "2026-09T10:00Z", " 2026-09-20T10:00:00Z", "2026-09-20T10:00:00Z ",
+    "2026-09-20T10:00:00+0", "2026-09-20T10:00:00+070", "2026-09-20T10:00:00+07000", "-000001-01-01T00:00:00Z",
+    "0000-01-01T00:00:00Z", "-000000-01-01T00:00:00Z", "+275760-09-13T00:00:00Z", "+275760-09-13T00:00:00.001Z",
+    "-271821-04-20T00:00:00Z", "-271821-04-19T23:59:59.999Z", "2026-09-20T23:59:59.999+23:59", "2026-09-20T00:00:00-23:59",
+    "2026-09-20T10:00:00+07:00Z", "1900-02-29T00:00:00Z", "2000-02-29T00:00:00Z", "2100-02-29T00:00:00Z",
+    "1969-12-31T23:59:59.999Z", "not a date", ""
+]
+# Characters at either end of an LC name: JS trim() and the port must agree.
+LC_ENDS = ["\t", "\n", "\v", "\f", "\r", " ", "\x1c", "\x1f", "\x85", "\xa0", "\u1680", "\u180e", "\u2000",
+           "\u200a", "\u200b", "\u2028", "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff"]
+
+
+@needs_node
+def test_dates_and_lc_names_are_read_as_the_page_reads_them(client, relay, tmp_path):
+    lcs = [c + "Evosep" + c for c in LC_ENDS] + ["\ufeff Evosep \ufeff", "EVOSEP\u3000", "evo sep"]
+    scenario = f"""(() => ({{
+        dates: {json.dumps(RUN_DATES)}.map(d => {{ const t = _instantMs({{ run_date: d }}); return isFinite(t) ? t : null; }}),
+        lcs: {json.dumps(lcs)}.map(lc => lcClass({{ spd: 100, lc_system: lc }})) }}))()"""
+    got = _run(client, tmp_path, scenario)["out"]
+    assert [relay._page_instant_ms({"run_date": d}) for d in RUN_DATES] == got["dates"]
+    assert [relay._page_lc_class({"spd": 100, "lc_system": lc}) for lc in lcs] == got["lcs"]
+    # the cases the review named, as V8 reads them
+    at = dict(zip(RUN_DATES, got["dates"]))
+    assert at["2026-09-20T10:00:00+0700"] == relay._page_instant_ms({"run_date": "2026-09-20T03:00:00Z"})
+    assert at["2026-02-30T10:00:00Z"] == relay._page_instant_ms({"run_date": "2026-03-02T10:00:00Z"})
+    assert at["2026-13-01T10:00:00Z"] is None and at["2026-09-20T10:00:00+07"] is None
+    assert got["lcs"][LC_ENDS.index("\ufeff")] == "evosep" and got["lcs"][LC_ENDS.index("\x1c")] == "nanolc"
 
 
 @needs_node
@@ -666,11 +745,57 @@ def test_page_load_fetches_the_summary_not_every_trace(client, hub, tmp_path):
 
 @needs_node
 def test_summary_failure_says_so(client, tmp_path):
+    """A 503 from the relay (an outage) is said as one, never as "no traces"."""
     scenario = f"""(async () => {{ replies['/api/tic-summary'] = 503; renderCommunityTIC(); const a = {_panel()}.box;
-        await loadTicSummary(); return [a, {_panel()}.box, {_panel()}.selOff]; }})()"""
-    loading, failed, off = _run(client, tmp_path, scenario)["out"]
+        await loadTicSummary(); return [a, {_panel()}.box, {_panel()}.selOff, {_panel()}.lcOff]; }})()"""
+    loading, failed, off, lc_off = _run(client, tmp_path, scenario)["out"]
     assert "Loading the TIC summaries…" in loading
-    assert "The TIC summaries did not load. Reload the page to try again." in failed and off is True
+    assert "The TIC summaries could not be loaded. Reload the page to try again." in failed
+    assert "submitted" not in failed and off is True and lc_off is True
+
+
+@needs_node
+def test_a_leaderboard_failure_does_not_leave_the_tic_loading(client, tmp_path):
+    scenario = f"""(async () => {{ replies['/api/leaderboard'] = 500; await loadData(); await flush();
+        return {{ net: net.slice(), panel: {_panel()} }}; }})()"""
+    got = _run(client, tmp_path, scenario, allow_errors=("[loadData] fetch failed",))["out"]
+    assert got["net"] == ["/api/leaderboard", "/api/leaderboard"]        # the summaries are not asked for
+    assert "The benchmark data did not load, so the TIC summaries were not requested." in got["panel"]["box"]
+    assert "Loading" not in got["panel"]["box"]
+    assert got["panel"]["selOff"] and got["panel"]["lcOff"] and got["panel"]["allOff"]
+
+
+@needs_node
+def test_the_bars_reset_takes_the_tic_back_to_its_largest_cohort(client, hub, tmp_path):
+    rows = _mixed_rows()
+    _serve(hub, rows)
+    scenario = f"""(async () => {{ {_loaded(_summary(client))} setSubmissions({json.dumps(rows)}); renderFilterBar(); renderCommunityTIC();
+        document.getElementById('tic-lc-select').value = 'custom'; ticPickSpd('38');
+        document.getElementById('tic-show-all').checked = true; ticToggleAll(); setView({{ amount: 'all' }});
+        const before = {_panel()};
+        resetView(); ticReset();                          // what the bar's Reset button runs
+        return [before, {_panel()}, {{ ...view }}, document.getElementById('tic-lc-select').value]; }})()"""
+    before, after, v, lc = _run(client, tmp_path, scenario)["out"]
+    assert before["sel"] == "38" and before["allOn"] is True
+    assert after["sel"] == "100" and lc == "all" and after["allOn"] is False and v["amount"] == "50"
+    assert "626" not in after["take"] and "6 runs · 1 lab" in after["take"]
+    html = _page(client)
+    assert '<button type="button" class="fbar-btn" id="fbar-reset" onclick="resetView(); ticReset()" hidden>Reset</button>' in html
+
+
+def test_leaving_full_screen_puts_the_plot_height_back(client):
+    """Every chart with the ⛶ button: the height is saved on the way in and
+    put back on the way out, from the button and from the browser's exit
+    (Esc), with width: null so the width follows the card again (a relayout
+    with only the height and autosize off left the full-screen width).
+    tic_check.py measures it in Chrome at 1280 and 400 px."""
+    main = _main_script(_page(client))
+    expand = main[main.index("function _stanFsEnter(pd) {"):main.index("window.addEventListener('load', () => { try { _stanInjectExpand(); }")]
+    assert "pd._stanH = (pd.layout && pd.layout.height) || (pd._fullLayout && pd._fullLayout.height) || null;" in expand
+    assert "Plotly.relayout(pd, { height: h, width: null })" in expand
+    assert expand.count("_stanFsExit(") == 3            # its definition, the Esc path and the button
+    assert "_stanFsExit(c.querySelector('[id^=\"chart-\"]'));" in expand and "_stanFsEnter(plot);" in expand
+    assert "Plotly.Plots.resize(plot)" not in expand
 
 
 @needs_node
@@ -735,7 +860,7 @@ def _tic_regions(html: str) -> dict[str, str]:
 # Pinned from this change (relay 1.6.0). A later change to the TIC overlay
 # recomputes these with _tic_regions() and says why.
 TIC_PINS = {
-    "tic_js": "9324fc98dbccafa5ccfb57a514db1ba6905fbd53bfef73fe39e8e9b5313be66d",
+    "tic_js": "380da8949d87626ed9577c9fd22a498ce8cff8fb910f6a6126140956192b610d",
     "tic_card": "38f19e7f2296e5bd836365697017232fbc630c1b93dae2aa23cc581fa16d47f7",
     "tic_css": "18a1978daa0909a01c7f957d55d014cf3d7270503f71fe4a7401384d5d8c9e88",
 }

@@ -69,6 +69,26 @@ and so are the P2a read-time rules (the D8 dedupe, the >5,000 ng hold-back,
   lab") and carries the single-lab tag.
 - **The DDA empty state** turns the SPD and LC menus and the checkbox off and
   says its message once, in the chart box.
+- **An outage reads as one.** With no benchmark table (the dataset could not
+  be read and there is no earlier copy) both new endpoints answer 503 with
+  `"unavailable": true`, and the panel says "The TIC summaries could not be
+  loaded", never "no traces have been submitted". When `/api/leaderboard`
+  fails, the summaries are not requested and the panel says so instead of
+  "Loading" for good.
+- **The bar's Reset** also takes the TIC back to how it opens: All LC
+  systems, the largest cohort, "show all traces" off.
+
+### Fixed
+- **Leaving full screen puts every chart back to its size.** Full screen
+  stretches the plot through Plotly's autosize, which drops its height and
+  width, so on the way out every chart with the ⛶ button kept the
+  full-screen size (920 px tall on a 1000 px screen) until redrawn. The
+  height is saved on the way in and restored on the way out, from the button
+  and from the browser's own exit (Esc), with `width: null` so the width
+  follows the card again (restoring the height with `autosize: false` left
+  the full-screen width). Measured in Chrome on all 12 charts at 1280 and
+  400 px: width and height return exactly. A rejected `requestFullscreen`
+  no longer leaves an unhandled promise.
 
 ### Added
 - **`GET /api/tic-summary`**: one entry per QC standard × mode × SPD × LC
@@ -83,25 +103,37 @@ and so are the P2a read-time rules (the D8 dedupe, the >5,000 ng hold-back,
   one cohort, each on its own time axis. 404 for a cohort that does not
   exist. `/api/tic-overlay` still serves every stored trace, unchanged.
 - Neither new endpoint carries a file name, lab name or submission id.
+- The port reads run dates as V8's `Date.parse` does on every ISO form:
+  offsets with or without the colon (`+0700`), a day past the month's end
+  rolled over (2026-02-30 is 2 March; month 13 and day 0 or 32 are undated),
+  24:00 as the next midnight, lower-case `t`/`z`, short dates and signed
+  6-digit years. So two copies with the same odd date stay one acquisition,
+  as on the page, and a TIC cohort never holds more runs than the page
+  counts. LC names are trimmed as JS `trim()` does (a BOM goes, U+001C
+  stays). Offset-less times stay UTC on the relay (a browser reads them as
+  local); STAN always writes an offset.
 - `/api/leaderboard` sorts with `maintain_order=True`, so the summaries read
   the rows in exactly its order.
 
 ### Tests
-- `tests/test_relay_community_tic.py` (23): SPACE_VERSION 1.6.0; the
+- `tests/test_relay_community_tic.py` (28): SPACE_VERSION 1.6.0; the
   summary's shape; built once per data refresh (not per request, not when the
   cache refills with the same rows, once when they change); the traces
-  endpoint and the old one; no file, lab or submission names; the
+  endpoint and the old one; an outage answered 503; 71 run-date strings and
+  24 LC names read identically by node's V8 and the port; no file, lab or submission names; the
   percentiles against a hand computation at the same minute (and different
   from the bin-index method); the 5-run band rule; the `lcClass()` grouping;
   the Python port against the page's own `dedupeRuns`/`isHeldBack`/`lcClass`/
-  `labCount`/`runLenText` on edge-case rows (copies across offsets,
-  held-back and flagged copies, float counts, date-only and unparseable
-  dates, a half SPD, LC with spaces) and on the 2026-09-29 snapshot (identical
+  `labCount`/`runLenText` on edge-case rows (copies across offsets with and
+  without colons, rolled-over days, 24:00, held-back and flagged copies,
+  float counts, date-only and unparseable dates, a half SPD, LC with spaces,
+  a BOM and U+001C) and on the 2026-09-29 snapshot (identical
   kept rows, usable rows and cohort membership; skipped when the snapshot is
   not on the machine); and in node: opening on the largest cohort, the menu
   labels, small cohorts, the DDA empty state, the filter bar driving the
   panel, "show all traces" fetching that cohort only and once, the page load
-  fetching the summary and not `/api/tic-overlay`, a failed summary, hostile
+  fetching the summary and not `/api/tic-overlay`, a failed summary, a failed
+  leaderboard, the bar's Reset, the full-screen restore in both exit paths, hostile
   instrument names and versions escaped in the menu, take line, legend and
   hovers; the new TIC code, card and CSS pinned; the lookup and PEG's server
   code pinned to ede086b; and the summaries without numpy.

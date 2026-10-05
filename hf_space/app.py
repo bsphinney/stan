@@ -2083,18 +2083,46 @@ def _page_track(r: dict) -> str:
 
 
 _MS_FRACTION = re.compile(r"(\.\d{3})\d+")
+# The date-time forms V8's Date.parse reads as ISO 8601 (checked in node 24
+# against the strings in tests/test_relay_community_tic.py): a 4-digit or
+# signed 6-digit year, optional month and day, an optional time after T, t
+# or a space, an optional fraction, and Z/z or an offset with or without its
+# colon (+07:00, +0700). A bare date may carry Z but no other offset.
 _ISO_INSTANT = re.compile(
-    r"(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2})?)?")
-_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    r"(?:(\d{4})|([+-]\d{6}))(?:-(\d{2})(?:-(\d{2}))?)?"
+    r"(?:[Tt ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(?:([Zz])|([+-])(\d{2}):?(\d{2}))?|([Zz]))?")
+_JS_MAX_TIME_MS = 8_640_000_000_000_000      # the largest time value a JS Date holds
+
+
+def _days_from_civil(y: int, m: int, d: int) -> int:
+    """Days from 1970-01-01 to the proleptic Gregorian date (any year)."""
+    y -= m <= 2
+    era = y // 400                    # floor division: right for years before 0 too
+    yoe = y - era * 400
+    doy = (153 * (m + (-3 if m > 2 else 9)) + 2) // 5 + d - 1
+    return era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
 
 
 def _page_instant_ms(r: dict) -> int | None:
-    """_instantMs(): the acquisition instant in epoch milliseconds, or None.
+    """_instantMs(): the acquisition instant in epoch milliseconds, or None
+    where the page's Date.parse gives NaN.
 
-    The page trims the fraction to milliseconds and calls Date.parse. A time
-    with no offset is local to a browser and UTC here: every stored run_date
-    carried an offset on 2026-09-29 (3,305 of 3,305), and the copies of one
-    acquisition share a format anyway.
+    The page trims the fraction to milliseconds and calls Date.parse; this
+    follows V8 on the ISO forms, including what it does with odd values: a
+    day past the month's end rolls over (2026-02-30 is 2 March, as V8 reads
+    it; month 13 and day 0 or 32 are NaN), 24:00 is the next midnight, and
+    hours, minutes and offsets out of range are NaN. Matching V8 here keeps
+    two copies with the same odd date one acquisition, as on the page, so a
+    TIC cohort never holds more runs than the page counts. Another browser
+    that reads such a date as NaN keeps both copies, which can only leave the
+    page with more runs than the TIC, never fewer.
+
+    A date-time with no offset is local time to a browser and is read as UTC
+    here. STAN always writes an offset (3,305 of 3,305 stored rows on
+    2026-09-29), and copies of one acquisition share their format, so the
+    difference cannot change which copies are within 2 s of each other.
+    Formats outside ISO 8601, which V8 hands to its legacy parser, are not
+    read here (None: never a copy); STAN writes none.
     """
     v = r.get("run_date")
     if not _js_truthy(v):
@@ -2102,15 +2130,27 @@ def _page_instant_ms(r: dict) -> int | None:
     m = _ISO_INSTANT.fullmatch(_MS_FRACTION.sub(r"\1", _js_text(v), count=1))
     if not m:
         return None
-    y, mo, d, hh, mi, ss, frac, off = m.groups()
-    try:
-        t = datetime(int(y), int(mo), int(d), int(hh or 0), int(mi or 0), int(ss or 0),
-                     int((frac or "0").ljust(3, "0")) * 1000, tzinfo=timezone.utc)
-    except ValueError:
+    y4, y6, mo, d, hh, mi, ss, frac, z, osign, oh, om, _bare_z = m.groups()
+    if y6 == "-000000":
         return None
-    if off and off != "Z":
-        t -= (1 if off[0] == "+" else -1) * timedelta(hours=int(off[1:3]), minutes=int(off[4:6]))
-    return (t - _EPOCH) // timedelta(milliseconds=1)
+    year = int(y4 if y4 is not None else y6)
+    month, day = int(mo or 1), int(d or 1)
+    h, mn, sec = int(hh or 0), int(mi or 0), int(ss or 0)
+    ms = int((frac or "0")[:3].ljust(3, "0"))
+    if not (1 <= month <= 12 and 1 <= day <= 31 and mn <= 59 and sec <= 59):
+        return None
+    if h > 24 or (h == 24 and (mn or sec or ms)):
+        return None
+    off = 0
+    if osign:
+        if int(oh) > 23 or int(om) > 59:
+            return None
+        off = (1 if osign == "+" else -1) * (int(oh) * 60 + int(om)) * 60_000
+    # MakeDay: the first of the month plus (day - 1) days, so a day past
+    # the month's end rolls into the next month as V8 does.
+    days = _days_from_civil(year, month, 1) + day - 1
+    t = ((days * 24 + h) * 60 + mn) * 60_000 + sec * 1000 + ms - off
+    return t if abs(t) <= _JS_MAX_TIME_MS else None
 
 
 def _page_held_back(r: dict) -> bool:
@@ -2178,13 +2218,20 @@ def _page_spd(r: dict) -> int:
     return int(v) if math.isfinite(v) and v > 0 else 0
 
 
+# What String.prototype.trim() removes: JS white space (including the BOM,
+# U+FEFF) and line terminators. Python's str.strip() keeps the BOM and also
+# removes U+001C-U+001F and U+0085, which trim() keeps.
+_JS_WHITESPACE = ("\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+                  "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff")
+
+
 def _page_lc_class(r: dict) -> str:
     """lcClass(): evosep | evosep_unv | nanolc | unrec | nospd (B2)."""
     spd = _page_spd(r)
     if not spd:
         return "nospd"
     v = r.get("lc_system")
-    lc = _js_text(v).strip().lower() if _js_truthy(v) else ""
+    lc = _js_text(v).strip(_JS_WHITESPACE).lower() if _js_truthy(v) else ""
     if lc == "evosep":
         return "evosep" if spd in _PAGE_EVOSEP_SPD else "evosep_unv"
     if lc:
@@ -2438,8 +2485,11 @@ def _json_response(body: bytes | dict, status_code: int = 200) -> Response:
     return Response(content=body, status_code=status_code, media_type="application/json")
 
 
-_TIC_EMPTY_SUMMARY = {"rows": 0, "duplicate_copies": 0, "usable": 0, "traces": {"DIA": 0, "DDA": 0},
-                      "not_drawn": {"no_spd": 0, "unreadable": 0}, "models": [], "cohorts": []}
+# No table (the dataset could not be read and there is no earlier copy) is
+# an outage, not an empty benchmark: answered 503, so the page says so
+# instead of "no traces have been submitted".
+_TIC_UNAVAILABLE = {"cohorts": [], "raw": [], "unavailable": True,
+                    "error": "The benchmark table could not be read; try again later"}
 
 
 @app.get("/api/tic-summary")
@@ -2454,7 +2504,9 @@ def tic_summary() -> Response:
     except Exception:
         logger.exception("Failed to build the TIC summaries")
         return _json_response({"cohorts": [], "error": "Failed to build the TIC summaries"}, 503)
-    return _json_response(data["summary"] if data else dict(_TIC_EMPTY_SUMMARY))
+    if data is None:
+        return _json_response(dict(_TIC_UNAVAILABLE), 503)
+    return _json_response(data["summary"])
 
 
 @app.get("/api/tic-traces")
@@ -2468,7 +2520,9 @@ def tic_traces(sample: str = "", mode: str = "", spd: int = 0, lc: str = "") -> 
     except Exception:
         logger.exception("Failed to build the TIC summaries")
         return _json_response({"raw": [], "error": "Failed to build the TIC summaries"}, 503)
-    body = data["traces"].get((sample, track, spd, lc)) if data else None
+    if data is None:
+        return _json_response(dict(_TIC_UNAVAILABLE), 503)
+    body = data["traces"].get((sample, track, spd, lc))
     if body is None:
         return _json_response({"raw": [], "error": "No TIC cohort with that sample, mode, spd and lc"}, 404)
     return _json_response(body)
@@ -4108,7 +4162,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         <label class="fgroup"><span class="flbl">Column</span>
             <select id="fbar-column" onchange="setView({ column: this.value })"><option value="">Any column</option></select></label>
         <span class="fbar-inview" id="fbar-inview">Loading runs…</span>
-        <button type="button" class="fbar-btn" id="fbar-reset" onclick="resetView()" hidden>Reset</button>
+        <button type="button" class="fbar-btn" id="fbar-reset" onclick="resetView(); ticReset()" hidden>Reset</button>
     </div>
 </div>
 
@@ -5224,6 +5278,30 @@ function applyFilters() {
 // Tap-to-fullscreen: add an expand (\u26F6) button to every chart card. Figures
 // are small on phones; tapping blows the chart up to the full viewport (rotate to
 // landscape for the most detail), tapping again restores it.
+//
+// Full screen stretches the plot through Plotly's autosize, which drops the
+// plot's own height and width, so on the way out every chart used to keep
+// the full-screen size (920 px tall on a 1000 px screen) until redrawn. The
+// height is kept on the way in and put back on the way out, by the button
+// and by the browser's own exit (Esc): relayout with the saved height and
+// width: null, so the width follows the card again.
+function _stanFsEnter(pd) {
+    if (!pd) return;
+    pd._stanH = (pd.layout && pd.layout.height) || (pd._fullLayout && pd._fullLayout.height) || null;
+    setTimeout(() => { try { if (window.Plotly) Plotly.Plots.resize(pd); } catch(e){} }, 80);
+}
+function _stanFsExit(pd) {
+    if (!pd) return;
+    const h = pd._stanH;
+    pd._stanH = null;
+    setTimeout(() => {
+        try {
+            if (!window.Plotly || !pd._fullLayout) return;
+            const done = h ? Plotly.relayout(pd, { height: h, width: null }) : Plotly.Plots.resize(pd);
+            if (done && done.catch) done.catch(() => {});
+        } catch(e){}
+    }, 80);
+}
 function _stanInjectExpand() {
     if (!window._stanFsSync) {
         window._stanFsSync = true;
@@ -5231,8 +5309,7 @@ function _stanInjectExpand() {
             if (!(document.fullscreenElement || document.webkitFullscreenElement)) {
                 document.querySelectorAll('.chart-card.fs').forEach(c => {
                     c.classList.remove('fs');
-                    const pd = c.querySelector('[id^="chart-"]');
-                    setTimeout(() => { try { if (window.Plotly && pd) Plotly.Plots.resize(pd); } catch(e){} }, 80);
+                    _stanFsExit(c.querySelector('[id^="chart-"]'));
                 });
                 document.body.classList.remove('fs-open');
             }
@@ -5251,19 +5328,20 @@ function _stanInjectExpand() {
         btn.onclick = () => {
             const goingFs = !card.classList.contains('fs');
             if (goingFs) {
+                _stanFsEnter(plot);
                 card.classList.add('fs'); document.body.classList.add('fs-open');
                 // True fullscreen (hides browser chrome) where the platform allows it
                 // — Android Chrome, desktop, iPad. iPhone Safari blocks element
                 // fullscreen, so it gracefully stays the CSS overlay. (For a fully
                 // chrome-free iPhone view, Add STAN to the Home Screen — PWA standalone.)
                 const req = card.requestFullscreen || card.webkitRequestFullscreen;
-                if (req) { try { req.call(card); } catch(e){} }
+                if (req) { try { const p = req.call(card); if (p && p.catch) p.catch(() => {}); } catch(e){} }
             } else {
                 const exit = document.exitFullscreen || document.webkitExitFullscreen;
-                if (document.fullscreenElement || document.webkitFullscreenElement) { try { exit.call(document); } catch(e){} }
+                if (document.fullscreenElement || document.webkitFullscreenElement) { try { const p = exit.call(document); if (p && p.catch) p.catch(() => {}); } catch(e){} }
                 card.classList.remove('fs'); document.body.classList.remove('fs-open');
+                _stanFsExit(plot);
             }
-            setTimeout(() => { try { if (window.Plotly) Plotly.Plots.resize(plot); } catch(e){} }, 80);
         };
         card.appendChild(btn);
     });
@@ -5304,6 +5382,7 @@ async function loadData() {
         console.error('[loadData] fetch failed:', e);
         document.getElementById('table-container').innerHTML =
             `<div class="empty-state">Failed to load data: ${e.message}. Try refreshing.</div>`;
+        try { ticNoData(); } catch (e2) { console.error('[tic]', e2); }   // the TIC summaries are never asked for
         return;
     }
     clearInterval(barTimer);
@@ -6496,7 +6575,7 @@ function renderDynamicRange() {
 const TIC_MIN_FOR_BANDS = 5;
 const TIC_LC_NAME = { evosep: 'Evosep', evosep_unv: 'Evosep', nanolc: 'nanoLC', unrec: 'LC not recorded' };
 let ticSummary = null;          // the /api/tic-summary payload
-let ticStatus = 'loading';      // 'loading' | 'ready' | 'failed'
+let ticStatus = 'loading';      // 'loading' | 'ready' | 'failed' | 'nodata'
 const ticRuns = new Map();      // cohort key -> { status: 'loading' | 'ready' | 'failed', raw, models }
 const ticPick = { spd: null };  // the SPD picked in the panel's own menu
 
@@ -6523,6 +6602,18 @@ function loadTicRuns(c) {
         .then(t => { ticRuns.set(k, { status: 'ready', raw: t.raw || [], models: t.models || [] }); })
         .catch(e => { ticRuns.set(k, { status: 'failed', raw: [], models: [] }); console.warn('[tic-traces]', e); })
         .then(() => { try { renderCommunityTIC(); } catch (e) { console.error('[tic-traces render]', e); } });
+}
+// /api/leaderboard failed, so the summaries are never requested: say so
+// rather than "Loading" for good.
+function ticNoData() { ticStatus = 'nodata'; renderCommunityTIC(); }
+// The bar's Reset also takes the panel back to how it opens: all LC
+// systems, the largest cohort, "show all traces" off.
+function ticReset() {
+    ticPick.spd = null;
+    const lcSel = document.getElementById('tic-lc-select'), allCb = document.getElementById('tic-show-all');
+    if (lcSel) lcSel.value = 'all';
+    if (allCb) allCb.checked = false;
+    renderCommunityTIC();
 }
 function ticToggleAll() {
     for (const [k, v] of ticRuns) if (v.status === 'failed') ticRuns.delete(k);
@@ -6615,7 +6706,10 @@ function renderCommunityTIC() {
         if (noteEl) noteEl.textContent = '';
     };
     if (ticStatus !== 'ready' || !ticSummary) {
-        say(ticStatus === 'failed' ? 'The TIC summaries did not load. Reload the page to try again.' : 'Loading the TIC summaries…', false);
+        // An outage is said as one (the relay answers 503), never as "no traces".
+        say({ failed: 'The TIC summaries could not be loaded. Reload the page to try again.',
+              nodata: 'The benchmark data did not load, so the TIC summaries were not requested. Reload the page to try again.' }[ticStatus]
+            || 'Loading the TIC summaries…', false);
         return;
     }
     const sLabel = SAMPLE_LABEL[sc.sample] || String(sc.sample).toUpperCase();
