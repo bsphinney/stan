@@ -1096,6 +1096,64 @@ def get_arcade_leaderboard_pg(game: str | None = None, limit: int = 10) -> list[
         return _rows(cur)
 
 
+#: Columns of the live PG ``runs`` table, read once per process (see
+#: :func:`_pg_runs_write_columns`). None until the first insert.
+_RUNS_WRITE_COLS: set | None = None
+#: Row keys already reported as missing from PG, so the warning is logged
+#: once per process rather than once per run.
+_RUNS_DROPPED_LOGGED: set = set()
+
+
+def _pg_runs_write_columns(cur) -> set:
+    """Column names of PG ``public.runs``, cached for the process.
+
+    ``_build_runs_row`` gains a key whenever STAN records something new,
+    and the PG migration that adds the column needs the table owner
+    (``brettsp``, CAS login), so it lands later and on Brett's schedule.
+    Until it does, writing the new key would fail every Hive insert
+    ("column ... of relation runs does not exist"). Reading the live
+    column list lets the code ship first: the new keys are simply not
+    written until the column exists. A short-lived Hive job reads it once;
+    the dashboard picks up a migration on its next restart.
+
+    Raises whatever the query raises: an unreadable schema means the
+    connection is broken, and the insert would fail anyway.
+    """
+    global _RUNS_WRITE_COLS
+    if _RUNS_WRITE_COLS is None:
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'runs'"
+        )
+        cols = {r[0] for r in cur.fetchall()}
+        if not cols:
+            # Not visible to this role: do not narrow on an empty answer,
+            # which would drop every column. Let the INSERT speak for itself.
+            return set()
+        _RUNS_WRITE_COLS = cols
+    return _RUNS_WRITE_COLS
+
+
+def _filter_runs_row_for_pg(row: dict, present: set) -> dict:
+    """``row`` without the keys PG ``runs`` does not have (yet).
+
+    Logs the dropped keys once per process at WARNING, naming the
+    migration that adds them, so a Hive log shows why they are NULL.
+    """
+    if not present:
+        return row
+    dropped = sorted(k for k in row if k not in present)
+    new = [k for k in dropped if k not in _RUNS_DROPPED_LOGGED]
+    if new:
+        _RUNS_DROPPED_LOGGED.update(new)
+        logger.warning(
+            "PG runs has no column(s) %s; not writing them until the owner "
+            "migration is applied (migrations/2026-10-05_runs_lc_faims.sql, "
+            "see docs/PG_FARM.md)", ", ".join(new),
+        )
+    return {k: v for k, v in row.items() if k in present}
+
+
 def insert_run_pg(
     instrument: str,
     run_name: str,
@@ -1139,6 +1197,18 @@ def insert_run_pg(
         if c in row and row[c] is not None:
             row[c] = Json(row[c])
 
+    with _connect() as pg, pg.cursor() as cur:
+        # Only the columns PG has: a key added to _build_runs_row ahead of
+        # its owner migration must not break every Hive insert.
+        row = _filter_runs_row_for_pg(row, _pg_runs_write_columns(cur))
+        run_id = _upsert_runs_row(cur, row, host_origin)
+        pg.commit()
+    logger.info("PG insert %s: %s (%s)", run_id[:8], run_name, host_origin)
+    return run_id
+
+
+def _upsert_runs_row(cur, row: dict, host_origin: str) -> str:
+    """Execute the natural-key upsert of one built ``runs`` row."""
     cols = list(row.keys()) + ["host_origin"]
     col_list = ", ".join(f'"{c}"' for c in cols)
     placeholders = ", ".join(["%s"] * len(cols))
@@ -1168,11 +1238,7 @@ def insert_run_pg(
         f'DO UPDATE SET {updates}'
     )
     values = list(row.values()) + [host_origin]
-
-    with _connect() as pg, pg.cursor() as cur:
-        cur.execute(sql, values)
-        pg.commit()
-    logger.info("PG insert %s: %s (%s)", row["id"][:8], run_name, host_origin)
+    cur.execute(sql, values)
     return row["id"]
 
 

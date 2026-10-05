@@ -40,7 +40,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.6.0"
+SPACE_VERSION = "1.7.0"
 
 # Fields a submission row keeps on the server but that no public response
 # may carry (community redesign D4, decision 5). run_name is the raw file
@@ -912,6 +912,52 @@ def compute_ips(sub: "BenchmarkSubmission") -> int:
 
 # ── Submission schema ───────────────────────────────────────────────
 
+#: Enums of the Space 1.7.0 cohort attributes. Kept in step with the
+#: client: stan.metrics.scoring.LC_FLOW_VALUES and
+#: stan.community.amount.AMOUNT_SOURCES.
+LC_FLOW_VALUES = frozenset({"nano", "capillary", "micro"})
+AMOUNT_SOURCE_VALUES = frozenset({"declared", "parsed", "assumed"})
+LC_MODEL_MAX_LEN = 80
+
+
+def _clean_enum(value: Any, allowed: frozenset) -> str:
+    """``value`` if it is one of ``allowed`` (trimmed, lower-cased), else ''."""
+    if not isinstance(value, str):
+        return ""
+    v = value.strip().lower()
+    return v if v in allowed else ""
+
+
+def _clean_lc_model(value: Any) -> str:
+    """An LC model name as stored: _clean_text, at most 80 characters."""
+    return _clean_text(value)[:LC_MODEL_MAX_LEN].strip()
+
+
+def _clean_faims(value: Any) -> bool | None:
+    """True / False, or None for anything that is not clearly either."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes"):
+            return True
+        if v in ("false", "0", "no"):
+            return False
+    return None
+
+
+#: How /api/update cleans a patched cohort attribute: the same rules as a
+#: submission, so a patch cannot store what /api/submit would not.
+_PATCH_CLEANERS: dict[str, Callable[[Any], Any]] = {
+    "lc_model": _clean_lc_model,
+    "lc_flow": lambda v: _clean_enum(v, LC_FLOW_VALUES),
+    "amount_source": lambda v: _clean_enum(v, AMOUNT_SOURCE_VALUES),
+    "faims": _clean_faims,
+}
+
+
 class BenchmarkSubmission(BaseModel):
     """A community benchmark submission from a STAN client."""
 
@@ -975,6 +1021,34 @@ class BenchmarkSubmission(BaseModel):
     run_date: str = ""
     # Additional stats (from DIA-NN report.stats.tsv)
     fwhm_rt_min: float | None = None
+    # Cohort attributes (Space 1.7.0, STAN 1.2.16; spec §A.5 B4 + decision
+    # 12). All optional: older clients omit them and the stored row reads
+    # '' / null ("not recorded"). Never part of the v1 completeness gate.
+    # An unknown enum value is stored as '' rather than rejecting the run.
+    lc_model: str = ""        # canonical LC name read from the raw file, <= 80 chars
+    lc_flow: str = ""         # nano | capillary | micro | ''
+    amount_source: str = ""   # declared | parsed | assumed | ''
+    faims: bool | None = None  # null = not recorded
+
+    @field_validator("lc_model", mode="before")
+    @classmethod
+    def _p3a_lc_model(cls, v: Any) -> str:
+        return _clean_lc_model(v)
+
+    @field_validator("lc_flow", mode="before")
+    @classmethod
+    def _p3a_lc_flow(cls, v: Any) -> str:
+        return _clean_enum(v, LC_FLOW_VALUES)
+
+    @field_validator("amount_source", mode="before")
+    @classmethod
+    def _p3a_amount_source(cls, v: Any) -> str:
+        return _clean_enum(v, AMOUNT_SOURCE_VALUES)
+
+    @field_validator("faims", mode="before")
+    @classmethod
+    def _p3a_faims(cls, v: Any) -> bool | None:
+        return _clean_faims(v)
 
 
 # ── Hard gates ──────────────────────────────────────────────────────
@@ -1534,6 +1608,10 @@ async def submit(sub: BenchmarkSubmission, request: Request) -> dict:
         "fasta_md5": [sub.fasta_md5],
         "speclib_md5": [sub.speclib_md5],
         "library_coverage_pct": [sub.library_coverage_pct],
+        "lc_model": [sub.lc_model],
+        "lc_flow": [sub.lc_flow],
+        "amount_source": [sub.amount_source],
+        "faims": [sub.faims],
     }
 
     schema = pa.schema([
@@ -1582,6 +1660,11 @@ async def submit(sub: BenchmarkSubmission, request: Request) -> dict:
         pa.field("fasta_md5", pa.string()),        # MD5 of frozen community FASTA
         pa.field("speclib_md5", pa.string()),      # MD5 of frozen vendor speclib (DIA only)
         pa.field("library_coverage_pct", pa.float32()),  # n_precursors / community library size
+        # Space 1.7.0 cohort attributes ('' / null = not recorded):
+        pa.field("lc_model", pa.string()),         # "UltiMate 3000", "Evosep One", ...
+        pa.field("lc_flow", pa.string()),          # nano | capillary | micro
+        pa.field("amount_source", pa.string()),    # declared | parsed | assumed
+        pa.field("faims", pa.bool_()),             # FAIMS on; null when unknown
     ])
 
     table = pa.table(row, schema=schema)
@@ -1646,6 +1729,13 @@ _UPDATABLE_FIELDS = {
     "dynamic_range_log10",
     "median_points_across_peak",
     "median_peak_width_sec",
+    # Space 1.7.0 cohort attributes: re-derivable from the raw file (LC
+    # model, FAIMS) or the lab's setup (flow, amount source), so a backfill
+    # may patch them. Cleaned exactly as on submit (_PATCH_CLEANERS).
+    "lc_model",
+    "lc_flow",
+    "amount_source",
+    "faims",
 }
 
 
@@ -1742,6 +1832,8 @@ async def update_submission(submission_id: str, request: Request) -> dict:
     for k, v in patch.items():
         if k in _JSON_ENCODED and isinstance(v, list):
             normalized_patch[k] = json.dumps(v)
+        elif k in _PATCH_CLEANERS:
+            normalized_patch[k] = _PATCH_CLEANERS[k](v)
         else:
             normalized_patch[k] = v
 

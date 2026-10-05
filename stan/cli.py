@@ -575,8 +575,8 @@ def setup() -> None:
 
     Asks for the watch folder (the vendor comes from the raw files already
     in it, or is asked), the instrument name, which files count as QC, the
-    LC column, HeLa amount, community participation, daily email and error
-    reports. Writes a block the watcher can run (vendor, extensions,
+    LC column and flow regime (lc_flow), HeLa amount, community
+    participation, daily email and error reports. Writes a block the watcher can run (vendor, extensions,
     stable_secs, enabled, qc_only, output_dir) to instruments.yml, updating
     the folder's existing block rather than adding a second one, and the
     community answers (community_submit, error_telemetry, display_name,
@@ -709,6 +709,12 @@ def add_watch(
         help="Process every raw file in the directory, not just QC files. "
              "Use for dedicated QC watch dirs where every file is a HeLa run.",
     ),
+    lc_flow: str = typer.Option(
+        None, "--lc-flow",
+        help="LC flow regime: nano (<1 µL/min) | capillary (1-10) | micro (>10). "
+             "Stamped on every run and sent to the community benchmark, which "
+             "groups non-Evosep runs by it. Sets it on an existing block too.",
+    ),
 ) -> None:
     """Add a new watch directory to instruments.yml.
 
@@ -733,11 +739,12 @@ def add_watch(
     nothing and exits 1.
 
     Exits 1 when the folder does not exist or its vendor cannot be told,
-    and 2 for a bad --vendor or --qc-pattern.
+    and 2 for a bad --vendor, --qc-pattern or --lc-flow.
 
     Example:
         stan add-watch F:\\data\\new_hela_runs
         stan add-watch D:\\Data\\HeLa --name "timsTOF HT" --vendor bruker
+        stan add-watch E:\\Exploris --lc-flow nano
         stan add-watch E:\\data\\shared --qc-pattern "(?i)(hela|qctest)"
         stan add-watch G:\\qc_only --all-files
     """
@@ -771,6 +778,17 @@ def add_watch(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(2)
 
+    if lc_flow is not None:
+        from stan.metrics.scoring import normalize_lc_flow
+
+        flow = normalize_lc_flow(lc_flow)
+        if not flow:
+            console.print(
+                f"[red]--lc-flow must be nano, capillary or micro, not {_escape(lc_flow)!r}[/red]"
+            )
+            raise typer.Exit(2)
+        lc_flow = flow
+
     if qc_pattern and not qc_off:
         # re.compile, not compile_qc_pattern: that one never raises, it logs
         # and falls back to the default, so a typo was written to the config
@@ -787,6 +805,7 @@ def add_watch(
         _complete_existing_watch(
             existing, watch_path, config_path,
             vendor=vendor, name=name, qc_off=qc_off, qc_pattern=qc_pattern,
+            lc_flow=lc_flow,
         )
         return
 
@@ -829,6 +848,8 @@ def add_watch(
     new_inst = watcher_block(
         name, vendor, watch_path, qc_only=qc_only_cfg, qc_pattern=qc_pattern_cfg,
     )
+    if lc_flow:
+        new_inst["lc_flow"] = lc_flow
     read_path = config_path
     try:
         _action, new_inst, config_path = upsert_instrument_block(new_inst, config_path=config_path)
@@ -850,6 +871,8 @@ def add_watch(
         console.print(f"  Filter:  [cyan]{_escape(pat_label)}[/cyan]")
     else:
         console.print("  Filter:  [cyan]none (processing all files)[/cyan]")
+    if new_inst.get("lc_flow"):
+        console.print(f"  LC flow: {_escape(str(new_inst['lc_flow']))}")
     console.print()
     console.print(f"[dim]Config written to {_escape(str(config_path))}[/dim]", soft_wrap=True)
     notes = config_write_notes(read_path, config_path, None, new_inst)
@@ -871,6 +894,7 @@ def _complete_existing_watch(
     name: str | None,
     qc_off: bool,
     qc_pattern: str | None,
+    lc_flow: str | None = None,
 ) -> None:
     """``stan add-watch`` on a folder that already has a block.
 
@@ -938,6 +962,8 @@ def _complete_existing_watch(
         override.update(qc_only=False, qc_pattern=None)
     elif qc_pattern:
         override.update(qc_only=True, qc_pattern=qc_pattern)
+    if lc_flow:
+        override["lc_flow"] = lc_flow
 
     final_name = str(override.get("name", label))
     owner = instrument_name_owner(final_name, watch_path, config_path)
@@ -7175,8 +7201,17 @@ def hive_process_cmd(
         help="Force dia/dda. Empty = auto-detect from raw metadata."),
     column_vendor: str = typer.Option("", "--column-vendor"),
     column_model: str = typer.Option("", "--column-model"),
-    amount_ng: float = typer.Option(50.0, "--amount-ng",
-        help="HeLa injection amount stamp."),
+    amount_ng: float = typer.Option(None, "--amount-ng",
+        help="Declared HeLa injection amount (ng) for THIS run, stored with "
+             "amount_source=declared. Omit it and the amount comes from a "
+             "unit-anchored token in the file name (50ng, 1ug, 1µg), else "
+             "--default-amount-ng, else 50 ng (amount_source parsed/assumed)."),
+    default_amount_ng: float = typer.Option(None, "--default-amount-ng",
+        help="The instrument's usual amount (dispatch.yml amount_ng). Used "
+             "only when the file name states none; stored as assumed."),
+    lc_flow: str = typer.Option("", "--lc-flow",
+        help="LC flow regime: nano (<1 µL/min) | capillary (1-10) | "
+             "micro (>10). From dispatch.yml lc_flow; stamped on the row."),
     spd: int = typer.Option(0, "--spd",
         help="Cohort default if metadata-resolve fails. 0 = no override."),
     gradient_min: int = typer.Option(0, "--gradient-min",
@@ -7230,6 +7265,8 @@ def hive_process_cmd(
             gradient_length_min=gradient_min or None,
             force=force,
             classification=classification,
+            default_amount_ng=default_amount_ng,
+            lc_flow=lc_flow,
         )
     elif step in ("search", "features", "pegdrift", "extract"):
         from stan.pipeline.hive_steps import (
@@ -7266,6 +7303,8 @@ def hive_process_cmd(
                 hela_amount_ng=amount_ng,
                 spd=spd or None,
                 gradient_length_min=gradient_min or None,
+                default_amount_ng=default_amount_ng,
+                lc_flow=lc_flow,
             )
     else:
         console.print(f"[red]Unknown --step value: {step!r}[/red]")
@@ -7621,6 +7660,11 @@ def ingest_orphans_cmd(
         # twice in PG just because one run saw it via /Volumes/ and
         # another via /quobyte/.
         _os.environ["STAN_RAW_PATH_CANONICAL"] = str(args["raw_path"])
+        # Before 1.2.16 the dispatcher wrote dispatch.yml's per-instrument
+        # amount_ng as --amount-ng. It never was a per-run declaration, so
+        # read it as the instrument default: a unit-anchored amount in the
+        # file name still wins, and nothing is stamped "declared".
+        default_amt = args.get("default_amount_ng") or args.get("amount_ng")
         try:
             result = step_extract(
                 raw_path=args.get("raw_path_local", args["raw_path"]),
@@ -7631,7 +7675,9 @@ def ingest_orphans_cmd(
                 out_dir=sub,
                 column_vendor=args.get("column_vendor", ""),
                 column_model=args.get("column_model", ""),
-                hela_amount_ng=float(args.get("amount_ng", 50.0)),
+                hela_amount_ng=None,
+                default_amount_ng=float(default_amt) if default_amt else None,
+                lc_flow=args.get("lc_flow", ""),
                 spd=int(args["spd"]) if args.get("spd") else None,
             )
         except Exception as e:

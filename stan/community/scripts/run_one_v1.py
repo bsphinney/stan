@@ -58,10 +58,13 @@ FAMILY_TO_HOST = {
 
 
 def _column_metadata_for_family(family: str) -> dict:
-    """Read column + lc_system metadata from the synced instruments.yml.
+    """Read column + LC metadata from the synced instruments.yml.
 
-    Returns ``{column_vendor, column_model, lc_system}``. Empty dict
-    when the host directory or YAML isn't reachable.
+    Returns any of ``{column_vendor, column_model, lc_system, lc_flow}``
+    the file sets. Empty dict when the host directory or YAML isn't
+    reachable. The per-host mirror stopped being written in 2026 (see
+    CLAUDE.md, "The Hive mirror is dead"), so treat this as a fallback:
+    ``lc_system`` is read from the raw file first (``_lc_metadata``).
     """
     host = FAMILY_TO_HOST.get(family, "")
     if not host:
@@ -78,7 +81,7 @@ def _column_metadata_for_family(family: str) -> dict:
             return {}
         first = instruments[0]
         out = {}
-        for k in ("column_vendor", "column_model", "lc_system"):
+        for k in ("column_vendor", "column_model", "lc_system", "lc_flow"):
             if first.get(k):
                 out[k] = first[k]
         return out
@@ -88,37 +91,48 @@ def _column_metadata_for_family(family: str) -> dict:
 
 
 def _resolve_amount_ng_from_name(name: str) -> float | None:
-    """Best-effort injection-amount detector from the filename.
+    """Injection amount stated in the file name, in ng, or None.
 
-    Strict mode: REQUIRES an explicit unit (ng / ug / μg / microgram).
-    Catches: ``_50ng_``, ``HeLa_50ng``, ``HeLa50ng``, ``_1ug_``,
-    ``_1.5ug_``, ``_500ng_``, ``_5ng_``.
+    Delegates to :func:`stan.community.amount.parse_amount_ng`, the one
+    unit-anchored parser for every ingest path (ng / ug / µg U+00B5 /
+    μg U+03BC / mcg, optional ``_`` or ``-`` before the unit). This
+    module's own regex missed the MICRO SIGN and ``50_ng`` / ``1-ug``.
 
-    The previous implicit ``hel(?:a|_|-)?\d+`` pattern was REMOVED on
-    2026-04-30 because it was matching replicate numbers as amounts —
-    ``FL20170223_Hela4-cntrl-DIA-mito.raw`` (replicate 4 of 50 ng HeLa)
-    was being stamped as ``amount_ng=4.0`` and polluting the relay's
-    ultra-low-load bucket. There's no reliable way to distinguish a
-    HeLa-N-as-replicate from a HeLa-N-as-load tag without external
-    metadata, so we now require an unambiguous ``ng``/``ug`` token.
-
-    Returns the amount in nanograms, or None when the filename carries
-    no quantitative token. None propagates so the caller can run the
-    search and either default to 50 ng (post-2020 lab convention)
+    A bare number never parses: an implicit ``hel\\d+`` pattern was
+    removed on 2026-04-30 because it read replicate numbers as amounts
+    (``FL20170223_Hela4-cntrl-DIA-mito.raw`` stamped 4 ng). None
+    propagates so the caller can assume 50 ng (post-2020 lab convention)
     or defer to manual review (pre-2020).
     """
-    n = name.lower()
-    # `\b` doesn't fire between "ng" and "_" because both are word chars
-    # in Python regex (`_` is `\w`). Use a negative lookahead instead so
-    # we only require the unit not to be followed by another letter.
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(ng|ug|μg|micrograms?)(?![a-z])", n)
-    if m:
-        amount = float(m.group(1))
-        unit = m.group(2)
-        if unit.startswith("u") or unit.startswith("μ") or unit.startswith("micro"):
-            amount *= 1000.0
-        return amount
-    return None
+    from stan.community.amount import parse_amount_ng
+
+    return parse_amount_ng(name)
+
+
+def _lc_metadata(raw: Path, yml_meta: dict) -> dict:
+    """``lc_system`` and ``lc_model`` read from the raw file, with the
+    synced instruments.yml as the fallback for ``lc_system``.
+
+    Before 1.2.16 this path took ``lc_system`` from the yml alone, which
+    the dead per-host mirror may not carry, so a row could go out with no
+    LC recorded. The watcher and the Hive pipeline have always read it from
+    the raw file (``detect_lc_system``); this does the same.
+    """
+    out: dict = {}
+    try:
+        from stan.metrics.scoring import detect_lc_model, detect_lc_system
+
+        lc_sys = detect_lc_system(raw)
+        if lc_sys:
+            out["lc_system"] = lc_sys
+        lc_model = detect_lc_model(raw)
+        if lc_model:
+            out["lc_model"] = lc_model
+    except Exception:
+        logger.debug("LC detection failed for %s", raw.name, exc_info=True)
+    if not out.get("lc_system") and yml_meta.get("lc_system"):
+        out["lc_system"] = yml_meta["lc_system"]
+    return out
 
 
 def _resolve_spd_from_name(name: str) -> int | None:
@@ -428,8 +442,8 @@ def extract_and_submit(
     #   5. None
     from stan.metrics.scoring import validate_spd_from_metadata
 
-    # Injection amount comes from the filename — manual review queue
-    # if the name carries no token.
+    # Injection amount comes from the filename (unit-anchored) — manual
+    # review queue if the name carries no token and the run is pre-2020.
     amount_ng = _resolve_amount_ng_from_name(raw.name)
 
     spd = None
@@ -497,15 +511,20 @@ def extract_and_submit(
     # and decouples the metric stamp from the search-time decision
     # in run_sage(). Bruker is always TOF; Thermo runs through the
     # filter-string detector.
+    # v1.2.16: the same pass over the scan filters answers FAIMS.
     if vendor == "thermo":
         try:
-            from stan.tools.trfp import detect_ms2_analyzer
-            run["ms2_analyzer"] = detect_ms2_analyzer(raw)
+            from stan.tools.trfp import detect_scan_facts
+            facts = detect_scan_facts(raw)
+            run["ms2_analyzer"] = facts["ms2_analyzer"]
+            if facts["faims"] is not None:
+                run["faims"] = facts["faims"]
         except Exception:
             logger.debug("ms2_analyzer detect failed", exc_info=True)
             run["ms2_analyzer"] = ""
     elif vendor == "bruker":
         run["ms2_analyzer"] = "tof"
+        run["faims"] = False
     run["diann_version"] = "2.3.0"
     # Real acquisition date from raw-file metadata. Bruker .d reads
     # GlobalMetadata.AcquisitionDateTime from analysis.tdf; Thermo .raw
@@ -520,9 +539,14 @@ def extract_and_submit(
     ).isoformat()
     if gradient_min is not None:
         run["gradient_length_min"] = int(round(gradient_min))
-    # Column + LC metadata from the watcher's synced instruments.yml.
-    # Populates the dashboard Column Comparison + LC system panels.
-    run.update(_column_metadata_for_family(family))
+    # Column + flow from the synced instruments.yml (Column Comparison
+    # panel, nanoLC key); LC system + model from the raw file first.
+    yml_meta = _column_metadata_for_family(family)
+    run.update({k: v for k, v in yml_meta.items() if k != "lc_system"})
+    run.update(_lc_metadata(raw, yml_meta))
+    if run.get("lc_flow"):
+        from stan.metrics.scoring import normalize_lc_flow
+        run["lc_flow"] = normalize_lc_flow(run["lc_flow"])
 
     # Empty-search short-circuit. When DIA-NN/Sage produces a parquet
     # but every count is zero (FDR collapsed to nothing, library
@@ -562,14 +586,19 @@ def extract_and_submit(
             "metrics": metrics,
         }
 
-    # Resolve injection amount.
-    # 1. Filename token (HeL50, _50ng_, _1ug_) → trust it.
+    # Resolve injection amount (stan.community.amount precedence; this
+    # path has no per-run declaration and no instrument default):
+    # 1. Unit-anchored filename token (_50ng_, _1ug_, 1µg) → "parsed".
     # 2. acquisition_date >= 2020 → assume 50ng (post-2020 lab
-    #    convention: HeLa QCs are always 50 ng).
+    #    convention: HeLa QCs are always 50 ng) → "assumed".
     # 3. Pre-2020 with no token → DEFER. Skip the community submit
     #    and write a manual-review entry; the search output is still
     #    on disk for Brett to inspect.
+    # A filename that states an implausible amount (>5,000 ng, two
+    # amounts) is not submitted: submit_to_benchmark refuses it with the
+    # reason (amount_problem) and the run lands in the JSONL as an error.
     final_amount_ng: float | None = amount_ng
+    run["amount_source"] = "parsed" if amount_ng is not None else "assumed"
     deferred_reason: str | None = None
     if final_amount_ng is None:
         try:

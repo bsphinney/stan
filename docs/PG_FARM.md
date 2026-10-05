@@ -83,6 +83,40 @@ Indexes (set up by the migration script):
 - `idx_runs_run_date`   on `run_date`
 - `idx_runs_host`       on `host_origin`
 
+### Pending owner migration: `runs_lc_faims` (STAN 1.2.16)
+
+Measured 2026-10-05 (read-only, service account): live `public.runs` has 67
+columns and none of the four P3a cohort attributes. STAN 1.2.16 writes them
+(`lc_model` TEXT, `lc_flow` TEXT, `amount_source` TEXT, `faims` INTEGER
+1/0/NULL — compare `faims = 1`, never a boolean), but **ships before the
+columns exist**: `insert_run_pg` reads the live column list from
+information_schema once per process and drops any row key PG lacks, with
+one WARNING per process naming the keys and this migration. Hive ingest
+keeps working either way; the four values are simply not stored until it
+runs. Apply it as the table owner, from the Mac:
+
+```bash
+pgfarm auth login                                   # UCD CAS, browser flow
+export PGPASSWORD="$(pgfarm auth token | tail -n1)"
+python scripts/apply_pg_migration.py migrations/2026-10-05_runs_lc_faims.sql --user brettsp --dry-run
+python scripts/apply_pg_migration.py migrations/2026-10-05_runs_lc_faims.sql --user brettsp
+```
+
+`--dry-run` runs the ALTERs and rolls back (the file has no BEGIN/COMMIT of
+its own for that reason). Check afterwards:
+
+```sql
+SELECT column_name, data_type FROM information_schema.columns
+WHERE table_schema = 'public' AND table_name = 'runs'
+  AND column_name IN ('lc_model', 'lc_flow', 'amount_source', 'faims');
+```
+
+A Hive job started after that writes the columns (the column list is cached
+per process); the dashboard picks them up on its next restart, and its
+PG→SQLite mirror re-fetches `runs` once because the table shape changed
+(~73 MB egress). Existing rows stay NULL: a backfill from the raw files is
+P4 and needs Brett's go after a before/after.
+
 ### `arcade_scores` (v1.0.22)
 
 The one table here that is not QC data. It holds arcade high scores plus an
@@ -402,6 +436,8 @@ firing — `tail` the dispatch log under `/quobyte/proteomics-grp/STAN/logs/`.
 |                    | `.pgfarm_secret.json` paths (token auto-mints)|
 | When schema drifts | Update `PG_COLUMN_TYPES` in migrate script    |
 |                    | + `_build_runs_row` in `stan.db`              |
+|                    | (`insert_run_pg` skips keys PG lacks until    |
+|                    | the owner migration runs, logging once)       |
 | New instrument     | Add to `FAMILY_TO_HOST_ORIGIN` in `db_pg.py`  |
 |                    | + new entry in cron's host loop               |
 

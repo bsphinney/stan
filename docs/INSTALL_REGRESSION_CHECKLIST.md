@@ -209,7 +209,8 @@ single quotes around Windows paths.
 | `search_mode` | `local` | `community` uses the frozen community parameters and expects the library and FASTA in `<output_dir>\_community_assets\`. |
 | `keep_mzml` | `false` | Keeps the mzML that is converted from `.raw` before a Sage search. |
 | `startup_catchup_days` | `30` | At start-up, searches QC files from the last N days that are not in the database yet. `0` turns this off. |
-| `hela_amount_ng` | `50` | The injected amount. It is part of the community cohort. |
+| `hela_amount_ng` | `50` | Your usual injected amount. It is part of the community cohort. A file name that states an amount with a unit (`50ng`, `1ug`) wins over it (1.2.16). |
+| `lc_flow` | none | The LC flow regime: `nano` (<1 µL/min), `capillary` (1–10) or `micro` (>10). Stamped on every run and sent to the community benchmark, which groups non-Evosep LC runs by it. Set it with `stan add-watch <dir> --lc-flow nano` or `stan setup`; leave it unset for an Evosep. |
 | `column_vendor`, `column_model` | none | The LC column. STAN cannot read it from raw files. |
 | `spd` | none | Last-resort samples-per-day. STAN reads SPD from the raw file, so leave this unset unless that fails. |
 | `execution_mode` | `local` | Leave it unset. `slurm` is a legacy path in which the watcher submits each search to a cluster over SSH. New cluster installs use Mode C's dispatcher instead. |

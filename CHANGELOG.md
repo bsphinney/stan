@@ -11,6 +11,109 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.16] — 2026-10-05
+
+Community redesign **P3a**: capture and accept four per-run cohort attributes,
+for new runs only (spec
+`docs/superpowers/specs/2026-09-29-community-redesign-and-precursor-lookup-design.md`
+§A.3 B4, §A.5, decision 12; Brett's decisions of 2026-10-05). Relay
+(`hf_space/app.py`) is Space **1.7.0**. No stored row changes: nothing is
+backfilled, and `compute_cohort_id`, the broad cohort collapse in
+`normalize_v1`, the facility id (P3c) and the read-time amount check (P3b) are
+untouched. The community page does not read the new fields yet; its TIC,
+lookup and P2 code are byte-identical to 1.6.0 (hash pins unchanged).
+
+### Added
+- **Four fields on every new run**, stamped at ingest by the watcher, the Hive
+  pipeline (`stan hive-process`, full and per-step) and `run_one_v1`, stored in
+  `runs` and sent with each community submission:
+  - `lc_model` — the LC named canonically ("UltiMate 3000", "Evosep One",
+    "Vanquish Neo", "EASY-nLC 1200", "nanoElute", ...) by the new
+    `stan.metrics.scoring.detect_lc_model`: the instrument-method DriverIds of
+    a Thermo `.raw` (`_extract_lc_from_raw_binary`), the HyStar method of a
+    Bruker `.d` (entity-escaped XML in `<N>.m/hystar.method`, then
+    `HyStarMetadata.xml`). Checked on real files: a 2026-10-05 Exploris 480
+    and a 2026-09-29 Lumos raw ("UltiMate 3000"), timsTOF HT `.d` folders from
+    2023, 2024 and 2026 ("Evosep One"). An unrecognised device is NULL, never a
+    guess. `detect_lc_system` (evosep/custom) is unchanged.
+  - `lc_flow` — nano (<1 µL/min) | capillary (1–10) | micro (>10), set per
+    instrument: `stan setup` asks it (skippable), `stan add-watch --lc-flow`
+    sets it on a new or existing block, and on Hive it is `lc_flow:` in
+    `dispatch.yml` (passed as `stan hive-process --lc-flow`; a `--raw`
+    dispatch takes it from the same entry).
+  - `amount_source` — declared | parsed | assumed, from the new
+    `stan/community/amount.py`: a per-run declaration (`--amount-ng`) wins, then
+    a unit-anchored amount in the file name (ng, ug, µg U+00B5, μg U+03BC, mcg,
+    optional `_`/`-` before the unit), then the instrument default
+    (`hela_amount_ng` / dispatch.yml `amount_ng`, recorded as assumed), then
+    50 ng. A number without a unit never parses ("HeL50", "Hela4", "2ugli").
+  - `faims` — FAIMS on (1), off (0) or unknown (NULL), from a `cv=`
+    compensation voltage in the Thermo scan filters, read in the same fisher_py
+    pass as the MS2 analyzer (`stan.tools.trfp.detect_scan_facts`;
+    `detect_ms2_analyzer` is now a wrapper). Bruker is always 0. The filter
+    format follows ProteoWizard's Thermo filter parser; it is not yet checked
+    against a real FAIMS raw through fisher_py (TODO in `trfp.py`).
+- **Owner migration** `migrations/2026-10-05_runs_lc_faims.sql` adds the four
+  columns to PG `runs` (`faims` INTEGER, never BOOLEAN). Brett applies it when
+  convenient, from the Mac:
+
+  ```bash
+  pgfarm auth login
+  export PGPASSWORD="$(pgfarm auth token | tail -n1)"
+  python scripts/apply_pg_migration.py migrations/2026-10-05_runs_lc_faims.sql --user brettsp --dry-run
+  python scripts/apply_pg_migration.py migrations/2026-10-05_runs_lc_faims.sql --user brettsp
+  ```
+
+  The new columns change the runs table shape, so the Azure dashboard's
+  PG→SQLite mirror re-fetches `runs` once (~73 MB egress).
+- **Relay 1.7.0** accepts the four as optional `BenchmarkSubmission` fields
+  and stores them as parquet columns (string, string, string, bool). An
+  unknown `lc_flow` / `amount_source` is stored as '', an unclear `faims` as
+  null, and `lc_model` goes through `_clean_text` and is capped at 80
+  characters: a bad value never rejects a run. They are not in the v1
+  completeness gate and are patchable through `/api/update` under the same
+  cleaning. A client that does not send them is stored exactly as before, plus
+  four empty columns.
+
+### Changed
+- **PG writes no longer break when STAN gains a field.** `insert_run_pg`
+  reads the live `public.runs` column list from information_schema once per
+  process and drops row keys PG does not have, with one WARNING naming them
+  and the migration. Shipping 1.2.16 before the migration is safe: verified
+  read-only against the live table (2026-10-05, service account, read-only
+  session) that the four new keys are the only ones dropped.
+- **An amount is never sent silently when it cannot be trusted.** A declared
+  amount the file name contradicts, a file name naming two amounts, or an
+  amount (stored or parsed) above 5,000 ng makes `submission_readiness` answer
+  needs_metrics with the reason (counted as waiting by `stan submit-all` and
+  the dashboard's Sync), and `submit_to_benchmark` refuses it. Rows stored
+  before 1.2.16 send `amount_source` derived from the file name.
+- `stan hive-process --amount-ng` now defaults to none (it means "declared for
+  this run"); the new `--default-amount-ng` carries dispatch.yml's
+  per-instrument `amount_ng`, which the dispatcher used to pass as
+  `--amount-ng`. `stan ingest-orphans` reads an old sbatch's `--amount-ng` as
+  that default. The watcher now lets a unit-anchored amount in the file name
+  win over `hela_amount_ng`.
+- **`run_one_v1` reads the LC from the raw file** (`detect_lc_system`,
+  `detect_lc_model`), with the synced instruments.yml only as the fallback, and
+  uses the shared amount parser in place of its own regex (which missed the
+  MICRO SIGN and `50_ng` / `1-ug`).
+- SQLite: `_SCHEMA` and `_migrate` add `lc_model`, `lc_flow`, `amount_source`
+  (TEXT) and `faims` (INTEGER 1/0/NULL; compare `faims = 1`). Old rows stay
+  NULL.
+
+### Known gaps
+- Hive has no `fisher_py`, so Hive-ingested Thermo runs keep `faims` NULL (as
+  their `ms2_analyzer` is already 'unknown'). P3b's file-name hint covers the
+  UC Davis FAIMS runs at read time; a Hive-side reader is a follow-up.
+- Hive's `/quobyte/proteomics-grp/STAN/dispatch.yml` needs `lc_flow: nano`
+  on its "Orbitrap Fusion Lumos" and "Orbitrap Exploris 480" entries (both
+  nanoflow, Brett 2026-10-05; the timsTOF HT's Evosep entry stays without one)
+  before their runs carry a flow. The template
+  (`stan hive-dispatch --print-default-config`) now has them.
+
+---
+
 ## [1.2.15] — 2026-10-05
 
 Community site redesign: the TIC overlay (spec

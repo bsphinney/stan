@@ -222,11 +222,13 @@ instruments:
   diann_path: '<the DiaNN.exe path step 3 printed>'
   sage_path: 'C:\Users\<user>\STAN\tools\sage\sage-v0.14.7-x86_64-pc-windows-msvc\sage.exe'
   startup_catchup_days: 0      # default 30: the first start searches 30 days of old QC files
-  hela_amount_ng: 50
+  hela_amount_ng: 50           # your usual amount; a file name that states one (50ng, 1ug) wins
+  # lc_flow: nano              # non-Evosep LC only: nano | capillary | micro (stan add-watch --lc-flow)
 ```
 
 `stan add-watch <dir> --vendor bruker --name "<label>" -y` writes the keys
-from `name` to `output_dir` (its `output_dir` is
+from `name` to `output_dir`, plus `lc_flow` with `--lc-flow nano|capillary|micro`
+(its `output_dir` is
 `%USERPROFILE%\STAN\qc_output\<label>`, with spaces turned into `_`). Add
 every key from `lib_path` down by hand. If the one-click installer ran, its
 `%USERPROFILE%\.stan\instruments.yml` is the only one; the first `add-watch`
@@ -464,6 +466,7 @@ What ships today vs. what's still planned.
 | SPD on non-QC acquisitions | Done | `sample_health.spd`, resolved per-file at ingest (metadata, then filename token — never the cohort default). Backfill with `stan fix-sample-spds`. Lets the dashboard's TIC overlay filter Sample and Blank traces by gradient instead of dropping them. |
 | Per-instrument utilisation capacity | Done | Utilisation is scored against each instrument's two most-used gradients (`spd_usage_by_instrument()`), not a fixed Evosep 100/60 pair. |
 | `detect_lc_system()` | Done | Evosep vs custom from `.d` method tree + TrayType; powers the LC filter on the community TIC overlay. |
+| Cohort attributes per run (v1.2.16, P3a) | Done | `lc_model` (`detect_lc_model`: Thermo DriverIds, Bruker HyStar method), `lc_flow` (`stan setup` / `add-watch --lc-flow` / dispatch.yml), `amount_source` (declared / parsed / assumed, `stan/community/amount.py`) and `faims` (`cv=` in Thermo scan filters) stamped at ingest and sent to the relay (1.7.0). Amount conflicts and amounts above 5,000 ng are held back from submission. PG gets the columns by `migrations/2026-10-05_runs_lc_faims.sql` (owner, pending); until then the PG writer skips them. Hive has no `fisher_py`, so Hive Thermo runs record FAIMS as unknown. |
 | Real acquisition-date preservation | Done | Bruker `analysis.tdf.AcquisitionDateTime` / Thermo `fisher_py` CreationDate, not insertion time. |
 | DIA-NN filename `--` sanitizer | Done | Junction/symlink workaround for the DIA-NN argv-parsing bug. |
 | Today TIC overlay | Done | `/api/today/tic-overview` powers the at-a-glance pump-and-spray view. |

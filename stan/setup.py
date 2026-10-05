@@ -96,10 +96,12 @@ def run_setup() -> None:
     console.print("[bold]2. What LC column is installed?[/bold]")
     console.print("  [dim]This is the one thing STAN can't read from raw files.[/dim]")
     column_vendor, column_model = _pick_column()
+    lc_flow = _pick_lc_flow((existing_block or {}).get("lc_flow"))
 
     # ── 3. HeLa amount ───────────────────────────────────────────
     console.print()
     console.print("[bold]3. HeLa injection amount[/bold]")
+    console.print("  [dim]Your usual amount. A file name that states one (50ng, 1ug) wins.[/dim]")
     amount = FloatPrompt.ask("  Amount (ng)", default=50.0, console=console)
 
     # ── 4. Community benchmark ───────────────────────────────────
@@ -214,6 +216,8 @@ def run_setup() -> None:
         inst_config["column_vendor"] = column_vendor
     if column_model:
         inst_config["column_model"] = column_model
+    if lc_flow:
+        inst_config["lc_flow"] = lc_flow
     # None removes the key from a block being updated: the default QC
     # pattern replaces a custom one, and community_submit lives in
     # community.yml now (an older setup wrote an ignored copy here).
@@ -299,6 +303,7 @@ def run_setup() -> None:
         table.add_row("QC filter", inst_config.get("qc_pattern") or "default HeLa/QC pattern")
     table.add_row("Results folder", str(inst_config.get("output_dir", "")))
     table.add_row("LC column", f"{column_vendor} {column_model}".strip() or "(not set)")
+    table.add_row("LC flow", inst_config.get("lc_flow") or "(not set)")
     table.add_row("HeLa amount", f"{amount} ng")
     table.add_row("Community", "Yes" if community else "No")
     if community and display_name != "Anonymous Lab":
@@ -633,6 +638,37 @@ def _pick_column() -> tuple[str, str]:
         return "", custom
 
     return all_choices[idx]
+
+
+#: What `stan setup` offers for the LC flow regime (spec decision 12).
+_LC_FLOW_CHOICES = {
+    "nano": "nanoflow, under 1 µL/min",
+    "capillary": "capillary flow, 1-10 µL/min",
+    "micro": "microflow, over 10 µL/min",
+}
+
+
+def _pick_lc_flow(current: str | None = None) -> str:
+    """Ask for the LC flow regime. Returns nano | capillary | micro, or ''.
+
+    Not reliably in raw files, so it is asked once per instrument, like the
+    column. The community benchmark groups non-Evosep runs by it; an Evosep
+    lab, or anyone unsure, skips it. Skipping keeps a value already set.
+    """
+    from stan.metrics.scoring import normalize_lc_flow
+
+    console.print("  [dim]LC flow regime, used to group non-Evosep LC runs on the[/dim]")
+    console.print("  [dim]community benchmark. Skip for an Evosep, or if unsure.[/dim]")
+    for key, label in _LC_FLOW_CHOICES.items():
+        console.print(f"    [bold]{key}[/bold]  {label}")
+    current = normalize_lc_flow(current)
+    pick = Prompt.ask(
+        "  LC flow regime",
+        choices=[*_LC_FLOW_CHOICES, "skip"],
+        default=current or "skip",
+        console=console,
+    )
+    return "" if pick == "skip" else normalize_lc_flow(pick)
 
 
 def _check_search_engines() -> None:

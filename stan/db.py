@@ -180,7 +180,19 @@ CREATE TABLE IF NOT EXISTS runs (
     drift_coverage         REAL,   -- 0..1, fraction of ion intensity inside any window
     drift_median_im        REAL,   -- median per-window mode drift in 1/K0
     drift_p90_abs_im       REAL,   -- 90th percentile |drift| across windows
-    drift_class            TEXT
+    drift_class            TEXT,
+
+    -- Community cohort attributes (v1.2.16, spec §A.5 B4 + decision 12).
+    -- lc_model: canonical LC name read from the raw file ("Vanquish Neo",
+    --   "UltiMate 3000", "Evosep One", ...); NULL when not recognised.
+    -- lc_flow: nano | capillary | micro, from instruments.yml lc_flow.
+    -- amount_source: declared | parsed | assumed (stan.community.amount).
+    -- faims: 1 / 0 / NULL (unknown). INTEGER, not BOOLEAN, to match PG;
+    --   always compare `faims = 1`.
+    lc_model               TEXT,
+    lc_flow                TEXT,
+    amount_source          TEXT,
+    faims                  INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_instrument ON runs(instrument);
@@ -567,6 +579,13 @@ def _migrate(con: sqlite3.Connection) -> None:
         # forward — no retroactive backfill needed when the leaderboard
         # split ships.
         ("ms2_analyzer", "ALTER TABLE runs ADD COLUMN ms2_analyzer TEXT"),
+        # Community cohort attributes (v1.2.16, P3a): stamped at ingest,
+        # sent with every submission. Older rows stay NULL ("not
+        # recorded"); nothing is backfilled here. faims is 1/0/NULL.
+        ("lc_model", "ALTER TABLE runs ADD COLUMN lc_model TEXT"),
+        ("lc_flow", "ALTER TABLE runs ADD COLUMN lc_flow TEXT"),
+        ("amount_source", "ALTER TABLE runs ADD COLUMN amount_source TEXT"),
+        ("faims", "ALTER TABLE runs ADD COLUMN faims INTEGER"),
     ]
 
     # sample_health migrations — independent from runs so new columns
@@ -977,6 +996,14 @@ def _build_runs_row(
         # ingest. Empty string when detection failed or non-Thermo/
         # Bruker.
         "ms2_analyzer": metrics.get("ms2_analyzer") or "",
+        # v1.2.16 community cohort attributes. NULL means "not recorded"
+        # (and, on a PG re-ingest, COALESCE keeps what is already there).
+        # The PG writer drops any of these the live table does not have
+        # yet, so this ships ahead of migrations/2026-10-05_runs_lc_faims.sql.
+        "lc_model": metrics.get("lc_model") or None,
+        "lc_flow": _lc_flow_or_none(metrics.get("lc_flow")),
+        "amount_source": _amount_source_or_none(metrics.get("amount_source")),
+        "faims": _faims_int(metrics.get("faims")),
         # Run metadata
         "amount_ng": amount_ng,
         "spd": spd,
@@ -1008,6 +1035,34 @@ def _build_runs_row(
         # second query. DDA leaves it NULL (no library searched).
         "library_coverage_pct": metrics.get("library_coverage_pct"),
     }
+
+
+def _lc_flow_or_none(value: object) -> str | None:
+    """``nano`` | ``capillary`` | ``micro``, or None when not set/unknown."""
+    from stan.metrics.scoring import normalize_lc_flow
+
+    return normalize_lc_flow(value) or None
+
+
+def _amount_source_or_none(value: object) -> str | None:
+    from stan.community.amount import AMOUNT_SOURCES
+
+    return value if isinstance(value, str) and value in AMOUNT_SOURCES else None
+
+
+def _faims_int(value: object) -> int | None:
+    """FAIMS as stored: 1, 0 or None. Never a boolean (PG column is INTEGER)."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return int(value)
+    if isinstance(value, str) and value.strip().lower() in ("1", "true", "yes"):
+        return 1
+    if isinstance(value, str) and value.strip().lower() in ("0", "false", "no"):
+        return 0
+    return None
 
 
 def _insert_runs_row_sqlite(

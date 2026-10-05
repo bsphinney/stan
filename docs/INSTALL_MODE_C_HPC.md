@@ -348,7 +348,8 @@ instruments:
     watch_dir: /shared/<lab>/stan/incoming/timsTOF-HT
     column_vendor: ""                # optional
     column_model: ""                 # optional
-    # amount_ng: 50                  # optional HeLa load stamp (job default 50)
+    # amount_ng: 50                  # optional usual HeLa load; a unit-anchored amount in the file name wins
+    # lc_flow: nano                  # non-Evosep LC: nano | capillary | micro (sent to the community benchmark)
   - name: Orbitrap Exploris 480
     family: Exploris
     vendor: thermo
@@ -788,7 +789,8 @@ From `_load_config()` and `_render_sbatch()` in `stan/community/scripts/dispatch
 | `instruments[].vendor` | yes | — | `bruker` or `thermo` |
 | `instruments[].watch_dir` | yes | — | Flat directory; see Phase 3 |
 | `instruments[].column_vendor` / `column_model` | no | — | Stamped on each run |
-| `instruments[].amount_ng` | no | job default 50 | HeLa load |
+| `instruments[].amount_ng` | no | 50 | The instrument's usual HeLa load, passed as `--default-amount-ng`: a unit-anchored amount in the file name (`50ng`, `1ug`) wins, and the run records `amount_source` `parsed` or `assumed` (1.2.16; before, it was passed as `--amount-ng`) |
+| `instruments[].lc_flow` | no | — | `nano`, `capillary` or `micro`; passed as `--lc-flow`, stamped on each run and sent to the community benchmark. Leave unset for an Evosep |
 | `instruments[].spd` | no | — | Fallback only, used when raw-file metadata cannot resolve the samples-per-day value |
 
 `sage_binary`, which `hive_bootstrap.sh` writes, is read by nothing.

@@ -16,11 +16,14 @@ import urllib.request
 import urllib.error
 
 from stan import __version__
+from stan.community.amount import (
+    AMOUNT_SOURCES, ASSUMED_AMOUNT_NG, amount_problem, derive_amount_source,
+)
 from stan.community.fingerprint_dedup import compute_submission_fingerprint
 from stan.community.validate import validate_submission
 from stan.config import load_community
 from stan.db import mark_submitted
-from stan.metrics.scoring import compute_cohort_id
+from stan.metrics.scoring import compute_cohort_id, normalize_lc_flow
 from stan.search.community_params import (
     check_diann_version_compatible, is_asset_hash_eligible_diann,
 )
@@ -116,6 +119,12 @@ def submission_readiness(run: dict) -> tuple[str, str]:
     ok, msg = check_diann_version_compatible(str(run.get("diann_version") or ""))
     if not ok:
         return "ineligible", msg or "DIA-NN version not recorded"
+    # An amount the file name contradicts, or one above 5,000 ng, is never
+    # sent silently (v1.2.16). It waits for a correction rather than being
+    # refused for good: fix the stored amount and it becomes ready.
+    problem = _row_amount_problem(run)
+    if problem:
+        return "needs_metrics", problem
     if not is_dda:
         missing = [k for k in DIA_ROW_METRICS_REQUIRED if run.get(k) is None]
         has_tic = run.get("_has_tic") or all(_has_list(run.get(k)) for k in DIA_ROW_LISTS_REQUIRED)
@@ -126,6 +135,43 @@ def submission_readiness(run: dict) -> tuple[str, str]:
     if validation.errors:
         return "needs_metrics", "; ".join(validation.errors)
     return "ready", ""
+
+def _stored_amount(run: dict) -> float:
+    """The amount a sync would send for this row (callers default to 50)."""
+    amount = run.get("amount_ng")
+    return float(amount) if amount else ASSUMED_AMOUNT_NG
+
+
+def _row_amount_problem(run: dict) -> str | None:
+    return amount_problem(
+        run.get("run_name") or "", _stored_amount(run), run.get("amount_source"),
+    )
+
+
+def _amount_source_for(run: dict, amount_ng: float) -> str:
+    """``amount_source`` to send: the stamped one, or for a row stored
+    before 1.2.16 recorded it, derived now from the file name."""
+    src = run.get("amount_source")
+    if isinstance(src, str) and src in AMOUNT_SOURCES:
+        return src
+    return derive_amount_source(run.get("run_name") or "", amount_ng)
+
+
+def _faims_for(run: dict) -> bool | None:
+    """FAIMS as sent: True / False / None (not recorded). Stored as 1/0/NULL."""
+    v = run.get("faims")
+    if v is None or v == "":
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)) and v in (0, 1):
+        return bool(v)
+    if isinstance(v, str) and v.strip().lower() in ("1", "true"):
+        return True
+    if isinstance(v, str) and v.strip().lower() in ("0", "false"):
+        return False
+    return None
+
 
 def _detect_sample_type(run_name: str) -> str:
     """Detect QC standard from the run filename.
@@ -212,6 +258,12 @@ def submit_to_benchmark(
     is_compat, msg = check_diann_version_compatible(diann_version)
     if not is_compat:
         raise ValueError(f"Submission rejected: {msg}")
+
+    # Never send an amount the file name contradicts, or one above
+    # 5,000 ng (v1.2.16; submission_readiness holds these back first).
+    problem = amount_problem(run.get("run_name") or "", amount_ng, run.get("amount_source"))
+    if problem:
+        raise ValueError(f"Submission rejected: {problem}")
 
     # Build submission
     # Coerce None → "" for every string field the relay expects. SQLite
@@ -326,6 +378,17 @@ def submit_to_benchmark(
         # tof rows always get True since their params are correct
         # for their analyzer.
         "it_params_tuned": (run.get("ms2_analyzer") or "") != "IT",
+        # v1.2.16 (P3a, spec §A.5 B4 + decision 12). Relay 1.7.0 stores
+        # them; an older relay ignores unknown fields, so sending is safe.
+        # lc_model: canonical LC name read from the raw file at ingest.
+        # lc_flow: nano | capillary | micro from instruments.yml / dispatch.yml.
+        # amount_source: declared | parsed | assumed; derived from the file
+        #   name for rows stored before it was recorded.
+        # faims: true / false / null (not recorded).
+        "lc_model": run.get("lc_model") or "",
+        "lc_flow": normalize_lc_flow(run.get("lc_flow")),
+        "amount_source": _amount_source_for(run, amount_ng),
+        "faims": _faims_for(run),
     }
 
     # Add identified TIC trace if available (128 bins, ~500 bytes)

@@ -538,14 +538,19 @@ def step_extract(
     forced_mode: str = "",
     column_vendor: str = "",
     column_model: str = "",
-    hela_amount_ng: float = 50.0,
+    hela_amount_ng: float | None = None,
     spd: int | None = None,
     gradient_length_min: int | None = None,
+    default_amount_ng: float | None = None,
+    lc_flow: str = "",
 ) -> dict:
     """Read search + pegdrift artifacts, extract metrics, write runs row.
 
     The consolidator. Runs after search/features/pegdrift jobs end.
     Idempotent: short-circuits if a row already exists for this raw.
+
+    ``hela_amount_ng`` (declared), ``default_amount_ng`` and ``lc_flow``
+    mean what they mean in ``hive_process.process_raw``.
     """
     from stan.db import init_db, insert_run, record_dispatch_attempt
     from stan.db_pg import (
@@ -554,8 +559,8 @@ def step_extract(
     from stan.gating.evaluator import evaluate_gates
     from stan.watcher.acquisition_date import get_acquisition_date
     from stan.pipeline.hive_process import (
-        _detect_mode_str, _extract_metrics, _resolve_spd_chain,
-        _gradient_for_spd, _persist_tic, _row_exists,
+        _detect_mode_str, _extract_metrics, _resolve_run_amount,
+        _resolve_spd_chain, _gradient_for_spd, _persist_tic, _row_exists,
     )
 
     record: dict = {
@@ -616,6 +621,10 @@ def step_extract(
             gradient_min=resolved_grad,
             column_vendor=column_vendor,
             column_model=column_model,
+            lc_flow=lc_flow,
+        )
+        amount_ng, metrics["amount_source"] = _resolve_run_amount(
+            raw_path, hela_amount_ng, default_amount_ng,
         )
 
         primary_count = (
@@ -655,7 +664,7 @@ def step_extract(
             gate_result=decision.result.value,
             failed_gates=decision.failed_gates,
             diagnosis=decision.diagnosis,
-            amount_ng=hela_amount_ng,
+            amount_ng=amount_ng,
             spd=resolved_spd,
             gradient_length_min=resolved_grad,
             run_date=acq_date,

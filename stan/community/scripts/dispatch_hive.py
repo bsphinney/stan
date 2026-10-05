@@ -111,6 +111,15 @@ max_attempts: 3
 # One entry per instrument. The dispatcher walks `watch_dir` for .d
 # directories and .raw files. `name` becomes runs.instrument; `family`
 # is the IPS cohort key.
+#
+# lc_flow (v1.2.16): the LC flow regime, stamped on every run and sent to
+# the community benchmark, where non-Evosep runs are grouped by it:
+#   nano (<1 uL/min) | capillary (1-10 uL/min) | micro (>10 uL/min)
+# It is not reliably in raw files, so it is set here. Leave it "" for an
+# Evosep (the nanoLC grouping does not apply) or when unsure.
+# amount_ng (optional): the instrument's usual HeLa amount. A unit-anchored
+# amount in the file name (50ng, 1ug) wins over it; without either a run
+# is stamped 50 ng, amount_source "assumed".
 instruments:
   - name: timsTOF HT
     family: timsTOF
@@ -118,6 +127,7 @@ instruments:
     watch_dir: /quobyte/proteomics-grp/hela_qcs/timstofHT
     column_vendor: ""
     column_model: ""
+    lc_flow: ""          # Evosep One
 
   - name: Orbitrap Fusion Lumos
     family: Lumos
@@ -125,6 +135,7 @@ instruments:
     watch_dir: /quobyte/proteomics-grp/hela_qcs/lumosRox
     column_vendor: ""
     column_model: ""
+    lc_flow: nano        # UltiMate 3000; nanoflow per Brett, 2026-10-05
 
   - name: Orbitrap Exploris 480
     family: Exploris
@@ -132,6 +143,7 @@ instruments:
     watch_dir: /quobyte/proteomics-grp/hela_qcs/exploris480
     column_vendor: ""
     column_model: ""
+    lc_flow: nano        # UltiMate 3000; nanoflow per Brett, 2026-10-05
 """.replace("{qc_pattern}", DEFAULT_QC_PATTERN)
 
 
@@ -531,8 +543,14 @@ def _render_sbatch(
         argv += ["--column-vendor", _shell_quote(instrument["column_vendor"])]
     if instrument.get("column_model"):
         argv += ["--column-model", _shell_quote(instrument["column_model"])]
+    # dispatch.yml's amount_ng is the instrument's usual amount, not a
+    # declaration about this run, so it goes in as the default: a
+    # unit-anchored amount in the file name still wins (v1.2.16; it was
+    # --amount-ng before, which would now stamp every run "declared").
     if instrument.get("amount_ng"):
-        argv += ["--amount-ng", str(float(instrument["amount_ng"]))]
+        argv += ["--default-amount-ng", str(float(instrument["amount_ng"]))]
+    if instrument.get("lc_flow"):
+        argv += ["--lc-flow", _shell_quote(str(instrument["lc_flow"]))]
     if instrument.get("spd"):
         argv += ["--spd", str(int(instrument["spd"]))]
 
@@ -933,6 +951,30 @@ def dispatch_all(
     return summary
 
 
+#: Per-instrument keys a --raw dispatch takes from dispatch.yml when the
+#: caller does not pass them: the watcher's self-submit and
+#: ``stan hive-dispatch --raw`` know the model and column, not these.
+_CONFIG_FILL_KEYS = ("lc_flow", "amount_ng")
+
+
+def _with_config_defaults(instrument: dict, cfg: dict) -> dict:
+    """``instrument`` with ``lc_flow`` / ``amount_ng`` filled from the
+    dispatch.yml entry of the same name, when the caller left them out."""
+    name = str(instrument.get("name") or "").strip().lower()
+    match = next(
+        (i for i in cfg.get("instruments") or []
+         if str(i.get("name") or "").strip().lower() == name),
+        None,
+    )
+    if not match:
+        return instrument
+    out = dict(instrument)
+    for key in _CONFIG_FILL_KEYS:
+        if not out.get(key) and match.get(key):
+            out[key] = match[key]
+    return out
+
+
 def dispatch_one_raw(
     raw_path: Path,
     instrument: dict,
@@ -967,6 +1009,7 @@ def dispatch_one_raw(
     cfg = _load_config(config_path)
     db_path = Path(cfg["db_path"])
     sbatch_log_dir = Path(cfg["sbatch_log_dir"])
+    instrument = _with_config_defaults(instrument, cfg)
 
     # Optional partition override — used for partition-comparison
     # timing tests. Mutate a copy so the dispatch.yml on disk stays

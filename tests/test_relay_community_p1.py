@@ -45,9 +45,10 @@ SECRET_PRINT = "feedfacecafebeef"
 
 def test_space_version(client):
     # P1 shipped as 1.2.2, P2a as 1.3.0, P2b as 1.4.0, P2c as 1.5.0; the TIC
-    # overlay (tests/test_relay_community_tic.py) is 1.6.0.
-    assert client.get("/api/version").json()["version"] == "1.6.0"
-    assert "community site v1.6.0" in _page(client)
+    # overlay (tests/test_relay_community_tic.py) as 1.6.0; P3a (schema,
+    # tests/test_relay_community_p3a.py) is 1.7.0.
+    assert client.get("/api/version").json()["version"] == "1.7.0"
+    assert "community site v1.7.0" in _page(client)
 
 
 # ── server: D4, no file names in public responses ────────────────────

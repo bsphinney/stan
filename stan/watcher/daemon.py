@@ -1636,15 +1636,37 @@ class InstrumentWatcher:
             # cohort split — the relay schema will read this field
             # once the leaderboard cards split. Bruker stamps "tof"
             # for completeness; non-Thermo + non-Bruker stays empty.
+            #
+            # v1.2.16: the same pass over the scan filters answers FAIMS
+            # (a "cv=" compensation voltage in the filter). Bruker has none.
             try:
                 vendor = (self._config.get("vendor") or "").lower()
                 if vendor == "thermo":
-                    from stan.tools.trfp import detect_ms2_analyzer
-                    metrics["ms2_analyzer"] = detect_ms2_analyzer(raw_path)
+                    from stan.tools.trfp import detect_scan_facts
+                    facts = detect_scan_facts(raw_path)
+                    metrics["ms2_analyzer"] = facts["ms2_analyzer"]
+                    if facts["faims"] is not None:
+                        metrics["faims"] = facts["faims"]
                 elif vendor == "bruker":
                     metrics["ms2_analyzer"] = "tof"
+                    metrics["faims"] = False
             except Exception:
                 logger.debug("ms2_analyzer detect failed for %s", raw_path.name, exc_info=True)
+
+            # v1.2.16 community cohort attributes (spec decision 12): the
+            # LC model read from the raw file, and the flow regime the
+            # operator set with `stan setup` / `stan add-watch --lc-flow`.
+            try:
+                from stan.metrics.scoring import detect_lc_model
+                lc_model = detect_lc_model(raw_path)
+                if lc_model:
+                    metrics["lc_model"] = lc_model
+            except Exception:
+                logger.debug("LC model detect failed for %s", raw_path.name, exc_info=True)
+            from stan.metrics.scoring import normalize_lc_flow
+            flow = normalize_lc_flow(self._config.get("lc_flow"))
+            if flow:
+                metrics["lc_flow"] = flow
 
             # v0.2.223: copy operator-set column metadata from
             # instruments.yml onto every QC row. The setup wizard
@@ -1697,6 +1719,23 @@ class InstrumentWatcher:
                 if resolved:
                     inst_name = resolved
 
+            # Injection amount (v1.2.16): a unit-anchored amount in the
+            # file name (50ng, 1ug) wins over the instrument's configured
+            # hela_amount_ng, and the row records which it was. A name
+            # that states an implausible amount is logged now and held
+            # back at submit time (stan.community.amount).
+            from stan.community.amount import amount_problem, resolve_amount
+            amount_ng, metrics["amount_source"] = resolve_amount(
+                raw_path.name,
+                instrument_default=self._config.get("hela_amount_ng"),
+            )
+            problem = amount_problem(raw_path.name, amount_ng)
+            if problem:
+                logger.warning(
+                    "%s: %s -- not submitted to the community benchmark "
+                    "until resolved", raw_path.name, problem,
+                )
+
             run_id = insert_run(
                 instrument=inst_name or "unknown",
                 run_name=raw_path.name,
@@ -1706,7 +1745,7 @@ class InstrumentWatcher:
                 gate_result=decision.result.value,
                 failed_gates=decision.failed_gates,
                 diagnosis=decision.diagnosis,
-                amount_ng=self._config.get("hela_amount_ng", 50.0),
+                amount_ng=amount_ng,
                 spd=metrics.get("spd"),
                 gradient_length_min=gradient_min,
                 run_date=raw_mtime,

@@ -526,6 +526,172 @@ def detect_lc_system(raw_path) -> str | None:
     return None
 
 
+# ── LC model (decision 12, P3a) ─────────────────────────────────────
+#
+# detect_lc_system() collapses the LC to evosep/custom for the TIC split.
+# The nanoLC cohort key needs the model itself, named the same way however
+# the vendor software spells it. Each entry is (needle, canonical name);
+# needles are matched against the name lower-cased with everything but
+# letters and digits removed, so "Thermo.EasyNLC1200", "EASY-nLC 1200" and
+# "Easy nLC1200" all match "easynlc1200". More specific needles come first.
+# A name no needle matches is not returned: an unrecognised device answers
+# None rather than a guess.
+_LC_MODEL_VOCAB: tuple[tuple[str, str], ...] = (
+    ("vanquishneo", "Vanquish Neo"),
+    ("vanquishhorizon", "Vanquish Horizon"),
+    ("vanquishflex", "Vanquish Flex"),
+    ("easynlc1200", "EASY-nLC 1200"),
+    ("easynlc1000", "EASY-nLC 1000"),
+    ("easynlc", "EASY-nLC"),
+    ("evosepone", "Evosep One"),
+    ("evosepeno", "Evosep Eno"),
+    ("evosep", "Evosep"),
+    ("nanoelute2", "nanoElute 2"),
+    ("nanoelute", "nanoElute"),
+    ("ultimate3000", "UltiMate 3000"),
+    # Chromeleon's system driver for an UltiMate 3000 stack (verified on
+    # Exploris 480 + Lumos raws, 2026-10-05: DriverId "Dionex.Chromatography
+    # System" next to "Dionex.PumpNCS3500RS" and "WPS-3000").
+    ("dionexchromatographysystem", "UltiMate 3000"),
+    ("uplcmclass", "ACQUITY UPLC M-Class"),
+    ("nanoacquity", "nanoACQUITY UPLC"),
+    ("ekspert", "Eksigent nanoLC"),
+    ("eksigent", "Eksigent nanoLC"),
+)
+
+#: Flow regimes for the nanoLC cohort key (decision 12): nanoflow
+#: (<1 µL/min), capillary (1–10 µL/min), microflow (>10 µL/min). Set per
+#: instrument (``lc_flow`` in instruments.yml / dispatch.yml); not reliably
+#: in raw files.
+LC_FLOW_VALUES: tuple[str, ...] = ("nano", "capillary", "micro")
+
+_LC_FLOW_SYNONYMS = {
+    "nano": "nano", "nanoflow": "nano", "nanolc": "nano",
+    "capillary": "capillary", "cap": "capillary", "capflow": "capillary",
+    "capillaryflow": "capillary",
+    "micro": "micro", "microflow": "micro", "microlc": "micro",
+}
+
+
+def normalize_lc_flow(value: object) -> str:
+    """``nano`` | ``capillary`` | ``micro``, or '' for anything else.
+
+    Accepts the obvious spellings ("nanoflow", "Capillary flow",
+    "microflow"); everything unrecognised is '' (not recorded) rather
+    than a guess.
+    """
+    if not isinstance(value, str):
+        return ""
+    key = _re.sub(r"[^a-z]", "", value.lower())
+    return _LC_FLOW_SYNONYMS.get(key, "")
+
+
+def normalize_lc_model(name: object) -> str | None:
+    """Map a vendor's LC device name onto the canonical vocabulary.
+
+    >>> normalize_lc_model("Dionex UltiMate 3000")
+    'UltiMate 3000'
+    >>> normalize_lc_model("Thermo.EasyNLC1200")
+    'EASY-nLC 1200'
+    >>> normalize_lc_model("Agilent ICF System") is None
+    True
+    """
+    if not isinstance(name, str) or not name.strip():
+        return None
+    compact = _re.sub(r"[^a-z0-9]", "", name.lower())
+    for needle, canonical in _LC_MODEL_VOCAB:
+        if needle in compact:
+            return canonical
+    return None
+
+
+def _first_lc_model(candidates) -> str | None:
+    for c in candidates:
+        model = normalize_lc_model(c)
+        if model:
+            return model
+    return None
+
+
+def _bruker_lc_device_names(d_path) -> list[str]:
+    """LC device names from a Bruker ``.d``'s HyStar files, best first.
+
+    Verified on real timsTOF HT ``.d`` folders from 2023-08, 2024-06 and
+    2026-09/10 (Flinders + hela_qcs, 2026-10-05), all Evosep One:
+
+    * ``<N>.m/hystar.method`` holds the LC method as XML that is
+      entity-escaped one to three levels deep
+      (``&amp;lt;SubDeviceName&amp;gt;Evosep One&amp;lt;/...``). After
+      unescaping: ``<SubDeviceName>Evosep One``, ``<DeviceName>`` "Agilent
+      ICF System" (the control framework, not an LC) and "Evosep One",
+      ``<ModuleType>EVOSEP_ONE``.
+    * ``HyStarMetadata.xml`` (2026 files only) lists modules as
+      ``<Module ID="SAMPLER0" Name="Evosep One (Sampler0)" Type="ALS">``.
+
+    No nanoElute ``.d`` was available to check, so another LC is found
+    only if it writes its name into the same elements; otherwise the
+    vocabulary matches nothing and the caller gets None.
+    """
+    import html
+    from pathlib import Path as _Path
+
+    path = _Path(d_path)
+    names: list[str] = []
+    for m_dir in sorted(path.glob("*.m")):
+        hystar = m_dir / "hystar.method"
+        if not hystar.is_file():
+            continue
+        try:
+            text = hystar.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for _ in range(6):  # undo the nested entity escaping
+            unescaped = html.unescape(text)
+            if unescaped == text:
+                break
+            text = unescaped
+        for tag in ("SubDeviceName", "DeviceName", "ModuleType"):
+            names += _re.findall(rf"<{tag}>([^<]{{1,120}})</{tag}>", text)
+    meta = path / "HyStarMetadata.xml"
+    if meta.is_file():
+        try:
+            text = meta.read_text(encoding="utf-8", errors="replace")
+            names += _re.findall(r'<Module\b[^>]*\bName="([^"]{1,120})"', text)
+        except OSError:
+            pass
+    return names
+
+
+def detect_lc_model(raw_path) -> str | None:
+    """The LC model that acquired a run, from the raw file, or None.
+
+    Canonical names from ``_LC_MODEL_VOCAB`` ("Vanquish Neo",
+    "EASY-nLC 1200", "Evosep One", "nanoElute", "UltiMate 3000", ...).
+
+    * Thermo ``.raw``: the embedded instrument-method DriverIds read by
+      ``stan.tools.trfp._extract_lc_from_raw_binary`` (no .NET needed).
+    * Bruker ``.d``: the HyStar method XML (``_bruker_lc_device_names``).
+
+    ``detect_lc_system`` is unchanged and still answers evosep/custom.
+    """
+    from pathlib import Path as _Path
+
+    path = _Path(raw_path)
+    try:
+        if path.suffix.lower() == ".d" and path.is_dir():
+            return _first_lc_model(_bruker_lc_device_names(path))
+        if path.suffix.lower() == ".raw" and path.is_file():
+            from stan.tools.trfp import _extract_lc_from_raw_binary
+
+            info = _extract_lc_from_raw_binary(path)
+            return _first_lc_model(
+                [info.get("lc_system") or ""] + list(info.get("lc_drivers") or [])
+            )
+    except Exception:
+        return None
+    return None
+
+
 def throughput_bucket(spd: int | None = None, gradient_min: int | None = None) -> str:
     """Resolve throughput bucket from SPD (preferred) or gradient length (fallback).
 

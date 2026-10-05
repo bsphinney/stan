@@ -69,6 +69,11 @@ RELAY_EXPECTED_FIELDS = {
     "diann_version",
     "column_vendor",
     "column_model",
+    # Space 1.7.0 / STAN 1.2.16 cohort attributes (optional on the relay).
+    "lc_model",
+    "lc_flow",
+    "amount_source",
+    "faims",
 }
 
 # Fields the relay generates server-side — client must NOT send these
@@ -106,6 +111,10 @@ def _build_test_payload() -> dict:
         "diann_version": "2.3.0",
         "column_vendor": "PepSep",
         "column_model": "PepSep MAX 10cm x 150um, 1.5um C18",
+        "lc_model": "Evosep One",
+        "lc_flow": "",
+        "amount_source": "parsed",
+        "faims": False,
     }
 
 
@@ -114,6 +123,17 @@ def test_submit_payload_has_all_relay_fields():
     payload = _build_test_payload()
     missing = RELAY_EXPECTED_FIELDS - set(payload.keys())
     assert not missing, f"Client payload missing relay fields: {missing}"
+
+
+def test_relay_schema_has_the_p3a_fields():
+    """The relay's BenchmarkSubmission declares what submit.py sends (1.7.0)."""
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "hf_space" / "app.py").read_text()
+    body = src[src.index("class BenchmarkSubmission(BaseModel):"):src.index("# ── Hard gates")]
+    for field in ("lc_model", "lc_flow", "amount_source", "faims"):
+        assert re.search(rf"^    {field}: ", body, re.M), field
 
 
 def test_submit_payload_no_server_side_fields():

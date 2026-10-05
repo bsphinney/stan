@@ -143,9 +143,15 @@ def _extract_metrics(
     gradient_min: int | None,
     column_vendor: str,
     column_model: str,
+    lc_flow: str = "",
 ) -> dict:
     """Run DIA or DDA extractor, then enrich with SPD, LC, MS2 analyzer,
     column metadata, and IPS score. Mirrors daemon._store_run:1395-1458.
+
+    Also stamps the v1.2.16 cohort attributes read from the raw file
+    (``lc_model``, ``faims``) and the instrument's configured ``lc_flow``.
+    ``amount_source`` is stamped by the caller with the amount
+    (:func:`_resolve_run_amount`).
     """
     from stan.metrics.extractor import extract_dda_metrics, extract_dia_metrics
 
@@ -187,15 +193,37 @@ def _extract_metrics(
     except Exception:
         logger.debug("LC system detect failed for %s", raw_path.name, exc_info=True)
 
-    # MS2 analyzer (OT/IT for Thermo, "tof" for Bruker).
+    # LC model (canonical name, decision 12) from the same raw metadata.
+    try:
+        from stan.metrics.scoring import detect_lc_model
+        lc_model = detect_lc_model(raw_path)
+        if lc_model:
+            metrics["lc_model"] = lc_model
+    except Exception:
+        logger.debug("LC model detect failed for %s", raw_path.name, exc_info=True)
+
+    # MS2 analyzer (OT/IT for Thermo, "tof" for Bruker) and FAIMS, from one
+    # pass over the Thermo scan filters. Bruker has no FAIMS.
     try:
         if vendor == "thermo":
-            from stan.tools.trfp import detect_ms2_analyzer
-            metrics["ms2_analyzer"] = detect_ms2_analyzer(raw_path)
+            from stan.tools.trfp import detect_scan_facts
+            facts = detect_scan_facts(raw_path)
+            metrics["ms2_analyzer"] = facts["ms2_analyzer"]
+            if facts["faims"] is not None:
+                metrics["faims"] = facts["faims"]
         elif vendor == "bruker":
             metrics["ms2_analyzer"] = "tof"
+            metrics["faims"] = False
     except Exception:
         logger.debug("ms2_analyzer detect failed for %s", raw_path.name, exc_info=True)
+
+    # Flow regime is configured per instrument, not read from the file.
+    from stan.metrics.scoring import normalize_lc_flow
+    flow = normalize_lc_flow(lc_flow)
+    if flow:
+        metrics["lc_flow"] = flow
+    elif lc_flow:
+        logger.warning("ignoring unknown lc_flow %r (nano | capillary | micro)", lc_flow)
 
     if column_vendor:
         metrics["column_vendor"] = column_vendor
@@ -210,6 +238,34 @@ def _extract_metrics(
         metrics["search_engine"] = "sage"
 
     return metrics
+
+
+def _resolve_run_amount(
+    raw_path: Path,
+    declared: float | None,
+    instrument_default: float | None,
+) -> tuple[float, str]:
+    """Injection amount + ``amount_source`` for one run (stan.community.amount).
+
+    ``declared`` is ``stan hive-process --amount-ng`` (per run);
+    ``instrument_default`` is dispatch.yml's ``amount_ng`` for the
+    instrument (``--default-amount-ng``). A problem the submit path will
+    hold the run back for (declared vs file name, or above 5,000 ng) is
+    logged here too, so it shows in the job log the day it happens.
+    """
+    from stan.community.amount import amount_problem, resolve_amount
+
+    amount, source = resolve_amount(
+        raw_path.name, declared=declared, instrument_default=instrument_default,
+    )
+    problem = amount_problem(raw_path.name, amount, source)
+    if problem:
+        logger.warning(
+            "%s: %s -- stored as %s (%s); it will not be submitted to the "
+            "community benchmark until this is resolved",
+            raw_path.name, problem, amount, source,
+        )
+    return amount, source
 
 
 def _resolve_spd_chain(
@@ -501,11 +557,13 @@ def process_raw(
     forced_mode: str = "",
     column_vendor: str = "",
     column_model: str = "",
-    hela_amount_ng: float = 50.0,
+    hela_amount_ng: float | None = None,
     spd: int | None = None,
     gradient_length_min: int | None = None,
     force: bool = False,
     classification: str = "auto",
+    default_amount_ng: float | None = None,
+    lc_flow: str = "",
 ) -> dict:
     """Run the full STAN QC pipeline against `raw_path` and write to
     the global Hive-resident DB at `db_path`.
@@ -525,8 +583,16 @@ def process_raw(
         forced_mode: "dia" | "dda" to override mode detection.
         column_vendor, column_model: Stamped onto runs row for the
             dashboard Column Comparison panel.
-        hela_amount_ng: Injection amount stamp (default 50 ng matches
-            post-2020 lab convention).
+        hela_amount_ng: A per-run declared injection amount
+            (``--amount-ng``); None when not declared. The stored amount
+            and its ``amount_source`` come from
+            ``stan.community.amount.resolve_amount``: declared, else a
+            unit-anchored amount in the file name, else
+            ``default_amount_ng``, else 50 ng.
+        default_amount_ng: The instrument's configured amount
+            (dispatch.yml ``amount_ng``), used after the file name.
+        lc_flow: The instrument's flow regime (nano | capillary | micro)
+            from dispatch.yml ``lc_flow``; stamped on the row.
         spd: Cohort default if metadata-resolve fails.
         gradient_length_min: Forced gradient length, otherwise snapped
             from SPD.
@@ -651,6 +717,10 @@ def process_raw(
             gradient_min=resolved_grad,
             column_vendor=column_vendor,
             column_model=column_model,
+            lc_flow=lc_flow,
+        )
+        amount_ng, metrics["amount_source"] = _resolve_run_amount(
+            raw_path, hela_amount_ng, default_amount_ng,
         )
 
         # Surface "search ran but produced zero IDs" as a distinct status
@@ -709,7 +779,7 @@ def process_raw(
             gate_result=decision.result.value,
             failed_gates=decision.failed_gates,
             diagnosis=decision.diagnosis,
-            amount_ng=hela_amount_ng,
+            amount_ng=amount_ng,
             spd=resolved_spd,
             gradient_length_min=resolved_grad,
             db_path=db_path,

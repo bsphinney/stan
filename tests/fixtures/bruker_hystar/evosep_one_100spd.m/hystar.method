@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <LCMethodData Version="2">
+    <Properties />
+    <ModuleMethods>
+      <ModuleMethodData ModuleName="c6541dc3-07d6-4dee-9aa9-f94f8a2d8406">&lt;!--?xml version="1.0" encoding="utf-8"?--&gt;
+&lt;root&gt;
+  &lt;HyStarMethodData&gt;
+    &lt;PluginProperties&gt;
+      &lt;PluginVersion&gt;2.0&lt;/PluginVersion&gt;
+    &lt;/PluginProperties&gt;
+    &lt;ModuleName&gt;Agilent ICF System	d4f90283-317f-46a0-b766-3aa13f751068&lt;/ModuleName&gt;
+    &lt;Stylesheet&gt;&amp;lt;?xml version="1.0" encoding="utf-16"?&amp;gt;
+&amp;lt;Segment xmlns="http://www.bdal.com/methoddata/otof"&amp;gt;
+  &amp;lt;SegmentName&amp;gt;ICF System&amp;lt;/SegmentName&amp;gt;
+  &amp;lt;SegmentTime&amp;gt; &amp;lt;/SegmentTime&amp;gt;
+  &amp;lt;SubDevice&amp;gt;
+    &amp;lt;SubDeviceName&amp;gt;Evosep One&amp;lt;/SubDeviceName&amp;gt;
+    &amp;lt;Id&amp;gt;SAMPLER0&amp;lt;/Id&amp;gt;
+    &amp;lt;Type&amp;gt;EVOSEP_ONE&amp;lt;/Type&amp;gt;
+    &amp;lt;Parameter&amp;gt;
+      &amp;lt;Name&amp;gt;Run Time&amp;lt;/Name&amp;gt;
+      &amp;lt;Id&amp;gt;MethodDataObject_RunTimeMinutes&amp;lt;/Id&amp;gt;
+      &amp;lt;Unit&amp;gt;min&amp;lt;/Unit&amp;gt;
+      &amp;lt;Value&amp;gt;11.5&amp;lt;/Value&amp;gt;
+    &amp;lt;/Parameter&amp;gt;
+    &amp;lt;Parameter&amp;gt;
+      &amp;lt;Name&amp;gt;Method Name&amp;lt;/Name&amp;gt;
+      &amp;lt;Id&amp;gt;MethodDataObject_MethodName&amp;lt;/Id&amp;gt;
+      &amp;lt;Unit /&amp;gt;
+      &amp;lt;Value&amp;gt;100 samples per day&amp;lt;/Value&amp;gt;
+    &amp;lt;/Parameter&amp;gt;
+  &amp;lt;/SubDevice&amp;gt;
+&amp;lt;/Segment&amp;gt;&lt;/Stylesheet&gt;
+    &lt;MethodName&gt;TEST&lt;/MethodName&gt;
+    &lt;MainFlow&gt;1&lt;/MainFlow&gt;
+    &lt;Description&gt;Agilent ICF Method&lt;/Description&gt;
+    &lt;TraceInfo /&gt;
+    &lt;NoStandardMethodData&gt;
+      &lt;TotalRunTime&gt;11.5&lt;/TotalRunTime&gt;
+    &lt;/NoStandardMethodData&gt;
+  &lt;/HyStarMethodData&gt;
+  &lt;ModuleMethodData&gt;
+    &lt;AgilentPostRunTime&gt;0&lt;/AgilentPostRunTime&gt;
+    &lt;OverlappedInjectionEnabled&gt;False&lt;/OverlappedInjectionEnabled&gt;
+    &lt;AuxTraces&gt;&lt;/AuxTraces&gt;
+    &lt;AgilentMethodData&gt;&amp;lt;InstrumentMethod xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" schemaVersion="1.0.2"&amp;gt;&amp;lt;PackageID&amp;gt;EvosepOneDriver&amp;lt;/PackageID&amp;gt;&amp;lt;InstrumentConfiguration&amp;gt;&amp;amp;lt;InstrumentConfig xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" schemaVersion="1.0.3"&amp;amp;gt;&amp;amp;lt;PackageID&amp;amp;gt;EvosepOneDriver&amp;amp;lt;/PackageID&amp;amp;gt;&amp;amp;lt;Module&amp;amp;gt;&amp;amp;lt;CategoryID&amp;amp;gt;EVOSEP_ONE&amp;amp;lt;/CategoryID&amp;amp;gt;&amp;amp;lt;Name&amp;amp;gt;Evosep One&amp;amp;lt;/Name&amp;amp;gt;&amp;amp;lt;ModuleType&amp;amp;gt;EVOSEP_ONE&amp;amp;lt;/ModuleType&amp;amp;gt;&amp;amp;lt;SerialNumber&amp;amp;gt;N/A&amp;amp;lt;/SerialNumber&amp;amp;gt;&amp;amp;lt;FirmwareRevision&amp;amp;gt;N/A&amp;amp;lt;/FirmwareRevision&amp;amp;gt;&amp;amp;lt;RapidControlConfiguration&amp;amp;gt;&amp;amp;amp;lt;?xml version="1.0" encoding="utf-16"?&amp;amp;amp;gt;&amp;amp;amp;lt;ConfigurationObject xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"&amp;amp;amp;gt;&amp;amp;amp;lt;VersionNumber&amp;amp;amp;gt;1&amp;amp;amp;lt;/VersionNumber&amp;amp;amp;gt;&amp;amp;amp;lt;DeviceName&amp;amp;amp;gt;Evosep One&amp;amp;amp;lt;/DeviceName&amp;amp;amp;gt;&amp;amp;amp;lt;ConnectionInfo&amp;amp;amp;gt;&amp;amp;amp;lt;Address&amp;amp;amp;gt;172.17.17.1&amp;amp;amp;lt;/Address&amp;amp;amp;gt;&amp;amp;amp;lt;Details /&amp;amp;amp;gt;&amp;amp;amp;lt;SharedPort&amp;amp;amp;gt;false&amp;amp;amp;lt;/SharedPort&amp;amp;amp;gt;&amp;amp;amp;lt;SubAddress&amp;amp;amp;gt;172.17.17.2&amp;amp;amp;lt;/SubAddress&amp;amp;amp;gt;&amp;amp;amp;lt;Type&amp;amp;amp;gt;TCPIP&amp;amp;amp;lt;/Type&amp;amp;amp;gt;&amp;amp;amp;lt;/ConnectionInfo&amp;amp;amp;gt;&amp;amp;amp;lt;AutoIdleFlow&amp;amp;amp;gt;false&amp;amp;amp;lt;/AutoIdleFlow&amp;amp;amp;gt;&amp;amp;amp;lt;SimulationMode&amp;amp;amp;gt;false&amp;amp;amp;lt;/SimulationMode&amp;amp;amp;gt;&amp;amp;amp;lt;SerialNumber&amp;amp;amp;gt;n/a&amp;amp;amp;lt;/SerialNumber&amp;amp;amp;gt;&amp;amp;amp;lt;FwVersionInfo&amp;amp;amp;gt;n/a&amp;amp;amp;lt;/FwVersionInfo&amp;amp;amp;gt;&amp;amp;amp;lt;/ConfigurationObject&amp;amp;amp;gt;&amp;amp;lt;/RapidControlConfiguration&amp;amp;gt;&amp;amp;lt;IsInjector&amp;amp;gt;true&amp;amp;lt;/IsInjector&amp;amp;gt;&amp;amp;lt;HasPretreatment&amp;amp;gt;false&amp;amp;lt;/HasPretreatment&amp;amp;gt;&amp;amp;lt;/Module&amp;amp;gt;&amp;amp;lt;/InstrumentConfig&amp;amp;gt;&amp;lt;/InstrumentConfiguration&amp;gt;&amp;lt;DeviceMethod&amp;gt;&amp;lt;ModuleCategoryID&amp;gt;EVOSEP_ONE&amp;lt;/ModuleCategoryID&amp;gt;&amp;lt;IndexWithinRole&amp;gt;0&amp;lt;/IndexWithinRole&amp;gt;&amp;lt;RapidControlMethod&amp;gt;&amp;amp;lt;?xml version="1.0" encoding="utf-16"?&amp;amp;gt;&amp;amp;lt;MethodDataObject xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"&amp;amp;gt;&amp;amp;lt;VersionNumber&amp;amp;gt;1&amp;amp;lt;/VersionNumber&amp;amp;gt;&amp;amp;lt;RunTime&amp;amp;gt;690&amp;amp;lt;/RunTime&amp;amp;gt;&amp;amp;lt;MethodName&amp;amp;gt;100 samples per day&amp;amp;lt;/MethodName&amp;amp;gt;&amp;amp;lt;MethodFilename&amp;amp;gt;C:\Program Files (x86)\Bruker Daltonik\HyStar\AgilentICF\EvosepOneDriver\BusinessLogic\100 samples per day (11.5 min).lua&amp;amp;lt;/MethodFilename&amp;amp;gt;&amp;amp;lt;/MethodDataObject&amp;amp;gt;&amp;lt;/RapidControlMethod&amp;gt;&amp;lt;/DeviceMethod&amp;gt;&amp;lt;/InstrumentMethod&amp;gt;&lt;/AgilentMethodData&gt;
+    &lt;PretreatmentHyStar32&gt;&lt;/PretreatmentHyStar32&gt;
+  &lt;/ModuleMethodData&gt;
+&lt;/root&gt;</ModuleMethodData>
+    </ModuleMethods>
+    <TransferMethods />
+    <TotalRunTime>11.5</TotalRunTime>
+    <StartTime>0</StartTime>
+    <StopTime>11.5</StopTime>
+    <ActiveConfigurationID>b10f80a6-c5f9-48ed-bfdc-1651ba71ac55</ActiveConfigurationID>
+    <StartStopCheckBoxStatus>False</StartStopCheckBoxStatus>
+  </LCMethodData>
+  <FractionTreatmentData Version="2">&lt;?xml version="1.0" encoding="utf-8"?&gt;
+&lt;ListTreatmentRows xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"&gt;
+  &lt;TreatmentRowList /&gt;
+&lt;/ListTreatmentRows&gt;</FractionTreatmentData>
+  <FractionTreatmentReport>&lt;?xml version="1.0" encoding="utf-8"?&gt;&lt;Module&gt;&lt;BaseSection&gt;&lt;/BaseSection&gt;&lt;Segment&gt;&lt;SegmentName&gt;Fraction Treatment&lt;/SegmentName&gt;&lt;SubDevice /&gt;&lt;/Segment&gt;&lt;/Module&gt;</FractionTreatmentReport>
+  <ColumnInfo></ColumnInfo>
+  <ListOfHardwareDevices>
+    <Device>
+      <GUIDValue>c6541dc3-07d6-4dee-9aa9-f94f8a2d8406</GUIDValue>
+      <DeviceName>Agilent ICF System</DeviceName>
+      <Index>2</Index>
+      <IsMainPump>True</IsMainPump>
+    </Device>
+  </ListOfHardwareDevices>
+</root>

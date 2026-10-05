@@ -184,10 +184,11 @@ def _interp_quantile(values: list[float], p: float) -> float:
 # ── server and page text ─────────────────────────────────────────────
 
 def test_space_version_is_1_5_0_or_later(client, relay):
-    # P2c shipped as 1.5.0; the TIC overlay (tests/test_relay_community_tic.py) is 1.6.0.
-    assert relay.SPACE_VERSION == "1.6.0"
-    assert client.get("/api/version").json()["version"] == "1.6.0"
-    assert "community site v1.6.0" in _page(client)
+    # P2c shipped as 1.5.0; the TIC overlay (tests/test_relay_community_tic.py)
+    # as 1.6.0; P3a (schema, tests/test_relay_community_p3a.py) is 1.7.0.
+    assert relay.SPACE_VERSION == "1.7.0"
+    assert client.get("/api/version").json()["version"] == "1.7.0"
+    assert "community site v1.7.0" in _page(client)
 
 
 def test_where_anchor_is_the_lookup_and_the_ranges_follow(client):

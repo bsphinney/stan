@@ -121,6 +121,11 @@ PG_COLUMN_TYPES = {
     "drift_class":                   "TEXT",
     "stan_version":                  "TEXT",
     "ms2_analyzer":                  "TEXT",
+    # v1.2.16 (P3a): migrations/2026-10-05_runs_lc_faims.sql
+    "lc_model":                      "TEXT",
+    "lc_flow":                       "TEXT",
+    "amount_source":                 "TEXT",
+    "faims":                         "INTEGER",
 }
 
 EXTRA_COLUMNS = {

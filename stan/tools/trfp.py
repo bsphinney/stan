@@ -18,6 +18,7 @@ import io
 import json
 import logging
 import platform
+import re
 import shutil
 import subprocess
 import zipfile
@@ -447,7 +448,30 @@ _LC_DRIVERS = {
 }
 
 
+# detect_lc_system and detect_lc_model both read the LC from the same raw
+# file at ingest; `strings` over a ~1 GB .raw takes seconds, so the answer is
+# kept per (path, size, mtime) for the life of the process.
+_LC_BINARY_CACHE: dict[tuple[str, int, float], dict] = {}
+_LC_BINARY_CACHE_MAX = 64
+
+
 def _extract_lc_from_raw_binary(raw_path: Path) -> dict:
+    """Memoised :func:`_scan_lc_from_raw_binary` (see there)."""
+    try:
+        st = Path(raw_path).stat()
+        key = (str(raw_path), st.st_size, st.st_mtime)
+    except OSError:
+        return _scan_lc_from_raw_binary(raw_path)
+    hit = _LC_BINARY_CACHE.get(key)
+    if hit is None:
+        hit = _scan_lc_from_raw_binary(raw_path)
+        if len(_LC_BINARY_CACHE) >= _LC_BINARY_CACHE_MAX:
+            _LC_BINARY_CACHE.clear()
+        _LC_BINARY_CACHE[key] = hit
+    return {k: (list(v) if isinstance(v, list) else v) for k, v in hit.items()}
+
+
+def _scan_lc_from_raw_binary(raw_path: Path) -> dict:
     """Scan the .raw binary for embedded LC device identifiers.
 
     The Thermo .raw format embeds the full instrument method XML which
@@ -544,8 +568,57 @@ def get_acquisition_date(raw_path: Path) -> str | None:
     return meta.get("creation_date")
 
 
-def detect_ms2_analyzer(raw_path: Path, max_scans: int = 200) -> str:
-    """Detect Thermo MS2 mass analyzer from per-scan filter strings.
+# FAIMS compensation voltage in a Thermo scan filter, e.g.
+# "FTMS + p NSI cv=-45.00 Full ms [350.0000-1400.0000]". Format taken from
+# ProteoWizard's Thermo filter parser (pwiz_aux/msrc/utility/vendor_api/
+# thermo/ScanFilter.cpp), whose case-insensitive pattern has
+# "(?:cv=(?<compensationVoltage>-?\d+(?:\.\d+)?))?" after the source,
+# corona, photo-ionization, source-CID and detector tokens and before the
+# scan mode; a match sets its faimsOn flag.
+# TODO: verify against a real FAIMS .raw read through fisher_py (none of
+# this lab's 2022 FaimHe1ug Lumos files is reachable with fisher_py: it is
+# not installed on Hive or the dev Mac).
+_FAIMS_CV_RE = re.compile(r"(?<![a-z])cv=-?\d+(?:\.\d+)?", re.IGNORECASE)
+
+
+def scan_facts_from_filters(filters) -> dict:
+    """``{ms2_analyzer, faims}`` from an iterable of scan filter strings.
+
+    Split out of :func:`detect_scan_facts` so the rules can be tested on
+    fake filter strings without a raw file.
+
+    * ``ms2_analyzer``: "IT" if any filter is ITMS (tribrids always do MS1
+      in the orbitrap, so an ITMS scan means ion-trap MS2), else "OT" if
+      any is FTMS, else "unknown".
+    * ``faims``: True if any filter carries a ``cv=`` compensation voltage,
+      False if filters were read and none does, None if none were read.
+    """
+    saw_itms = saw_ftms = saw_cv = False
+    n_read = 0
+    for filter_str in filters:
+        if not filter_str:
+            continue
+        n_read += 1
+        f = str(filter_str).lower()
+        if "itms" in f:
+            saw_itms = True
+        elif "ftms" in f:
+            saw_ftms = True
+        if _FAIMS_CV_RE.search(f):
+            saw_cv = True
+    if saw_itms:
+        analyzer = "IT"
+    elif saw_ftms:
+        analyzer = "OT"
+    else:
+        analyzer = "unknown"
+    return {"ms2_analyzer": analyzer, "faims": (saw_cv if n_read else None)}
+
+
+def detect_scan_facts(raw_path: Path, max_scans: int = 200) -> dict:
+    """MS2 analyzer and FAIMS from one pass over the scan filter strings.
+
+    Returns ``{"ms2_analyzer": "OT"|"IT"|"unknown", "faims": bool|None}``.
 
     Tribrid instruments (Lumos, Eclipse, Ascend, Tribrid Fusion) can
     acquire MS2 in either the orbitrap (FTMS, ~5-20 ppm fragment
@@ -556,53 +629,56 @@ def detect_ms2_analyzer(raw_path: Path, max_scans: int = 200) -> str:
     runs to a wider tolerance set.
 
     Strategy: walk the first ``max_scans`` and bucket each filter
-    string by ms-level + analyzer. Lumos/Eclipse/Ascend always do
-    MS1 in the orbitrap, so any ITMS filter (regardless of detected
-    ms-level) means MS2 is in the ion trap → return "IT". If we see
-    only FTMS filters across all scans, MS2 is in the orbitrap →
-    return "OT". Tribrid filter strings sometimes elide the explicit
-    "ms2" token (e.g. "FTMS + p NSI d Full ms2 ..." vs the older
-    "FTMS + p NSI sa d Full") so the analyzer-prefix heuristic is
-    more robust than substring-matching "ms2".
+    string by analyzer. Lumos/Eclipse/Ascend always do MS1 in the
+    orbitrap, so any ITMS filter means MS2 is in the ion trap → "IT".
+    Only FTMS filters → "OT". Tribrid filter strings sometimes elide
+    the explicit "ms2" token (e.g. "FTMS + p NSI d Full ms2 ..." vs the
+    older "FTMS + p NSI sa d Full") so the analyzer-prefix heuristic is
+    more robust than substring-matching "ms2". A FAIMS run carries a
+    ``cv=`` compensation voltage in every filter (see ``_FAIMS_CV_RE``).
 
-    Returns "OT", "IT", or "unknown" (couldn't open the file or
-    fisher_py not installed). Exploris is always OT (no ion trap);
-    Bruker/timsTOF returns "unknown" since this helper is Thermo-only.
+    ``ms2_analyzer`` is "unknown" and ``faims`` None when the file
+    cannot be read or fisher_py is not installed (it is not, on Hive).
+    Exploris is always OT (no ion trap). Thermo-only: a Bruker ``.d``
+    answers "unknown"/None here; callers stamp "tof"/False themselves.
     """
+    unknown = {"ms2_analyzer": "unknown", "faims": None}
     if raw_path.suffix.lower() != ".raw":
-        return "unknown"
+        return unknown
     try:
         from fisher_py import RawFile
     except ImportError:
-        logger.debug("fisher_py not installed — cannot detect MS2 analyzer")
-        return "unknown"
+        logger.debug("fisher_py not installed — cannot read scan filters")
+        return unknown
 
     try:
         raw = RawFile(str(raw_path))
     except Exception:
         logger.debug("Could not open %s with fisher_py", raw_path, exc_info=True)
-        return "unknown"
+        return unknown
 
-    try:
-        saw_itms = False
-        saw_ftms = False
+    def _filters():
         for scan_num in range(1, max_scans + 1):
             try:
                 _mzs, _ints, _charge, filter_str = raw.get_scan_from_scan_number(scan_num)
             except Exception:
                 continue
-            f = (filter_str or "").lower()
-            if "itms" in f:
-                saw_itms = True
-            elif "ftms" in f:
-                saw_ftms = True
-        if saw_itms:
-            return "IT"
-        if saw_ftms:
-            return "OT"
-        return "unknown"
+            yield filter_str
+
+    try:
+        return scan_facts_from_filters(_filters())
     finally:
         try:
             raw.close()
         except Exception:
             pass
+
+
+def detect_ms2_analyzer(raw_path: Path, max_scans: int = 200) -> str:
+    """Thermo MS2 mass analyzer: "OT", "IT" or "unknown".
+
+    Kept for its callers (``run_one_v1.run_sage`` and older code);
+    :func:`detect_scan_facts` reads the same filters once and also
+    answers FAIMS.
+    """
+    return detect_scan_facts(raw_path, max_scans=max_scans)["ms2_analyzer"]
