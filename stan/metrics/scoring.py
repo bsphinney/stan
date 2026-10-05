@@ -536,6 +536,9 @@ def detect_lc_system(raw_path) -> str | None:
 # "Easy nLC1200" all match "easynlc1200". More specific needles come first.
 # A name no needle matches is not returned: an unrecognised device answers
 # None rather than a guess.
+#
+# The relay (hf_space/app.py) keeps an identical copy, because the Space runs
+# that file alone; tests/test_relay_community_p3a.py fails if they differ.
 _LC_MODEL_VOCAB: tuple[tuple[str, str], ...] = (
     ("vanquishneo", "Vanquish Neo"),
     ("vanquishhorizon", "Vanquish Horizon"),
@@ -596,9 +599,14 @@ def normalize_lc_model(name: object) -> str | None:
     >>> normalize_lc_model("Agilent ICF System") is None
     True
     """
+    import unicodedata
+
     if not isinstance(name, str) or not name.strip():
         return None
-    compact = _re.sub(r"[^a-z0-9]", "", name.lower())
+    # NFKC and a 200-character window, as the relay's _clean_lc_model does,
+    # so both sides name any input the same way (tests/test_relay_community_p3a.py).
+    text = unicodedata.normalize("NFKC", name)[:200]
+    compact = _re.sub(r"[^a-z0-9]", "", text.lower())
     for needle, canonical in _LC_MODEL_VOCAB:
         if needle in compact:
             return canonical

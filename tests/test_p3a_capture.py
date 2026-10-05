@@ -867,3 +867,86 @@ def test_normalize_keeps_the_new_columns_and_old_rows_are_null():
     rows = {r["submission_id"]: r for r in out.to_dicts()}
     assert rows["old"]["lc_model"] is None and rows["old"]["faims"] is None
     assert rows["new"]["lc_model"] == "UltiMate 3000" and rows["new"]["faims"] is True
+
+
+# ── review fixes (1.2.16) ────────────────────────────────────────────────
+
+def test_hive_process_skips_options_it_does_not_know(monkeypatch):
+    """A dispatch.yml key added for a newer STAN must not stop every job on a
+    Hive checkout that is behind it; known options still parse after it."""
+    from typer.testing import CliRunner
+
+    import stan.pipeline.hive_process as hp
+    from stan.cli import app
+
+    seen: dict = {}
+
+    def fake_process_raw(**kw):
+        seen.update(kw)
+        return {"status": "ok"}
+
+    monkeypatch.setattr(hp, "process_raw", fake_process_raw)
+    res = CliRunner().invoke(app, [
+        "hive-process", "/x/Ex_HeL50_30m.raw", "--instrument", "Orbitrap Exploris 480",
+        "--family", "Exploris", "--out-dir", "/x/out", "--from-the-future", "42",
+        "--lc-flow", "nano", "--spd", "38",
+    ])
+    assert res.exit_code == 0, res.output
+    assert "ignored arguments" in res.output and "--from-the-future 42" in res.output
+    assert (seen["lc_flow"], seen["spd"], seen["hela_amount_ng"]) == ("nano", 38, None)
+
+
+def test_an_empty_lc_scan_is_not_cached(tmp_path, monkeypatch):
+    """A timed-out or failed scan answers {}; caching it would hide the LC
+    from every later call in the process."""
+    from stan.tools import trfp
+
+    answers = [{}, {"lc_system": "Dionex UltiMate 3000", "lc_drivers": ["Dionex.ChromatographySystem"]}]
+    calls: list[int] = []
+
+    def scan(path):
+        calls.append(1)
+        return answers[len(calls) - 1]
+
+    monkeypatch.setattr(trfp, "_scan_lc_from_raw_binary", scan)
+    monkeypatch.setattr(trfp, "_LC_BINARY_CACHE", {})
+    raw = tmp_path / "x.raw"
+    raw.write_bytes(b"x")
+    assert trfp._extract_lc_from_raw_binary(raw) == {}
+    assert trfp._extract_lc_from_raw_binary(raw)["lc_system"] == "Dionex UltiMate 3000"
+    assert trfp._extract_lc_from_raw_binary(raw)["lc_system"] == "Dionex UltiMate 3000"
+    assert len(calls) == 2
+
+
+def _migrate_script():
+    import importlib.util
+
+    pytest.importorskip("psycopg2")
+    path = Path(__file__).resolve().parents[1] / "scripts" / "migrate_sqlite_to_pgfarm.py"
+    spec = importlib.util.spec_from_file_location("migrate_sqlite_to_pgfarm_t", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_sqlite_to_pg_migration_skips_columns_pg_lacks():
+    mod = _migrate_script()
+    assert {"lc_model", "lc_flow", "amount_source", "faims"} <= set(mod.PG_COLUMN_TYPES)
+    common = ["id", "instrument", "lc_model", "n_precursors", "faims"]
+    cur = _FakeCursor({"id", "instrument", "n_precursors", "host_origin"})
+    live = mod.live_pg_columns(cur)
+    assert "information_schema.columns" in cur.executed[0][0]
+    keep, skipped = mod.writable_columns(common, live)
+    assert [common[i] for i in keep] == ["id", "instrument", "n_precursors"]
+    assert skipped == ["lc_model", "faims"]
+    # An empty answer (table not visible) narrows nothing.
+    assert mod.writable_columns(common, set()) == (list(range(len(common))), [])
+
+
+def test_submit_sends_only_vocabulary_lc_models(monkeypatch):
+    submit, sent = _capture_submit(monkeypatch)
+    submit.submit_to_benchmark(_run(lc_model="Dionex UltiMate 3000"), spd=38, amount_ng=50.0,
+                               diann_version="2.3.0")
+    submit.submit_to_benchmark(_run(lc_model="hand-typed pump"), spd=38, amount_ng=50.0,
+                               diann_version="2.3.0")
+    assert [p["lc_model"] for p in sent] == ["UltiMate 3000", ""]

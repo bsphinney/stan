@@ -17,10 +17,21 @@ Community redesign **P3a**: capture and accept four per-run cohort attributes,
 for new runs only (spec
 `docs/superpowers/specs/2026-09-29-community-redesign-and-precursor-lookup-design.md`
 §A.3 B4, §A.5, decision 12; Brett's decisions of 2026-10-05). Relay
-(`hf_space/app.py`) is Space **1.7.0**. No stored row changes: nothing is
+(`hf_space/app.py`) is Space **1.7.0**. No existing row is rewritten: nothing is
 backfilled, and `compute_cohort_id`, the broad cohort collapse in
 `normalize_v1`, the facility id (P3c) and the read-time amount check (P3b) are
-untouched. The community page does not read the new fields yet; its TIC,
+untouched. Two things do change what gets stored from now on:
+
+- **New rows store the amount the file name states.** 1.2.15 on Hive stamped
+  every run 50 ng (dispatch.yml has no `amount_ng`); 1.2.16 stamps
+  "FL010921_HeLa100ng_PeSe60m_1Good.raw" as 100 ng (`parsed`), keeps 50 ng
+  (`assumed`) for a name with no unit such as "HeL50", and stores
+  "…HeLa100ug…" as 100,000 ng, which is then held back from submission.
+- **A forced re-ingest overwrites an old row's `amount_ng`.** The PG upsert's
+  `COALESCE(EXCLUDED.x, runs.x)` keeps the old value only when the new one is
+  NULL, and the amount is never NULL, so `STAN_FORCE_REINGEST=1` /
+  `stan ingest-orphans --force` replaces a stored 50 with the parsed amount.
+  Ordinary dispatch skips rows that already exist. The community page does not read the new fields yet; its TIC,
 lookup and P2 code are byte-identical to 1.6.0 (hash pins unchanged).
 
 ### Added
@@ -69,11 +80,15 @@ lookup and P2 code are byte-identical to 1.6.0 (hash pins unchanged).
 - **Relay 1.7.0** accepts the four as optional `BenchmarkSubmission` fields
   and stores them as parquet columns (string, string, string, bool). An
   unknown `lc_flow` / `amount_source` is stored as '', an unclear `faims` as
-  null, and `lc_model` goes through `_clean_text` and is capped at 80
-  characters: a bad value never rejects a run. They are not in the v1
-  completeness gate and are patchable through `/api/update` under the same
-  cleaning. A client that does not send them is stored exactly as before, plus
-  four empty columns.
+  null, and `lc_model` is mapped onto the canonical vocabulary (a copy of
+  `stan.metrics.scoring._LC_MODEL_VOCAB`, kept identical by a test) after
+  `_clean_text`, with anything unrecognised stored as '': `lc_model` will be a
+  cohort key (decision 12), so free text would make every spelling its own
+  cohort. A bad value never rejects a submission. They are not in the v1
+  completeness gate. `/api/update` may patch them, but refuses an unusable
+  value with 422 and leaves the stored one alone ('' or null clears). A
+  client that does not send them is stored exactly as before, plus four empty
+  columns.
 
 ### Changed
 - **PG writes no longer break when STAN gains a field.** `insert_run_pg`
@@ -87,7 +102,14 @@ lookup and P2 code are byte-identical to 1.6.0 (hash pins unchanged).
   amount (stored or parsed) above 5,000 ng makes `submission_readiness` answer
   needs_metrics with the reason (counted as waiting by `stan submit-all` and
   the dashboard's Sync), and `submit_to_benchmark` refuses it. Rows stored
-  before 1.2.16 send `amount_source` derived from the file name.
+  before 1.2.16 send `amount_source` derived from the file name. Measured
+  read-only on PG (2026-10-05): of 577 unsubmitted rows, 172 pass submit-all's
+  QC, blank and zero-ID gates; 10 of those have such a problem, none of them
+  was ready, and no row moves from ready to held.
+- **`stan hive-process` skips options it does not know**, with a warning on
+  stderr, instead of failing with "No such option". The dispatcher writes
+  dispatch.yml keys into every sbatch, so a key added for a newer STAN no
+  longer stops every job on a Hive checkout that is behind it.
 - `stan hive-process --amount-ng` now defaults to none (it means "declared for
   this run"); the new `--default-amount-ng` carries dispatch.yml's
   per-instrument `amount_ng`, which the dispatcher used to pass as
@@ -101,8 +123,17 @@ lookup and P2 code are byte-identical to 1.6.0 (hash pins unchanged).
 - SQLite: `_SCHEMA` and `_migrate` add `lc_model`, `lc_flow`, `amount_source`
   (TEXT) and `faims` (INTEGER 1/0/NULL; compare `faims = 1`). Old rows stay
   NULL.
+- `scripts/migrate_sqlite_to_pgfarm.py` skips columns the live PG table does
+  not have yet (same information_schema read), instead of failing every row.
+- The mockup v3.1 sources (`docs/community-redesign/mockup/build_mockup.py`
+  and its template, with the nanoLC gradient bands) come over from the plan
+  branch for P3d.
 
 ### Known gaps
+- **Deploy order for `dispatch.yml`.** The dispatcher writes `--lc-flow` and
+  `--default-amount-ng` into every sbatch when dispatch.yml has `lc_flow` /
+  `amount_ng`, and a `stan hive-process` older than 1.2.16 rejects both with
+  "No such option", which stops all ingestion. So: edit dispatch.yml only after Hive is on ≥1.2.16; remove `lc_flow`/`amount_ng` from dispatch.yml before any rollback below 1.2.16.
 - Hive has no `fisher_py`, so Hive-ingested Thermo runs keep `faims` NULL (as
   their `ms2_analyzer` is already 'unknown'). P3b's file-name hint covers the
   UC Davis FAIMS runs at read time; a Hive-side reader is a follow-up.

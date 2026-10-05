@@ -7182,8 +7182,17 @@ def backup_now() -> None:
         raise typer.Exit(1)
 
 
-@app.command("hive-process")
+# hive-process skips options it does not know, with a warning, instead of
+# failing with "No such option": the sbatch scripts are written by the
+# dispatcher from dispatch.yml, so a key added for a newer STAN (1.2.16 added
+# --lc-flow / --default-amount-ng) would otherwise stop every job on a Hive
+# checkout that is behind it. A version older than 1.2.16 still fails.
+@app.command(
+    "hive-process",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def hive_process_cmd(
+    ctx: typer.Context,
     raw: Path = typer.Argument(..., help="Path to .d directory or .raw file on Hive."),
     instrument: str = typer.Option(..., "--instrument",
         help="Canonical instrument model name (e.g. 'timsTOF HT', "
@@ -7247,6 +7256,14 @@ def hive_process_cmd(
     Idempotent: skips raws whose row already exists unless --force.
     """
     import json as _json
+
+    if ctx.args:
+        # stderr: stdout carries the JSON result line callers parse.
+        typer.echo(
+            f"WARNING: hive-process ignored arguments this STAN ({__version__}) "
+            f"does not know: {' '.join(ctx.args)}",
+            err=True,
+        )
 
     if step == "full":
         from stan.pipeline.hive_process import process_raw

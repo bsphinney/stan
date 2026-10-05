@@ -450,7 +450,9 @@ _LC_DRIVERS = {
 
 # detect_lc_system and detect_lc_model both read the LC from the same raw
 # file at ingest; `strings` over a ~1 GB .raw takes seconds, so the answer is
-# kept per (path, size, mtime) for the life of the process.
+# kept per (path, size, mtime) for the life of the process. Only a scan that
+# found something is kept: an empty answer may be a timeout or a read error,
+# and caching it would hide the LC from every later call.
 _LC_BINARY_CACHE: dict[tuple[str, int, float], dict] = {}
 _LC_BINARY_CACHE_MAX = 64
 
@@ -465,9 +467,10 @@ def _extract_lc_from_raw_binary(raw_path: Path) -> dict:
     hit = _LC_BINARY_CACHE.get(key)
     if hit is None:
         hit = _scan_lc_from_raw_binary(raw_path)
-        if len(_LC_BINARY_CACHE) >= _LC_BINARY_CACHE_MAX:
-            _LC_BINARY_CACHE.clear()
-        _LC_BINARY_CACHE[key] = hit
+        if hit:
+            if len(_LC_BINARY_CACHE) >= _LC_BINARY_CACHE_MAX:
+                _LC_BINARY_CACHE.clear()
+            _LC_BINARY_CACHE[key] = hit
     return {k: (list(v) if isinstance(v, list) else v) for k, v in hit.items()}
 
 

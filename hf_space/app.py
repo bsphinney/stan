@@ -917,7 +917,35 @@ def compute_ips(sub: "BenchmarkSubmission") -> int:
 #: stan.community.amount.AMOUNT_SOURCES.
 LC_FLOW_VALUES = frozenset({"nano", "capillary", "micro"})
 AMOUNT_SOURCE_VALUES = frozenset({"declared", "parsed", "assumed"})
-LC_MODEL_MAX_LEN = 80
+
+#: Canonical LC model names (decision 12): (needle, canonical), needles
+#: matched against the name lower-cased with all but [a-z0-9] removed, most
+#: specific first. lc_model will be a cohort key (P3d), so the relay stores
+#: only these names: free text would make every spelling its own cohort.
+#: A COPY of stan.metrics.scoring._LC_MODEL_VOCAB, because the Space runs
+#: this file alone and cannot import stan. tests/test_relay_community_p3a.py
+#: fails if the two copies differ; change both together.
+_LC_MODEL_VOCAB: tuple[tuple[str, str], ...] = (
+    ("vanquishneo", "Vanquish Neo"),
+    ("vanquishhorizon", "Vanquish Horizon"),
+    ("vanquishflex", "Vanquish Flex"),
+    ("easynlc1200", "EASY-nLC 1200"),
+    ("easynlc1000", "EASY-nLC 1000"),
+    ("easynlc", "EASY-nLC"),
+    ("evosepone", "Evosep One"),
+    ("evosepeno", "Evosep Eno"),
+    ("evosep", "Evosep"),
+    ("nanoelute2", "nanoElute 2"),
+    ("nanoelute", "nanoElute"),
+    ("ultimate3000", "UltiMate 3000"),
+    ("dionexchromatographysystem", "UltiMate 3000"),
+    ("uplcmclass", "ACQUITY UPLC M-Class"),
+    ("nanoacquity", "nanoACQUITY UPLC"),
+    ("ekspert", "Eksigent nanoLC"),
+    ("eksigent", "Eksigent nanoLC"),
+)
+#: Longest input looked at; a vendor name is a few dozen characters.
+_LC_MODEL_INPUT_MAX = 200
 
 
 def _clean_enum(value: Any, allowed: frozenset) -> str:
@@ -929,8 +957,19 @@ def _clean_enum(value: Any, allowed: frozenset) -> str:
 
 
 def _clean_lc_model(value: Any) -> str:
-    """An LC model name as stored: _clean_text, at most 80 characters."""
-    return _clean_text(value)[:LC_MODEL_MAX_LEN].strip()
+    """The canonical LC model name for ``value``, or '' when unrecognised.
+
+    Same rule as the client's ``normalize_lc_model``: NFKC and the
+    invisible-character scrub of ``_clean_text`` first, so a fullwidth or
+    zero-width-spliced spelling maps like the plain one. Whatever is sent,
+    only a name from ``_LC_MODEL_VOCAB`` (or '') is ever stored.
+    """
+    text = _clean_text(value)[:_LC_MODEL_INPUT_MAX]
+    compact = re.sub(r"[^a-z0-9]", "", text.lower())
+    for needle, canonical in _LC_MODEL_VOCAB:
+        if needle in compact:
+            return canonical
+    return ""
 
 
 def _clean_faims(value: Any) -> bool | None:
@@ -948,14 +987,36 @@ def _clean_faims(value: Any) -> bool | None:
     return None
 
 
-#: How /api/update cleans a patched cohort attribute: the same rules as a
-#: submission, so a patch cannot store what /api/submit would not.
-_PATCH_CLEANERS: dict[str, Callable[[Any], Any]] = {
-    "lc_model": _clean_lc_model,
-    "lc_flow": lambda v: _clean_enum(v, LC_FLOW_VALUES),
-    "amount_source": lambda v: _clean_enum(v, AMOUNT_SOURCE_VALUES),
-    "faims": _clean_faims,
-}
+def _patch_cohort_value(field: str, value: Any) -> Any:
+    """A patched cohort attribute as it will be stored, or HTTP 422.
+
+    /api/submit cleans an unusable value to ''/null so a run is never lost
+    over it. A patch is different: it would overwrite a stored value, so an
+    unusable one is refused and nothing changes. '' (or null for faims)
+    clears the field on purpose.
+    """
+    if value is None or value == "":
+        return None if field == "faims" else ""
+    if field == "faims":
+        cleaned = _clean_faims(value)
+        ok = cleaned is not None
+    elif field == "lc_model":
+        cleaned = _clean_lc_model(value)
+        ok = bool(cleaned)
+    else:
+        allowed = LC_FLOW_VALUES if field == "lc_flow" else AMOUNT_SOURCE_VALUES
+        cleaned = _clean_enum(value, allowed)
+        ok = bool(cleaned)
+    if not ok:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{field}: {value!r} is not a recognised value; nothing was changed.",
+        )
+    return cleaned
+
+
+#: Cohort attributes /api/update validates with _patch_cohort_value.
+_PATCH_VALIDATED = frozenset({"lc_model", "lc_flow", "amount_source", "faims"})
 
 
 class BenchmarkSubmission(BaseModel):
@@ -1025,7 +1086,7 @@ class BenchmarkSubmission(BaseModel):
     # 12). All optional: older clients omit them and the stored row reads
     # '' / null ("not recorded"). Never part of the v1 completeness gate.
     # An unknown enum value is stored as '' rather than rejecting the run.
-    lc_model: str = ""        # canonical LC name read from the raw file, <= 80 chars
+    lc_model: str = ""        # canonical LC name (_LC_MODEL_VOCAB) or ''; free text is not stored
     lc_flow: str = ""         # nano | capillary | micro | ''
     amount_source: str = ""   # declared | parsed | assumed | ''
     faims: bool | None = None  # null = not recorded
@@ -1731,7 +1792,8 @@ _UPDATABLE_FIELDS = {
     "median_peak_width_sec",
     # Space 1.7.0 cohort attributes: re-derivable from the raw file (LC
     # model, FAIMS) or the lab's setup (flow, amount source), so a backfill
-    # may patch them. Cleaned exactly as on submit (_PATCH_CLEANERS).
+    # may patch them. A value /api/submit would clean away is refused here
+    # with 422 instead (_patch_cohort_value), so a patch never nulls one.
     "lc_model",
     "lc_flow",
     "amount_source",
@@ -1832,8 +1894,8 @@ async def update_submission(submission_id: str, request: Request) -> dict:
     for k, v in patch.items():
         if k in _JSON_ENCODED and isinstance(v, list):
             normalized_patch[k] = json.dumps(v)
-        elif k in _PATCH_CLEANERS:
-            normalized_patch[k] = _PATCH_CLEANERS[k](v)
+        elif k in _PATCH_VALIDATED:
+            normalized_patch[k] = _patch_cohort_value(k, v)
         else:
             normalized_patch[k] = v
 
@@ -1853,7 +1915,10 @@ async def update_submission(submission_id: str, request: Request) -> dict:
                     df = df.with_columns(pl.lit(None).cast(pl.Float32).alias(k))
                 else:
                     df = df.with_columns(pl.lit(None).cast(pl.Utf8).alias(k))
-            expressions.append(pl.lit(v).alias(k))
+            if k == "faims":  # keep the stored bool column bool, null included
+                expressions.append(pl.lit(v, dtype=pl.Boolean).alias(k))
+            else:
+                expressions.append(pl.lit(v).alias(k))
         return df.with_columns(expressions)
 
     cache = tempfile.mkdtemp(prefix="hf_update_")

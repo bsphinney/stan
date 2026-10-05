@@ -406,6 +406,9 @@ html.fs-open, html.fs-open body { overflow: hidden; }
 .pair select { min-width: 0; max-width: 100%; }
 .take .tag1 { margin-left: 2px; }
 .section-desc { color: var(--text-2); font-size: .9rem; margin: 0 0 14px; max-width: 85ch; }
+.subsec { margin-top: 36px; scroll-margin-top: 110px; }
+.subhead { font-size: 1.15rem; margin: 0 0 8px; padding-bottom: 6px; color: #7dd3fc; border-bottom: 1px solid rgba(125,211,252,.35); text-wrap: balance; }
+@media (max-width: 480px) { .ann summary { white-space: normal; } }
 /* lookup: engine fields + log drop */
 .engbox { display: grid; gap: 11px; border-top: 1px dashed var(--card-line); padding-top: 11px; }
 .engbox[hidden] { display: none; }
@@ -515,6 +518,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     <nav class="nav" aria-label="Site">
       <a class="join" href="#join">Join</a>
       <a href="#where">Where do I stand</a>
+      <a href="#explore">Instrument Health Explorer</a>
       <a href="#methods">Methods</a>
       <a href="#peg">PEG Watch</a>
       <span class="sep" aria-hidden="true"></span>
@@ -526,7 +530,8 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     </nav>
     <div class="anns" style="justify-content:center;margin-top:8px">
       <details class="ann"><summary><b>CHANGED</b> · D2</summary><p id="ann-d2"></p></details>
-      <details class="ann"><summary><b>CHANGED</b> · D6 nav</summary><p><b>Join comes first.</b> The only way in used to be "Install STAN to contribute your own", which went to the GitHub root. Nav order follows the review outline: Join · Where do I stand · Methods · PEG Watch, then the external links.</p></details>
+      <details class="ann"><summary><b>CHANGED</b> · D6 nav</summary><p><b>Join comes first.</b> The only way in used to be "Install STAN to contribute your own", which went to the GitHub root. Nav order follows the review outline: Join · Where do I stand · Instrument Health Explorer · Methods · PEG Watch, then the external links.</p></details>
+      <details class="ann"><summary><b>CHANGED</b> · nav link to the Instrument Health Explorer (Brett)</summary><p><b>Brett asked for a link to the Instrument Health Explorer at the top.</b> "Instrument Health Explorer" now sits after "Where do I stand" and jumps to the section (<code>#explore</code>), which keeps its live name. One link covers the ID-free charts too: as on live, "LC / Instrument Health (ID-free metrics)" is a sub-heading inside the Instrument Health Explorer rather than a section of its own, so the link lands on all of the charts. They keep their own anchor, <code>#health</code>.</p></details>
     </div>
   </header>
 
@@ -554,7 +559,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     <span class="inview" id="f-inview"></span>
   </div>
   <div class="anns" style="margin-top:8px">
-    <details class="ann"><summary><b>NEW</b> · B2 filter bar</summary><p><b>One cohort definition, one set of filters, every panel.</b> Cohort = QC standard × instrument model × track (DIA/DDA) × LC and gradient × amount. Evosep runs are named by a real Evosep method ("Evosep 60 SPD"). nanoLC runs are named by the run length recorded with the file plus the stored SPD ("44 min run (~38 SPD)"). A run with no LC recorded joins the nanoLC cohort for its SPD when that SPD is not an Evosep method; at an Evosep-method SPD it is listed but not ranked, because it could be either. Before, the page bucketed throughput four ways and amount three ways, so a 60 SPD timsTOF HT at 50 ng had a different n in every panel (606, 617, 1,341 or the whole family). The DIA/DDA switch moved here from the bottom of the page, and there is no mixed "All" view. The PEG section below is not affected, as today.</p></details>
+    <details class="ann"><summary><b>NEW</b> · B2 filter bar</summary><p><b>One cohort definition, one set of filters, every panel.</b> Cohort = QC standard × instrument model × track (DIA/DDA) × LC and gradient × amount. Evosep runs are named by a real Evosep method ("Evosep 60 SPD"). nanoLC runs are named by their gradient band plus the stored SPD ("nanoLC · 30 min gradient band (~38 SPD)"), and their cohort also carries LC model and flow regime (B2/B4 amendment, see Reference ranges). A run with no LC recorded joins the nanoLC cohort for its SPD when that SPD is not an Evosep method; at an Evosep-method SPD it is listed but not ranked, because it could be either. Before, the page bucketed throughput four ways and amount three ways, so a 60 SPD timsTOF HT at 50 ng had a different n in every panel (606, 617, 1,341 or the whole family). The DIA/DDA switch moved here from the bottom of the page, and there is no mixed "All" view. The PEG section below is not affected, as today.</p></details>
   </div>
 
   <!-- ======================= WHERE DOES MY RUN SIT ======================= -->
@@ -567,6 +572,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
       <details class="ann"><summary><b>NEW</b> · Part B engine fields</summary><p id="ann-eng"></p></details>
       <details class="ann"><summary><b>NEW</b> · log drop</summary><p id="ann-log"></p></details>
       <details class="ann"><summary><b>DECISION 11</b> · reference library</summary><p id="ann-d11"></p></details>
+      <details class="ann"><summary><b>NEW</b> · nanoLC fields (B2/B4 amendment)</summary><p id="ann-nanof"></p></details>
     </div>
     <div class="demo review-only" id="ws-demo"><span>Show a lookup state:</span></div>
     <div class="card">
@@ -575,7 +581,9 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
           <div class="field"><label>Acquisition</label><div class="seg" id="ws-track" role="group" aria-label="Acquisition track"></div><span class="hint">Same switch as the bar at the top.</span></div>
           <div class="field"><label for="ws-model">Instrument model</label><select id="ws-model"></select></div>
           <div class="field"><label for="ws-lc">LC method</label><select id="ws-lc"></select></div>
-          <div class="field" id="ws-min-f"><label for="ws-min">Gradient length (minutes)</label><input id="ws-min" type="number" inputmode="decimal" min="1" step="1"><span class="hint">Converted to SPD = 1440 ÷ (minutes × 1.25) and matched to the nearest cohort within 15%.</span></div>
+          <div class="field" id="ws-min-f"><label for="ws-min">Gradient length (active gradient, minutes)</label><input id="ws-min" type="number" inputmode="decimal" min="1" step="1"><span class="hint" id="ws-min-h"></span></div>
+          <div class="field" id="ws-lcm-f"><label for="ws-lcm">LC model</label><select id="ws-lcm"></select></div>
+          <div class="field" id="ws-flow-f"><label for="ws-flow">Flow regime</label><select id="ws-flow"></select><span class="hint">nanoLC cohorts match on gradient band + LC model + flow regime once labs submit them.</span></div>
           <div class="field"><label for="ws-amt">Amount loaded</label><select id="ws-amt"></select></div>
           <div class="field"><label for="ws-val"><span id="ws-val-l">Precursors at 1% FDR</span> <span class="exval" id="ws-ex">Example value</span></label><input class="big" id="ws-val" type="number" inputmode="numeric" min="0" step="1"></div>
           <div class="field"><label for="ws-pep">Peptides <span class="muted" style="font-weight:500">(optional)</span></label><input id="ws-pep" type="number" inputmode="numeric" min="0" step="1" placeholder="e.g. 34,000"></div>
@@ -603,6 +611,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     <div class="anns">
       <details class="ann"><summary><b>CHANGED</b> · D1</summary><p><b>DIA and DDA never share a card.</b> The old cohort key had no acquisition mode, so 37 DDA rows (0 precursors each) fell into DIA cards and produced ranges like "0 – 37,360". Mode is now part of the key and each card reads its own primary metric: precursors for DIA, PSMs for DDA. Switch Track in the filter bar to see the DDA cards.</p></details>
       <details class="ann"><summary><b>CHANGED</b> · D5</summary><p id="ann-d5"></p></details>
+      <details class="ann"><summary><b>NEW</b> · B2/B4 amendment (Brett 2026-09-29)</summary><p id="ann-band"></p></details>
       <details class="ann"><summary><b>CHANGED</b> · D2 n runs · n labs</summary><p><b>Every card says how many runs and facilities it holds.</b> Cohorts from one facility carry "Single-lab reference", which today is all of them. Below 10 runs the card lists the values instead of an IQR, so nobody reads "41,555 – 41,555" as a range.</p></details>
     </div>
     <div id="refs-body"></div>
@@ -749,7 +758,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     <h2 id="explore-h">Instrument Health Explorer</h2>
     <p class="desc">Each point is one QC run. Every chart follows the filter bar and says in its badge what it follows. Counts compare fairly within a vendor: timsTOF and Orbitrap runs search different libraries.</p>
     <div class="anns">
-      <details class="ann"><summary><b>KEPT</b> · every chart (v3)</summary><p><b>Every live chart you are keeping is back, drawn as on the live site with Plotly 2.35</b>: hover, drag-zoom, legend clicks and the ⛶ fullscreen button on every card, and the modebar on the TIC overlay as live. They follow the live order: Best Configurations, Depth by Amount Loaded next to Identification Depth by Platform, Depth by Throughput, Column Comparison, Throughput vs. Quantitation Quality and the TIC overlay, then the four ID-free charts in their own visible section. At desktop width every chart is open. On a phone each is a panel with a one-line summary; Depth by Throughput, Throughput vs. Quantitation Quality and the TIC overlay stay open at every width. v2's "Main cohort per instrument" rows and its collapsed month-by-month table are gone. Each chart's own chips say what was fixed inside it.</p></details>
+      <details class="ann"><summary><b>KEPT</b> · every chart (v3)</summary><p><b>Every live chart you are keeping is back, drawn as on the live site with Plotly 2.35</b>: hover, drag-zoom, legend clicks and the ⛶ fullscreen button on every card, and the modebar on the TIC overlay as live. They follow the live order: Best Configurations, Depth by Amount Loaded, Identification Depth by Platform, Depth by Throughput, Column Comparison, Throughput vs. Quantitation Quality and the TIC overlay, then the four ID-free charts under live's own sub-heading, "LC / Instrument Health (ID-free metrics)", inside this section. At desktop width every chart is open. On a phone each is a panel with a one-line summary; Depth by Throughput, Throughput vs. Quantitation Quality and the TIC overlay stay open at every width. v2's "Main cohort per instrument" rows and its collapsed month-by-month table are gone. Each chart's own chips say what was fixed inside it.</p></details>
     </div>
     <div class="stack">
       <!-- best configurations -->
@@ -802,9 +811,9 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
           <button type="button" class="fs-btn" data-fs="plot-spd" aria-label="Toggle full screen">⛶</button>
           <div class="anns">
             <details class="ann"><summary><b>KEPT</b> · title and form</summary><p>Same title and question. A box per SPD with every run drawn as a point, the live SPD colour scale, amount shapes (○ 50 ng · ◇ &lt;20 ng · □ &gt;100 ng), one facet per instrument with its own title, and an amount select inside the card.</p></details>
-            <details class="ann"><summary><b>CHANGED</b> · facets + SPD + D1</summary><p><b>Faceted by instrument model</b> (HT, Pro and Pro 2 apart; live pooled them as "timsTOF"), and <b>one box per SPD</b> instead of four SPD buckets, so 60 and 100 SPD are no longer one "fast"/"ultra" box and a 9 SPD Lumos run is no longer pooled with 15 SPD. DIA and DDA never mix (live's box read "Precursors / PSMs"). A box needs 5 runs; a smaller group shows its points only. Runs recorded as Evosep at a non-method SPD get their own box ("36 unv."), and runs with no LC recorded at an Evosep SPD get theirs ("60 no LC"), so neither joins an Evosep box. Facet titles read "n runs · n labs". The within-vendor caveat sits under the chart. At phone width the facets stack instead of squeezing side by side.</p></details>
+            <details class="ann"><summary><b>CHANGED</b> · facets + SPD + D1</summary><p><b>Faceted by instrument model</b> (HT, Pro and Pro 2 apart; live pooled them as "timsTOF"), and <b>one box per SPD</b> (per gradient band for nanoLC, under the B2/B4 amendment) instead of four SPD buckets, so 60 and 100 SPD are no longer one "fast"/"ultra" box and a 9 SPD Lumos run is no longer pooled with 15 SPD. DIA and DDA never mix (live's box read "Precursors / PSMs"). A box needs 5 runs; a smaller group shows its points only. Runs recorded as Evosep at a non-method SPD get their own box ("36 unv."), and runs with no LC recorded at an Evosep SPD get theirs ("60 no LC"), so neither joins an Evosep box. Facet titles read "n runs · n labs". The within-vendor caveat sits under the chart. At phone width the facets stack instead of squeezing side by side.</p></details>
           </div>
-          <p class="cdesc">Precursors (DIA) or PSMs (DDA) against samples per day, one facet per instrument model. Each box is one SPD. Pick the amount loaded so you compare like with like: the best SPD may differ by load.</p>
+          <p class="cdesc">Precursors (DIA) or PSMs (DDA) against samples per day, one facet per instrument model. Each box is one Evosep SPD, or one nanoLC gradient band ordered from the longest gradient. Pick the amount loaded so you compare like with like: the best SPD may differ by load.</p>
           <div class="ctl"><label>Amount loaded: <select data-amt aria-label="Amount loaded (same as the filter bar)"></select></label><span class="shape">Shape: ○ 50 ng · ◇ &lt;20 ng · □ &gt;100 ng · same select as the bar at the top</span></div>
           <div class="plot" id="plot-spd"></div>
           <p class="caveat" style="margin:6px 0 0">Compare facets of one vendor only. timsTOF and Orbitrap runs search different libraries (~54,000 vs ~170,000 precursors), so a timsTOF box above an Orbitrap box is not a verdict on the instruments.</p>
@@ -869,11 +878,10 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
         <div class="gone" id="gone"></div>
       </div>
     </div>
-  </section>
 
-  <!-- ======================= LC / INSTRUMENT HEALTH (ID-free) ======================= -->
-  <section class="section" id="health" aria-labelledby="health-h">
-    <h2 id="health-h">LC / Instrument Health (ID-free metrics)</h2>
+  <!-- ======================= LC / INSTRUMENT HEALTH (ID-free): a sub-heading of the Explorer, as on live ======================= -->
+  <div class="subsec" id="health" role="region" aria-labelledby="health-h">
+    <h3 class="subhead" id="health-h">LC / Instrument Health (ID-free metrics)</h3>
     <p class="section-desc">The metrics the proteomics QC literature (NIST MSQC, QCloud2, CPTAC, PTXQC) treats as LC-health signals: they catch failures before identifications collapse, and they do not depend on how many peptides were identified. One colour per instrument: each dot is a run and the line is that instrument's monthly median. They follow the filter bar.</p>
     <div class="anns">
       <details class="ann"><summary><b>KEPT</b> · visible, live order</summary><p><b>All four live ID-free charts are back, visible at every width</b>, in live order and with live axes (mass accuracy on 0–25 ppm, dynamic range from zero, dates as "Jan 2024"). v2 had folded them into a collapsed table of sparklines, which you read as a removal.</p></details>
@@ -907,6 +915,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
         <div class="plot" id="plot-pts"></div>
       </div>
     </div>
+  </div>
   </section>
 
   <!-- ======================= LAB TREND ======================= -->
@@ -1115,9 +1124,10 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   const amountShape = (a) => { a = a || 50; return a < 20 ? 'diamond' : a > 100 ? 'square' : 'circle'; };
   const ABBR = (m) => ({ 'timsTOF HT': 'HT', 'timsTOF Pro': 'Pro', 'timsTOF Pro 2': 'Pro 2', 'Orbitrap Exploris 480': 'Exploris', 'Orbitrap Fusion Lumos': 'Lumos' }[m] || m);
   const lenOf = (c) => c.g.split(' (')[0].replace(/ runs?$/, '').replace(/^Evosep, /, '');
-  const gShort = (c) => c.lc === 'evosep' ? `Evosep ${c.spd} SPD` : c.lc === 'evosep_unv' ? `Evosep ${c.spd} SPD (unverified)` : c.lc === 'unrec' ? `${c.spd} SPD, LC not recorded` : `~${c.spd} SPD · ${lenOf(c)}`;
+  const gShort = (c) => c.lc === 'evosep' ? `Evosep ${c.spd} SPD` : c.lc === 'evosep_unv' ? `Evosep ${c.spd} SPD (unverified)` : c.lc === 'unrec' ? `${c.spd} SPD, LC not recorded` : c.g.replace(/^nanoLC · /, '');
+  const bandSpd = (c) => (c.g.match(/\((~[^)]*) SPD\)$/) || [0, '~' + c.spd])[1];
   // one object per valid run (build_mockup.py documents the columns)
-  const RUNS = D.runs.map((r, idx) => ({ idx, d: r[0], lab: r[1], ci: r[2], c: C[r[2]], prec: r[3], pep: r[4], prot: r[5], psm: r[6], pts: r[7], ppm: r[8], ms1: r[9], dr: r[10], amt: r[11], col: r[12], pw: r[13] }));
+  const RUNS = D.runs.map((r, idx) => ({ idx, d: r[0], lab: r[1], ci: r[2], c: C[r[2]], prec: r[3], pep: r[4], prot: r[5], psm: r[6], pts: r[7], ppm: r[8], ms1: r[9], dr: r[10], amt: r[11], col: r[12], pw: r[13], spd: r[14] }));
   const byCohRuns = C.map(() => []);
   RUNS.forEach((o) => byCohRuns[o.ci].push(o));
   const pv = (o) => o.c.t === 'DIA' ? o.prec : o.psm;
@@ -1232,16 +1242,21 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   const ALLM = { bruker: M.filter((m) => D.vendor[m] === 'bruker').concat(EXTRA.bruker), thermo: M.filter((m) => D.vendor[m] === 'thermo').concat(EXTRA.thermo) };
   const OTHER = 'Another model';
   const vendorOf = (name) => ALLM.bruker.includes(name) ? 'bruker' : ALLM.thermo.includes(name) ? 'thermo' : null;
-  const ws = { m: 'timsTOF HT', lc: 'e60', mins: 30, a: '50', val: 38000, pep: '', example: true };
+  const ws = { m: 'timsTOF HT', lc: 'e60', mins: 30, a: '50', val: 38000, pep: '', example: true, lcm: '', flow: '' };
+  const bandOf = (mins) => { for (const [hi, b] of D.bands) if (hi == null || mins < hi) return b; return 180; };   // same half-open bands as the build
+  const LCM = [['', 'Not set'], ['vneo', 'Thermo Vanquish Neo'], ['u3000', 'Dionex UltiMate 3000'], ['ne2', 'Bruker nanoElute 2'], ['mclass', 'Waters ACQUITY M-Class'], ['other', 'Other']];
+  const FLOW = [['', 'Not set'], ['nano', 'nanoflow (<1 µL/min)'], ['cap', 'capillary (1–10 µL/min)'], ['micro', 'microflow (>10 µL/min)']];
   const wsPool = () => C.filter((c) => c.s === st.sample && c.t === st.track && M[c.m] === ws.m);
   const spdOfMins = (mins) => 1440 / (mins * 1.25);
-  function nanoPick(cs, spdU) {
-    const c = cs.filter((x) => x.lc === 'nanolc').map((x) => ({ x, d: Math.abs(Math.log(x.spd / spdU)) })).sort((a, b) => a.d - b.d || b.x.n - a.x.n)[0];
-    return c && c.d <= Math.log(1.15) ? c.x : null;
+  // B2/B4 amendment: a nanoLC cohort is gradient band + LC model + flow regime. No cohort records
+  // model or flow yet (every one reads "not recorded"), so today the match is on the band alone.
+  function nanoPick(cs, mins) {
+    const b = bandOf(mins);
+    return cs.filter((x) => x.lc === 'nanolc' && x.band === b).sort((a, z) => z.n - a.n)[0] || null;
   }
   function wsMatch(amt) {
     const pool = wsPool().filter((c) => c.a === (amt || ws.a));
-    if (ws.lc === 'nano') { if (!(ws.mins > 0)) return null; return nanoPick(pool, spdOfMins(ws.mins)); }
+    if (ws.lc === 'nano') { if (!(ws.mins > 0)) return null; return nanoPick(pool, ws.mins); }
     const spd = +ws.lc.slice(1);
     return pool.find((c) => c.lc === 'evosep' && c.spd === spd) || null;
   }
@@ -1249,7 +1264,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     const cs = C.filter((c) => c.s === st.sample && c.t === st.track && M[c.m] === name && ranked(c));
     return cs.sort((a, b) => (b.a === ws.a) - (a.a === ws.a) || b.n - a.n)[0] || null;
   }
-  function lcFrom(c) { if (!c) return; if (c.lc === 'evosep') ws.lc = 'e' + c.spd; else { ws.lc = 'nano'; ws.mins = Math.round(1440 / (c.spd * 1.25)); } }
+  function lcFrom(c) { if (!c) return; if (c.lc === 'evosep') ws.lc = 'e' + c.spd; else { ws.lc = 'nano'; ws.mins = Math.round(1440 / (1.25 * c.spd)); } }
   function exampleVal() { const c = wsMatch(); ws.val = c ? Math.round(q(c.v, 0.4) / 100) * 100 : null; }
   function wsReset() {
     ws.example = true; ws.pep = '';
@@ -1270,6 +1285,11 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     const nanoN = pool.filter((c) => c.lc === 'nanolc').reduce((s, c) => s + c.n, 0);
     $('ws-lc').innerHTML = `<optgroup label="Evosep method">${EVO_ORDER.map((spd) => { const n = evoN(spd); return `<option value="e${spd}"${ws.lc === 'e' + spd ? ' selected' : ''}>${esc(D.evosep[spd])} · ${n ? runsTxt(n) : 'no runs yet'}</option>`; }).join('')}</optgroup><optgroup label="Other LC"><option value="nano"${ws.lc === 'nano' ? ' selected' : ''}>nanoLC or other LC · ${nanoN ? runsTxt(nanoN) : 'no runs yet'}</option></optgroup>`;
     $('ws-min-f').classList.toggle('hidden', ws.lc !== 'nano');
+    $('ws-lcm-f').classList.toggle('hidden', ws.lc !== 'nano');
+    $('ws-flow-f').classList.toggle('hidden', ws.lc !== 'nano');
+    $('ws-lcm').innerHTML = LCM.map(([k, l]) => `<option value="${k}"${k === ws.lcm ? ' selected' : ''}>${l}</option>`).join('');
+    $('ws-flow').innerHTML = FLOW.map(([k, l]) => `<option value="${k}"${k === ws.flow ? ' selected' : ''}>${l}</option>`).join('');
+    $('ws-min-h').textContent = `The active gradient, not the total run time (a 30 min gradient in a 44 min acquisition is 30). Snaps to its band: ≤20 → 15 min, 21–37 → 30, 38–52 → 45, 53–75 → 60, 76–105 → 90, 106–150 → 120, >150 → 180.${ws.mins > 0 ? ` Yours: ${bandOf(ws.mins)} min gradient band.` : ''}`;
     $('ws-min').value = ws.mins == null ? '' : ws.mins;
     $('ws-amt').innerHTML = AMT_OPTS.filter(([k]) => k !== 'all').map(([k, l]) => `<option value="${k}"${k === ws.a ? ' selected' : ''}>${l}${wsMatch(k) ? '' : ' · no runs yet'}</option>`).join('');
     $('ws-val-l').textContent = st.track === 'DIA' && eng.e !== 'stan' ? `${Prim()} from your search` : `${Prim()} at 1% FDR`;
@@ -1284,19 +1304,21 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     wsBand = null;
     const pool = wsPool(), c = wsMatch();
     wsCoh = c;
-    const gtxt = ws.lc === 'nano' ? (ws.mins > 0 ? `a ${fmtN(ws.mins)} min gradient (~${Math.round(spdOfMins(ws.mins))} SPD)` : 'nanoLC') : D.evosep[ws.lc.slice(1)];
-    const mapLine = ws.lc === 'nano' && ws.mins > 0 ? `<div class="ws-map">Your ${fmtN(ws.mins)} min gradient ≈ <b>${Math.round(spdOfMins(ws.mins))} SPD</b> (1440 ÷ (${fmtN(ws.mins)} × 1.25)).${c ? ` Nearest cohort: <b>${esc(c.g)}</b>. Its title shows the run length recorded with those files, not the gradient.` : ''}</div>` : '';
-    if (ws.lc === 'nano' && !(ws.mins > 0)) { out.innerHTML = '<div class="empty"><b>Enter your gradient length in minutes.</b> It is converted to SPD and matched to the nearest nanoLC cohort.</div>'; return; }
+    const gtxt = ws.lc === 'nano' ? (ws.mins > 0 ? `a ${fmtN(ws.mins)} min active gradient (${bandOf(ws.mins)} min gradient band)` : 'nanoLC') : D.evosep[ws.lc.slice(1)];
+    const ignored = [ws.lcm ? pick(LCM, ws.lcm) : '', ws.flow ? pick(FLOW, ws.flow).split(' (')[0] : ''].filter(Boolean);
+    const mapLine = ws.lc === 'nano' && ws.mins > 0 ? `<div class="ws-map">Your ${fmtN(ws.mins)} min active gradient falls in the <b>${bandOf(ws.mins)} min gradient band</b> (${D.bandRange[bandOf(ws.mins)]}).${c ? ` Matched cohort: <b>${esc(c.g)}</b>.` : ''} nanoLC cohorts match on band + LC model + flow regime once labs submit them. No cohort records LC model or flow yet, so this matches on the band alone and ignores ${ignored.length ? `your ${esc(ignored.join(' · '))}` : 'model and flow'}.</div>` : '';
+    if (ws.lc === 'nano' && !(ws.mins > 0)) { out.innerHTML = '<div class="empty"><b>Enter your gradient length in minutes.</b> Enter the active gradient, not the total run time. It snaps to its band (15, 30, 45, 60, 90, 120 or 180 min) and is matched to the nanoLC cohort for that band.</div>'; return; }
     if (!c) {
       let why;
       if (!pool.length) why = `No lab has shared ${esc(ws.m === OTHER ? 'this model' : ws.m)} ${st.track} ${SAMPLE[st.sample]} runs yet.`;
       else why = `No lab has shared ${esc(ws.m)} ${st.track} runs at ${esc(gtxt)} with ${AMT[ws.a]} loaded.`;
       const extra = [];
       const spdT = ws.lc === 'nano' ? spdOfMins(ws.mins) : +ws.lc.slice(1);
-      const unr = pool.filter((x) => x.why && x.a === ws.a && Math.abs(Math.log(x.spd / spdT)) <= Math.log(1.15));
+      const unr = ws.lc === 'nano' ? [] : pool.filter((x) => x.why && x.a === ws.a && Math.abs(Math.log(x.spd / spdT)) <= Math.log(1.15));
       unr.forEach((x) => extra.push(`${runsTxt(x.n)} at ${x.spd} SPD exist but are not ranked: ${WHY(x)}.`));
       const otherAmt = AMT_OPTS.map(([k]) => k).filter((k) => k !== 'all' && k !== ws.a).map((k) => wsMatch(k)).filter(Boolean).sort((a, b) => b.n - a.n)[0];
-      const near = pool.filter((x) => ranked(x) && x.a === ws.a).sort((a, b) => Math.abs(Math.log(a.spd / spdT)) - Math.abs(Math.log(b.spd / spdT)))[0];
+      const dist = (x) => ws.lc === 'nano' && x.band ? Math.abs(Math.log(x.band / bandOf(ws.mins))) : Math.abs(Math.log(x.spd / spdT));
+      const near = pool.filter((x) => ranked(x) && x.a === ws.a).sort((a, b) => dist(a) - dist(b))[0];
       out.innerHTML = `${mapLine}<div class="empty"><b>Your configuration isn't in the benchmark yet.</b> ${why} <a href="#join">Join to create this cohort →</a></div>` +
         (extra.length ? `<p class="fine" style="margin:0">${extra.join(' ')}</p>` : '') +
         (otherAmt ? `<p class="fine" style="margin:0">Same method at another amount: <button type="button" class="linkbtn" data-a="${otherAmt.a}" id="ws-alt">${AMT[otherAmt.a]} · ${runsTxt(otherAmt.n)}</button></p>` : '') +
@@ -1324,10 +1346,10 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
       const cov = val / D.libsize.bruker * 100;
       lines.push(`Library coverage: <b>${cov.toFixed(0)}%</b> of the ~54,000-precursor timsTOF library (cohort median ${c.lib == null ? '—' : c.lib.toFixed(0) + '%'}). ${cov > 90 ? '<span class="libhi">Library-limited</span> Above 90%, the library rather than the instrument caps the count.' : 'Above 90%, the library rather than the instrument would cap the count.'}`);
     }
-    if (c.nolc) lines.push(`${c.nolc === c.n ? `All ${c.n}` : c.nolc} run${c.nolc === 1 ? '' : 's'} in this cohort had no LC recorded; ${c.spd} SPD is not an Evosep method, so they are treated as nanoLC.`);
+    if (c.nolc) lines.push(`${c.nolc === c.n ? `All ${c.n}` : c.nolc} run${c.nolc === 1 ? '' : 's'} in this cohort had no LC recorded; ${c.spds && c.spds.length > 1 ? 'their SPD is' : c.spd + ' SPD is'} not an Evosep method, so they are treated as nanoLC.`);
     const cardVisible = st.amount === 'all' || st.amount === c.a;
     out.innerHTML = `${mapLine}<div class="ws-head">${head}<div class="ws-coh">of ${runsTxt(c.n)} in <b>${esc(cohTitle(c))}</b></div></div>
-      <div class="ws-meta"><span><b>${labsTxt(c)}</b></span>${singleTag(c)}<span>${fmtMo(c.d0)}${c.d0 === c.d1 ? '' : ' – ' + fmtMo(c.d1)}</span><button type="button" class="linkbtn" id="ws-go">Show this cohort's card${cardVisible ? '' : ` (switches the page to ${AMT[c.a]})`} ↓</button></div>
+      <div class="ws-meta"><span><b>${labsTxt(c)}</b></span>${singleTag(c)}<span>${fmtMo(c.d0)}${c.d0 === c.d1 ? '' : ' – ' + fmtMo(c.d1)}</span>${c.lc === 'nanolc' ? '<span>LC model not recorded · flow not recorded</span>' : ''}<button type="button" class="linkbtn" id="ws-go">Show this cohort's card${cardVisible ? '' : ` (switches the page to ${AMT[c.a]})`} ↓</button></div>
       ${c.n >= 5 ? '<div class="chartbox" id="ws-strip"></div>' : ''}
       <div class="ws-lines">${lines.map((l) => `<div>${l}</div>`).join('')}</div>
       <div class="ws-foot"><span>Nothing leaves your browser.</span><a href="#join">Track this run over time: join the benchmark →</a></div>`;
@@ -1386,6 +1408,8 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   $('ws-lc').addEventListener('change', (e) => { ws.lc = e.target.value; if (ws.example) exampleVal(); wsForm(); wsResult(); });
   $('ws-min').addEventListener('input', (e) => { ws.mins = e.target.value === '' ? null : +e.target.value; if (ws.example) exampleVal(); $('ws-val').value = ws.val == null ? '' : ws.val; wsResult(); });
   $('ws-min').addEventListener('change', () => wsForm());
+  $('ws-lcm').addEventListener('change', (e) => { ws.lcm = e.target.value; wsResult(); });
+  $('ws-flow').addEventListener('change', (e) => { ws.flow = e.target.value; wsResult(); });
   $('ws-amt').addEventListener('change', (e) => { ws.a = e.target.value; if (ws.example) exampleVal(); wsForm(); wsResult(); });
   $('ws-val').addEventListener('input', (e) => { ws.val = e.target.value === '' ? null : +e.target.value; ws.example = false; $('ws-ex').classList.add('hidden'); wsResult(); });
   $('ws-pep').addEventListener('input', (e) => { ws.pep = e.target.value; wsResult(); });
@@ -1593,24 +1617,27 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
       ['Points per peak', `median ${c.pts.toFixed(1)}`],
     ];
     if (c.lib != null) rows.push(['Library coverage', `median ${c.lib.toFixed(0)}%${c.lib > 90 ? '<span class="libhi">Library-limited</span>' : ''}`]);
-    const lens = c.lens.length === 1 ? `Run length recorded: ${c.lens[0][0]} min` : `Run lengths recorded: ${c.lens.map(([x, n]) => `${x} min ×${n}`).join(' · ')}`;
-    const nolc = c.nolc ? `<div class="rc-note">${c.nolc === c.n ? `All ${c.n}` : `Includes ${c.nolc}`} run${c.nolc === 1 ? '' : 's'} with no LC recorded, treated as nanoLC because ${c.spd} SPD is not an Evosep method.</div>` : '';
+    const rlw = c.lc === 'nanolc' ? 'Acquisition length' : 'Run length';
+    const lens = (c.lens.length === 1 ? `${rlw} recorded: ${c.lens[0][0]} min` : `${rlw}s recorded: ${c.lens.map(([x, n]) => `${x} min ×${n}`).join(' · ')}`)
+      + (c.lc === 'nanolc' && c.spds.length > 1 ? ` · SPD recorded: ${c.spds.map(([x, n]) => `${x} ×${n}`).join(' · ')}` : '');
+    const lcmf = c.lc === 'nanolc' ? '<div class="rc-note">LC model not recorded · flow not recorded</div>' : '';
+    const nolc = c.nolc ? `<div class="rc-note">${c.nolc === c.n ? `All ${c.n}` : `Includes ${c.nolc}`} run${c.nolc === 1 ? '' : 's'} with no LC recorded, treated as nanoLC because ${c.spds && c.spds.length > 1 ? 'their SPD' : c.spd + ' SPD'} is not an Evosep method.</div>` : '';
     return `<article class="rc" id="rc-${i}">
       <div class="rc-top"><h4>${esc(c.g)}</h4><span class="amt">${AMT[c.a]}</span></div>
       <div class="rc-n"><span><b>${fmtN(c.n)}</b> runs · ${labsTxt(c)}</span><span>${fmtMo(c.d0)}${c.d0 === c.d1 ? '' : ' – ' + fmtMo(c.d1)}</span>${singleTag(c)}</div>
       <div class="rc-big">${fmtN(p50)}<small>median ${c.t === 'DIA' ? 'precursors' : 'PSMs'}</small></div>
       ${bar}${spread}
       <dl>${rows.map(([k, x]) => `<dt>${k}</dt><dd>${x}</dd>`).join('')}</dl>
-      <div class="rc-foot">${lens}${c.cols.length ? ` · Column: ${esc(c.cols[0])}` : ''}</div>${nolc}
+      <div class="rc-foot">${lens}${c.cols.length ? ` · Column: ${esc(c.cols[0])}` : ''}</div>${lcmf}${nolc}
     </article>`;
   }
   function nrRow(c) {
     const vals = c.n <= 8 ? c.v.map(fmtN).join(', ') : `median ${fmtN(q(c.v, .5))}, range ${fmtN(c.v[0])}–${fmtN(c.v[c.v.length - 1])}`;
-    return `<div id="rc-${C.indexOf(c)}"><span><b>${esc(c.g)}</b> · ${AMT[c.a]}<br><span class="nr-why">${WHY(c)}</span></span><span>${runsTxt(c.n)} · ${vals}</span></div>`;
+    return `<div id="rc-${C.indexOf(c)}"><span><b>${esc(c.g)}</b> · ${AMT[c.a]}${c.lc === 'nanolc' ? ' · LC model and flow not recorded' : ''}<br><span class="nr-why">${WHY(c)}</span></span><span>${runsTxt(c.n)} · ${vals}</span></div>`;
   }
   function renderRefs() {
     const vis = C.filter(inView);
-    $('refs-desc').innerHTML = `Each card is one cohort: runs from the same instrument model, track, LC and gradient, and load amount. The large number is the cohort's median ${prim()} at 1% FDR; the bar shows the middle half of runs inside the 10th–90th percentile, on one scale per instrument. Proteins are context only. Cohorts that cannot be ranked are listed under each instrument with the reason.`;
+    $('refs-desc').innerHTML = `Each card is one cohort: runs from the same instrument model, track, LC and gradient, and load amount. Evosep cohorts are named by method; nanoLC cohorts by gradient band, LC model and flow regime, and no run records model or flow yet. The large number is the cohort's median ${prim()} at 1% FDR; the bar shows the middle half of runs inside the 10th–90th percentile, on one scale per instrument. Proteins are context only. Cohorts that cannot be ranked are listed under each instrument with the reason.`;
     if (!vis.length) { $('refs-body').innerHTML = `<div class="empty"><b>No ${SAMPLE[st.sample]} ${st.track} runs at ${st.amount === 'all' ? 'any amount' : AMT[st.amount]} yet.</b> <a href="#join">Join the benchmark</a> to create the first cohort.</div>`; return; }
     const narrow = window.innerWidth < 640;
     let html = '', first = true;
@@ -1630,7 +1657,13 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     }
     $('refs-body').innerHTML = html;
   }
-  $('ann-d5').innerHTML = `<b>Cards are grouped by instrument, lead with the primary metric, and fold what cannot be ranked.</b> The old page had 31 cards in one flat grid (2,578 px on desktop, 8,824 px on phone). The literal column "Unknown" (3,178 rows) was treated as a real column, so every major cohort appeared twice with identical numbers; unlabelled runs now get only the cohort card. <b>Titles come from what was recorded:</b> Evosep runs by method, nanoLC runs by the run length recorded with the files plus the stored SPD ("44 min run (~38 SPD)"), so a title never contradicts the run length on the card. <b>Missing metadata never defines a ranked cohort:</b> ${F.nolc_merged} runs with no LC recorded at a non-Evosep SPD join that SPD's nanoLC cohort (the card counts them), and ${F.unrec_runs} at an Evosep-method SPD are listed as not ranked. Evosep runs at 36 and 46 SPD (${F.unv_runs} runs) are not Evosep methods, so they are marked "SPD unverified" and not ranked. Column Comparison is visible again below, with an honest empty state: today ${F.two_col_cohorts} cohorts have two known columns.`;
+  $('ann-d5').innerHTML = `<b>Cards are grouped by instrument, lead with the primary metric, and fold what cannot be ranked.</b> The old page had 31 cards in one flat grid (2,578 px on desktop, 8,824 px on phone). The literal column "Unknown" (3,178 rows) was treated as a real column, so every major cohort appeared twice with identical numbers; unlabelled runs now get only the cohort card. <b>Titles come from what was recorded:</b> Evosep runs by method, nanoLC runs by the band of the active gradient behind the stored SPD, with that SPD in brackets ("nanoLC · 30 min gradient band (~38 SPD)"). Each card also lists the acquisition lengths recorded, which are longer than the gradient. <b>Missing metadata never defines a ranked cohort:</b> ${F.nolc_merged} runs with no LC recorded at a non-Evosep SPD join that SPD's nanoLC cohort (the card counts them), and ${F.unrec_runs} at an Evosep-method SPD are listed as not ranked. Evosep runs at 36 and 46 SPD (${F.unv_runs} runs) are not Evosep methods, so they are marked "SPD unverified" and not ranked. Column Comparison is visible again below, with an honest empty state: today ${F.two_col_cohorts} cohorts have two known columns.`;
+  {
+    const B = F.band;
+    const mix = F.band_mixed.map((m) => `<li>${esc(m.m)} ${m.t} ${SAMPLE[m.s]} ${AMT[m.a]} · <b>${m.band} min band</b>, ${runsTxt(m.n)}, median ${fmtN(m.med)}: ${m.parts.map(([sp, n, md, g]) => `${sp} SPD (${g} min) ×${n}, median ${fmtN(md)}`).join('; ')}</li>`).join('');
+    $('ann-band').innerHTML = `<b>Purpose: two labs with the same LC model, flow regime and gradient band land in one cohort and are ranked against each other.</b> Evosep labs already share a cohort through the method; this gives non-Evosep labs the same. <b>The rule:</b> a nanoLC cohort is keyed by a fixed band on the active gradient (≤20 → 15 min, 21–37 → 30, 38–52 → 45, 53–75 → 60, 76–105 → 90, 106–150 → 120, >150 → 180), plus LC model and flow regime (nanoflow &lt;1 µL/min, capillary 1–10, microflow &gt;10). <b>The band comes from the stored SPD's gradient</b>, 1440 ÷ (1.25 × SPD) to one decimal (the inverse of <code>gradient_min_to_spd</code>). It does not use <code>gradient_length_min</code>, because that records the acquisition length: Exploris 38 SPD runs store 44 min, but their TIC ends at 30. So 38 SPD → 30.3 min → 30 band, 32 → 36.0 → 30, 30 → 38.4 → 45, 19 → 60.6 → 60, 12 → 96.0 → 90, 9 → 128.0 → 120. Gradients are fractional, so the integer gaps between bands close at the half minute. Titles read "nanoLC · 30 min gradient band (~38 SPD)"; the brackets give the range when no single SPD holds 90% of the runs. The snapshot records neither LC model nor flow, so every UC Davis nanoLC cohort reads "LC model not recorded · flow not recorded"; no model is inferred. Evosep, unverified-Evosep and LC-not-recorded groups keep their SPD key. <b>Against v2's exact-SPD key:</b> ${fmtN(B.nano_runs)} nanoLC runs go from ${B.old} cohorts to ${B.new} (${B.cohorts_old} → ${B.cohorts_new} on the whole page). ${B.merged} bands each merge two or more old cohorts, ${B.merged_from} old cohorts in all; ${B.split ? `${B.split} old cohorts split` : 'no old cohort splits, because every stored SPD maps to exactly one band'}. ${fmtN(B.moved)} runs moved into a cohort led by another SPD, and ${fmtN(B.runs_changed)} runs are in a cohort whose membership changed. Ranked nanoLC cohorts (5+ runs) go from ${B.ranked_old} to ${B.ranked_new}. <b>Every band that mixes stored SPDs</b> (${F.band_mixed.length}), with counts and median ${prim()}:<ul style="margin:4px 0 0;padding-left:18px">${mix}</ul> The three large bands (Exploris 60 and 90 min, Lumos 60 min, all at 50 ng) are each at least 98% one SPD, with one or two stray runs from a neighbouring gradient. The rest are small high- or low-load bands of 3 to 8 runs; the widest spread is the 8-run Lumos band at over 250 ng (medians 34.6k–47.8k across 11, 13 and 14 SPD).`;
+    $('ann-nanof').innerHTML = `<b>When LC method is nanoLC, the form asks for LC model</b> (Thermo Vanquish Neo, Dionex UltiMate 3000, Bruker nanoElute 2, Waters ACQUITY M-Class, other), <b>flow regime</b> (nanoflow &lt;1 µL/min, capillary 1–10, microflow &gt;10) and <b>gradient length</b> (the active gradient, not the total run time), which snaps to its band. Matching will use band + LC model + flow regime once labs submit them. No cohort records either today, so the lookup matches on the band alone and says it is ignoring the model and flow you picked. This comes from the B2/B4 amendment (Brett 2026-09-29).`;
+  }
 
   // ================= best configurations =================
   function renderBest() {
@@ -1684,7 +1717,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   });
 
   // ---- Identification Depth by Platform (live renderViolin): one violin per ranked SPD cohort
-  const vOrder = (a, b) => (vend(a) === vend(b) ? 0 : vend(a) === 'bruker' ? -1 : 1) || a.m - b.m || a.spd - b.spd || LC_RANK[a.lc] - LC_RANK[b.lc];
+  const vOrder = (a, b) => (vend(a) === vend(b) ? 0 : vend(a) === 'bruker' ? -1 : 1) || a.m - b.m || thr(a) - thr(b) || LC_RANK[a.lc] - LC_RANK[b.lc];
   const LC_RANK = { evosep: 0, nanolc: 1, evosep_unv: 2, unrec: 3 };
   const violinCohorts = () => C.filter((c) => inView(c) && ranked(c)).sort(vOrder);
   defChart('plot-violin', (el) => {
@@ -1699,12 +1732,12 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     cs.forEach((c, i) => {
       const rs = byCohRuns[C.indexOf(c)].slice().sort((a, b) => pv(a) - pv(b)); tot += rs.length;
       const k = Math.min(80, rs.length), step = rs.length / k;
-      for (let j = 0; j < k; j++) { const o = rs[Math.floor(j * step)]; pos.push(P(i) + jit(o.idx) * 0.5); val.push(pv(o)); spd.push(c.spd); sym.push(amountShape(o.amt)); txt.push(`${M[c.m]}<br>${c.g} · ${o.amt} ng<br>${Prim()}: ${fmtN(pv(o))}`); }
+      for (let j = 0; j < k; j++) { const o = rs[Math.floor(j * step)]; pos.push(P(i) + jit(o.idx) * 0.5); val.push(pv(o)); spd.push(o.spd); sym.push(amountShape(o.amt)); txt.push(`${M[c.m]}<br>${c.g} · ${o.amt} ng<br>${Prim()}: ${fmtN(pv(o))}`); }
     });
     const sc = { type: 'scatter', mode: 'markers', [Pz]: pos, [V]: val, showlegend: false, text: txt, hovertemplate: '%{text}<extra></extra>',
       marker: { color: spd, colorscale: SPD_CS, cmin: 5, cmax: 200, size: 5, opacity: 0.55, symbol: sym, line: { color: '#fff', width: 0.3 },
         showscale: !nar, colorbar: nar ? undefined : { ...SPD_BAR, len: 0.5, thickness: 10, x: 1.02 } } };
-    const ticks = cs.map((c) => nar ? `${ABBR(M[c.m])} · ${c.lc === 'evosep' ? `Evosep ${c.spd}` : `~${c.spd} SPD, ${lenOf(c)}`}` : `${short(M[c.m])}<br>${c.lc === 'evosep' ? 'Evosep' : `~${c.spd} SPD`}<br>${c.lc === 'evosep' ? `${c.spd} SPD` : lenOf(c)}`);
+    const ticks = cs.map((c) => nar ? `${ABBR(M[c.m])} · ${c.lc === 'evosep' ? `Evosep ${c.spd}` : `${c.band} min band (${bandSpd(c)} SPD)`}` : `${short(M[c.m])}<br>${c.lc === 'evosep' ? 'Evosep' : `${c.band} min band`}<br>${c.lc === 'evosep' ? `${c.spd} SPD` : `${bandSpd(c)} SPD`}`);
     // vendor groups: dotted divider and a library label per group (the within-vendor caveat, on the chart)
     const shapes = [], ann = [];
     const bi = cs.findIndex((c) => vend(c) === 'thermo');
@@ -1726,14 +1759,15 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
   });
 
   // ---- Depth by Throughput (live renderSpdDepth): facet per MODEL, box per SPD, points by SPD colour + amount shape
-  const catOf = (c) => c.lc === 'evosep_unv' ? `${c.spd} unv.` : c.lc === 'unrec' ? `${c.spd} no LC` : String(c.spd);
+  const thr = (c) => c.lc === 'nanolc' && c.band ? 1440 / (c.band * 1.25) : c.spd;   // nominal throughput: a band sorts by its gradient, not its mixed stored SPD
+  const catOf = (c) => c.lc === 'evosep_unv' ? `${c.spd} unv.` : c.lc === 'unrec' ? `${c.spd} no LC` : c.lc === 'nanolc' ? `${c.band} min` : String(c.spd);
   defChart('plot-spd', (el) => {
     const rs = viewRuns(true).filter((o) => pv(o) > 0);
     if (!rs.length) return noPlot(el, `No ${SAMPLE[st.sample]} ${st.track} runs at ${st.amount === 'all' ? 'any amount' : AMT[st.amount]}. Try "All amounts".`);
     const nar = isNarrow(), amtLbl = st.amount === 'all' ? '' : `, ${AMT[st.amount]}`;
     const fac = [...new Set(rs.map((o) => o.c.m))].sort((a, b) => a - b).map((m) => {
       const sub = rs.filter((o) => o.c.m === m);
-      const cats = [...new Map(sub.map((o) => [catOf(o.c), o.c])).entries()].sort((a, b) => a[1].spd - b[1].spd || LC_RANK[a[1].lc] - LC_RANK[b[1].lc]).map((e) => e[0]);
+      const cats = [...new Map(sub.map((o) => [catOf(o.c), o.c])).entries()].sort((a, b) => thr(a[1]) - thr(b[1]) || LC_RANK[a[1].lc] - LC_RANK[b[1].lc]).map((e) => e[0]);
       return { m, sub, cats };
     });
     const nf = fac.length, traces = [], ann = [], base = PL(), layout = { ...base, showlegend: false };
@@ -1748,8 +1782,8 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
         traces.push({ type: 'box', y: cr.map(pv), x: cr.map(() => cat), name: cat, boxpoints: false, line: { color: MCOL[f.m] }, fillcolor: rgba(MCOL[f.m], 0.125), showlegend: false, xaxis: xa, yaxis: ya, hoverinfo: 'skip' });
       });
       traces.push({ type: 'scatter', mode: 'markers', x: f.sub.map((o) => catOf(o.c)), y: f.sub.map(pv), xaxis: xa, yaxis: ya, showlegend: false,
-        text: f.sub.map((o) => `${M[f.m]}<br>${o.c.g} · ${o.amt} ng<br>${o.c.t}`), hovertemplate: `%{text}<br>${Prim()}: %{y:,}<extra></extra>`,
-        marker: { color: f.sub.map((o) => o.c.spd), colorscale: SPD_CS, cmin: 5, cmax: 200, size: 6, opacity: 0.8, symbol: f.sub.map((o) => amountShape(o.amt)), line: { color: '#fff', width: 0.3 },
+        text: f.sub.map((o) => `${M[f.m]}<br>${o.c.g} · ${o.amt} ng<br>${o.spd} SPD · ${o.c.t}`), hovertemplate: `%{text}<br>${Prim()}: %{y:,}<extra></extra>`,
+        marker: { color: f.sub.map((o) => o.spd), colorscale: SPD_CS, cmin: 5, cmax: 200, size: 6, opacity: 0.8, symbol: f.sub.map((o) => amountShape(o.amt)), line: { color: '#fff', width: 0.3 },
           showscale: !nar && i === nf - 1, colorbar: !nar && i === nf - 1 ? { ...SPD_BAR, len: 0.5, thickness: 10, x: 1.02 } : undefined } });
       const title = nar ? `<b>${M[f.m]}</b> (${rlTxt(f.sub)}${amtLbl})` : `<b>${short(M[f.m])}</b><br>${rlTxt(f.sub)}${amtLbl}`;
       if (nar) {
@@ -1760,7 +1794,7 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
       } else {
         const w = FW(f) / W, d0 = acc + (i ? 0.018 : 0), d1 = acc + w - (i < nf - 1 ? 0.018 : 0);
         acc += w;
-        layout[i ? 'xaxis' + (i + 1) : 'xaxis'] = { ...AXL, anchor: ya, domain: [d0, d1], type: 'category', categoryorder: 'array', categoryarray: f.cats, tickfont: { size: 10 }, title: { text: i === 0 ? 'SPD' : '' } };
+        layout[i ? 'xaxis' + (i + 1) : 'xaxis'] = { ...AXL, anchor: ya, domain: [d0, d1], type: 'category', categoryorder: 'array', categoryarray: f.cats, tickfont: { size: 10 }, title: { text: i === 0 ? 'SPD (Evosep) or gradient band (nanoLC)' : '' } };
         layout[i ? 'yaxis' + (i + 1) : 'yaxis'] = { ...AXL, anchor: xa, matches: i ? 'y' : undefined, showticklabels: i === 0, title: { text: i === 0 ? `${Prim()} (1% FDR)` : '' } };
         ann.push({ text: title, xref: 'paper', yref: 'paper', x: (d0 + d1) / 2, y: 1.01, xanchor: 'center', yanchor: 'bottom', showarrow: false, font: { color: MCOL[f.m], size: 11 } });
       }
@@ -1809,12 +1843,12 @@ tr.grp:hover td { background: rgba(1,26,58,.75); }
     const nar = isNarrow(), ms = [...new Set(rs.map((o) => o.c.m))].sort((a, b) => a - b);
     const tr = ms.map((m) => {
       const sub = rs.filter((o) => o.c.m === m);
-      return { type: 'scatter', mode: 'markers', name: `${M[m]} (${rlTxt(sub)})`, x: sub.map((o) => o.c.spd), y: sub.map((o) => o.pts),
+      return { type: 'scatter', mode: 'markers', name: `${M[m]} (${rlTxt(sub)})`, x: sub.map((o) => o.spd), y: sub.map((o) => o.pts),
         marker: { color: MCOL[m], size: nar ? 8 : 11, opacity: 0.8, symbol: sub.map(COLSYM), line: { color: 'rgba(255,255,255,.75)', width: 1 } },
         text: sub.map((o) => `${M[m]}<br>${o.c.g} · ${o.amt} ng<br>${o.col < 0 ? 'Column not recorded' : D.cols[o.col]}<br>Peak width: ${o.pw == null ? '—' : o.pw.toFixed(1) + ' s'}`),
         hovertemplate: '%{text}<br>SPD: %{x}<br>Points/peak: %{y:.1f}<extra></extra>' };
     });
-    const xMax = Math.max(60, Math.max(...rs.map((o) => o.c.spd)) * 1.5);
+    const xMax = Math.max(60, Math.max(...rs.map((o) => o.spd)) * 1.5);
     tr.push({ x: [0, xMax], y: [6, 6], mode: 'lines', type: 'scatter', name: '6 points: STAN minimum', line: { color: 'rgba(248,113,113,0.6)', width: 2, dash: 'dash' }, hoverinfo: 'skip' });
     tr.push({ x: [0, xMax], y: [12, 12], mode: 'lines', type: 'scatter', name: '12+: STAN recommended', line: { color: 'rgba(52,211,153,0.5)', width: 1.5, dash: 'dot' }, hoverinfo: 'skip' });
     if (rs.some((o) => o.col >= 0)) tr.push({ x: [null], y: [null], mode: 'markers', type: 'scatter', name: 'PepSep column', marker: { symbol: 'square', size: 10, color: '#a0b4cc' }, hoverinfo: 'skip' });

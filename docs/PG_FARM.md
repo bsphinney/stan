@@ -117,6 +117,11 @@ PG→SQLite mirror re-fetches `runs` once because the table shape changed
 (~73 MB egress). Existing rows stay NULL: a backfill from the raw files is
 P4 and needs Brett's go after a before/after.
 
+The flow regime comes from `lc_flow:` in `/quobyte/proteomics-grp/STAN/dispatch.yml`
+(`nano` on the Lumos and Exploris 480 entries). Deploy order: edit dispatch.yml only after Hive is on ≥1.2.16; remove `lc_flow`/`amount_ng` from dispatch.yml before any rollback below 1.2.16.
+A `stan hive-process` older than 1.2.16 rejects the `--lc-flow` /
+`--default-amount-ng` flags the dispatcher writes, so every job would fail.
+
 ### `arcade_scores` (v1.0.22)
 
 The one table here that is not QC data. It holds arcade high scores plus an

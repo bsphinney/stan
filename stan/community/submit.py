@@ -23,7 +23,7 @@ from stan.community.fingerprint_dedup import compute_submission_fingerprint
 from stan.community.validate import validate_submission
 from stan.config import load_community
 from stan.db import mark_submitted
-from stan.metrics.scoring import compute_cohort_id, normalize_lc_flow
+from stan.metrics.scoring import compute_cohort_id, normalize_lc_flow, normalize_lc_model
 from stan.search.community_params import (
     check_diann_version_compatible, is_asset_hash_eligible_diann,
 )
@@ -380,12 +380,13 @@ def submit_to_benchmark(
         "it_params_tuned": (run.get("ms2_analyzer") or "") != "IT",
         # v1.2.16 (P3a, spec §A.5 B4 + decision 12). Relay 1.7.0 stores
         # them; an older relay ignores unknown fields, so sending is safe.
-        # lc_model: canonical LC name read from the raw file at ingest.
+        # lc_model: canonical LC name read from the raw file at ingest (the
+        #   relay stores only names from the same vocabulary).
         # lc_flow: nano | capillary | micro from instruments.yml / dispatch.yml.
         # amount_source: declared | parsed | assumed; derived from the file
         #   name for rows stored before it was recorded.
         # faims: true / false / null (not recorded).
-        "lc_model": run.get("lc_model") or "",
+        "lc_model": normalize_lc_model(run.get("lc_model")) or "",
         "lc_flow": normalize_lc_flow(run.get("lc_flow")),
         "amount_source": _amount_source_for(run, amount_ng),
         "faims": _faims_for(run),

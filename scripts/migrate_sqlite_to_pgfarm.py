@@ -158,6 +158,34 @@ def sqlite_columns(con: sqlite3.Connection) -> list[str]:
     return [row[1] for row in cur.fetchall()]
 
 
+def live_pg_columns(cur) -> set[str]:
+    """Columns the live PG ``public.runs`` table has.
+
+    ``PG_COLUMN_TYPES`` lists the columns STAN writes, which can run ahead
+    of the table: a new column reaches PG only by an owner migration
+    (e.g. migrations/2026-10-05_runs_lc_faims.sql), and ``CREATE TABLE IF
+    NOT EXISTS`` never adds one to a table that exists. Same query as
+    ``stan.db_pg._pg_runs_write_columns``.
+    """
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'runs'"
+    )
+    return {r[0] for r in cur.fetchall()}
+
+
+def writable_columns(common: list[str], live: set[str]) -> tuple[list[int], list[str]]:
+    """Indexes into ``common`` that PG can take, and the names it cannot.
+
+    An empty ``live`` (the role cannot see the table) narrows nothing, so
+    the INSERT reports the real problem instead of silently writing less.
+    """
+    if not live:
+        return list(range(len(common))), []
+    keep = [i for i, c in enumerate(common) if c in live]
+    return keep, [c for c in common if c not in live]
+
+
 def upsert_sql(pg_cols: list[str]) -> str:
     """Build an upsert that keeps the newer of (sqlite, pg) for migrated_at-stamped rows."""
     placeholders = ", ".join(["%s"] * len(pg_cols))
@@ -206,10 +234,19 @@ def migrate(sqlite_path: Path, host_origin: str, *, dry_run: bool) -> None:
         cur.execute(build_create_table())
         pg.commit()
 
+        # Skip columns the live table does not have yet (pending owner
+        # migration) rather than fail every row.
+        keep, skipped = writable_columns(common, live_pg_columns(cur))
+        if skipped:
+            logger.warning(
+                "PG runs has no column(s) %s; not writing them until the owner "
+                "migration is applied (see docs/PG_FARM.md)", ", ".join(skipped),
+            )
+        write_cols = [common[i] for i in keep] + ["host_origin"]
         psycopg2.extras.execute_batch(
             cur,
-            upsert_sql(pg_cols),
-            [tuple(list(r) + [host_origin]) for r in rows],
+            upsert_sql(write_cols),
+            [tuple([r[i] for i in keep] + [host_origin]) for r in rows],
             page_size=200,
         )
         pg.commit()
