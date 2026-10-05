@@ -243,6 +243,34 @@ def test_lc_model_vocabulary(raw, canonical):
     assert normalize_lc_model(raw) == canonical
 
 
+# Added after the P3a review: legitimate LCs that were recorded as nothing.
+NEW_LC_NAMES = [
+    ("Waters M-Class", "ACQUITY UPLC M-Class"),
+    ("M-Class", "ACQUITY UPLC M-Class"),
+    ("nLC 1200", "EASY-nLC 1200"),
+    ("nLC 1000", "EASY-nLC 1000"),
+    ("Agilent 1290 Infinity II", "Agilent 1290"),
+    ("1290 Infinity", "Agilent 1290"),
+    ("Agilent 1260 Infinity", "Agilent 1260"),
+    ("1260 Infinity II", "Agilent 1260"),
+    ("Shimadzu Nexera", "Shimadzu Nexera"),
+    ("Shimadzu Nexera X2", "Shimadzu Nexera"),
+    ("Nexera Mikros", "Shimadzu Nexera Mikros"),
+    ("Waters ACQUITY I-Class", "ACQUITY UPLC I-Class"),
+    ("ACQUITY UPLC I-Class PLUS", "ACQUITY UPLC I-Class"),
+    ("Vanquish Duo", "Vanquish Duo"),
+    ("Thermo Vanquish Duo UHPLC", "Vanquish Duo"),
+    ("Eksigent nanoLC 425", "Eksigent nanoLC"),          # vendor first, not EASY-nLC
+]
+
+
+@pytest.mark.parametrize("raw,canonical", NEW_LC_NAMES)
+def test_lc_model_vocabulary_review_additions(raw, canonical):
+    from stan.metrics.scoring import normalize_lc_model
+
+    assert normalize_lc_model(raw) == canonical
+
+
 @pytest.mark.parametrize("raw", ["Agilent ICF System", "WPS-3000", "", None, "Some Pump"])
 def test_unrecognised_devices_are_none(raw):
     from stan.metrics.scoring import normalize_lc_model
@@ -871,29 +899,26 @@ def test_normalize_keeps_the_new_columns_and_old_rows_are_null():
 
 # ── review fixes (1.2.16) ────────────────────────────────────────────────
 
-def test_hive_process_skips_options_it_does_not_know(monkeypatch):
-    """A dispatch.yml key added for a newer STAN must not stop every job on a
-    Hive checkout that is behind it; known options still parse after it."""
+@pytest.mark.parametrize("typo", [["--amount-n", "100"], ["--stpe", "extract"], ["--froce"]])
+def test_hive_process_rejects_an_unknown_option(monkeypatch, typo):
+    """A typo must fail loudly (exit 2), not silently drop a declared amount
+    or run the full pipeline. The rollback case is handled by deploy order
+    (docs/GOTCHAS_DELIMP.md), not by tolerating unknown options."""
     from typer.testing import CliRunner
 
     import stan.pipeline.hive_process as hp
+    import stan.pipeline.hive_steps as hs
     from stan.cli import app
 
-    seen: dict = {}
-
-    def fake_process_raw(**kw):
-        seen.update(kw)
-        return {"status": "ok"}
-
-    monkeypatch.setattr(hp, "process_raw", fake_process_raw)
+    ran: list[str] = []
+    monkeypatch.setattr(hp, "process_raw", lambda **kw: ran.append("full") or {"status": "ok"})
+    monkeypatch.setattr(hs, "step_extract", lambda **kw: ran.append("extract") or {"status": "ok"})
     res = CliRunner().invoke(app, [
         "hive-process", "/x/Ex_HeL50_30m.raw", "--instrument", "Orbitrap Exploris 480",
-        "--family", "Exploris", "--out-dir", "/x/out", "--from-the-future", "42",
-        "--lc-flow", "nano", "--spd", "38",
+        "--family", "Exploris", "--out-dir", "/x/out", *typo,
     ])
-    assert res.exit_code == 0, res.output
-    assert "ignored arguments" in res.output and "--from-the-future 42" in res.output
-    assert (seen["lc_flow"], seen["spd"], seen["hela_amount_ng"]) == ("nano", 38, None)
+    assert res.exit_code == 2, res.output
+    assert ran == []
 
 
 def test_an_empty_lc_scan_is_not_cached(tmp_path, monkeypatch):

@@ -23,6 +23,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from tests.test_p3a_capture import NEW_LC_NAMES
 from tests.test_relay_peg import SUBMIT_PAYLOAD, client, drain, hub, queued, relay  # noqa: F401  (fixtures)
 
 P3A = ("lc_model", "lc_flow", "amount_source", "faims")
@@ -114,6 +115,19 @@ HOSTILE_STRINGS = (
     ({"name": "Evosep One"}, ""),
 ])
 def test_lc_model_stores_only_vocabulary_names(client, relay, sent, stored):
+    row = _p3a(_submit(client, relay, lc_model=sent))
+    assert row["lc_model"] == stored
+    assert row["lc_model"] in {c for _, c in relay._LC_MODEL_VOCAB} | {""}
+
+
+@pytest.mark.parametrize("sent,stored", [
+    *NEW_LC_NAMES,
+    ("Agilent ICF System", ""),          # HyStar's control framework, not an LC
+])
+def test_relay_stores_the_review_additions(client, relay, sent, stored):
+    from stan.metrics.scoring import normalize_lc_model
+
+    assert relay._clean_lc_model(sent) == (normalize_lc_model(sent) or "")
     row = _p3a(_submit(client, relay, lc_model=sent))
     assert row["lc_model"] == stored
     assert row["lc_model"] in {c for _, c in relay._LC_MODEL_VOCAB} | {""}

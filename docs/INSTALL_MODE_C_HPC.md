@@ -792,7 +792,7 @@ From `_load_config()` and `_render_sbatch()` in `stan/community/scripts/dispatch
 | `instruments[].amount_ng` | no | 50 | The instrument's usual HeLa load, passed as `--default-amount-ng`: a unit-anchored amount in the file name (`50ng`, `1ug`) wins, and the run records `amount_source` `parsed` or `assumed` (1.2.16; before, it was passed as `--amount-ng`) |
 | `instruments[].lc_flow` | no | — | `nano`, `capillary` or `micro`; passed as `--lc-flow`, stamped on each run and sent to the community benchmark. Leave unset for an Evosep |
 
-**Deploy order for `lc_flow` and `amount_ng`.** The dispatcher writes them into every sbatch as `--lc-flow` / `--default-amount-ng`, and `stan hive-process` before 1.2.16 rejects both ("No such option"), which stops every job. Edit dispatch.yml only after Hive is on ≥1.2.16; remove `lc_flow`/`amount_ng` from dispatch.yml before any rollback below 1.2.16. From 1.2.16, `hive-process` skips options it does not know, with a warning.
+**Deploy order for `lc_flow` and `amount_ng`.** The dispatcher writes them into every sbatch as `--lc-flow` / `--default-amount-ng`, and `stan hive-process` before 1.2.16 rejects both ("No such option"), which stops every job. Edit dispatch.yml only after Hive is on ≥1.2.16; remove `lc_flow`/`amount_ng` from dispatch.yml before any rollback below 1.2.16.
 | `instruments[].spd` | no | — | Fallback only, used when raw-file metadata cannot resolve the samples-per-day value |
 
 `sage_binary`, which `hive_bootstrap.sh` writes, is read by nothing.

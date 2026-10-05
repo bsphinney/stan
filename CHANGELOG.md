@@ -106,10 +106,6 @@ lookup and P2 code are byte-identical to 1.6.0 (hash pins unchanged).
   read-only on PG (2026-10-05): of 577 unsubmitted rows, 172 pass submit-all's
   QC, blank and zero-ID gates; 10 of those have such a problem, none of them
   was ready, and no row moves from ready to held.
-- **`stan hive-process` skips options it does not know**, with a warning on
-  stderr, instead of failing with "No such option". The dispatcher writes
-  dispatch.yml keys into every sbatch, so a key added for a newer STAN no
-  longer stops every job on a Hive checkout that is behind it.
 - `stan hive-process --amount-ng` now defaults to none (it means "declared for
   this run"); the new `--default-amount-ng` carries dispatch.yml's
   per-instrument `amount_ng`, which the dispatcher used to pass as

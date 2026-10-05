@@ -533,7 +533,10 @@ def detect_lc_system(raw_path) -> str | None:
 # the vendor software spells it. Each entry is (needle, canonical name);
 # needles are matched against the name lower-cased with everything but
 # letters and digits removed, so "Thermo.EasyNLC1200", "EASY-nLC 1200" and
-# "Easy nLC1200" all match "easynlc1200". More specific needles come first.
+# "Easy nLC1200" all match "easynlc1200". More specific needles come first,
+# and a vendor-qualified family before a bare model number ("Eksigent ...
+# nanoLC" is checked before "nlc1200"). "Agilent ICF System" (HyStar's
+# control framework) matches nothing and stays None.
 # A name no needle matches is not returned: an unrecognised device answers
 # None rather than a guess.
 #
@@ -543,8 +546,11 @@ _LC_MODEL_VOCAB: tuple[tuple[str, str], ...] = (
     ("vanquishneo", "Vanquish Neo"),
     ("vanquishhorizon", "Vanquish Horizon"),
     ("vanquishflex", "Vanquish Flex"),
-    ("easynlc1200", "EASY-nLC 1200"),
-    ("easynlc1000", "EASY-nLC 1000"),
+    ("vanquishduo", "Vanquish Duo"),
+    ("ekspert", "Eksigent nanoLC"),
+    ("eksigent", "Eksigent nanoLC"),
+    ("nlc1200", "EASY-nLC 1200"),
+    ("nlc1000", "EASY-nLC 1000"),
     ("easynlc", "EASY-nLC"),
     ("evosepone", "Evosep One"),
     ("evosepeno", "Evosep Eno"),
@@ -556,10 +562,15 @@ _LC_MODEL_VOCAB: tuple[tuple[str, str], ...] = (
     # Exploris 480 + Lumos raws, 2026-10-05: DriverId "Dionex.Chromatography
     # System" next to "Dionex.PumpNCS3500RS" and "WPS-3000").
     ("dionexchromatographysystem", "UltiMate 3000"),
-    ("uplcmclass", "ACQUITY UPLC M-Class"),
+    ("mclass", "ACQUITY UPLC M-Class"),
+    ("iclass", "ACQUITY UPLC I-Class"),
     ("nanoacquity", "nanoACQUITY UPLC"),
-    ("ekspert", "Eksigent nanoLC"),
-    ("eksigent", "Eksigent nanoLC"),
+    ("agilent1290", "Agilent 1290"),
+    ("1290infinity", "Agilent 1290"),
+    ("agilent1260", "Agilent 1260"),
+    ("1260infinity", "Agilent 1260"),
+    ("nexeramikros", "Shimadzu Nexera Mikros"),
+    ("nexera", "Shimadzu Nexera"),
 )
 
 #: Flow regimes for the nanoLC cohort key (decision 12): nanoflow
