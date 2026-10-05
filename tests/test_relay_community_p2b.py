@@ -134,10 +134,11 @@ def _mixed_rows() -> list[dict]:
 # ── server and page text ─────────────────────────────────────────────
 
 def test_space_version_is_1_4_0_or_later(client, relay):
-    # P2b shipped as 1.4.0; P2c (tests/test_relay_community_p2c.py) is 1.5.0.
-    assert relay.SPACE_VERSION == "1.5.0"
-    assert client.get("/api/version").json()["version"] == "1.5.0"
-    assert "community site v1.5.0" in _page(client)
+    # P2b shipped as 1.4.0, P2c as 1.5.0; the TIC overlay
+    # (tests/test_relay_community_tic.py) is 1.6.0.
+    assert relay.SPACE_VERSION == "1.6.0"
+    assert client.get("/api/version").json()["version"] == "1.6.0"
+    assert "community site v1.6.0" in _page(client)
 
 
 def test_sticky_bar_markup_and_css(client):
@@ -193,13 +194,12 @@ def test_every_panel_has_a_badge_that_says_what_it_follows(client):
         assert re.search(rf'<span class="fbadge" id="{badge}"></span>', html), badge
 
 
-# Pinned from main 54c4671 (relay 1.3.0): the TIC overlay (its code and its
-# card, with its own SPD, LC and mode menus) and PEG Watch (section, CSS and
-# script) are not touched by P2b. Recompute with the regions below over
-# `git show 54c4671:hf_space/app.py` if a later phase changes them on purpose.
+# Pinned from main 54c4671 (relay 1.3.0): PEG Watch (section, CSS and
+# script) and esc() are not touched by P2b. Recompute with the regions below
+# over `git show 54c4671:hf_space/app.py` if a later phase changes them on
+# purpose. The TIC overlay was pinned here too until relay 1.6.0 rebuilt it
+# (spec §A.4); tests/test_relay_community_tic.py pins the new code.
 UNCHANGED = {
-    "tic_js": "10b24afeeb91fb58ebf08f31aae48e474b6edacfd0a9e099ffa9214d32562275",
-    "tic_card": "4d54f0b83481e79e18cffd73d6ff12d8d7ef53d50c012c7112059170f5ba7185",
     "peg_html": "a75df63c674d3b539fa04089dd9c279331e4f571d5837f6877df5061ae41f863",
     "peg_css": "e5cbfc43a53de637d392abcb200e763adcddf8da69bcddaef6780381fe4c68fc",
     "peg_js": "6678022131ca594e7ba08132e51418574557caf332bfa20037638dfb98a33fc0",
@@ -213,8 +213,6 @@ def _regions(html: str) -> dict[str, str]:
         j = html.index(b, i + len(a))
         return html[i:j + (len(b) if incl_b else 0)]
     return {
-        "tic_js": between("// ── Community TIC Overlay", "\n// ── "),
-        "tic_card": between("<h3>Community TIC Overlay by SPD</h3>", '<div id="chart-community-tic"></div>', True),
         "peg_html": between("<!-- Evosep PEG Watch (v1.2.0).", "<!-- Community Submissions -->"),
         "peg_css": between("/* ── Evosep PEG Watch (v1.2.0) ──", "#peg .peg-chips { justify-content: flex-start; }\n        }\n", True),
         "peg_js": re.search(r'<script id="peg-watch-js">.*?</script>', html, re.S).group(0),
@@ -222,13 +220,9 @@ def _regions(html: str) -> dict[str, str]:
     }
 
 
-def test_tic_overlay_and_peg_watch_are_byte_identical_to_54c4671(client):
+def test_peg_watch_is_byte_identical_to_54c4671(client):
     got = {k: hashlib.sha256(v.encode()).hexdigest() for k, v in _regions(_page(client)).items()}
     assert got == UNCHANGED
-    # The TIC still has its own menus, not the bar's.
-    card = _regions(_page(client))["tic_card"]
-    for sel in ('id="tic-spd-select"', 'id="tic-lc-select"', 'id="tic-mode-select"', 'id="tic-show-all"'):
-        assert sel in card
 
 
 def test_no_browser_storage(client):
@@ -385,7 +379,8 @@ def test_a_change_re_renders_only_the_panels_that_follow_it(client, tmp_path):
     assert got["gradient"] == [["gradient"], minus("renderSpdDepth", "renderPointsAcrossPeak")]
     assert got["column"] == [["column"], minus("renderColumnComparison")]
     assert got["model"] == [["model"], every]
-    assert got["mode"] == [["mode"], every]
+    # 1.6.0: DIA / DDA drives the TIC overlay too (spec §A.4)
+    assert got["mode"] == [["mode"], sorted(every + ["renderCommunityTIC"])]
     # a new QC standard: every panel, the stats row and the TIC overlay; the
     # instrument, gradient and column picked for HeLa have no yeast runs
     assert got["sample"] == [["column", "gradient", "model", "sample"], sorted(names)]

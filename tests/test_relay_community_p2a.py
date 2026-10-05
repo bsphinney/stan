@@ -39,10 +39,11 @@ def _section(html: str, sid: str) -> str:
 # ── server ───────────────────────────────────────────────────────────
 
 def test_space_version_is_1_3_0_or_later(client, relay):
-    # P2a shipped as 1.3.0, P2b as 1.4.0; P2c (tests/test_relay_community_p2c.py) is 1.5.0.
-    assert relay.SPACE_VERSION == "1.5.0"
-    assert client.get("/api/version").json()["version"] == "1.5.0"
-    assert "community site v1.5.0" in _page(client)
+    # P2a shipped as 1.3.0, P2b as 1.4.0, P2c as 1.5.0; the TIC overlay
+    # (tests/test_relay_community_tic.py) is 1.6.0.
+    assert relay.SPACE_VERSION == "1.6.0"
+    assert client.get("/api/version").json()["version"] == "1.6.0"
+    assert "community site v1.6.0" in _page(client)
 
 
 def test_favicon_is_served_and_inline(client, relay):
@@ -524,7 +525,7 @@ def test_dedupe_prefers_a_usable_copy_and_inherits_only_the_column(client, tmp_p
           const r = dedupeRuns(src); const k = r.kept.find(s => s.n_precursors === 41000);
           const orig = src.find(s => s.submission_id === k.submission_id);
           out.{name} = {{ dropped: r.dropped, id: k.submission_id, lc: k.lc_system, spd: k.spd, amount: k.amount_ng,
-                          version: k.stan_version, idion: ticOf({{...k}}).idion, col: [k.column_vendor, k.column_model],
+                          version: k.stan_version, idion: (rt => rt[0] - (rt[1] - rt[0]) / 2 > 0.1)(JSON.parse(k.tic_rt_bins)), col: [k.column_vendor, k.column_model],
                           untouched: JSON.stringify(src) === before, same: k === orig }}; }}""" for name, v in cases.items()) + "return out; })()"
     got = _run(client, tmp_path, scenario)
     # the newer copy stays whole, and takes only the seed copy's column
@@ -655,7 +656,8 @@ def test_explorer_intro_and_dead_css(client):
     intro = re.sub(r"\s+", " ", intro[:intro.index('<div class="chart-row">')])
     # P2b: every chart follows the filter bar and says so in its badge
     assert "Every chart here follows the filter bar at the top of the page and says in its badge what it shows" in intro
-    assert "The TIC overlay keeps its own SPD, LC and acquisition-mode menus and follows only the QC standard" in intro
+    # 1.6.0: the TIC overlay follows the bar's QC standard and DIA / DDA (§A.4)
+    assert "The TIC overlay follows the QC standard and DIA / DDA (never both at once) and keeps its own SPD and LC menus." in intro
     assert "Throughput vs. Quantitation Quality shows every run" not in intro
     css = html[:html.index("</style>")]
     for dead in (".ref-card", ".ref-row", ".ref-grid", ".ref-metric", ".ref-range", ".ref-n", ".ref-vals"):

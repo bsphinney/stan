@@ -11,6 +11,7 @@ Hosted at: https://huggingface.co/spaces/brettsp/stan
 
 from __future__ import annotations
 
+import bisect
 import hmac
 import io
 import io
@@ -20,12 +21,13 @@ import math
 import os
 import re
 import shutil
+import statistics
 import tempfile
 import threading
 import time
 import unicodedata
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -47,7 +49,7 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.5.0"
+SPACE_VERSION = "1.6.0"
 
 # Fields a submission row keeps on the server but that no public response
 # may carry (community redesign D4, decision 5). run_name is the raw file
@@ -1938,12 +1940,12 @@ async def leaderboard(refresh: int = 0) -> dict:
             return {"submissions": [], "count": 0}
 
         # Sort by primary metric descending — defensive, since n_precursors
-        # may be missing from DDA submissions.
-        if "n_precursors" in df.columns:
-            df = df.sort("n_precursors", descending=True, nulls_last=True)
-        # TIC traces (~10MB across all rows) are fetched lazily via
-        # /api/tic-overlay so the initial leaderboard load stays light.
-        # File names and their hash never leave the server (D4).
+        # may be missing from DDA submissions. The TIC summaries read the
+        # rows in this same order (_leaderboard_frame).
+        df = _leaderboard_frame(df)
+        # TIC traces (~10MB across all rows) stay out of it: /api/tic-overlay
+        # serves every stored trace, and the page reads /api/tic-summary and
+        # /api/tic-traces. File names and their hash never leave the server (D4).
         dropped = ("tic_rt_bins", "tic_intensity") + PRIVATE_SUBMISSION_FIELDS
         slim = df.drop([c for c in dropped if c in df.columns])
         return {"submissions": slim.to_dicts(), "count": slim.height}
@@ -1954,9 +1956,10 @@ async def leaderboard(refresh: int = 0) -> dict:
 
 @app.get("/api/tic-overlay")
 async def tic_overlay(refresh: int = 0) -> dict:
-    """Lazy companion to /api/leaderboard: per-submission TIC traces only.
-    The Community-tab TIC overlay fetches this after the initial page
-    render so the main leaderboard payload stays light."""
+    """Every stored TIC trace, by submission id (8.7 MB raw on 2026-09-29).
+    The community page loaded this after its first render until relay 1.6.0;
+    it now reads /api/tic-summary and /api/tic-traces. Kept, unchanged, for
+    other clients."""
     try:
         df = _load_all_submissions(force_refresh=bool(refresh))
         if df is None or df.is_empty():
@@ -1972,6 +1975,503 @@ async def tic_overlay(refresh: int = 0) -> dict:
     except Exception:
         logger.exception("Failed to fetch tic-overlay")
         return {"traces": [], "count": 0, "error": "Failed to fetch data"}
+
+
+# ── Community TIC overlay: per-cohort summaries (spec §A.4, B5; relay 1.6.0) ──
+#
+# The page's TIC overlay used to download every stored trace at load
+# (/api/tic-overlay: 8.7 MB raw, 3.0 MB gzipped on 2026-09-29, 60% of a cold
+# load) and take its percentiles in the browser, bin by bin on the first
+# trace's axis. It now reads one summary per cohort from /api/tic-summary:
+# the runs, labs and instruments in it and the 10th/25th/50th/75th/90th
+# percentile of the peak-scaled MS1 TIC at each minute of the cohort's median
+# time axis. The few runs of a cohort too small for bands, and the
+# identified-ion traces of older submissions, are drawn one by one, so they
+# come with the summary. Every run of one cohort comes from /api/tic-traces,
+# only when the page's "show all traces" is ticked. Both are built once per
+# load of the submissions table (the _load_all_submissions cache) and served
+# from memory as ready-made JSON; nothing is computed per request.
+#
+# A cohort is QC standard x acquisition mode x SPD x LC class, plus an "all
+# LC" entry where one SPD holds runs of more than one LC class. Its rows are
+# the page's own: the /api/leaderboard rows, in /api/leaderboard order, put
+# through a port of the page's read-time rules (dedupeRuns, isHeldBack, the
+# usable filter, trackOf, spdOf, lcClass, labCount, runLenText; P2a/P2b), so
+# the TIC counts exactly the runs every other panel counts.
+# tests/test_relay_community_tic.py runs the page's JavaScript and this port
+# on the 2026-09-29 snapshot and asserts identical kept rows and cohorts: a
+# change to a read-time rule in the page must be made here too.
+#
+# Stdlib only (the Space image has no numpy). No file name, lab name or
+# submission id is in either response.
+
+# The page's EVOSEP_METHODS (B2). Not the PEG channel's EVOSEP_METHOD_SPD.
+_PAGE_EVOSEP_SPD = frozenset({100, 60, 30, 200, 300, 500, 20, 40, 80, 120})
+_PAGE_DUP_WINDOW_MS = 2000
+_PAGE_HELD_BACK_NG = 5000
+_PAGE_DEFAULT_LAB = "Anonymous Lab"
+# A raw MS1 trace starts within seconds of acquisition start; an
+# identified-ion trace (STAN 0.2.282, 0.2.283 and a few later rows) starts at
+# the first identification. Those never feed a median (§A.4 item 1).
+TIC_IDION_START_MIN = 0.1
+TIC_MIN_FOR_BANDS = 5          # bands from 5 or more raw runs, else each run (§A.4 item 4)
+TIC_AXIS_POINTS = 128          # points on a cohort's median time axis
+TIC_LC_ORDER = ("evosep", "nanolc", "evosep_unv", "unrec")
+TIC_PCTS = (("p10", 0.10), ("p25", 0.25), ("p50", 0.50), ("p75", 0.75), ("p90", 0.90))
+
+_JS_DECIMAL = re.compile(r"[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
+_JS_RADIX = re.compile(r"0([xXoObB])([0-9a-fA-F]+)")
+
+
+def _js_num(v: Any) -> float:
+    """JavaScript's unary plus (``+v``), for the values a JSON row holds."""
+    if v is None:
+        return 0.0
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return 0.0
+        if _JS_DECIMAL.fullmatch(s):
+            return float(s.replace("Infinity", "inf"))
+        m = _JS_RADIX.fullmatch(s)
+        if m:
+            try:
+                return float(int(m.group(2), {"x": 16, "o": 8, "b": 2}[m.group(1).lower()]))
+            except ValueError:
+                return math.nan
+    return math.nan
+
+
+def _js_truthy(v: Any) -> bool:
+    if isinstance(v, float):
+        return v == v and v != 0.0
+    return bool(v)
+
+
+def _js_round(x: float) -> float:
+    """``Math.round``: halves round up, not to even."""
+    return float(math.floor(x + 0.5)) if math.isfinite(x) else x
+
+
+def _js_text(v: Any) -> str:
+    """How JavaScript writes one JSON value as text (``Array.join``, ``String``)."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        if v != v:
+            return "NaN"
+        if math.isinf(v):
+            return "Infinity" if v > 0 else "-Infinity"
+        return str(int(v)) if v == int(v) and abs(v) < 1e21 else repr(v)
+    if isinstance(v, datetime):
+        return v.isoformat()          # what the JSON response carries
+    return str(v)
+
+
+def _page_track(r: dict) -> str:
+    """trackOf(): DDA when the acquisition mode says so, else DIA."""
+    m = r.get("acquisition_mode")
+    return "DDA" if "dda" in (_js_text(m).lower() if _js_truthy(m) else "") else "DIA"
+
+
+_MS_FRACTION = re.compile(r"(\.\d{3})\d+")
+_ISO_INSTANT = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2})?)?")
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _page_instant_ms(r: dict) -> int | None:
+    """_instantMs(): the acquisition instant in epoch milliseconds, or None.
+
+    The page trims the fraction to milliseconds and calls Date.parse. A time
+    with no offset is local to a browser and UTC here: every stored run_date
+    carried an offset on 2026-09-29 (3,305 of 3,305), and the copies of one
+    acquisition share a format anyway.
+    """
+    v = r.get("run_date")
+    if not _js_truthy(v):
+        return None
+    m = _ISO_INSTANT.fullmatch(_MS_FRACTION.sub(r"\1", _js_text(v), count=1))
+    if not m:
+        return None
+    y, mo, d, hh, mi, ss, frac, off = m.groups()
+    try:
+        t = datetime(int(y), int(mo), int(d), int(hh or 0), int(mi or 0), int(ss or 0),
+                     int((frac or "0").ljust(3, "0")) * 1000, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    if off and off != "Z":
+        t -= (1 if off[0] == "+" else -1) * timedelta(hours=int(off[1:3]), minutes=int(off[4:6]))
+    return (t - _EPOCH) // timedelta(milliseconds=1)
+
+
+def _page_held_back(r: dict) -> bool:
+    """isHeldBack(): a stored amount above 5,000 ng is a unit error."""
+    a = _js_num(r.get("amount_ng"))
+    return (a if a == a else 0.0) > _PAGE_HELD_BACK_NG
+
+
+def _page_usable(r: dict) -> bool:
+    """usableRows(): neither flagged nor held back."""
+    return not _js_truthy(r.get("is_flagged")) and not _page_held_back(r)
+
+
+def _page_dedupe(rows: list[dict]) -> tuple[list[dict], int]:
+    """dedupeRuns(): one row per acquisition, in the order given, and the
+    number of copies dropped.
+
+    A copy is the same instrument model, track and all four ID counts,
+    acquired within 2 s of the previous one. Of each set the page keeps a
+    usable copy, then the one from the lab with more rows, then the earliest
+    submitted. (The kept row also takes a dropped copy's LC column when it
+    records none; the TIC reads no column, so that part is not ported.)
+    submitted_at is compared as text: the page's localeCompare orders these
+    uniform ISO stamps the same way.
+    """
+    total = Counter(r.get("display_name") for r in rows)
+    inst = {id(r): _page_instant_ms(r) for r in rows}
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        k = "|".join(_js_text(x) for x in (r.get("instrument_model"), _page_track(r), r.get("n_precursors"),
+                                           r.get("n_peptides"), r.get("n_proteins"), r.get("n_psms")))
+        groups.setdefault(k, []).append(r)
+    keep: set[int] = set()
+    dropped = 0
+
+    def rank(r: dict) -> tuple:
+        v = r.get("submitted_at")
+        return (-int(_page_usable(r)), -total[r.get("display_name")], _js_text(v) if _js_truthy(v) else "")
+
+    for g in groups.values():
+        keep.update(id(r) for r in g if inst[id(r)] is None)      # no instant: never a copy
+        chain: list[dict] = []
+        for r in sorted((r for r in g if inst[id(r)] is not None), key=lambda r: inst[id(r)]):
+            if chain and inst[id(r)] - inst[id(chain[-1])] <= _PAGE_DUP_WINDOW_MS:
+                chain.append(r)
+                continue
+            if chain:
+                dropped += len(chain) - 1
+                keep.add(id(min(chain, key=rank)))
+            chain = [r]
+        if chain:
+            dropped += len(chain) - 1
+            keep.add(id(min(chain, key=rank)))
+    return [r for r in rows if id(r) in keep], dropped
+
+
+def _page_sample(r: dict) -> str:
+    v = r.get("sample_type")
+    return _js_text(v) if _js_truthy(v) else "hela"
+
+
+def _page_spd(r: dict) -> int:
+    """spdOf(): the rounded SPD, 0 when none is recorded."""
+    v = _js_round(_js_num(r.get("spd")))
+    return int(v) if math.isfinite(v) and v > 0 else 0
+
+
+def _page_lc_class(r: dict) -> str:
+    """lcClass(): evosep | evosep_unv | nanolc | unrec | nospd (B2)."""
+    spd = _page_spd(r)
+    if not spd:
+        return "nospd"
+    v = r.get("lc_system")
+    lc = _js_text(v).strip().lower() if _js_truthy(v) else ""
+    if lc == "evosep":
+        return "evosep" if spd in _PAGE_EVOSEP_SPD else "evosep_unv"
+    if lc:
+        return "nanolc"
+    return "unrec" if spd in _PAGE_EVOSEP_SPD else "nanolc"
+
+
+def _page_model(r: dict) -> str:
+    """modelOf()."""
+    for k in ("instrument_model", "instrument_family"):
+        if _js_truthy(r.get(k)):
+            return _js_text(r.get(k))
+    return "Unknown"
+
+
+def _page_lab_count(rows: list[dict]) -> int:
+    """labCount(): 'Anonymous Lab' counts only when nothing else does."""
+    names = {r.get("display_name") for r in rows if _js_truthy(r.get("display_name"))}
+    anon = _PAGE_DEFAULT_LAB in names
+    names.discard(_PAGE_DEFAULT_LAB)
+    return len(names) or (1 if anon else 0)
+
+
+def _page_run_lengths(rows: list[dict]) -> list[int] | None:
+    """runLenText()'s two numbers: the 10th and 90th percentile of the stored
+    run length (gradient_length_min), the page's one run-length source."""
+    s = sorted(v for v in (_js_round(_js_num(r.get("gradient_length_min"))) for r in rows)
+               if math.isfinite(v) and v > 0)
+    if not s:
+        return None
+    return [int(s[math.floor(0.1 * (len(s) - 1))]), int(s[int(_js_round(0.9 * (len(s) - 1)))])]
+
+
+def _tic_trace(r: dict) -> dict | None:
+    """A row's trace, scaled to its own peak, or None when it has none that
+    can be: the page's ticOf() checks (two or more bins, as many values as
+    bins), plus numbers only, time in order and a positive peak."""
+    rt, y = r.get("tic_rt_bins"), r.get("tic_intensity")
+    try:
+        rt = json.loads(rt) if isinstance(rt, str) else rt
+        y = json.loads(y) if isinstance(y, str) else y
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(rt, list) or not isinstance(y, list) or len(rt) < 2 or len(rt) != len(y):
+        return None
+    for v in rt + y:
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            return None
+    if any(b < a for a, b in zip(rt, rt[1:])):
+        return None
+    peak = max(y)
+    if peak <= 0:
+        return None
+    return {"rt": [float(v) for v in rt], "y": [v / peak for v in y],
+            "idion": rt[0] - (rt[1] - rt[0]) / 2 > TIC_IDION_START_MIN}
+
+
+def _tic_interp(rt: list[float], y: list[float], x: float) -> float | None:
+    """A trace's value at minute x, linear between bins; None outside it."""
+    if x < rt[0] or x > rt[-1]:
+        return None
+    i = bisect.bisect_left(rt, x)
+    if i == 0:
+        return y[0]
+    x0, x1 = rt[i - 1], rt[i]
+    return y[i - 1] if x1 <= x0 else y[i - 1] + (y[i] - y[i - 1]) * (x - x0) / (x1 - x0)
+
+
+def _tic_quantile(sv: list[float], p: float) -> float:
+    """Linear-interpolated quantile of a sorted, non-empty list (the page's quant())."""
+    if len(sv) == 1:
+        return sv[0]
+    x = (len(sv) - 1) * p
+    lo = math.floor(x)
+    hi = min(lo + 1, len(sv) - 1)
+    return sv[lo] + (sv[hi] - sv[lo]) * (x - lo)
+
+
+def _tic_median_axis(traces: list[dict]) -> list[float]:
+    """A cohort's median time axis: at each bin, the median minute of the
+    traces with the most common bin count, spread to TIC_AXIS_POINTS."""
+    nb = Counter(len(t["rt"]) for t in traces).most_common(1)[0][0]
+    same = [t["rt"] for t in traces if len(t["rt"]) == nb]
+    axis = [statistics.median(rt[j] for rt in same) for j in range(nb)]
+    if nb != TIC_AXIS_POINTS:
+        a, b = axis[0], axis[-1]
+        axis = [a + (b - a) * j / (TIC_AXIS_POINTS - 1) for j in range(TIC_AXIS_POINTS)]
+    return axis
+
+
+def _tic_bands(raw: list[dict], axis: list[float]) -> dict[str, list[int | None]]:
+    """Percentiles at the same minute (§A.4 item 3): each trace is
+    interpolated onto the cohort's axis, and a minute gets values only where
+    at least half the runs, and never fewer than 5, cover it. Per mille of
+    each run's own peak."""
+    need = max(TIC_MIN_FOR_BANDS, math.ceil(len(raw) / 2))
+    out: dict[str, list[int | None]] = {k: [] for k, _ in TIC_PCTS}
+    for x in axis:
+        col = sorted(v for v in (_tic_interp(t["rt"], t["y"], x) for t in raw) if v is not None)
+        for k, p in TIC_PCTS:
+            out[k].append(int(round(1000 * _tic_quantile(col, p))) if len(col) >= need else None)
+    return out
+
+
+def _tic_own_axis(t: dict) -> list:
+    """One run on its own time axis: [model index, first minute, last minute,
+    per-mille values at evenly spaced minutes between them]. Stored bins are
+    evenly spaced to within 1.4% (2026-09-29), so this is the trace."""
+    a, b, n = t["rt"][0], t["rt"][-1], len(t["rt"])
+    ys = [_tic_interp(t["rt"], t["y"], min(b, a + (b - a) * j / (n - 1))) for j in range(n)]
+    return [t["mi"], round(a, 3), round(b, 3), [int(round(1000 * (v or 0.0))) for v in ys]]
+
+
+def _tic_entry(s: str, track: str, spd: int, lc: str, by_lc: dict[str, list[dict]]) -> tuple[dict, list]:
+    """One menu entry, and every raw run in it (served on demand)."""
+    tr = [t for c in TIC_LC_ORDER for t in by_lc.get(c, [])]
+    raw = [t for t in tr if not t["idion"]]
+    idt = [t for t in tr if t["idion"]]
+    parts = []
+    for c in TIC_LC_ORDER:
+        if c in by_lc:
+            n_id = sum(1 for t in by_lc[c] if t["idion"])
+            parts.append([c, len(by_lc[c]) - n_id, n_id, _page_run_lengths([t["row"] for t in by_lc[c]])])
+    runs = [_tic_own_axis(t) for t in raw]
+    banded = len(raw) >= TIC_MIN_FOR_BANDS
+    entry: dict[str, Any] = {
+        "s": s, "t": track, "spd": spd, "lc": lc, "parts": parts,
+        "n": len(raw), "nid": len(idt),
+        "labs": _page_lab_count([t["row"] for t in (raw or idt)]),
+        "inst": Counter(t["model"] for t in raw).most_common(),
+        "iinst": Counter(t["model"] for t in idt).most_common(),
+        "iver": sorted({_js_text(t["row"].get("stan_version")) for t in idt if _js_truthy(t["row"].get("stan_version"))}),
+        "rt": None, "b": None,
+        "solo": [] if banded else runs,                     # too few for bands: each run is drawn
+        "idt": [_tic_own_axis(t) for t in idt],             # never in a median; a legend entry
+    }
+    if banded:
+        axis = _tic_median_axis(raw)
+        entry["rt"] = [round(v, 2) for v in axis]
+        entry["b"] = _tic_bands(raw, axis)
+    return entry, runs
+
+
+def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
+    """The submissions in /api/leaderboard order: most precursors first."""
+    if "n_precursors" in df.columns:
+        df = df.sort("n_precursors", descending=True, nulls_last=True, maintain_order=True)
+    return df
+
+
+def _tic_groups(df: "pl.DataFrame") -> dict:
+    """The page's rows and the TIC cohorts they make (§A.4 item 5): the
+    /api/leaderboard rows, one per acquisition, usable, with a trace, by
+    (QC standard, track, SPD) and then LC class, each in acquisition order."""
+    rows = _leaderboard_frame(df.drop([c for c in PRIVATE_SUBMISSION_FIELDS if c in df.columns])).to_dicts()
+    kept, dropped = _page_dedupe(rows)
+    usable = [r for r in kept if _page_usable(r)]
+    groups: dict[tuple, dict[str, list[dict]]] = {}
+    models: list[str] = []
+    tracks: Counter = Counter()
+    no_spd = unreadable = 0
+    for r in usable:
+        if not _js_truthy(r.get("tic_rt_bins")) or not _js_truthy(r.get("tic_intensity")):
+            continue
+        t = _tic_trace(r)
+        if t is None:
+            unreadable += 1
+            continue
+        lc = _page_lc_class(r)
+        if lc == "nospd":
+            no_spd += 1
+            continue
+        track = _page_track(r)
+        tracks[track] += 1
+        model = _page_model(r)
+        if model not in models:
+            models.append(model)
+        t.update(row=r, model=model, mi=models.index(model), when=_page_instant_ms(r))
+        groups.setdefault((_page_sample(r), track, _page_spd(r)), {}).setdefault(lc, []).append(t)
+    for by_lc in groups.values():
+        for c in by_lc.values():
+            c.sort(key=lambda t: (t["when"] is None, t["when"] or 0))
+    return {"rows": rows, "kept": kept, "dropped": dropped, "usable": usable, "groups": groups,
+            "models": models, "tracks": tracks, "no_spd": no_spd, "unreadable": unreadable}
+
+
+def _tic_build(df: "pl.DataFrame") -> dict:
+    """Every cohort's summary and runs, as response bodies."""
+    t0 = time.monotonic()
+    g = _tic_groups(df)
+    cohorts: list[dict] = []
+    traces: dict[tuple, bytes] = {}
+    for s, track, spd in sorted(g["groups"]):
+        by_lc = g["groups"][(s, track, spd)]
+        present = [c for c in TIC_LC_ORDER if c in by_lc]
+        menu = [(c, {c: by_lc[c]}) for c in present]
+        if len(present) > 1:          # "All LC systems" mixes these, and the page says so
+            menu.append(("all", by_lc))
+        for lc, part in menu:
+            entry, runs = _tic_entry(s, track, spd, lc, part)
+            cohorts.append(entry)
+            traces[(s, track, spd, lc)] = json.dumps(
+                {"s": s, "t": track, "spd": spd, "lc": lc, "n": len(runs), "models": g["models"], "raw": runs},
+                separators=(",", ":"), ensure_ascii=False).encode()
+    summary = {
+        "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "rows": len(g["rows"]), "duplicate_copies": g["dropped"], "usable": len(g["usable"]),
+        "traces": {"DIA": g["tracks"].get("DIA", 0), "DDA": g["tracks"].get("DDA", 0)},
+        "not_drawn": {"no_spd": g["no_spd"], "unreadable": g["unreadable"]},
+        "models": g["models"], "cohorts": cohorts,
+    }
+    logger.info("TIC summaries: %d menu entries from %d traces in %.2f s",
+                len(cohorts), sum(g["tracks"].values()), time.monotonic() - t0)
+    return {"summary": json.dumps(summary, separators=(",", ":"), ensure_ascii=False).encode(), "traces": traces}
+
+
+# Built once per copy of the submissions table. _load_all_submissions hands
+# out a new DataFrame each time its 5-minute cache refills, usually holding
+# the same rows; a fingerprint of the rows decides whether anything changed.
+_TIC_CACHE: dict = {"df": None, "key": None, "data": None, "builds": 0}
+_TIC_CACHE_LOCK = threading.Lock()
+
+
+def _tic_fingerprint(df: "pl.DataFrame") -> tuple | None:
+    try:
+        return (tuple(df.columns), tuple(df.hash_rows().to_list()))
+    except Exception:
+        return None
+
+
+def _tic_data() -> dict | None:
+    df = _load_all_submissions()
+    if df is None or df.is_empty():
+        return None
+    with _TIC_CACHE_LOCK:
+        c = _TIC_CACHE
+        if c["data"] is not None and c["df"] is df:
+            return c["data"]
+        key = _tic_fingerprint(df)
+        if c["data"] is not None and key is not None and key == c["key"]:
+            c["df"] = df
+            return c["data"]
+        data = _tic_build(df)
+        c.update(df=df, key=key, data=data, builds=c["builds"] + 1)
+        return data
+
+
+def _json_response(body: bytes | dict, status_code: int = 200) -> Response:
+    if isinstance(body, dict):
+        body = json.dumps(body, separators=(",", ":")).encode()
+    return Response(content=body, status_code=status_code, media_type="application/json")
+
+
+_TIC_EMPTY_SUMMARY = {"rows": 0, "duplicate_copies": 0, "usable": 0, "traces": {"DIA": 0, "DDA": 0},
+                      "not_drawn": {"no_spd": 0, "unreadable": 0}, "models": [], "cohorts": []}
+
+
+@app.get("/api/tic-summary")
+def tic_summary() -> Response:
+    """The community TIC overlay's menu: one summary per (QC standard, mode,
+    SPD, LC) cohort, with its runs, labs and instruments, the cohort's median
+    time axis and the p10/p25/p50/p75/p90 bands of the peak-scaled MS1 TIC
+    at each minute of it (from 5 runs), or each run when there are fewer.
+    Built once per data refresh; see _tic_build."""
+    try:
+        data = _tic_data()
+    except Exception:
+        logger.exception("Failed to build the TIC summaries")
+        return _json_response({"cohorts": [], "error": "Failed to build the TIC summaries"}, 503)
+    return _json_response(data["summary"] if data else dict(_TIC_EMPTY_SUMMARY))
+
+
+@app.get("/api/tic-traces")
+def tic_traces(sample: str = "", mode: str = "", spd: int = 0, lc: str = "") -> Response:
+    """Every raw MS1 trace of one cohort of /api/tic-summary (its s, t, spd
+    and lc), each on its own time axis, for the overlay's "show all
+    traces". /api/tic-overlay still serves every stored trace."""
+    track = {"dia": "DIA", "dda": "DDA"}.get(mode.strip().lower(), "")
+    try:
+        data = _tic_data()
+    except Exception:
+        logger.exception("Failed to build the TIC summaries")
+        return _json_response({"raw": [], "error": "Failed to build the TIC summaries"}, 503)
+    body = data["traces"].get((sample, track, spd, lc)) if data else None
+    if body is None:
+        return _json_response({"raw": [], "error": "No TIC cohort with that sample, mode, spd and lc"}, 404)
+    return _json_response(body)
 
 
 def _strip_private_fields(obj: Any) -> Any:
@@ -3506,6 +4006,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
         .ws-foot a { color: var(--ucd-gold); }
         .ws-link { font: inherit; font-size: inherit; color: var(--ucd-gold); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; text-align: left; }
         .ws-hidden { display: none !important; }
+
+        /* ── Community TIC overlay (relay 1.6.0, spec §A.4) ──
+           The panel's own SPD and LC menus and "show all traces", the take
+           line and the note. The chart div stays a direct child of the card,
+           so the ⛶ full-screen view keeps working. */
+        .tic-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; margin: 0.5rem 0 0.4rem; padding-left: 0.5rem; color: var(--text-muted); font-size: 0.85rem; }
+        .tic-ctl > label { font-weight: 650; letter-spacing: 0.03em; }
+        .tic-sel { min-width: 0; max-width: 100%; padding: 0.25rem; background: #0b1d33; color: var(--text-primary); border: 1px solid #1e3a5f; border-radius: 4px; font-size: 0.85rem; }
+        .tic-sel:disabled, .tic-ctl input:disabled + span { opacity: 0.55; }
+        #tic-spd-select { flex: 0 1 auto; }
+        .tic-ctl label.tic-chk { display: inline-flex; align-items: center; gap: 0.3rem; font-weight: 500; letter-spacing: 0; cursor: pointer; white-space: nowrap; }
+        .tic-take { color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; padding-left: 0.5rem; margin: 0 0 0.4rem; }
+        .tic-take:empty { display: none; }
+        .tic-take b { color: var(--text-primary); }
+        @media (max-width: 640px) {
+            .tic-ctl { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+            .tic-ctl label.tic-chk { grid-column: 1 / -1; }
+            .tic-sel, #tic-spd-select { width: 100%; }
+        }
     </style>
 </head>
 <body>
@@ -3556,8 +4075,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
      ranks or compares. It stays at the top of the screen while the page
      scrolls; on a phone it folds to a one-line summary and a Filters button.
      The per-chart amount selects and the DIA / DDA / All tabs above the
-     submissions table are views of this state. The TIC overlay keeps its own
-     SPD, LC and acquisition-mode menus, and PEG Watch is not filtered. -->
+     submissions table are views of this state. The TIC overlay follows its
+     QC standard and DIA / DDA and keeps its own SPD and LC menus, and PEG
+     Watch is not filtered. -->
 <div class="fbar" id="fbar" role="region" aria-label="Filters for the benchmark panels">
     <div class="fbar-sum">
         <span class="fbar-sumtext" id="fbar-summary" aria-live="polite">HeLa · DIA · 50 ng</span>
@@ -3819,7 +4339,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         every amount, Depth by Throughput and Throughput vs. Quantitation Quality every gradient, and Column
         Comparison every column. Under "Both", DIA and DDA keep their own table, violin or facet, with one
         exception: Depth by Amount Loaded puts precursors and PSMs on one axis, and its badge warns about it. The
-        TIC overlay keeps its own SPD, LC and acquisition-mode menus and follows only the QC standard.
+        TIC overlay follows the QC standard and DIA / DDA (never both at once) and keeps its own SPD and LC menus.
         Counts compare fairly within a vendor: timsTOF and Orbitrap runs search different libraries (see
         <a href="#methods" style="color:var(--ucd-gold)">Methods</a>).
     </p>
@@ -3903,25 +4423,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
         </div>
     </div>
     <div class="chart-row">
-        <div class="chart-card chart-full">
-            <h3>Community TIC Overlay by SPD</h3>
-            <div class="chart-desc">MS1 total-ion chromatograms read from the raw file, grouped by throughput + LC system + acquisition mode. Each run is scaled to its own peak, so the chart compares shape, not signal. For Evosep users the gradient is standardized &mdash; shape differences reveal instrument-specific issues. Thick dashed line = median of the runs shown, with bands from 5 or more runs; below 5, each run is drawn on its own. A few older submissions carry an identified-ion trace instead, which starts at the first identification; those are kept out of the median. <strong>Always pick one acquisition mode</strong> &mdash; DIA and DDA have different cycle times and their shapes should not be averaged together.</div>
-            <div style="margin-bottom:0.5rem;">
-                <select id="tic-spd-select" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:0.3rem;padding:0.3rem 0.6rem;font-size:0.85rem;"></select>
-                <select id="tic-lc-select" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:0.3rem;padding:0.3rem 0.6rem;font-size:0.85rem;margin-left:0.4rem;">
+        <div class="chart-card chart-full" id="tic-card">
+            <h3>Community TIC Overlay by SPD <span class="fbadge" id="tic-badge"></span></h3>
+            <div class="chart-desc">The MS1 total-ion chromatogram from the raw file, grouped by throughput (SPD) and LC system. The QC standard and acquisition mode follow the filter bar, and the menus here pick the SPD and the LC; every instrument, gradient, amount and column is shown. Each run is scaled to its own peak, so the chart compares shape, not signal. For Evosep users the gradient is standardized &mdash; shape differences reveal instrument-specific issues. Thick dashed line = the median at each minute, with the middle half (IQR) and the 10&ndash;90% band, from 5 or more runs; below 5, each run is drawn on its own. A few older submissions carry an identified-ion trace instead, which starts at the first identification; those are kept out of the median. DIA and DDA are never averaged together.</div>
+            <div class="tic-ctl">
+                <label for="tic-spd-select">SPD</label>
+                <select id="tic-spd-select" class="tic-sel" onchange="ticPickSpd(this.value)" disabled><option value="">loading</option></select>
+                <label for="tic-lc-select">LC</label>
+                <select id="tic-lc-select" class="tic-sel" onchange="renderCommunityTIC()">
                     <option value="all">All LC systems</option>
                     <option value="evosep">Evosep only</option>
                     <option value="custom">Custom / nanoLC only</option>
                 </select>
-                <select id="tic-mode-select" style="background:var(--card);color:var(--text);border:1px solid var(--border);border-radius:0.3rem;padding:0.3rem 0.6rem;font-size:0.85rem;margin-left:0.4rem;">
-                    <option value="dia">DIA only</option>
-                    <option value="dda">DDA only</option>
-                    <option value="all">DIA + DDA (mixed)</option>
-                </select>
-                <span id="tic-count" style="color:var(--muted);margin-left:0.5rem;font-size:0.85rem;"></span>
-                <label style="color:var(--muted);margin-left:0.6rem;font-size:0.82rem;cursor:pointer;white-space:nowrap;"><input type="checkbox" id="tic-show-all" style="vertical-align:middle;margin-right:0.25rem;" onchange="renderCommunityTIC()">show all traces</label>
+                <label class="tic-chk"><input type="checkbox" id="tic-show-all" onchange="ticToggleAll()"><span>show all traces</span></label>
             </div>
+            <p class="tic-take" id="tic-count" aria-live="polite"></p>
             <div id="chart-community-tic"></div>
+            <p class="chart-note" id="tic-note"></p>
         </div>
     </div>
 </div>
@@ -4321,8 +4839,7 @@ function isHeldBack(s) { return (+s.amount_ng || 0) > HELD_BACK_NG; }
 let submittedRows = 0;   // rows /api/leaderboard returned
 let duplicateCopies = 0; // copies dedupeRuns() dropped
 let allDataRaw = [];  // one row per acquisition (deduplicated); includes flagged and held-back runs
-let allData = [];     // usable rows of the bar's QC standard: what the stats row and the TIC overlay use
-let ticLoaded = false;  // /api/tic-overlay answered (or failed); until then the TIC chart says "Loading"
+let allData = [];     // usable rows of the bar's QC standard: what the stats row and the panels use
 
 // Rows every panel may use: not flagged, not held back. The "Hide failed
 // runs" toggle is gone (is_flagged was false on every row, so it did nothing);
@@ -4534,7 +5051,7 @@ const PANELS = [
     ['spd-depth',      _NO_GRADIENT, () => renderSpdDepth()],
     ['column-compare', _NO_COLUMN,   () => renderColumnComparison()],
     ['points-peak',    _NO_GRADIENT, () => renderPointsAcrossPeak()],
-    ['community-tic',  ['sample'],   () => renderCommunityTIC()],
+    ['community-tic',  ['sample', 'mode'], () => renderCommunityTIC()],   // its SPD and LC menus are its own (§A.4)
     ['mass-acc',       _ALL,         () => renderMassAccuracy()],
     ['ms1-signal',     _ALL,         () => renderMs1Signal()],
     ['dyn-range',      _ALL,         () => renderDynamicRange()],
@@ -4807,24 +5324,10 @@ async function loadData() {
     try { renderLibraryCaveat(); }   catch (e) { console.error('[renderLibraryCaveat]', e); }
     _honourHash();
 
-    // Lazy-load heavy TIC traces AFTER the initial render, then merge into
-    // allDataRaw by submission_id and re-render the community TIC overlay.
-    fetch('/api/tic-overlay').then(r => r.ok ? r.json() : null).then(t => {
-        ticLoaded = true;
-        if (!t || !t.traces) { try { renderCommunityTIC(); } catch (e) {} return; }
-        const byId = {};
-        t.traces.forEach(x => { byId[x.submission_id] = x; });
-        allDataRaw.forEach(s => {
-            const x = byId[s.submission_id];
-            if (x) { s.tic_rt_bins = x.tic_rt_bins; s.tic_intensity = x.tic_intensity; }
-        });
-        applyFilters();
-        try { renderCommunityTIC(); } catch(e) { console.error('[tic-overlay merge]', e); }
-    }).catch(e => {
-        ticLoaded = true;
-        console.error('[tic-overlay fetch]', e);
-        try { renderCommunityTIC(); } catch (e2) {}
-    });
+    // The TIC overlay's summaries load after the first render (spec §A.4,
+    // B5): about 30 KB gzipped where every stored trace (/api/tic-overlay,
+    // 3.0 MB gzipped) used to load here.
+    loadTicSummary();
 }
 
 // The rows /api/leaderboard returned, reduced to one per acquisition (D8).
@@ -5971,235 +6474,280 @@ function renderDynamicRange() {
         null, { yaxis: { rangemode: 'tozero' } });
 }
 
-// ── Community TIC Overlay ─────────────────────────────────────────
+// ── Community TIC Overlay (spec §A.4, relay 1.6.0) ───────────────────
+// What it plots: the MS1 total-ion chromatogram read from the raw file
+// (STAN's pipeline calls extract_tic_bruker / extract_tic_thermo), each run
+// scaled to its own peak, so the chart compares shape, not signal. A few
+// older submissions carry an identified-ion trace instead, which starts at
+// the first identification; those never feed a median and are their own
+// legend entry (§A.4 item 1).
+//
+// The relay builds the menu once per data refresh (/api/tic-summary): one
+// entry per QC standard × acquisition mode × SPD × LC class, plus "all LC"
+// where one SPD holds more than one class, from the same deduplicated,
+// usable rows as every other panel (a port of dedupeRuns, isHeldBack and
+// lcClass; §A.4 item 5). Each entry has its runs, labs and instruments and
+// the 10th–90th percentiles at each minute of the cohort's median time axis
+// (items 2, 3). Cohorts under 5 runs and identified-ion traces come with it,
+// one run at a time. Every run of a banded cohort loads from /api/tic-traces
+// only when "show all traces" is ticked, for that cohort alone.
+// The QC standard and DIA / DDA follow the filter bar; the SPD and LC menus
+// are the panel's own (Brett: keep the breakdown by SPD and LC).
+const TIC_MIN_FOR_BANDS = 5;
+const TIC_LC_NAME = { evosep: 'Evosep', evosep_unv: 'Evosep', nanolc: 'nanoLC', unrec: 'LC not recorded' };
+let ticSummary = null;          // the /api/tic-summary payload
+let ticStatus = 'loading';      // 'loading' | 'ready' | 'failed'
+const ticRuns = new Map();      // cohort key -> { status: 'loading' | 'ready' | 'failed', raw, models }
+const ticPick = { spd: null };  // the SPD picked in the panel's own menu
 
-// Infer LC system from column metadata or SPD fallback.
-// Evosep's only standard SPDs are 100, 60, 30 — if column info is missing
-// but SPD is exactly one of those, assume Evosep. Old submissions without
-// an explicit `lc_system` field fall through to this inference.
-function inferLcSystem(s) {
-    const v = (s.column_vendor || '').toLowerCase();
-    const m = (s.column_model || '').toLowerCase();
-    if (v.includes('evo') || m.includes('evo') || m.match(/^ev\d/)) return 'evosep';
-    if ([100, 60, 30].includes(s.spd)) return 'evosep';
-    return 'custom';
+// Loaded after the first render, like the old trace download.
+function loadTicSummary() {
+    ticStatus = 'loading';
+    return fetch('/api/tic-summary')
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(t => { ticSummary = t; ticStatus = 'ready'; })
+        .catch(e => { ticSummary = null; ticStatus = 'failed'; console.warn('[tic-summary]', e); })
+        .then(() => { try { renderCommunityTIC(); } catch (e) { console.error('[tic-summary render]', e); } });
+}
+function ticKey(c) { return `${c.s}|${c.t}|${c.spd}|${c.lc}`; }
+// One cohort's runs, for "show all traces". A failed load is tried again
+// the next time the box is ticked.
+function loadTicRuns(c) {
+    const k = ticKey(c);
+    if (ticRuns.has(k)) return;
+    ticRuns.set(k, { status: 'loading', raw: [], models: [] });
+    const q = ['sample', c.s, 'mode', c.t, 'spd', c.spd, 'lc', c.lc];
+    const qs = [0, 2, 4, 6].map(i => `${q[i]}=${encodeURIComponent(q[i + 1])}`).join('&');
+    fetch(`/api/tic-traces?${qs}`)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(t => { ticRuns.set(k, { status: 'ready', raw: t.raw || [], models: t.models || [] }); })
+        .catch(e => { ticRuns.set(k, { status: 'failed', raw: [], models: [] }); console.warn('[tic-traces]', e); })
+        .then(() => { try { renderCommunityTIC(); } catch (e) { console.error('[tic-traces render]', e); } });
+}
+function ticToggleAll() {
+    for (const [k, v] of ticRuns) if (v.status === 'failed') ticRuns.delete(k);
+    renderCommunityTIC();
+}
+function ticPickSpd(v) { ticPick.spd = +v; renderCommunityTIC(); }
+
+// Names. A part is [LC class, raw runs, identified-ion traces, [10th, 90th
+// percentile of the stored run length] or null]. gradLabel() and
+// runLenText() read run lengths from rows; two stand-in rows holding the
+// percentiles give back exactly those two numbers.
+function ticLenRows(lens) { return lens ? [{ gradient_length_min: lens[0] }, { gradient_length_min: lens[1] }] : []; }
+function ticRunLen(lens) { return runLenText(ticLenRows(lens)); }
+// In full, as every other panel names a gradient: "Evosep 100 SPD",
+// "~30 min gradient (38 SPD) · 44 min run", "Evosep, 44 min run (SPD 36
+// unverified)", "60 SPD, LC not recorded (22 min run)".
+function ticPartName(p, spd) { return gradLabel(p[0], spd, ticLenRows(p[3])); }
+// For the menu, after "<SPD> SPD · ": "Evosep · 11 min run", "nanoLC · ~30 min
+// gradient · 44 min run". Mixed, each part shorter: "Evosep 44 min".
+function ticPartMenu(p, spd) {
+    const len = ticRunLen(p[3]);
+    const bits = [TIC_LC_NAME[p[0]]];
+    if (p[0] === 'nanolc') bits.push(`~${gradientMinOf(spd)} min gradient`);
+    if (len) bits.push(len);
+    return bits.join(' · ') + (p[0] === 'evosep_unv' ? ' (SPD unverified)' : '');
+}
+function ticPartShort(p) {
+    const len = ticRunLen(p[3]).replace(/ runs?$/, '');
+    return `${TIC_LC_NAME[p[0]]}${len ? ' ' + len : ''}${p[0] === 'evosep_unv' ? ' (SPD unverified)' : ''}`;
+}
+function ticCountText(c) {
+    if (!c.n) return `${fmtN(c.nid)} identified-ion only`;
+    return `${fmtN(c.n)} run${c.n === 1 ? '' : 's'}${c.nid ? ` +${fmtN(c.nid)} identified-ion` : ''}${c.n < TIC_MIN_FOR_BANDS ? ' (no bands)' : ''}`;
+}
+function ticMenuText(c) {
+    const desc = c.parts.length > 1 ? c.parts.map(ticPartShort).join(' + ') : ticPartMenu(c.parts[0], c.spd);
+    return `${c.spd} SPD · ${desc} · ${ticCountText(c)}`;
 }
 
-// The traces are the raw MS1 total-ion chromatogram, read from the raw file
-// by STAN's pipeline (extract_tic_bruker / extract_tic_thermo). A few older
-// submissions carry an identified-ion trace instead, which starts at the first
-// identification: its first bin begins minutes into the run, where a raw trace
-// begins within seconds. Those never feed the median (spec §A.4 item 1).
-const TIC_IDION_START_MIN = 0.1;
-// Percentile bands from fewer runs than this are noise, so below it every run
-// is drawn on its own instead (bug 11).
-const TIC_MIN_FOR_BANDS = 5;
-
-// A row's TIC parsed once and kept on the row: {rt, y, idion}, or null.
-function ticOf(s) {
-    if (s._tic !== undefined) return s._tic;
-    let out = null;
-    try {
-        const rt = typeof s.tic_rt_bins === 'string' ? JSON.parse(s.tic_rt_bins) : s.tic_rt_bins;
-        const y = typeof s.tic_intensity === 'string' ? JSON.parse(s.tic_intensity) : s.tic_intensity;
-        if (Array.isArray(rt) && Array.isArray(y) && rt.length >= 2 && rt.length === y.length) {
-            const start = rt[0] - (rt[1] - rt[0]) / 2;
-            out = { rt, y, idion: start > TIC_IDION_START_MIN };
-        }
-    } catch (e) { out = null; }
-    s._tic = out;
-    return out;
+// The QC standard and track the panel shows. The bar's "Both" shows DIA and
+// "All standards" the standard with the most runs: one median never mixes
+// DIA with DDA or HeLa with K562.
+function ticScope() {
+    const track = view.mode === 'dda' ? 'DDA' : 'DIA';
+    let sample = view.sample;
+    if (sample === 'all') {
+        const n = {};
+        ((ticSummary && ticSummary.cohorts) || []).forEach(c => { if (c.lc !== 'all') n[c.s] = (n[c.s] || 0) + c.n + c.nid; });
+        sample = Object.keys(n).sort((a, b) => n[b] - n[a] || a.localeCompare(b))[0] || 'hela';
+    }
+    return { sample, track };
+}
+function ticBadgeText(sc) {
+    const parts = viewBadgeText(['sample', 'mode']).split(' · ');
+    if (view.sample === 'all') parts[0] = `${SAMPLE_LABEL[sc.sample] || String(sc.sample).toUpperCase()} (one QC standard at a time)`;
+    parts[1] = view.mode === 'all' ? 'DIA (DIA and DDA are never averaged together)' : sc.track;
+    return parts.join(' · ');
+}
+// The SPD menu for the LC choice: under "All LC systems", one entry per SPD
+// (its mixed "all" entry when it has one); otherwise the entries of that LC.
+function ticOptions(entries, lcChoice) {
+    if (lcChoice === 'evosep' || lcChoice === 'custom') {
+        const want = lcChoice === 'evosep' ? ['evosep', 'evosep_unv'] : ['nanolc'];
+        return entries.filter(c => want.includes(c.lc)).sort((a, b) => a.spd - b.spd);
+    }
+    const spds = [...new Set(entries.map(c => c.spd))].sort((a, b) => a - b);
+    return spds.map(spd => entries.find(c => c.spd === spd && c.lc === 'all') || entries.find(c => c.spd === spd));
 }
 
 function renderCommunityTIC() {
     const el = document.getElementById('chart-community-tic');
     const sel = document.getElementById('tic-spd-select');
     const lcSel = document.getElementById('tic-lc-select');
-    const modeSel = document.getElementById('tic-mode-select');
     const allCb = document.getElementById('tic-show-all');
-    const countEl = document.getElementById('tic-count');
+    const takeEl = document.getElementById('tic-count');
+    const noteEl = document.getElementById('tic-note');
     if (!el || !sel) return;
-    if (!sel.onchange) sel.onchange = () => renderCommunityTIC();
-    if (lcSel && !lcSel.onchange) lcSel.onchange = () => renderCommunityTIC();
-    if (modeSel && !modeSel.onchange) modeSel.onchange = () => renderCommunityTIC();
-
-    const say = (msg) => {
+    const sc = ticScope();
+    _setText('tic-badge', ticBadgeText(sc));
+    // An empty state: the message is said once, in the chart box, and the
+    // controls that cannot change it are off.
+    const say = (msg, lcOn) => {
         _resetChart(el);
-        el.innerHTML = `<p style="color:var(--text-muted)">${msg}</p>`;
-        if (countEl) countEl.innerHTML = '';
+        el.innerHTML = `<p style="color:var(--text-muted)">${esc(msg)}</p>`;
+        sel.innerHTML = '<option value="">none</option>';
+        sel.disabled = true;
+        if (lcSel) lcSel.disabled = !lcOn;
+        if (allCb) { allCb.disabled = true; if (!lcOn) allCb.checked = false; }
+        if (takeEl) takeEl.innerHTML = '';
+        if (noteEl) noteEl.textContent = '';
     };
-    const clearMenu = () => { sel.innerHTML = '<option>none</option>'; sel.dataset.opts = ''; sel.disabled = true; };
-    const setControls = (on) => { [sel, lcSel, allCb].forEach(c => { if (c) c.disabled = !on; }); };
-
-    const withTIC = allData.filter(s => s.tic_rt_bins && s.tic_intensity);
-    if (withTIC.length === 0) {
-        // Clear the menu too, or the previous QC standard's SPDs stay listed.
-        clearMenu();
-        setControls(false);
-        say(ticLoaded ? 'No TIC traces for this QC standard yet.' : 'Loading TIC traces…');
+    if (ticStatus !== 'ready' || !ticSummary) {
+        say(ticStatus === 'failed' ? 'The TIC summaries did not load. Reload the page to try again.' : 'Loading the TIC summaries…', false);
         return;
     }
-
-    // DIA and DDA have very different scan rates and cycle times, so mixing
-    // them in one median produces meaningless shapes. Default to DIA.
-    const modeFilter = (modeSel && modeSel.value) || 'dia';
-    const modeOf = (s) => (s.acquisition_mode || '').toLowerCase();
-    const modeRows = modeFilter === 'all' ? withTIC : withTIC.filter(s => modeOf(s).includes(modeFilter));
-    if (!modeRows.length) {
-        // Nothing to choose (today: DDA), so the other controls are off and
-        // the message is said once.
-        clearMenu();
-        setControls(false);
-        if (allCb) allCb.checked = false;
-        const anyDda = allDataRaw.some(s => s.tic_rt_bins && modeOf(s).includes('dda'));
-        say(modeFilter === 'dda'
-            ? (anyDda ? 'No DDA TIC traces for this QC standard yet.' : 'No DDA TIC traces have been submitted yet.')
-            : 'No TIC traces for this acquisition mode yet.');
+    const sLabel = SAMPLE_LABEL[sc.sample] || String(sc.sample).toUpperCase();
+    const entries = (ticSummary.cohorts || []).filter(c => c.s === sc.sample && c.t === sc.track);
+    if (!entries.length) {
+        const nTrack = (ticSummary.traces || {})[sc.track] || 0;
+        const other = sc.track === 'DDA' ? 'DIA' : 'DDA', nOther = (ticSummary.traces || {})[other] || 0;
+        say(nTrack ? `No ${sc.track} TIC traces for ${sLabel} yet.`
+            : `No ${sc.track} TIC traces have been submitted yet.${nOther ? ` All ${fmtN(nOther)} traces in the benchmark are ${other}.` : ''}`, false);
         return;
     }
-    setControls(true);
-
-    // LC filter before the SPD menu, so the menu lists only SPDs that have
-    // traces for that LC.
-    const lcFilter = (lcSel && lcSel.value) || 'all';
-    const lcOf = (s) => s.lc_system || inferLcSystem(s);
-    const lcRows = lcFilter === 'all' ? modeRows : modeRows.filter(s => lcOf(s) === lcFilter);
-
-    // Per SPD: rows with a raw MS1 trace, and rows with an identified-ion trace.
-    const bySpd = new Map();
-    lcRows.forEach(s => {
-        const spd = s.spd || 0;
-        const t = spd > 0 ? ticOf(s) : null;
-        if (!t) return;
-        if (!bySpd.has(spd)) bySpd.set(spd, { raw: [], idt: [] });
-        bySpd.get(spd)[t.idion ? 'idt' : 'raw'].push(s);
-    });
-    const spds = [...bySpd.keys()].sort((a, b) => a - b);
-    if (!spds.length) {
-        clearMenu();
-        say('No TIC traces for this LC system.');
+    const lcChoice = (lcSel && lcSel.value) || 'all';
+    const opts = ticOptions(entries, lcChoice);
+    if (!opts.length) {
+        say(`No ${sLabel} ${sc.track} TIC traces for this LC choice. Switch LC to "All LC systems".`, true);
         return;
     }
-
-    const optLabel = (spd) => {
-        const g = bySpd.get(spd), n = g.raw.length;
-        if (!n) return `${spd} SPD (${g.idt.length} identified-ion only)`;
-        let label = `${spd} SPD (${n} run${n === 1 ? '' : 's'}`;
-        if (g.idt.length) label += ` + ${g.idt.length} identified-ion`;
-        if (n < TIC_MIN_FOR_BANDS) label += ', no bands';
-        return label + ')';
-    };
-    // Opens on the SPD with the most runs, not on the lowest SPD (bug 11).
-    const biggest = spds.slice().sort((a, b) =>
-        (bySpd.get(b).raw.length - bySpd.get(a).raw.length)
-        || (bySpd.get(b).idt.length - bySpd.get(a).idt.length) || (a - b))[0];
-    const newOpts = spds.map(spd => `${spd}|${bySpd.get(spd).raw.length}|${bySpd.get(spd).idt.length}`).join(',');
-    if (sel.dataset.opts !== newOpts) {
-        // Keep the reader's SPD when it survives a filter change.
-        const prev = parseInt(sel.value);
-        sel.innerHTML = spds.map(spd => `<option value="${spd}">${esc(optLabel(spd))}</option>`).join('');
-        sel.dataset.opts = newOpts;
-        sel.value = String(spds.includes(prev) ? prev : biggest);
+    // Opens on the cohort with the most runs (§A.4 item 4), and keeps the
+    // reader's SPD when it survives a change of LC, standard or mode.
+    if (!opts.some(c => c.spd === ticPick.spd)) {
+        ticPick.spd = opts.slice().sort((a, b) => (b.n - a.n) || (b.nid - a.nid) || (a.spd - b.spd))[0].spd;
     }
+    const c = opts.find(x => x.spd === ticPick.spd);
+    sel.innerHTML = _optionsHtml(opts.map(x => [String(x.spd), ticMenuText(x)]), String(c.spd));
+    sel.value = String(c.spd);
     sel.disabled = false;
-    const selectedSPD = spds.includes(parseInt(sel.value)) ? parseInt(sel.value) : biggest;
+    if (lcSel) lcSel.disabled = false;
+    const banded = !!c.b;
+    if (allCb) {
+        allCb.disabled = !banded;
+        allCb.title = banded ? '' : 'Every run is already drawn';
+    }
+    const showAll = banded && !!(allCb && allCb.checked);
+    let runs = null;
+    if (showAll) {
+        loadTicRuns(c);
+        runs = ticRuns.get(ticKey(c));
+    }
 
-    const g = bySpd.get(selectedSPD);
-    const withModel = (rows) => rows.map(s => ({ ...ticOf(s), model: s.instrument_model || s.instrument_family || 'Unknown' }));
-    const raw = withModel(g.raw), idt = withModel(g.idt);
-    const nLabs = labCount(g.raw.length ? g.raw : g.idt);
-    const labsTxt = `${nLabs} lab${nLabs === 1 ? '' : 's'}`;
+    // The take line: what the picture is, how many runs and labs (§A.4 item 7).
+    const labsTxt = `${c.labs} lab${c.labs === 1 ? '' : 's'}`;
+    const mixed = c.parts.length > 1;
+    const name = mixed ? `${c.spd} SPD, all LC systems` : ticPartName(c.parts[0], c.spd);
+    let take;
+    if (banded) take = `<b>${runsLabsText(c.n, c.labs)}</b> ${singleLabTag(c.labs)} · ${esc(name)}: the median at each minute, with its middle half and 10–90% band.`;
+    else if (c.n) take = `<b>${c.n === 1 ? 'the one run' : `each of ${c.n} runs`} (too few for a median) · ${labsTxt}</b> ${singleLabTag(c.labs)} · ${esc(name)}.`;
+    else take = `<b>${fmtN(c.nid)} identified-ion trace${c.nid === 1 ? '' : 's'} only · ${labsTxt}</b> ${singleLabTag(c.labs)} · ${esc(name)}. No raw MS1 trace was submitted here; these come from STAN ${esc(c.iver.join(' and ') || 'an older version')}.`;
+    if (mixed) {
+        take += ` <b>All mixes gradients here:</b> ${c.parts.map(p => `${esc(ticPartShort(p))} (${p[1] ? fmtN(p[1]) : ''}${p[1] && p[2] ? ' + ' : ''}${p[2] ? `${fmtN(p[2])} identified-ion` : ''})`).join(' + ')}.`;
+    }
+    if (takeEl) takeEl.innerHTML = take;
+    const iv = c.iver.join(' and ') || 'older versions';
+    let note = c.n ? 'Trace: the MS1 total-ion chromatogram from the raw file, scaled to its own peak.'
+        : 'These are identified-ion traces, which start at the first identification rather than at acquisition start; each is scaled to its own peak.';
+    note += ` Instruments: ${(c.n ? c.inst : c.iinst).map(([m, k]) => `${m} ${fmtN(k)}`).join(' · ')}.`;
+    note += banded ? ` Time axis: the cohort's typical run, ${c.rt[0]}–${c.rt[c.rt.length - 1]} min; each percentile is taken across the runs at the same minute.`
+        : ' Each run is drawn on its own time axis, coloured by instrument.';
+    if (c.n && c.nid) note += ` ${fmtN(c.nid)} identified-ion trace${c.nid === 1 ? '' : 's'} from STAN ${iv} ${c.nid === 1 ? 'is' : 'are'} kept out of the median; click "Identified-ion traces" in the legend to show ${c.nid === 1 ? 'it' : 'them'}.`;
+    if (showAll) {
+        if (runs.status === 'loading') note += ` Loading all ${fmtN(c.n)} runs…`;
+        else if (runs.status === 'failed') note += ' The runs did not load; untick and tick "show all traces" to try again.';
+        else note += ` "Show all traces" draws every one of the ${fmtN(c.n)} runs, each on its own time axis, one colour per instrument.`;
+    }
+    if (noteEl) noteEl.textContent = note;
 
-    // Bands need TIC_MIN_FOR_BANDS raw traces on one bin count.
-    const lenCount = {};
-    raw.forEach(t => { lenCount[t.y.length] = (lenCount[t.y.length] || 0) + 1; });
-    const nBins = raw.length ? +Object.keys(lenCount).sort((a, b) => lenCount[b] - lenCount[a])[0] : 0;
-    const same = raw.filter(t => t.y.length === nBins);
-    const bands = same.length >= TIC_MIN_FOR_BANDS;
-
-    const lcLabel = lcFilter === 'evosep' ? ', Evosep' : lcFilter === 'custom' ? ', Custom LC' : '';
-    const modeLabel = modeFilter === 'dia' ? ', DIA' : modeFilter === 'dda' ? ', DDA' : ', DIA+DDA';
-    let head;
-    if (bands) head = `<b>${runsLabsText(raw.length, nLabs)}</b>`;
-    else if (raw.length >= TIC_MIN_FOR_BANDS) head = `<b>${runsLabsText(raw.length, nLabs)}</b>, each drawn on its own (trace lengths differ, no bands)`;
-    else if (raw.length) head = `<b>${raw.length === 1 ? 'the one run' : `each of ${raw.length} runs`} (too few for a median) · ${labsTxt}</b>`;
-    else head = `<b>${idt.length} identified-ion trace${idt.length === 1 ? '' : 's'} only · ${labsTxt}</b>`;
-    const kept = raw.length && idt.length ? ` · ${idt.length} identified-ion trace${idt.length === 1 ? '' : 's'} kept out of the median` : '';
-    if (countEl) countEl.innerHTML = `${head} ${singleLabTag(nLabs)} (${selectedSPD} SPD${lcLabel}${modeLabel})${kept}`;
-
-    const norm = (y) => { const mx = Math.max(...y); return mx > 0 ? y.map(v => v / mx) : y; };
+    const nar = isNarrowView();
+    const models = ticSummary.models || [];
+    const modelName = (mi, list) => (list || models)[mi] || 'Unknown';
     const seen = new Set();
     const first = (k) => { if (seen.has(k)) return false; seen.add(k); return true; };
-    const plotTraces = [];
-
-    if (bands) {
-        // Median + shaded percentile bands instead of a 600+ trace hairball.
-        // Raw traces are available via the "show all" toggle.
-        const rtAxis = same[0].rt;
-        const norms = same.map(t => norm(t.y));
-        const pct = (sorted, q) => {
-            if (!sorted.length) return 0;
-            const idx = Math.min(sorted.length - 1, Math.max(0, Math.round((q / 100) * (sorted.length - 1))));
-            return sorted[idx];
-        };
-        const p10 = [], p25 = [], p50 = [], p75 = [], p90 = [];
-        for (let j = 0; j < nBins; j++) {
-            const col = norms.map(n => n[j] || 0).sort((a, b) => a - b);
-            p10.push(pct(col, 10)); p25.push(pct(col, 25)); p50.push(pct(col, 50));
-            p75.push(pct(col, 75)); p90.push(pct(col, 90));
-        }
-        const band = (y, fill, fillcolor, name) => ({
-            x: rtAxis, y, type: 'scatter', mode: 'lines',
-            line: { width: 0, color: 'rgba(0,0,0,0)' },
-            fill: fill || undefined, fillcolor,
-            name: name || '', showlegend: !!name, hoverinfo: 'skip',
-        });
-        if (allCb && allCb.checked) {
-            const colors = ['rgba(100,180,255,0.12)', 'rgba(100,255,180,0.12)', 'rgba(255,180,100,0.12)', 'rgba(180,100,255,0.12)'];
-            raw.forEach((t, i) => {
-                plotTraces.push({ x: t.rt, y: norm(t.y), type: 'scatter', mode: 'lines',
-                    line: { width: 0.7, color: colors[i % colors.length] },
-                    name: t.model, showlegend: false, hoverinfo: 'skip' });
+    // [model index, first minute, last minute, per-mille values] -> x, y
+    const xy = ([, a, b, ys]) => ({ x: ys.map((_, j) => a + (b - a) * j / Math.max(1, ys.length - 1)), y: ys.map(v => v / 1000) });
+    const traces = [];
+    if (banded) {
+        if (runs && runs.status === 'ready') {
+            // One Plotly trace per instrument, its runs separated by gaps:
+            // hundreds of runs draw as a handful of traces.
+            const byModel = new Map();
+            runs.raw.forEach(r => {
+                const m = modelName(r[0], runs.models);
+                if (!byModel.has(m)) byModel.set(m, { x: [], y: [], n: 0 });
+                const o = byModel.get(m), p = xy(r);
+                o.x.push(...p.x, null); o.y.push(...p.y, null); o.n++;
             });
+            for (const [m, o] of byModel) {
+                traces.push({ x: o.x, y: o.y, type: 'scatter', mode: 'lines', connectgaps: false, opacity: 0.3,
+                    line: { width: 0.7, color: fc(m) }, name: `${esc(m)} runs (${fmtN(o.n)})`, legendgroup: 'runs ' + m, hoverinfo: 'skip' });
+            }
         }
-        // Order matters for 'tonexty' fills: each lower edge is pushed immediately
-        // before its upper edge so the fill anchors to the correct band floor.
-        plotTraces.push(band(p10, null, 'rgba(255,107,53,0)'));
-        plotTraces.push(band(p90, 'tonexty', 'rgba(255,107,53,0.12)', '10–90th pct'));
-        plotTraces.push(band(p25, null, 'rgba(255,107,53,0)'));
-        plotTraces.push(band(p75, 'tonexty', 'rgba(255,107,53,0.28)', '25–75th pct (IQR)'));
-        plotTraces.push({
-            x: rtAxis, y: p50, type: 'scatter', mode: 'lines',
-            line: { width: 3, color: '#ff6b35', dash: 'dash' },
-            name: `Median (${runsLabsText(norms.length, nLabs)})`, showlegend: true, hoverinfo: 'skip',
-        });
+        const live = c.b.p50.map((v, j) => v == null ? -1 : j).filter(j => j >= 0);
+        const j0 = live[0], j1 = live[live.length - 1];
+        const X = c.rt.slice(j0, j1 + 1), B = (k) => c.b[k].slice(j0, j1 + 1).map(v => v == null ? null : v / 1000);
+        const band = (y, fill, fillcolor, name, grp, show) => ({ x: X, y, type: 'scatter', mode: 'lines',
+            line: { width: 0, color: 'rgba(0,0,0,0)' }, fill: fill || 'none', fillcolor, name, legendgroup: grp, showlegend: show, hoverinfo: 'skip' });
+        // Order matters for 'tonexty': each lower edge right before its upper edge.
+        traces.push(band(B('p10'), null, 'rgba(255,107,53,0)', '10–90th pct', 'b1', false));
+        traces.push(band(B('p90'), 'tonexty', 'rgba(255,107,53,0.12)', '10–90th pct', 'b1', true));
+        traces.push(band(B('p25'), null, 'rgba(255,107,53,0)', '25–75th pct (IQR)', 'b2', false));
+        traces.push(band(B('p75'), 'tonexty', 'rgba(255,107,53,0.28)', '25–75th pct (IQR)', 'b2', true));
+        traces.push({ x: X, y: B('p50'), type: 'scatter', mode: 'lines', line: { width: 3, color: '#ff6b35', dash: 'dash' },
+            name: `Median (${runsLabsText(c.n, c.labs)})`, hovertemplate: '%{x:.2f} min · %{y:.2f}<extra>median</extra>' });
     } else {
         // Too few for a median: each run on its own time axis, by instrument.
-        raw.forEach(t => plotTraces.push({
-            x: t.rt, y: norm(t.y), type: 'scatter', mode: 'lines',
-            line: { width: 1.6, color: fc(t.model) },
-            name: t.model, legendgroup: 'raw ' + t.model, showlegend: first('raw ' + t.model),
-            hovertemplate: `${esc(t.model)}<br>%{x:.1f} min · %{y:.2f}<extra></extra>`,
-        }));
+        c.solo.forEach(r => {
+            const m = modelName(r[0]), p = xy(r);
+            traces.push({ x: p.x, y: p.y, type: 'scatter', mode: 'lines', line: { width: 1.6, color: fc(m) },
+                name: esc(m), legendgroup: 'solo ' + m, showlegend: first('solo ' + m),
+                hovertemplate: `${esc(m)}<br>%{x:.1f} min · %{y:.2f}<extra></extra>` });
+        });
     }
-    // Identified-ion traces: their own series, hidden behind a legend entry
-    // when raw traces exist, drawn when they are all there is.
-    idt.forEach(t => plotTraces.push({
-        x: t.rt, y: norm(t.y), type: 'scatter', mode: 'lines',
-        line: { width: raw.length ? 1 : 1.6, color: raw.length ? 'rgba(203,213,225,0.8)' : fc(t.model), dash: 'dot' },
-        name: `Identified-ion traces (${idt.length})`, legendgroup: 'idion', showlegend: first('idion'),
-        visible: raw.length ? 'legendonly' : true, hoverinfo: 'skip',
-    }));
+    // Identified-ion traces: their own series, behind a legend entry when
+    // raw runs exist, drawn when they are all there is.
+    c.idt.forEach(r => {
+        const m = modelName(r[0]), p = xy(r);
+        traces.push({ x: p.x, y: p.y, type: 'scatter', mode: 'lines',
+            line: { width: c.n ? 1 : 1.6, color: c.n ? 'rgba(203,213,225,0.8)' : fc(m), dash: 'dot' },
+            name: `Identified-ion traces, STAN ${esc(c.iver.join('/') || '?')} (${fmtN(c.nid)})`, legendgroup: 'idion', showlegend: first('idion'),
+            visible: c.n ? 'legendonly' : true, hovertemplate: `identified-ion · ${esc(m)}<br>%{x:.1f} min · %{y:.2f}<extra></extra>` });
+    });
 
     _resetChart(el);
-    Plotly.newPlot(el, plotTraces, {
-        xaxis: { title: 'Retention Time (min)', color: '#94a3b8', gridcolor: '#1e293b' },
-        yaxis: { title: 'Normalized Signal', color: '#94a3b8', gridcolor: '#1e293b', range: [0, 1.05] },
+    Plotly.newPlot(el, traces, {
+        xaxis: { title: { text: 'Retention Time (min)' }, color: '#94a3b8', gridcolor: '#1e293b', zeroline: false },
+        yaxis: { title: { text: 'Normalized Signal' }, color: '#94a3b8', gridcolor: '#1e293b', range: [0, 1.05], zeroline: false },
         paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-        margin: { t: 10, b: 50, l: 60, r: 20 },
-        height: 350,
-        legend: { x: 0.7, y: 0.95, bgcolor: 'rgba(0,0,0,0.5)', font: { color: '#e2e8f0' } },
-    }, {responsive: true});
+        font: { color: '#a0b4cc', size: nar ? 11 : 12 },
+        margin: nar ? { t: 10, b: 130, l: 48, r: 8 } : { t: 10, b: 50, l: 60, r: 20 },
+        height: nar ? 420 : 350,
+        legend: nar ? { orientation: 'h', x: 0, y: -0.3, font: { color: '#e2e8f0', size: 10 } }
+                    : { x: 0.7, y: 0.95, bgcolor: 'rgba(0,0,0,0.5)', font: { color: '#e2e8f0' } },
+        hoverlabel: { bgcolor: '#011a3a', bordercolor: '#DAAA00', font: { color: '#e8eef5' } },
+    }, { responsive: true });   // the modebar stays: zoom, pan and the PNG download
 }
 
 // ── Lab trend vs. reference (community redesign B3) ─────────────────

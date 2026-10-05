@@ -10,10 +10,11 @@ Sage 0.14.x against the frozen FASTA at 1% PSM FDR) is placed in its cohort;
 every other search gets a specific refusal. No scaling factor, preliminary or
 otherwise, is applied to any search.
 
-Server side: SPACE_VERSION 1.5.0. Page side, as text: the lookup holds the
+Server side: SPACE_VERSION 1.5.0 (1.6.0 since the TIC overlay,
+tests/test_relay_community_tic.py). Page side, as text: the lookup holds the
 #where anchor with the reference ranges right below it, no network or storage
-call in its code, TIC overlay, PEG Watch and the P2a/P2b read-time rules
-byte-identical to main fc5cb33. Page side, run in node against the page's own
+call in its code, PEG Watch and the P2a/P2b read-time rules byte-identical to
+main fc5cb33 (the TIC overlay was too, until 1.6.0 rebuilt it). Page side, run in node against the page's own
 script (the harness of tests/test_relay_community_p2b.py, plus a FileReader,
 and network APIs that record any call): the percentile against a hand
 computation, the cohort key and ranking rules, defaults from the filter bar,
@@ -182,10 +183,11 @@ def _interp_quantile(values: list[float], p: float) -> float:
 
 # ── server and page text ─────────────────────────────────────────────
 
-def test_space_version_is_1_5_0(client, relay):
-    assert relay.SPACE_VERSION == "1.5.0"
-    assert client.get("/api/version").json()["version"] == "1.5.0"
-    assert "community site v1.5.0" in _page(client)
+def test_space_version_is_1_5_0_or_later(client, relay):
+    # P2c shipped as 1.5.0; the TIC overlay (tests/test_relay_community_tic.py) is 1.6.0.
+    assert relay.SPACE_VERSION == "1.6.0"
+    assert client.get("/api/version").json()["version"] == "1.6.0"
+    assert "community site v1.6.0" in _page(client)
 
 
 def test_where_anchor_is_the_lookup_and_the_ranges_follow(client):
@@ -259,24 +261,29 @@ P2A_RULES = {
     "view_state_js": "fc3b5b7964de0e86a1383d9014312957cce263cba5371b01c6df6cb32bc8efb2",
 }
 LOOKUP_PANEL_LINE = "    ['lookup',         _NO_COLUMN,   () => renderLookup()],   // fields the visitor has not set follow the bar (P2c)\n"
+# 1.6.0 changed exactly one more line here: the TIC overlay follows DIA / DDA
+# too (spec §A.4). The pin below is of the fc5cb33 text, so the new line is
+# put back to the old one before hashing.
+TIC_PANEL_LINE = "    ['community-tic',  ['sample', 'mode'], () => renderCommunityTIC()],   // its SPD and LC menus are its own (§A.4)\n"
+TIC_PANEL_LINE_FC5CB33 = "    ['community-tic',  ['sample'],   () => renderCommunityTIC()],\n"
 
 
-def test_tic_peg_and_p2a_rules_are_byte_identical_to_fc5cb33(client):
+def test_peg_and_p2a_rules_are_byte_identical_to_fc5cb33(client):
     html = _page(client)
     got = {k: hashlib.sha256(v.encode()).hexdigest() for k, v in _regions(html).items()}
-    assert got == UNCHANGED      # TIC code and card, PEG section, CSS and script, esc(): unchanged since 1.3.0
+    assert got == UNCHANGED      # PEG section, CSS and script, esc(): unchanged since 1.3.0
 
     def between(a: str, b: str, incl: bool = False) -> str:
         i = html.index(a)
         j = html.index(b, i + len(a))
         return html[i:j + (len(b) if incl else 0)]
     view_state = between("const VIEW_DEFAULT = {", "function _countBy(rows, keyOf) {")
-    assert view_state.count(LOOKUP_PANEL_LINE) == 1
+    assert view_state.count(LOOKUP_PANEL_LINE) == 1 and view_state.count(TIC_PANEL_LINE) == 1
     rules = {
         "dedupe_heldback_js": between("const DUP_WINDOW_MS = 2000;", "let submittedRows = 0;"),
         "colkey_js": between("function colKey(s) {", "\n}\n", True),
         "cohort_key_js": between("const EVOSEP_METHODS = {", "// ── One filter state for every panel (B2)"),
-        "view_state_js": view_state.replace(LOOKUP_PANEL_LINE, ""),
+        "view_state_js": view_state.replace(LOOKUP_PANEL_LINE, "").replace(TIC_PANEL_LINE, TIC_PANEL_LINE_FC5CB33),
     }
     assert {k: hashlib.sha256(v.encode()).hexdigest() for k, v in rules.items()} == P2A_RULES
     # Outside its own block the lookup adds exactly: the PANELS line, its call

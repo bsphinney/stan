@@ -44,9 +44,10 @@ SECRET_PRINT = "feedfacecafebeef"
 # ── server: SPACE_VERSION ────────────────────────────────────────────
 
 def test_space_version(client):
-    # P1 shipped as 1.2.2, P2a as 1.3.0, P2b as 1.4.0; P2c (tests/test_relay_community_p2c.py) is 1.5.0.
-    assert client.get("/api/version").json()["version"] == "1.5.0"
-    assert "community site v1.5.0" in _page(client)
+    # P1 shipped as 1.2.2, P2a as 1.3.0, P2b as 1.4.0, P2c as 1.5.0; the TIC
+    # overlay (tests/test_relay_community_tic.py) is 1.6.0.
+    assert client.get("/api/version").json()["version"] == "1.6.0"
+    assert "community site v1.6.0" in _page(client)
 
 
 # ── server: D4, no file names in public responses ────────────────────
@@ -256,7 +257,7 @@ def test_page_text_p1(client):
     # bug 19, TIC wording, D7 library wording, decision 7 footer
     assert "Populated going forward" not in html
     assert "Identified (DIA) or raw (DDA)" not in html
-    assert "MS1 total-ion chromatograms read from the raw file" in html
+    assert "The MS1 total-ion chromatogram from the raw file" in html     # §A.4 item 1, relay 1.6.0
     assert "predicted spectral library" not in html
     assert "empirical HeLa libraries, one per vendor (timsTOF ~54k, Orbitrap ~170k precursors)" in html
     assert "opensource.org/licenses/MIT" not in html and "Code: <a" in html
@@ -516,73 +517,10 @@ def test_lab_trend_clears_a_stale_empty_state(client, tmp_path):
     assert "the cohort holds 12 runs · 1 lab" in got["sum"]
 
 
-def _tic(i: int, spd: int, idion: bool = False, **over) -> dict:
-    start = 2.0 if idion else 0.05          # an identified-ion trace starts at the first ID
-    rt = [round(start + 0.1 * j, 3) for j in range(30)]
-    y = [float(1 + (j % 10)) for j in range(30)]
-    return _row(i, spd=spd, lc_system="evosep", tic_rt_bins=json.dumps(rt), tic_intensity=json.dumps(y), **over)
-
-
-def _tic_rows() -> list[dict]:
-    rows = [_tic(i, 7) for i in range(2)]                       # the lowest SPD: 2 runs
-    rows += [_tic(10 + i, 100) for i in range(6)]               # the largest cohort
-    rows += [_tic(20 + i, 60) for i in range(3)] + [_tic(30, 60, idion=True)]
-    return rows
-
-
-@needs_node
-def test_tic_opens_on_the_largest_cohort_with_bands(client, tmp_path):
-    scenario = f"""(() => {{
-        ticLoaded = true; allData = {json.dumps(_tic_rows())};
-        renderCommunityTIC();
-        const p = plots[plots.length - 1];
-        return {{ sel: els['tic-spd-select'].value, opts: els['tic-spd-select'].innerHTML,
-                  count: els['tic-count'].innerHTML, names: p.traces.map(t => t.name) }};
-    }})()"""
-    got = _run(client, tmp_path, scenario)
-    assert got["sel"] == "100"
-    assert "7 SPD (2 runs, no bands)" in got["opts"] and "100 SPD (6 runs)" in got["opts"]
-    assert "60 SPD (3 runs + 1 identified-ion, no bands)" in got["opts"]
-    assert "6 runs · 1 lab" in got["count"] and "single-lab reference" in got["count"]
-    assert "Median (6 runs · 1 lab)" in got["names"] and "25–75th pct (IQR)" in got["names"]
-
-
-@needs_node
-def test_tic_below_five_runs_draws_each_run_and_keeps_identified_ion_out(client, tmp_path):
-    scenario = f"""(() => {{
-        ticLoaded = true; allData = {json.dumps(_tic_rows())};
-        renderCommunityTIC();
-        document.getElementById('tic-spd-select').value = '60';
-        renderCommunityTIC();
-        const p = plots[plots.length - 1];
-        return {{ count: els['tic-count'].innerHTML,
-                  traces: p.traces.map(t => ({{ name: t.name, visible: t.visible === undefined ? true : t.visible,
-                                                 dash: (t.line || {{}}).dash || '' }})) }};
-    }})()"""
-    got = _run(client, tmp_path, scenario)
-    assert "each of 3 runs (too few for a median)" in got["count"]
-    assert "1 identified-ion trace kept out of the median" in got["count"]
-    names = [t["name"] for t in got["traces"]]
-    assert not any(n.startswith("Median") or "pct" in n for n in names)
-    assert names.count("timsTOF HT") == 3
-    [idion] = [t for t in got["traces"] if t["dash"] == "dot"]
-    assert idion["name"] == "Identified-ion traces (1)" and idion["visible"] == "legendonly"
-
-
-@needs_node
-def test_tic_dda_says_none_submitted_and_turns_its_controls_off(client, tmp_path):
-    scenario = f"""(() => {{
-        ticLoaded = true; allDataRaw = allData = {json.dumps(_tic_rows())};
-        renderCommunityTIC();
-        document.getElementById('tic-mode-select').value = 'dda';
-        renderCommunityTIC();
-        return {{ msg: els['chart-community-tic'].innerHTML,
-                  off: ['tic-spd-select', 'tic-lc-select', 'tic-show-all'].map(i => els[i].disabled),
-                  mode: els['tic-mode-select'].disabled }};
-    }})()"""
-    got = _run(client, tmp_path, scenario)
-    assert "No DDA TIC traces have been submitted yet." in got["msg"]
-    assert got["off"] == [True, True, True] and got["mode"] is False
+# The TIC overlay's P1 behaviours (it opens on the largest cohort, draws each
+# run below 5 runs and keeps identified-ion traces out of the median, and its
+# DDA empty state) moved with the panel to the relay's per-cohort summaries
+# in 1.6.0: tests/test_relay_community_tic.py covers them there.
 
 
 @needs_node

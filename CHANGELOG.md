@@ -11,6 +11,105 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.15] — 2026-10-05
+
+Community site redesign: the TIC overlay (spec
+`docs/superpowers/specs/2026-09-29-community-redesign-and-precursor-lookup-design.md`
+§A.4 items 1–8 and the page-weight half of §A.3 B5), in the relay
+(`hf_space/app.py`, Space **1.6.0**), as in mockup v3.1. No STAN client
+behaviour changes; the bump carries the relay release. No schema change and
+no stored row changes. PEG Watch and the lookup are byte-identical to 1.5.0,
+and so are the P2a read-time rules (the D8 dedupe, the >5,000 ng hold-back,
+`colKey()`) and the B2 cohort key, pinned by hash in the tests.
+
+### Changed
+- **The page no longer downloads every stored trace.** It loaded
+  `/api/tic-overlay` after the first render: 8.7 MB raw, 3.1 MB gzipped, more
+  than half of a cold load. It now loads `/api/tic-summary`, 87 KB raw and
+  30 KB gzipped on the 2026-09-29 snapshot, and the whole default load went
+  from 5.02 MB to 1.96 MB on the wire (local relay, same snapshot, headless
+  Chrome). Every run of a cohort loads from `/api/tic-traces` only when "show
+  all traces" is ticked, for that cohort (100 SPD Evosep: 119 KB gzipped).
+- **DIA / DDA and the QC standard follow the filter bar.** The panel's own
+  acquisition-mode menu is gone; its SPD and LC menus (All LC systems ·
+  Evosep only · Custom / nanoLC only), each run scaled to its own peak, the
+  dashed median with its IQR and 10–90% bands, "show all traces", Plotly's
+  zoom, pan, legend toggles and PNG download, and the ⛶ full-screen button
+  are kept. Under the bar's "Both" the panel shows DIA, and under "All
+  standards" the standard with the most runs, and its badge says so: one
+  median never mixes DIA with DDA or HeLa with K562.
+- **It says what it plots:** the MS1 total-ion chromatogram from the raw
+  file. The identified-ion traces of older submissions (STAN 0.2.282 and
+  0.2.283 among others; they start at the first identification) stay out of
+  every median, as since 1.2.2, behind their own legend entry.
+- **Percentiles at the same minute.** Each trace is interpolated onto the
+  cohort's median time axis, and a minute has bands only where at least half
+  the runs, and never fewer than 5, cover it. The page used to take them at
+  the same bin index on the first trace's axis.
+- **Opens on the largest cohort** (100 SPD Evosep, 626 runs on the
+  snapshot). Bands only from 5 runs or more; below that each run is drawn on
+  its own time axis, coloured by instrument, and the line reads "each of N
+  runs (too few for a median)".
+- **The page's own rows and LC rule.** The relay builds each summary from
+  the same rows as every other panel: the `/api/leaderboard` rows put through
+  a Python port of the page's read-time rules (one copy per acquisition, a
+  usable copy first; held-back and flagged rows out) and grouped with
+  `lcClass()`, not the old `inferLcSystem()`. Evosep is named only at a real
+  Evosep method; an Evosep run at 36 or 46 SPD is "SPD unverified"; a run with
+  no LC at an Evosep-method SPD is "LC not recorded", never Evosep, and
+  appears only under All LC systems. On the snapshot: 3,305 rows, 3,061
+  acquisitions, 3,059 usable, 3,023 traces (the old page counted 3,268).
+- **Menu labels** use the stored run length (`gradient_length_min`), name
+  nanoLC by the gradient its SPD implies as the rest of the page does
+  ("38 SPD · nanoLC · ~30 min gradient · 44 min run · 515 runs +2
+  identified-ion"), say "(no bands)" under 5 runs, and say what "All LC
+  systems" mixes ("30 SPD · Evosep 44 min + nanoLC 44 min + LC not recorded
+  43 min"); the line above the chart spells the mix out.
+- **The take line** counts runs and labs with `labCount()` ("626 runs · 1
+  lab") and carries the single-lab tag.
+- **The DDA empty state** turns the SPD and LC menus and the checkbox off and
+  says its message once, in the chart box.
+
+### Added
+- **`GET /api/tic-summary`**: one entry per QC standard × mode × SPD × LC
+  class, plus an "all LC" entry where an SPD holds more than one class, with
+  its runs, identified-ion traces, labs, instruments, run lengths, the
+  cohort's median time axis and p10/p25/p50/p75/p90 per mille of each run's
+  peak, and for cohorts under 5 runs each run on its own axis. Built once per
+  load of the submissions table (a fingerprint of the rows skips the rebuild
+  when the 5-minute cache refills with the same data) and served from memory;
+  0.5–0.8 s per build on the snapshot, stdlib only.
+- **`GET /api/tic-traces?sample=&mode=&spd=&lc=`**: every raw MS1 trace of
+  one cohort, each on its own time axis. 404 for a cohort that does not
+  exist. `/api/tic-overlay` still serves every stored trace, unchanged.
+- Neither new endpoint carries a file name, lab name or submission id.
+- `/api/leaderboard` sorts with `maintain_order=True`, so the summaries read
+  the rows in exactly its order.
+
+### Tests
+- `tests/test_relay_community_tic.py` (23): SPACE_VERSION 1.6.0; the
+  summary's shape; built once per data refresh (not per request, not when the
+  cache refills with the same rows, once when they change); the traces
+  endpoint and the old one; no file, lab or submission names; the
+  percentiles against a hand computation at the same minute (and different
+  from the bin-index method); the 5-run band rule; the `lcClass()` grouping;
+  the Python port against the page's own `dedupeRuns`/`isHeldBack`/`lcClass`/
+  `labCount`/`runLenText` on edge-case rows (copies across offsets,
+  held-back and flagged copies, float counts, date-only and unparseable
+  dates, a half SPD, LC with spaces) and on the 2026-09-29 snapshot (identical
+  kept rows, usable rows and cohort membership; skipped when the snapshot is
+  not on the machine); and in node: opening on the largest cohort, the menu
+  labels, small cohorts, the DDA empty state, the filter bar driving the
+  panel, "show all traces" fetching that cohort only and once, the page load
+  fetching the summary and not `/api/tic-overlay`, a failed summary, hostile
+  instrument names and versions escaped in the menu, take line, legend and
+  hovers; the new TIC code, card and CSS pinned; the lookup and PEG's server
+  code pinned to ede086b; and the summaries without numpy.
+- The P1, P2a, P2b, P2c and PEG tests read SPACE_VERSION 1.6.0. P1's three
+  TIC tests moved to the new file. P2b's TIC pins are replaced by the new
+  file's; P2c's view-state pin allows exactly the one changed `PANELS` line
+  (the TIC follows `['sample', 'mode']`).
+
 ## [1.2.14] — 2026-10-01
 
 Community site redesign, phase P2c ("Where does my run sit?"), in the relay
