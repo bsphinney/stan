@@ -226,6 +226,12 @@ def test_leaderboard_serves_them_and_old_rows_read_null(client, hub):
     frame.write_parquet(buf)
     hub.files["benchmark_latest.parquet"] = buf.getvalue()
     rows = {r["submission_id"]: r for r in client.get("/api/leaderboard").json()["submissions"]}
-    assert rows["a"]["lc_model"] is None and rows["a"]["faims"] is None
+    assert rows["a"]["lc_model"] is None
     assert rows["b"]["lc_model"] == "Evosep One" and rows["b"]["faims"] is False
+    # Since relay 1.8.0 (P3b) /api/leaderboard serves the effective FAIMS:
+    # the stored value, else the file-name hint, else false, with
+    # faims_source saying which ('' = not recorded and no hint). The stored
+    # column itself is unchanged (null for the old row).
+    assert rows["a"]["faims"] is False and rows["a"]["faims_source"] == ""
+    assert rows["b"]["faims_source"] == "stored"
     assert "run_name" not in rows["a"]

@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.7.0"
+SPACE_VERSION = "1.8.0"
 
 # Fields a submission row keeps on the server but that no public response
 # may carry (community redesign D4, decision 5). run_name is the raw file
@@ -57,6 +57,10 @@ SPACE_VERSION = "1.7.0"
 # fingerprint is a hash of it. Both stay in the stored rows for de-duplication
 # and /api/update. The page shows instrument, date and SPD instead.
 PRIVATE_SUBMISSION_FIELDS = ("run_name", "fingerprint")
+# What /api/leaderboard works out from the file name instead of sending it
+# (community redesign P3b, relay 1.8.0): the amount check, and FAIMS with
+# where it came from. See _leaderboard_frame.
+P3B_DERIVED_FIELDS = ("amount_check", "faims", "faims_source")
 
 app = FastAPI(title="STAN Community Benchmark", version=SPACE_VERSION)
 
@@ -2105,8 +2109,9 @@ async def leaderboard(refresh: int = 0) -> dict:
             return {"submissions": [], "count": 0}
 
         # Sort by primary metric descending — defensive, since n_precursors
-        # may be missing from DDA submissions. The TIC summaries read the
-        # rows in this same order (_leaderboard_frame).
+        # may be missing from DDA submissions — and work out the amount check
+        # and FAIMS from the file name (P3b). The TIC summaries read the rows
+        # in this same order, with the same fields (_leaderboard_frame).
         df = _leaderboard_frame(df)
         # TIC traces (~10MB across all rows) stay out of it: /api/tic-overlay
         # serves every stored trace, and the page reads /api/tic-summary and
@@ -2319,9 +2324,10 @@ def _page_instant_ms(r: dict) -> int | None:
 
 
 def _page_held_back(r: dict) -> bool:
-    """isHeldBack(): a stored amount above 5,000 ng is a unit error."""
+    """isHeldBack(): a stored amount above 5,000 ng is a unit error, and an
+    amount the file name contradicts is unconfirmed (amount_check, P3b)."""
     a = _js_num(r.get("amount_ng"))
-    return (a if a == a else 0.0) > _PAGE_HELD_BACK_NG
+    return (a if a == a else 0.0) > _PAGE_HELD_BACK_NG or r.get("amount_check") == "mismatch"
 
 
 def _page_usable(r: dict) -> bool:
@@ -2540,18 +2546,202 @@ def _tic_entry(s: str, track: str, spd: int, lc: str, by_lc: dict[str, list[dict
     return entry, runs
 
 
+# ── P3b: the amount and FAIMS check at read time (relay 1.8.0) ───────
+# Brett's decision 3 (2026-10-05): a run whose file name states a different
+# amount than the stored one is held back from every range and ranking, and a
+# FAIMS token in the file name marks the run as FAIMS. Both are worked out
+# here from the private file name, which never leaves the server:
+# /api/leaderboard carries only the results (amount_check, faims,
+# faims_source). Nothing stored changes; correcting the stored amounts is P4
+# (gated). On the 2026-09-29 snapshot: 71 rows unconfirmed, 15 marked FAIMS.
+#
+# The relay is vendored and cannot import stan, so the amount parser below is
+# a verbatim copy of stan/community/amount.py (parse_amount_ng, amount_problem
+# and their helpers, renamed with an _amount prefix).
+# tests/test_relay_community_p3b.py runs one fixture list through both copies
+# and asserts identical results: change both or neither.
+
+_AMOUNT_MAX_PLAUSIBLE_NG = 5000.0
+_AMOUNT_UNIT_TO_NG = {"ng": 1.0, "ug": 1000.0, "µg": 1000.0, "μg": 1000.0, "mcg": 1000.0}
+# A number, an optional single "_", "-" or space, then a mass unit. The unit
+# is required ("HeL50" states no amount), µ is U+00B5 and μ U+03BC, and the
+# unit may be followed by an upper-case letter ("HeLa100ngDIA") but not a
+# lower-case one ("2ugli" is not 2 µg). Comments on each rule: amount.py.
+_AMOUNT_RE = re.compile(
+    r"(?<![\d.])(\d+(?:\.\d+)?)[_\- ]?((?i:ng|ug|µg|μg|mcg))(?![a-z])"
+)
+
+
+def _amounts_in(name: str) -> list[float]:
+    """Every unit-anchored amount in ``name``, in order, in nanograms."""
+    out: list[float] = []
+    for m in _AMOUNT_RE.finditer(name or ""):
+        try:
+            value = float(m.group(1))
+        except ValueError:
+            continue
+        out.append(value * _AMOUNT_UNIT_TO_NG[m.group(2).lower()])
+    return out
+
+
+def _amount_parse_ng(name: str | None) -> float | None:
+    """parse_amount_ng(): the amount a file name states, in ng, or None."""
+    found = _amounts_in(name or "")
+    return found[0] if found else None
+
+
+def _amount_same(a: float, b: float) -> bool:
+    return math.isclose(float(a), float(b), rel_tol=1e-3, abs_tol=1e-6)
+
+
+def _amount_positive(value: object) -> bool:
+    try:
+        v = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(v) and v > 0
+
+
+def _amount_problem(
+    run_name: str | None,
+    amount_ng: float | None,
+    amount_source: str | None = None,
+) -> str | None:
+    """amount_problem(): why this run's amount cannot be trusted, or None."""
+    del amount_source  # the rule is the same whatever the source; kept for callers
+    found = _amounts_in(run_name or "")
+    if amount_ng is not None and _amount_positive(amount_ng) and float(amount_ng) > _AMOUNT_MAX_PLAUSIBLE_NG:
+        return f"amount {_amount_fmt(amount_ng)} ng is above {_amount_fmt(_AMOUNT_MAX_PLAUSIBLE_NG)} ng"
+    if found and max(found) > _AMOUNT_MAX_PLAUSIBLE_NG:
+        return (
+            f"file name states {_amount_fmt(max(found))} ng, above "
+            f"{_amount_fmt(_AMOUNT_MAX_PLAUSIBLE_NG)} ng (likely a unit typo)"
+        )
+    distinct: list[float] = []
+    for v in found:
+        if not any(_amount_same(v, d) for d in distinct):
+            distinct.append(v)
+    if len(distinct) > 1:
+        return "file name states more than one amount: " + ", ".join(
+            f"{_amount_fmt(v)} ng" for v in distinct
+        )
+    if distinct and amount_ng is not None and not _amount_same(distinct[0], amount_ng):
+        return (
+            f"amount conflict: file name says {_amount_fmt(distinct[0])} ng, "
+            f"the run says {_amount_fmt(amount_ng)} ng"
+        )
+    return None
+
+
+def _amount_fmt(v: float) -> str:
+    v = float(v)
+    return f"{v:,.0f}" if v.is_integer() else f"{v:,.6g}"
+
+
+def _amount_check(run_name: str | None, amount_ng: Any) -> str:
+    """'mismatch' when the file name states an amount and the stored one,
+    as the page reads it, disagrees with it (amount_problem: another amount,
+    two different amounts, or a unit typo above 5,000 ng such as "HeL50ug"),
+    else ''.
+
+    Only a stored amount the page would otherwise use is checked: from
+    above 0 to 5,000 ng. Nothing stored means the page already reads
+    "amount not recorded", and above 5,000 ng isHeldBack() holds the run
+    back on its own and counts it as a unit error, so the two hold-backs the
+    stats row counts never overlap.
+    """
+    a = _js_num(amount_ng)
+    if not (a == a and 0 < a <= _PAGE_HELD_BACK_NG):
+        return ""
+    return "mismatch" if _amount_problem(run_name, a) else ""
+
+
+# FAIMS from the file name. UC Davis writes it as its own token: "Faim" in
+# "FL271022_FaimHe1ug_CV4680microDia-w6_120m_3.raw" (13 Lumos runs) and
+# "Faims" in "Ex150421_HeLa50ng_FaimsCV-60UnivPep_peS9apr_90m1.raw" (2
+# Exploris 480 runs). The token is matched in any case, must not follow a
+# letter, and must not be followed by a lower-case letter: CamelCase goes on
+# ("FaimHe1ug", "FaimsCV", "FAIMS_CV45") but a longer word does not
+# ("Fail" never reaches it; "Faimous" is not FAIMS). A token that says FAIMS
+# was off does not count: "no", "non", "wo" or "without" just before it
+# ("no_FAIMS", "woFAIMS" never matches anyway), or "off" just after it
+# ("FAIMS_off"; "FAIMSoff" never matches). A compensation voltage ("CV-50")
+# alone is not read: CV is also a coefficient of variation. On the
+# 2026-09-29 snapshot this marks exactly the 15 names that contain "faim" in
+# any case, and none of the 6 that contain "Fail". A timsTOF has no FAIMS
+# interface, so its file names are not read for it.
+# "faim(?!s)|faims", not "faims?": the optional s would backtrack, so
+# "FAIMSoff" would match as "FAIM" before a capital S.
+_FAIMS_NAME_RE = re.compile(r"(?<![A-Za-z])(?i:faim(?!s)|faims)(?![a-z])")
+_FAIMS_NOT_BEFORE = re.compile(r"(?<![A-Za-z])(?i:no|non|wo|without)[_\- ]?$")
+_FAIMS_NOT_AFTER = re.compile(r"[_\- ]?(?i:off)(?![a-z])")
+
+
+def _faims_from_name(run_name: str | None, model: Any = None, family: Any = None) -> bool:
+    """Whether the file name marks the run as FAIMS (never for a timsTOF)."""
+    if "timstof" in f"{model or ''} {family or ''}".lower():
+        return False
+    name = run_name or ""
+    for m in _FAIMS_NAME_RE.finditer(name):
+        if not _FAIMS_NOT_BEFORE.search(name, 0, m.start()) and not _FAIMS_NOT_AFTER.match(name, m.end()):
+            return True
+    return False
+
+
+def _effective_faims(stored: Any, run_name: str | None, model: Any = None, family: Any = None) -> tuple[bool, str]:
+    """(faims, faims_source): the stored value when there is one ('stored',
+    from STAN 1.2.16's scan-filter check), else the file-name hint
+    ('filename'), else False with ''."""
+    v = _clean_faims(stored)
+    if v is not None:
+        return v, "stored"
+    if _faims_from_name(run_name, model, family):
+        return True, "filename"
+    return False, ""
+
+
 def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
-    """The submissions in /api/leaderboard order: most precursors first."""
+    """The submissions in /api/leaderboard order (most precursors first),
+    with the P3b fields worked out from the private file name (run_name):
+
+    * ``amount_check``: 'mismatch' or '' (_amount_check);
+    * ``faims``: the stored value when there is one, else the file-name hint,
+      always a bool (_effective_faims);
+    * ``faims_source``: 'stored', 'filename' or ''.
+
+    The file name stays in the frame: every caller drops
+    PRIVATE_SUBMISSION_FIELDS before anything leaves the server.
+    """
     if "n_precursors" in df.columns:
         df = df.sort("n_precursors", descending=True, nulls_last=True, maintain_order=True)
-    return df
+    n = df.height
+
+    def col(c: str) -> list:
+        return df[c].to_list() if c in df.columns else [None] * n
+
+    checks: list[str] = []
+    faims: list[bool] = []
+    sources: list[str] = []
+    for name, amount, stored, model, family in zip(col("run_name"), col("amount_ng"), col("faims"),
+                                                   col("instrument_model"), col("instrument_family")):
+        name = name if isinstance(name, str) else ""
+        checks.append(_amount_check(name, amount))
+        f, src = _effective_faims(stored, name, model, family)
+        faims.append(f)
+        sources.append(src)
+    return df.with_columns(pl.Series("amount_check", checks, dtype=pl.Utf8),
+                           pl.Series("faims", faims, dtype=pl.Boolean),
+                           pl.Series("faims_source", sources, dtype=pl.Utf8))
 
 
 def _tic_groups(df: "pl.DataFrame") -> dict:
     """The page's rows and the TIC cohorts they make (§A.4 item 5): the
     /api/leaderboard rows, one per acquisition, usable, with a trace, by
-    (QC standard, track, SPD) and then LC class, each in acquisition order."""
-    rows = _leaderboard_frame(df.drop([c for c in PRIVATE_SUBMISSION_FIELDS if c in df.columns])).to_dicts()
+    (QC standard, track, SPD) and then LC class, each in acquisition order.
+    The P3b fields are worked out before the file name is dropped, as for
+    /api/leaderboard, so a run held back there is held back here."""
+    framed = _leaderboard_frame(df)
+    rows = framed.drop([c for c in PRIVATE_SUBMISSION_FIELDS if c in framed.columns]).to_dicts()
     kept, dropped = _page_dedupe(rows)
     usable = [r for r in kept if _page_usable(r)]
     groups: dict[tuple, dict[str, list[dict]]] = {}
@@ -4226,6 +4416,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
         .ws-link { font: inherit; font-size: inherit; color: var(--ucd-gold); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; text-align: left; }
         .ws-hidden { display: none !important; }
 
+        /* ── Community redesign P3b (relay 1.8.0) ──
+           The amount marks in the submissions table and the held-back list
+           under it. */
+        .amt-tag { display: inline-block; font-size: 0.68rem; font-weight: 650; letter-spacing: 0.03em; padding: 0 6px; border-radius: 999px; border: 1px dashed var(--text-secondary); color: var(--text-secondary); white-space: nowrap; vertical-align: 1px; cursor: help; }
+        .amt-tag.held { border-style: solid; border-color: var(--yellow); color: var(--yellow); }
+        details.held { margin-top: 1rem; border-top: 1px solid var(--table-border); padding-top: 0.6rem; }
+        details.held > summary { cursor: pointer; color: var(--text-secondary); font-size: 0.85rem; line-height: 1.5; }
+        details.held table { margin-top: 0.6rem; }
+
         /* ── Community TIC overlay (relay 1.6.0, spec §A.4) ──
            The panel's own SPD and LC menus and "show all traces", the take
            line and the note. The chart div stays a direct child of the card,
@@ -4428,7 +4627,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
                     <li>Run date, submission time and ID</li>
                     <li>Instrument model and family, acquisition mode</li>
                     <li>LC system, SPD and gradient length</li>
-                    <li>QC standard and amount loaded</li>
+                    <li>QC standard and amount loaded, and where the amount came from (declared, parsed from the file name, or assumed)</li>
+                    <li>FAIMS on or off, and whether that was recorded or read from the file name</li>
                     <li>Column vendor and model, if you set them</li>
                     <li>Precursor, peptide, protein and PSM counts</li>
                     <li>Mass accuracy, peak width, points per peak, peak capacity</li>
@@ -4439,7 +4639,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
                     <li>STAN, DIA-NN and schema versions; the frozen FASTA and library checksums STAN stamps on the run (not hashes of the files searched)</li>
                 </ul></div>
                 <div class="kept"><h4>Sent, but not shown on this site</h4><ul>
-                    <li>The file name<small>Used to catch duplicate submissions and to let you update a run. This page and its API never show it, but the stored row, name included, is also written to the public Hugging Face dataset, whose history keeps every name sent so far (removing it there is pending). Keep patient, customer and project identifiers out of QC file names, or set <code>STAN_STRIP_RUN_NAME=1</code> to send none.</small></li>
+                    <li>The file name<small>Used to catch duplicate submissions, to let you update a run, and to check the run's amount and FAIMS: a run whose file name states a different amount than the one sent is held back as amount unconfirmed, and a FAIMS token in it marks the run as FAIMS when FAIMS was not recorded; only those two results are published. This page and its API never show it, but the stored row, name included, is also written to the public Hugging Face dataset, whose history keeps every name sent so far (removing it there is pending). Keep patient, customer and project identifiers out of QC file names, or set <code>STAN_STRIP_RUN_NAME=1</code> to send none.</small></li>
                     <li>Your email address<small>Used once, to send the claim code. Only a one-way hash of it is kept, in the dataset's claims file.</small></li>
                 </ul></div>
                 <div class="no"><h4>Never leaves your lab</h4><ul>
@@ -4830,7 +5030,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
         Use the export button to download as CSV. The table follows the filter bar; the
         DIA / DDA / All tab here is the bar's mode, so it sets the whole page. Each run's
         percentile is within its cohort, named in the Cohort column; a cohort that is not
-        ranked shows a dash, with the reason.
+        ranked shows a dash, with the reason. An amount marked <span class="amt-tag">assumed</span>
+        is the lab's default, not recorded for the run. Runs held back from the ranges and rankings
+        (an amount unconfirmed or implausible) are listed below the table.
         <span class="fbadge" id="table-badge"></span>
     </p>
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.5rem;margin-bottom:1rem">
@@ -5051,9 +5253,16 @@ function dedupeRuns(rows) {
 }
 // A stored amount above 5 ug is a unit error (100,000 and 562,100 ng on
 // 2026-09-29), so the run is held back from every range and ranking until
-// its amount is confirmed. Counted under the stats row.
+// its amount is confirmed. So is a run whose amount is unconfirmed: the
+// relay found that its file name states a different amount than the stored
+// one (amount_check 'mismatch', relay 1.8.0; the file name itself is never
+// sent). 1 ug FAIMS runs stored as 50 ng topped the DIA table until then.
+// The stats row counts the two separately; the relay never marks a run
+// above 5,000 ng as unconfirmed, so they do not overlap.
 const HELD_BACK_NG = 5000;
-function isHeldBack(s) { return (+s.amount_ng || 0) > HELD_BACK_NG; }
+function amountImplausible(s) { return (+s.amount_ng || 0) > HELD_BACK_NG; }
+function amountUnconfirmed(s) { return s.amount_check === 'mismatch' && !amountImplausible(s); }
+function isHeldBack(s) { return amountImplausible(s) || s.amount_check === 'mismatch'; }
 
 let submittedRows = 0;   // rows /api/leaderboard returned
 let duplicateCopies = 0; // copies dedupeRuns() dropped
@@ -5067,7 +5276,11 @@ function usableRows() { return allDataRaw.filter(s => !s.is_flagged && !isHeldBa
 
 // ── One cohort key (community redesign B2, P2b) ─────────────────────
 // A cohort is QC standard × instrument model × acquisition mode × gradient
-// × amount bucket. The gradient is the LC class and the SPD. Evosep runs are
+// × amount bucket, and FAIMS (P3b): a FAIMS run never shares a cohort with
+// runs acquired without it, and its cohort's title says "· FAIMS". FAIMS is
+// in the key and the title only, not a filter (Brett's decision 9), so the
+// bar's gradient menu holds both.
+// The gradient is the LC class and the SPD. Evosep runs are
 // named only by real Evosep methods; an Evosep run at any other SPD reads
 // "SPD unverified"; nanoLC runs are named by the run length stored with them
 // (gradient_length_min) and the SPD derived from it; and a run that records
@@ -5138,15 +5351,19 @@ function gradShort(lc, spd, rows) {
     if (lc === 'nospd') return 'SPD not recorded';
     return [`~${gradientMinOf(spd)} min gradient`, `${spd} SPD`, runLenText(rows || [])].filter(Boolean).join(' · ');
 }
+// FAIMS as the relay serves it (relay 1.8.0): the stored value, else what
+// the file name says, always true or false; faims_source says which.
+function faimsOf(s) { return s.faims === true; }
 // Each row's cohort fields, worked out once. A WeakMap, so the rows the API
 // served are never written to (publishedFields() lists their keys).
 const _rowKeys = new WeakMap();
 function rowKey(s) {
     let k = _rowKeys.get(s);
     if (!k) {
-        k = { t: trackOf(s), m: modelOf(s), lc: lcClass(s), spd: spdOf(s), a: amountBucketOf(s), c: colKey(s) };
+        k = { t: trackOf(s), m: modelOf(s), lc: lcClass(s), spd: spdOf(s), a: amountBucketOf(s), c: colKey(s), f: faimsOf(s) };
         k.g = `${k.lc}:${k.spd}`;
-        k.key = [s.sample_type || 'hela', k.m, k.t, k.g, k.a].join('|');
+        // A run without FAIMS keeps the key it had before relay 1.8.0.
+        k.key = [s.sample_type || 'hela', k.m, k.t, k.g, k.a].join('|') + (k.f ? '|faims' : '');
         _rowKeys.set(s, k);
     }
     return k;
@@ -5174,7 +5391,7 @@ function cohortsOf(rows) {
         const k = rowKey(s);
         let c = byKey.get(k.key);
         if (!c) {
-            c = { key: k.key, model: k.m, track: k.t, lc: k.lc, spd: k.spd, amt: k.a, grad: k.g, rows: [] };
+            c = { key: k.key, model: k.m, track: k.t, lc: k.lc, spd: k.spd, amt: k.a, grad: k.g, faims: k.f, rows: [] };
             byKey.set(k.key, c);
         }
         c.rows.push(s);
@@ -5183,7 +5400,12 @@ function cohortsOf(rows) {
     out.forEach(c => { c.why = cohortWhy(c); c.ranked = !c.why; });
     return out;
 }
-function cohortGradLabel(c) { return gradLabel(c.lc, c.spd, c.rows); }
+// A cohort's gradient, and "· FAIMS" for a FAIMS cohort, so every title and
+// label built from it (cards, Best Configurations, violins, the lab trend,
+// the table) tells the two apart. gradLabel() itself, which also names the
+// bar's gradients and the TIC menus, is unchanged.
+const FAIMS_TAG = ' · FAIMS';
+function cohortGradLabel(c) { return gradLabel(c.lc, c.spd, c.rows) + (c.faims ? FAIMS_TAG : ''); }
 // "timsTOF HT · DIA · Evosep 60 SPD · 50 ng": plain text, escape before innerHTML.
 function cohortTitle(c) { return `${c.model} · ${c.track} · ${cohortGradLabel(c)} · ${AMOUNT_LABEL[c.amt]}`; }
 
@@ -5618,7 +5840,10 @@ function updateStats() {
 // before any panel counted anything. Every QC standard, not just the one shown.
 function statsNoteText() {
     if (!submittedRows) return '';
-    const held = allDataRaw.filter(isHeldBack).length;
+    // The two hold-backs are counted apart (P3b): a stored amount above
+    // 5,000 ng, and an amount the file name contradicts.
+    const held = allDataRaw.filter(amountImplausible).length;
+    const unconfirmed = allDataRaw.filter(amountUnconfirmed).length;
     const flagged = allDataRaw.filter(s => s.is_flagged && !isHeldBack(s)).length;
     const parts = [];
     if (duplicateCopies) {
@@ -5629,6 +5854,10 @@ function statsNoteText() {
     if (held) {
         parts.push(`${fmtN(held)} run${held === 1 ? '' : 's'} held back from every range and ranking because the `
             + `stored amount is above 5,000 ng, most likely a unit error`);
+    }
+    if (unconfirmed) {
+        parts.push(`${fmtN(unconfirmed)} run${unconfirmed === 1 ? '' : 's'} held back as amount unconfirmed, because the `
+            + `file name states a different amount than the one stored (the ones in view are listed below the submissions table)`);
     }
     if (flagged) parts.push(`${fmtN(flagged)} flagged run${flagged === 1 ? '' : 's'} left out`);
     const rowsText = submittedRows === 1 ? 'the 1 submitted row' : `${parts.length ? '' : 'all '}${fmtN(submittedRows)} submitted rows`;
@@ -5946,7 +6175,9 @@ function lkWhat() { return lk.mode === 'DIA' ? 'precursors' : 'PSMs'; }
 function lkRunsText(n) { return `${fmtN(n)} run${n === 1 ? '' : 's'}`; }
 // The QC standard comes from the bar; "All standards" compares within HeLa.
 function lkSample() { return view.sample === 'all' ? 'hela' : view.sample; }
-function lkRows() { return rowsOfSample(lkSample()); }
+// The lookup has no FAIMS field (FAIMS is in the cohort key and titles only,
+// decision 9), so it compares a run with runs acquired without FAIMS (P3b).
+function lkRows() { return rowsOfSample(lkSample()).filter(s => !rowKey(s).f); }
 function lkVendor(model) {
     const m = String(model || '').toLowerCase();
     if (!m || model === LK_OTHER_MODEL) return null;
@@ -7935,7 +8166,7 @@ function renderViolin() {
     // (phones) a nanoLC tick takes a second line for its gradient and run.
     const tick = (c) => {
         const g = gradShort(c.lc, c.spd, c.rows).split(' · ');
-        const tail = [mixed ? c.track : '', amounts ? AMOUNT_LABEL[c.amt] : ''];
+        const tail = [c.faims ? 'FAIMS' : '', mixed ? c.track : '', amounts ? AMOUNT_LABEL[c.amt] : ''];
         if (horiz) {
             const head = [shortModel(c.model), c.lc === 'nanolc' ? g[1] : g.join(' · ')].concat(tail).filter(Boolean);
             const more = c.lc === 'nanolc' ? [g[0]].concat(g.slice(2)) : [];
@@ -8089,12 +8320,13 @@ function renderColumnComparison() {
     const narrow = isNarrowView();
     const horiz = narrow || show.length > 6;
     const mixed = new Set(withCol.map(trackOf)).size > 1;
+    // A FAIMS cohort is its own group (its key ends '|faims'); its label says so.
     const label = (rows) => {
         const k = rowKey(rows[0]), m = esc(shortModel(k.m)), t = ` · ${k.t}`;
-        const rest = `${esc(gradShort(k.lc, k.spd, rows))} · ${esc(amountSeenText(rows))}`;
+        const rest = `${esc(gradShort(k.lc, k.spd, rows))}${k.f ? FAIMS_TAG : ''} · ${esc(amountSeenText(rows))}`;
         return horiz && !narrow ? `${m}${t} · ${rest}` : `${m}${t}<br>${rest}`;
     };
-    const titleOf = (rows) => { const k = rowKey(rows[0]); return `${k.m} · ${k.t} · ${gradLabel(k.lc, k.spd, rows)} · ${amountSeenText(rows)}`; };
+    const titleOf = (rows) => { const k = rowKey(rows[0]); return `${k.m} · ${k.t} · ${gradLabel(k.lc, k.spd, rows)}${k.f ? FAIMS_TAG : ''} · ${amountSeenText(rows)}`; };
     // On a phone there is no room right of a bar: with one bar per group the
     // runs, labs and dates go on the group's label instead.
     const inLabel = narrow && single;
@@ -8325,7 +8557,8 @@ function renderTable() {
     const cohorts = tableCohorts();
     const filtered = getTableData(cohorts);
     if (!filtered.length) {
-        document.getElementById('table-container').innerHTML='<div class="empty-state">No matching submissions. Change the filters above.</div>';
+        document.getElementById('table-container').innerHTML='<div class="empty-state">No matching submissions. Change the filters above.</div>'
+            + heldBackHtml(view.mode === 'dda', view.mode === 'all');
         return;
     }
 
@@ -8461,7 +8694,7 @@ function renderTable() {
         const col = columnName(s);
         h += `<td style="font-size:0.8rem;color:var(--text-muted)">${esc(col||'--')}</td>`;
         h += `<td>${esc(s.spd||'-')}</td>`;
-        h += `<td>${esc(s.amount_ng||50)}ng</td>`;
+        h += `<td>${amountCellHtml(s)}</td>`;
         // Show acquisition date (run_date) not submission date
         const rd = runDate(s);
         let dt = '--';
@@ -8482,7 +8715,57 @@ function renderTable() {
         h += `</span>`;
     }
     h += `</div>`;
+    h += heldBackHtml(isDDA, isAll);
     document.getElementById('table-container').innerHTML = h;
+}
+
+// ── Amounts in the table (P3b, relay 1.8.0) ──
+// The stored amount, marked "assumed" when the run recorded that it is the
+// lab's default (amount_source, STAN 1.2.16 and later; older runs record no
+// source and carry no mark), and "unconfirmed" or "above 5,000 ng" for a
+// held-back run. Nothing is invented: a run with no amount reads "not
+// recorded" (the table used to show 50 ng).
+function amountCellHtml(s) {
+    const a = +s.amount_ng;
+    const text = a > 0 ? `${esc(a.toLocaleString('en-US'))} ng` : '<span class="nr-why">not recorded</span>';
+    if (amountImplausible(s)) return `${text} <span class="amt-tag held" title="Held back: a stored amount above 5,000 ng is most likely a unit error">above 5,000 ng</span>`;
+    if (amountUnconfirmed(s)) return `${text} <span class="amt-tag held" title="Held back: the file name states a different amount than the one stored">unconfirmed</span>`;
+    if (a > 0 && s.amount_source === 'assumed') return `${text} <span class="amt-tag" title="No amount was recorded for this run: this is the lab's default">assumed</span>`;
+    return text;
+}
+
+// The held-back runs the table would hold under the bar (its QC standard and
+// every field), listed apart from it: they are in no range, ranking or
+// percentile, and a lab looking for its run should see where it went and why.
+// A held-back run is listed even if it is also flagged, as the stats row
+// counts it as held back.
+function heldBackRowsInView() {
+    const pool = view.sample === 'all' ? allDataRaw : allDataRaw.filter(s => (s.sample_type || 'hela') === view.sample);
+    return pool.filter(s => isHeldBack(s) && matchesView(s));
+}
+function heldBackHtml(isDDA, isAll) {
+    const held = heldBackRowsInView();
+    if (!held.length) return '';
+    const nu = held.filter(amountUnconfirmed).length, ni = held.length - nu;
+    const why = [nu ? `${fmtN(nu)} amount unconfirmed` : '', ni ? `${fmtN(ni)} stored above 5,000 ng` : ''].filter(Boolean).join(', ');
+    const pLabel = isDDA ? 'PSMs' : isAll ? 'Precursors / PSMs' : 'Precursors';
+    const rows = held.slice().sort((a, b) => (trackOf(a) === trackOf(b) ? 0 : trackOf(a) === 'DIA' ? -1 : 1) || primaryOf(b) - primaryOf(a));
+    let h = `<details class="held" id="held-back"><summary>${fmtN(held.length)} held-back run${held.length === 1 ? '' : 's'} in view (${why}): not in the table above or in any range or ranking</summary>`;
+    // Amount second, so its mark is in sight on a phone, where the table scrolls sideways.
+    h += '<table><thead><tr><th>Instrument</th><th>Amount</th><th>' + pLabel + '</th><th>Gradient</th><th>Why held back</th><th>Mode</th><th>Date</th></tr></thead><tbody>';
+    rows.forEach(s => {
+        const k = rowKey(s), rd = runDate(s);
+        const dt = rd && !isNaN(rd.getTime()) ? rd.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '--';
+        const reason = amountUnconfirmed(s) ? 'The file name states a different amount than the one stored'
+                                            : 'The stored amount is above 5,000 ng, most likely a unit error';
+        h += `<tr><td>${esc(s.instrument_model)}</td><td>${amountCellHtml(s)}</td>`
+            + `<td><strong>${fmtN(primaryOf(s))}</strong></td>`
+            + `<td style="font-size:0.8rem;min-width:9rem">${esc(gradLabel(k.lc, k.spd, [s]) + (k.f ? FAIMS_TAG : ''))}</td>`
+            + `<td style="font-size:0.8rem;color:var(--text-muted);min-width:11rem">${reason}</td>`
+            + `<td>${modeBadge(s.acquisition_mode || '')}</td>`
+            + `<td style="font-size:0.8rem;color:var(--text-muted)">${dt}</td></tr>`;
+    });
+    return h + '</tbody></table></details>';
 }
 
 function exportCSV() {

@@ -46,9 +46,10 @@ SECRET_PRINT = "feedfacecafebeef"
 def test_space_version(client):
     # P1 shipped as 1.2.2, P2a as 1.3.0, P2b as 1.4.0, P2c as 1.5.0; the TIC
     # overlay (tests/test_relay_community_tic.py) as 1.6.0; P3a (schema,
-    # tests/test_relay_community_p3a.py) is 1.7.0.
-    assert client.get("/api/version").json()["version"] == "1.7.0"
-    assert "community site v1.7.0" in _page(client)
+    # tests/test_relay_community_p3a.py) as 1.7.0; P3b (tests/test_relay_community_p3b.py)
+    # is 1.8.0.
+    assert client.get("/api/version").json()["version"] == "1.8.0"
+    assert "community site v1.8.0" in _page(client)
 
 
 # ── server: D4, no file names in public responses ────────────────────
@@ -122,16 +123,35 @@ def test_cohorts_strips_private_fields_at_any_depth(client, hub):
     assert c["rows"] == [{"n": 1}]
 
 
+# A name P3b (relay 1.8.0) reads: 1 µg FAIMS, stored as 50 ng.
+P3B_SECRET_NAME = "FL271022_FaimHe1ug_CV4680_KerryCol_MK.raw"
+
+
 def test_no_public_get_carries_a_file_name(client, hub):
-    """Spec §A.7: every read endpoint over the benchmark rows, in one sweep."""
-    hub.files["benchmark_latest.parquet"] = _benchmark_parquet([_stored_row(i) for i in range(12)])
+    """Spec §A.7: every read endpoint over the benchmark rows, in one sweep.
+
+    Since relay 1.8.0 (P3b) the relay works out an amount check and FAIMS
+    from the names before it serves the rows, and the TIC summaries are built
+    from the same rows: still no name in any response, the TIC included."""
+    rows = [_stored_row(i) for i in range(12)]
+    rows += [_stored_row(20 + i, run_name=f"{20 + i}_{P3B_SECRET_NAME}", instrument_family="Lumos",
+                         instrument_model="Orbitrap Fusion Lumos", n_precursors=80000 + i) for i in range(3)]
+    hub.files["benchmark_latest.parquet"] = _benchmark_parquet(rows)
     hub.files["cohort_stats/cohort_percentiles_latest.json"] = json.dumps(
-        {"timsTOF_100spd_low": {"run_name": [SECRET_NAME]}}).encode()
-    for path in ("/api/leaderboard", "/api/cohorts", "/api/tic-overlay",
-                 "/api/cohorts/timsTOF_100spd_low/tic", "/"):
+        {"timsTOF_100spd_low": {"run_name": [SECRET_NAME, P3B_SECRET_NAME]}}).encode()
+    paths = ["/api/leaderboard", "/api/cohorts", "/api/tic-overlay", "/api/tic-summary",
+             "/api/cohorts/timsTOF_100spd_low/tic", "/"]
+    paths += [f"/api/tic-traces?sample={c['s']}&mode={c['t']}&spd={c['spd']}&lc={c['lc']}"
+              for c in client.get("/api/tic-summary").json()["cohorts"]]
+    for path in paths:
         r = client.get(path)
         assert r.status_code == 200, path
-        assert SECRET_NAME not in r.text and SECRET_PRINT not in r.text, path
+        for secret in (SECRET_NAME, P3B_SECRET_NAME, SECRET_PRINT, "KerryCol", "FaimHe1ug"):
+            assert secret not in r.text, (path, secret)
+    # The P3b check did run on those names, and only its results are served.
+    served = client.get("/api/leaderboard").json()["submissions"]
+    assert sum(r["amount_check"] == "mismatch" for r in served) == 3
+    assert sum(r["faims"] is True and r["faims_source"] == "filename" for r in served) == 3
 
 
 # ── server: run_name optional at submit ──────────────────────────────

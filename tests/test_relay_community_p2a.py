@@ -40,10 +40,11 @@ def _section(html: str, sid: str) -> str:
 
 def test_space_version_is_1_3_0_or_later(client, relay):
     # P2a shipped as 1.3.0, P2b as 1.4.0, P2c as 1.5.0; the TIC overlay
-    # (tests/test_relay_community_tic.py) 1.6.0, P3a (schema) 1.7.0.
-    assert relay.SPACE_VERSION == "1.7.0"
-    assert client.get("/api/version").json()["version"] == "1.7.0"
-    assert "community site v1.7.0" in _page(client)
+    # (tests/test_relay_community_tic.py) 1.6.0, P3a (schema) 1.7.0, P3b
+    # (read-time amount and FAIMS check, tests/test_relay_community_p3b.py) 1.8.0.
+    assert relay.SPACE_VERSION == "1.8.0"
+    assert client.get("/api/version").json()["version"] == "1.8.0"
+    assert "community site v1.8.0" in _page(client)
 
 
 def test_favicon_is_served_and_inline(client, relay):

@@ -135,10 +135,10 @@ def _mixed_rows() -> list[dict]:
 
 def test_space_version_is_1_4_0_or_later(client, relay):
     # P2b shipped as 1.4.0, P2c as 1.5.0; the TIC overlay
-    # (tests/test_relay_community_tic.py) 1.6.0, P3a (schema) 1.7.0.
-    assert relay.SPACE_VERSION == "1.7.0"
-    assert client.get("/api/version").json()["version"] == "1.7.0"
-    assert "community site v1.7.0" in _page(client)
+    # (tests/test_relay_community_tic.py) 1.6.0, P3a (schema) 1.7.0, P3b 1.8.0.
+    assert relay.SPACE_VERSION == "1.8.0"
+    assert client.get("/api/version").json()["version"] == "1.8.0"
+    assert "community site v1.8.0" in _page(client)
 
 
 def test_sticky_bar_markup_and_css(client):

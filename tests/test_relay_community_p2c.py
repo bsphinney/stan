@@ -185,10 +185,11 @@ def _interp_quantile(values: list[float], p: float) -> float:
 
 def test_space_version_is_1_5_0_or_later(client, relay):
     # P2c shipped as 1.5.0; the TIC overlay (tests/test_relay_community_tic.py)
-    # as 1.6.0; P3a (schema, tests/test_relay_community_p3a.py) is 1.7.0.
-    assert relay.SPACE_VERSION == "1.7.0"
-    assert client.get("/api/version").json()["version"] == "1.7.0"
-    assert "community site v1.7.0" in _page(client)
+    # as 1.6.0; P3a (schema, tests/test_relay_community_p3a.py) as 1.7.0; P3b
+    # (tests/test_relay_community_p3b.py) is 1.8.0.
+    assert relay.SPACE_VERSION == "1.8.0"
+    assert client.get("/api/version").json()["version"] == "1.8.0"
+    assert "community site v1.8.0" in _page(client)
 
 
 def test_where_anchor_is_the_lookup_and_the_ranges_follow(client):
@@ -253,7 +254,12 @@ def test_lookup_code_makes_no_network_storage_or_address_call(client):
 
 
 # Pinned from main fc5cb33 (relay 1.4.0). The P2a read-time rules (the D8
-# dedupe, the >5,000 ng hold-back, colKey) and the B2 cohort key are untouched.
+# dedupe, the >5,000 ng hold-back, colKey) and the B2 cohort key are untouched
+# by P2c. P3b (relay 1.8.0, tests/test_relay_community_p3b.py) changed two of
+# them on purpose, and only as P3B_EDITS lists: isHeldBack() also holds back
+# an unconfirmed amount (amount_check), and the cohort key and its titles
+# carry FAIMS. The test puts each P3b text back to the fc5cb33 one before
+# hashing, so the pins stay those of fc5cb33 and any other change fails.
 P2A_RULES = {
     "dedupe_heldback_js": "0c42bc64f1fba0d31f5bd3fd6aced720006bdb03a324ba0a2485ce0ec83f75b3",
     "colkey_js": "ef38cfffa182968c2943f074ad5d7f67b596922d45e50385cce02d931034719c",
@@ -267,6 +273,43 @@ LOOKUP_PANEL_LINE = "    ['lookup',         _NO_COLUMN,   () => renderLookup()],
 # put back to the old one before hashing.
 TIC_PANEL_LINE = "    ['community-tic',  ['sample', 'mode'], () => renderCommunityTIC()],   // its SPD and LC menus are its own (§A.4)\n"
 TIC_PANEL_LINE_FC5CB33 = "    ['community-tic',  ['sample'],   () => renderCommunityTIC()],\n"
+# (P3b text, fc5cb33 text) for each region P3b changed.
+P3B_EDITS = {
+    "dedupe_heldback_js": [(
+        """// its amount is confirmed. So is a run whose amount is unconfirmed: the
+// relay found that its file name states a different amount than the stored
+// one (amount_check 'mismatch', relay 1.8.0; the file name itself is never
+// sent). 1 ug FAIMS runs stored as 50 ng topped the DIA table until then.
+// The stats row counts the two separately; the relay never marks a run
+// above 5,000 ng as unconfirmed, so they do not overlap.
+const HELD_BACK_NG = 5000;
+function amountImplausible(s) { return (+s.amount_ng || 0) > HELD_BACK_NG; }
+function amountUnconfirmed(s) { return s.amount_check === 'mismatch' && !amountImplausible(s); }
+function isHeldBack(s) { return amountImplausible(s) || s.amount_check === 'mismatch'; }
+""",
+        """// its amount is confirmed. Counted under the stats row.
+const HELD_BACK_NG = 5000;
+function isHeldBack(s) { return (+s.amount_ng || 0) > HELD_BACK_NG; }
+""")],
+    "cohort_key_js": [
+        ("""// FAIMS as the relay serves it (relay 1.8.0): the stored value, else what
+// the file name says, always true or false; faims_source says which.
+function faimsOf(s) { return s.faims === true; }
+""", ""),
+        ("a: amountBucketOf(s), c: colKey(s), f: faimsOf(s) };", "a: amountBucketOf(s), c: colKey(s) };"),
+        ("""        // A run without FAIMS keeps the key it had before relay 1.8.0.
+        k.key = [s.sample_type || 'hela', k.m, k.t, k.g, k.a].join('|') + (k.f ? '|faims' : '');""",
+         """        k.key = [s.sample_type || 'hela', k.m, k.t, k.g, k.a].join('|');"""),
+        ("amt: k.a, grad: k.g, faims: k.f, rows: [] };", "amt: k.a, grad: k.g, rows: [] };"),
+        ("""// A cohort's gradient, and "· FAIMS" for a FAIMS cohort, so every title and
+// label built from it (cards, Best Configurations, violins, the lab trend,
+// the table) tells the two apart. gradLabel() itself, which also names the
+// bar's gradients and the TIC menus, is unchanged.
+const FAIMS_TAG = ' · FAIMS';
+function cohortGradLabel(c) { return gradLabel(c.lc, c.spd, c.rows) + (c.faims ? FAIMS_TAG : ''); }""",
+         """function cohortGradLabel(c) { return gradLabel(c.lc, c.spd, c.rows); }"""),
+    ],
+}
 
 
 def test_peg_and_p2a_rules_are_byte_identical_to_fc5cb33(client):
@@ -286,6 +329,10 @@ def test_peg_and_p2a_rules_are_byte_identical_to_fc5cb33(client):
         "cohort_key_js": between("const EVOSEP_METHODS = {", "// ── One filter state for every panel (B2)"),
         "view_state_js": view_state.replace(LOOKUP_PANEL_LINE, "").replace(TIC_PANEL_LINE, TIC_PANEL_LINE_FC5CB33),
     }
+    for k, edits in P3B_EDITS.items():          # P3b's own changes, each exactly once
+        for new, old in edits:
+            assert rules[k].count(new) == 1, (k, new[:60])
+            rules[k] = rules[k].replace(new, old)
     assert {k: hashlib.sha256(v.encode()).hexdigest() for k, v in rules.items()} == P2A_RULES
     # Outside its own block the lookup adds exactly: the PANELS line, its call
     # in loadData, and its name among the panels renderCharts skips.
