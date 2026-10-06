@@ -2323,16 +2323,27 @@ def _page_instant_ms(r: dict) -> int | None:
     return t if abs(t) <= _JS_MAX_TIME_MS else None
 
 
-def _page_held_back(r: dict) -> bool:
-    """isHeldBack(): a stored amount above 5,000 ng is a unit error, and an
-    amount the file name contradicts is unconfirmed (amount_check, P3b)."""
+def _page_amount_implausible(r: dict) -> bool:
+    """amountImplausible(): a stored amount above 5,000 ng is a unit error."""
     a = _js_num(r.get("amount_ng"))
-    return (a if a == a else 0.0) > _PAGE_HELD_BACK_NG or r.get("amount_check") == "mismatch"
+    return (a if a == a else 0.0) > _PAGE_HELD_BACK_NG
+
+
+def _page_held_back(r: dict) -> bool:
+    """isHeldBack(): a stored amount above 5,000 ng, or an amount the file
+    name contradicts (amount_check 'mismatch', P3b)."""
+    return _page_amount_implausible(r) or r.get("amount_check") == "mismatch"
 
 
 def _page_usable(r: dict) -> bool:
     """usableRows(): neither flagged nor held back."""
     return not _js_truthy(r.get("is_flagged")) and not _page_held_back(r)
+
+
+def _page_dedupe_usable(r: dict) -> bool:
+    """dedupeRuns()' usable(): neither flagged nor stored above 5,000 ng.
+    An unconfirmed amount is not considered when choosing the copy (P3b)."""
+    return not _js_truthy(r.get("is_flagged")) and not _page_amount_implausible(r)
 
 
 def _page_dedupe(rows: list[dict]) -> tuple[list[dict], int]:
@@ -2341,8 +2352,9 @@ def _page_dedupe(rows: list[dict]) -> tuple[list[dict], int]:
 
     A copy is the same instrument model, track and all four ID counts,
     acquired within 2 s of the previous one. Of each set the page keeps a
-    usable copy, then the one from the lab with more rows, then the earliest
-    submitted. (The kept row also takes a dropped copy's LC column when it
+    usable copy (not flagged, not stored above 5,000 ng; an unconfirmed
+    amount is not considered here), then the one from the lab with more rows,
+    then the earliest submitted. (The kept row also takes a dropped copy's LC column when it
     records none; the TIC reads no column, so that part is not ported.)
     submitted_at is compared as text: the page's localeCompare orders these
     uniform ISO stamps the same way.
@@ -2359,7 +2371,7 @@ def _page_dedupe(rows: list[dict]) -> tuple[list[dict], int]:
 
     def rank(r: dict) -> tuple:
         v = r.get("submitted_at")
-        return (-int(_page_usable(r)), -total[r.get("display_name")], _js_text(v) if _js_truthy(v) else "")
+        return (-int(_page_dedupe_usable(r)), -total[r.get("display_name")], _js_text(v) if _js_truthy(v) else "")
 
     for g in groups.values():
         keep.update(id(r) for r in g if inst[id(r)] is None)      # no instant: never a copy
@@ -2659,20 +2671,28 @@ def _amount_check(run_name: str | None, amount_ng: Any) -> str:
 # FAIMS from the file name. UC Davis writes it as its own token: "Faim" in
 # "FL271022_FaimHe1ug_CV4680microDia-w6_120m_3.raw" (13 Lumos runs) and
 # "Faims" in "Ex150421_HeLa50ng_FaimsCV-60UnivPep_peS9apr_90m1.raw" (2
-# Exploris 480 runs). The token is matched in any case, must not follow a
-# letter, and must not be followed by a lower-case letter: CamelCase goes on
-# ("FaimHe1ug", "FaimsCV", "FAIMS_CV45") but a longer word does not
-# ("Fail" never reaches it; "Faimous" is not FAIMS). A token that says FAIMS
-# was off does not count: "no", "non", "wo" or "without" just before it
-# ("no_FAIMS", "woFAIMS" never matches anyway), or "off" just after it
+# Exploris 480 runs). The token is matched in any case and may:
+# * stand on its own, after no letter ("_FaimHe1ug", "FAIMS_CV45"), or be
+#   joined to a word before it CamelCase, with a capital F ("HeLaFAIMS_CV45",
+#   "200ngFAIMS", "DIAFAIMS", "withFAIMS"); a lower-case "faims" after a
+#   letter is part of a word and does not count;
+# * be followed by anything but a lower-case letter, so CamelCase goes on
+#   ("FaimHe1ug", "FaimsCV") but a longer word does not ("Fail" never
+#   reaches it; "Faimous" is not FAIMS), except "pro" ("FAIMSpro").
+# A token that says FAIMS was off does not count: "no", "non", "wo" or
+# "without" just before it ("no_FAIMS", "noFAIMS"), or "off" just after it
 # ("FAIMS_off"; "FAIMSoff" never matches). A compensation voltage ("CV-50")
 # alone is not read: CV is also a coefficient of variation. On the
-# 2026-09-29 snapshot this marks exactly the 15 names that contain "faim" in
-# any case, and none of the 6 that contain "Fail". A timsTOF has no FAIMS
-# interface, so its file names are not read for it.
+# 2026-09-29 snapshot and on the live table of 2026-10-06 this marks exactly
+# the 15 names that contain "faim" in any case, and none that contain "Fail".
+# A timsTOF has no FAIMS interface, so its file names are not read for it.
 # "faim(?!s)|faims", not "faims?": the optional s would backtrack, so
 # "FAIMSoff" would match as "FAIM" before a capital S.
-_FAIMS_NAME_RE = re.compile(r"(?<![A-Za-z])(?i:faim(?!s)|faims)(?![a-z])")
+_FAIMS_NAME_RE = re.compile(
+    r"(?:(?<![A-Za-z])|(?<=[A-Za-z])(?=F))"     # its own token, or CamelCase after a letter
+    r"(?i:faim(?!s)|faims)"
+    r"(?:(?i:pro)(?![a-z])|(?![a-z]))"           # then no lower-case letter, but "pro" may follow
+)
 _FAIMS_NOT_BEFORE = re.compile(r"(?<![A-Za-z])(?i:no|non|wo|without)[_\- ]?$")
 _FAIMS_NOT_AFTER = re.compile(r"[_\- ]?(?i:off)(?![a-z])")
 
@@ -2688,16 +2708,18 @@ def _faims_from_name(run_name: str | None, model: Any = None, family: Any = None
     return False
 
 
-def _effective_faims(stored: Any, run_name: str | None, model: Any = None, family: Any = None) -> tuple[bool, str]:
+def _effective_faims(stored: Any, run_name: str | None, model: Any = None,
+                     family: Any = None) -> tuple[bool | None, str]:
     """(faims, faims_source): the stored value when there is one ('stored',
-    from STAN 1.2.16's scan-filter check), else the file-name hint
-    ('filename'), else False with ''."""
+    from STAN 1.2.16's scan-filter check), else True from the file-name hint
+    ('filename'), else None with '': nothing is known, and the page reads
+    anything but true as no FAIMS."""
     v = _clean_faims(stored)
     if v is not None:
         return v, "stored"
     if _faims_from_name(run_name, model, family):
         return True, "filename"
-    return False, ""
+    return None, ""
 
 
 def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
@@ -2705,8 +2727,8 @@ def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
     with the P3b fields worked out from the private file name (run_name):
 
     * ``amount_check``: 'mismatch' or '' (_amount_check);
-    * ``faims``: the stored value when there is one, else the file-name hint,
-      always a bool (_effective_faims);
+    * ``faims``: the stored value when there is one, else True from the
+      file-name hint, else null (_effective_faims);
     * ``faims_source``: 'stored', 'filename' or ''.
 
     The file name stays in the frame: every caller drops
@@ -2720,7 +2742,7 @@ def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
         return df[c].to_list() if c in df.columns else [None] * n
 
     checks: list[str] = []
-    faims: list[bool] = []
+    faims: list[bool | None] = []
     sources: list[str] = []
     for name, amount, stored, model, family in zip(col("run_name"), col("amount_ng"), col("faims"),
                                                    col("instrument_model"), col("instrument_family")):
@@ -4570,6 +4592,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <fieldset class="ws-set">
                 <legend>The run</legend>
                 <p class="ws-hint">These start from the filter bar. Changing them here does not filter the page.</p>
+                <p class="ws-hint">Runs acquired with FAIMS are left out of these cohorts: there is no FAIMS field here, so your run is compared with runs acquired without it.</p>
                 <div class="ws-field"><label for="ws-model">Instrument model</label><select id="ws-model" onchange="lkSet('model', this.value)"></select></div>
                 <div class="ws-field"><label for="ws-grad">LC and gradient</label><select id="ws-grad" onchange="lkSet('grad', this.value)"></select></div>
                 <div class="ws-field ws-hidden" id="ws-mins-f"><label for="ws-mins">Gradient length (minutes)</label>
@@ -5162,6 +5185,18 @@ function vendorOf(s) {
     return m.includes('timstof') ? 'bruker' : 'thermo';
 }
 // The amounts a set of runs actually records: "40–50 ng".
+// One run's amount as a hover reads it: "50 ng", or "amount not recorded",
+// never a stand-in 50 ng (P3b review). Plain text: escape it.
+function amountText(s) { const a = +s.amount_ng; return a > 0 ? `${a.toLocaleString('en-US')} ng` : 'amount not recorded'; }
+// The point shape for a run's amount: diamond below 20 ng, square above
+// 100 ng, circle between, and an open circle when no amount is recorded.
+function amountShapeOf(s) {
+    const a = +s.amount_ng;
+    if (!(a > 0)) return 'circle-open';
+    if (a < 20) return 'diamond';
+    if (a > 100) return 'square';
+    return 'circle';
+}
 function amountSeenText(rows) {
     const v = [...new Set(rows.map(s => +s.amount_ng).filter(a => a > 0))].sort((a, b) => a - b);
     if (!v.length) return 'amount not recorded';
@@ -5198,7 +5233,7 @@ function columnName(s) {
 // A copy is the same instrument model, track and all four ID counts, with
 // acquisition instants within 2 s of each other (copies differ only in
 // sub-second precision). The file name is not in the key (D4). Of each set of
-// copies the page keeps a usable one (not flagged, not held back), then the
+// copies the page keeps a usable one (not flagged, not stored above 5,000 ng), then the
 // one from the lab with more runs, then the first submitted. If that copy
 // records no LC column and a dropped copy does, the kept row takes just the
 // dropped copy's column_vendor and column_model; every other field is the
@@ -5225,7 +5260,11 @@ function dedupeRuns(rows) {
     // Which copy stays: a usable one first (a flagged or held-back copy
     // would win only to be filtered out, losing the acquisition), then the
     // lab with more runs, then the earliest submitted.
-    const usable = (s) => (!s.is_flagged && !isHeldBack(s)) ? 1 : 0;
+    // An unconfirmed amount (amount_check, P3b) is not considered here: the
+    // copies it would prefer are older seed rows with an identified-ion TIC,
+    // another run length and SPD, no LC and another lab, so the copy kept is
+    // the one kept before P3b, and the acquisition is held back as a whole.
+    const usable = (s) => (!s.is_flagged && !amountImplausible(s)) ? 1 : 0;
     const pick = (chain) => {
         if (chain.length > 1) dropped += chain.length - 1;
         const order = chain.slice().sort((a, b) => (usable(b) - usable(a))
@@ -5351,8 +5390,8 @@ function gradShort(lc, spd, rows) {
     if (lc === 'nospd') return 'SPD not recorded';
     return [`~${gradientMinOf(spd)} min gradient`, `${spd} SPD`, runLenText(rows || [])].filter(Boolean).join(' · ');
 }
-// FAIMS as the relay serves it (relay 1.8.0): the stored value, else what
-// the file name says, always true or false; faims_source says which.
+// FAIMS as the relay serves it (relay 1.8.0): the stored value, else true
+// from the file name, else null (not known); faims_source says which.
 function faimsOf(s) { return s.faims === true; }
 // Each row's cohort fields, worked out once. A WeakMap, so the rows the API
 // served are never written to (publishedFields() lists their keys).
@@ -7731,12 +7770,7 @@ function renderSpdDepth() {
     if (!el) return;
     _resetChart(el);
 
-    const amountShape = s => {
-        const a = s.amount_ng || 50;
-        if (a < 20)  return 'diamond';
-        if (a > 100) return 'square';
-        return 'circle';
-    };
+    const amountShape = amountShapeOf;
 
     const data = viewRows('gradient').filter(s => primaryOf(s) > 0 && s.spd);
 
@@ -7821,7 +7855,7 @@ function renderSpdDepth() {
                     titlefont:{color:'#DAAA00'}, len: 0.5, thickness: 10, x: 1.02,
                 } : undefined,
             },
-            text: runs0.map(s => `${esc(s.instrument_model)}<br>${esc(s.spd)} SPD, ${esc(s.amount_ng||50)} ng<br>${trackOf(s)}`),
+            text: runs0.map(s => `${esc(s.instrument_model)}<br>${esc(s.spd)} SPD, ${esc(amountText(s))}<br>${trackOf(s)}`),
             hovertemplate: `%{text}<br>${trackOf(runs0[0]) === 'DDA' ? 'PSMs' : 'Precursors'}: %{y:,}<extra></extra>`,
         });
 
@@ -8192,12 +8226,7 @@ function renderViolin() {
         for (let k = 0; k < id.length; k++) h = (((h << 5) - h) + id.charCodeAt(k)) | 0;
         return ((h % 1000) / 1000 - 0.5) * 0.5;  // [-0.25, 0.25]
     };
-    const amountShape = s => {
-        const a = s.amount_ng || 50;
-        if (a < 20)  return 'diamond';
-        if (a > 100) return 'square';
-        return 'circle';
-    };
+    const amountShape = amountShapeOf;
     // At most 80 points per violin, every k-th by depth, so a large cohort
     // is not a blur of points and a small one keeps all of them.
     const MAX_POINTS_PER_VIOLIN = 80;
@@ -8209,7 +8238,7 @@ function renderViolin() {
             const s = sorted[Math.floor(j * step)];
             pos.push(P(i) + jitter(s)); val.push(primaryOf(s)); spd.push(s.spd || 30); sym.push(amountShape(s));
             const col = columnName(s) ? `<br>${esc(columnName(s))}` : '';
-            txt.push(`${esc(s.instrument_model)}<br>${trackOf(s)}<br>${esc(s.spd)} SPD, ${esc(s.amount_ng || 50)} ng${col}`);
+            txt.push(`${esc(s.instrument_model)}<br>${trackOf(s)}<br>${esc(s.spd)} SPD, ${esc(amountText(s))}${col}`);
         }
     });
     const scatterTrace = {

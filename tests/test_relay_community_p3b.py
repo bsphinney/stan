@@ -8,8 +8,8 @@ FAIMS from the file name. Nothing stored changes.
 
 Server side: /api/leaderboard (and the TIC summaries built from the same
 rows) carries three fields worked out from the private file name:
-amount_check ('mismatch' or ''), faims (stored, else the file-name hint,
-always a bool) and faims_source ('stored', 'filename' or ''). The amount
+amount_check ('mismatch' or ''), faims (stored, else true from the
+file-name hint, else null) and faims_source ('stored', 'filename' or ''). The amount
 parser is a copy of stan/community/amount.py, and one fixture list runs
 through both copies. No response carries a file name or a piece of one.
 
@@ -18,9 +18,12 @@ tests/test_relay_community_tic.py): isHeldBack() holds back an unconfirmed
 amount, and the Python port (_page_held_back) agrees, so TIC counts never
 exceed the page's; the stats row counts "amount unconfirmed" apart from the
 >5,000 ng hold-back; FAIMS runs form their own cohorts, titled "· FAIMS",
-with no new filter; the lookup compares with runs acquired without FAIMS;
-the submissions table marks assumed amounts and lists the held-back runs.
-On the 2026-09-29 snapshot: 71 rows unconfirmed (64 runs once copies are
+with no new filter; the lookup compares with runs acquired without FAIMS
+and says so; the submissions table marks assumed amounts and lists the
+held-back runs; an unconfirmed amount never decides which duplicate copy is
+kept (the five real cases of the snapshot); a missing amount is "amount not
+recorded" with an open-circle point, never a stand-in 50 ng.
+On the 2026-09-29 snapshot: 71 rows unconfirmed (69 runs once copies are
 removed), 15 marked FAIMS.
 """
 
@@ -44,7 +47,7 @@ from tests.test_relay_community_tic import (
     _tic_row,
     needs_snapshot,
 )
-from tests.test_relay_peg import client, hub, needs_node, relay  # noqa: F401  (fixtures)
+from tests.test_relay_peg import _page, client, hub, needs_node, relay  # noqa: F401  (fixtures)
 
 # ── the amount parser: one fixture list, both copies ─────────────────
 
@@ -135,11 +138,17 @@ FAIMS_YES = [
     "Ex150421_HeLa50ng_FaimsCV-60UnivPep_peS9apr_90m1.raw",   # UC Davis Exploris 480 (2)
     "FAIMS_CV45_HeLa.raw", "hela_faims-cv50.raw", "Faim.raw", "x-FAIMS.raw", "FAIMSCV",
     "HeLa_no_FAIMS_vs_FAIMS.raw",                             # one token is not negated
+    # joined CamelCase after a letter, with a capital F, and FAIMSpro
+    "HeLaFAIMS_CV45.raw", "200ngFAIMS.raw", "DIAFAIMS.raw", "withFAIMS.raw", "HeLaFaims.raw",
+    "FAIMSpro.raw", "HeLa_FAIMSpro_CV45.raw", "HeLa_FAIMSPro.raw",
+    "HeLa50faims.raw",                                         # after a digit: its own token
 ]
 FAIMS_NO = [
     "Ex240625_HeL50_masCalButFailSystCal_30m_2good.raw",      # "Fail" (6 on the snapshot)
-    "Faimous_run.raw", "Faimsx.raw", "HeLaFaims.raw",           # a longer word, or after a letter
-    "HeLa_no_FAIMS.raw", "HeLa_noFAIMS.raw", "HeLa_non-FAIMS.raw", "HeLa_wo_faims.raw", "HeLa_without FAIMS.raw",
+    "Faimous_run.raw", "Faimsx.raw", "FAIMSproduct.raw",      # a longer word
+    "helafaims.raw", "HeLafaims.raw",                         # lower-case after a letter: part of a word
+    "HeLa_no_FAIMS.raw", "HeLa_noFAIMS.raw", "noFAIMS.raw", "HeLa_non-FAIMS.raw", "nonFAIMS.raw",
+    "HeLa_wo_faims.raw", "woFAIMS.raw", "HeLa_without FAIMS.raw", "withoutFAIMS.raw",
     "HeLa_FAIMS_off.raw", "HeLa_FAIMS-OFF.raw", "HeLa_FAIMSoff.raw", "HeLa_FaimSoff.raw",
     "FL271022_HeLa50ng_CV4680microDia-w6_120m_3.raw",         # a CV alone is not FAIMS
     "", None,
@@ -161,7 +170,7 @@ def test_effective_faims_prefers_the_stored_value(relay):
     assert relay._effective_faims(True, "x.raw") == (True, "stored")
     assert relay._effective_faims(False, name) == (False, "stored")     # recorded off wins over the name
     assert relay._effective_faims(None, name) == (True, "filename")
-    assert relay._effective_faims(None, "x.raw") == (False, "")
+    assert relay._effective_faims(None, "x.raw") == (None, "")             # nothing known: null
     assert relay._effective_faims("maybe", name) == (True, "filename")  # not clearly either: read the name
 
 
@@ -203,20 +212,20 @@ def test_leaderboard_serves_the_derived_fields(client, hub):
     assert rows["s6"]["amount_check"] == "" and rows["s6"]["faims"] is True and rows["s6"]["faims_source"] == "filename"
     assert rows["s7"]["faims"] is False and rows["s7"]["faims_source"] == "stored"
     assert rows["s8"]["amount_check"] == "" and rows["s8"]["amount_ng"] == 100000.0   # held back as a unit error instead
-    assert all(rows[f"s{i}"]["amount_check"] == "" and rows[f"s{i}"]["faims"] is False
-               and rows[f"s{i}"]["faims_source"] == "" for i in range(1, 5))
+    assert all(rows[f"s{i}"]["amount_check"] == "" and rows[f"s{i}"]["faims"] is None
+               and rows[f"s{i}"]["faims_source"] == "" for i in range(1, 5))         # nothing known: null
     assert all("run_name" not in r and "fingerprint" not in r for r in rows.values())
 
 
 def test_leaderboard_without_file_names_or_faims_column(client, hub):
     """STAN_STRIP_RUN_NAME rows (no name) and tables written before 1.7.0 (no
-    faims column) read as not recorded: nothing held back, FAIMS false."""
+    faims column) read as not recorded: nothing held back, FAIMS null."""
     rows = [_tic_row(i) for i in range(3)]
     for r in rows:
         r.pop("run_name")
     hub.files["benchmark_latest.parquet"] = _benchmark_parquet(rows)
     got = client.get("/api/leaderboard").json()["submissions"]
-    assert [(r["amount_check"], r["faims"], r["faims_source"]) for r in got] == [("", False, "")] * 3
+    assert [(r["amount_check"], r["faims"], r["faims_source"]) for r in got] == [("", None, "")] * 3
 
 
 # ── privacy: no response carries a file name or a piece of one ───────
@@ -264,7 +273,7 @@ def test_no_response_carries_a_file_name_or_a_piece_of_one(client, hub):
         assert r.status_code == 200, p
         bodies[f"/api/tic-traces {p}"] = r.text
     lb = json.loads(bodies["/api/leaderboard"])["submissions"]
-    assert sum(r["amount_check"] == "mismatch" for r in lb) == 6 and sum(r["faims"] for r in lb) == 4   # the check ran
+    assert sum(r["amount_check"] == "mismatch" for r in lb) == 6 and sum(r["faims"] is True for r in lb) == 4   # the check ran
     pieces = set().union(*(_pieces(n) for n in PRIVATE_NAMES))
     for path, body in bodies.items():
         hits = sorted(p for p in pieces if p in body)
@@ -273,32 +282,74 @@ def test_no_response_carries_a_file_name_or_a_piece_of_one(client, hub):
 
 # ── the Python port holds back what the page holds back ──────────────
 
+# The five acquisitions of the 2026-09-29 snapshot whose copies disagree:
+# an older 0.2.282/0.2.283 "Anonymous Lab" seed copy that stores the amount
+# the file name states, with an identified-ion TIC, another run length and SPD
+# and no LC, and a 0.2.376 Clogged PeakTail copy stored as 50 ng (two for
+# FL120621, under two names). Values as stored: (file name, model, family,
+# precursors, peptides, proteins, run date, (amount, SPD, run length) of the
+# seed copy, (SPD, LC, run length) of the 0.376 copy).
+SEED_CHAINS = [
+    ("Hela100ng_in20ul-OT2_S3-A1_1_17687.d", "timsTOF HT", "timsTOF", 41555, 37533, 4625,
+     "2025-09-23T22:21:11+00:00", (100.0, 100, 13), (100, "evosep", 11)),
+    ("evosep_40ng_hela_S2-A2_1_16723.d", "timsTOF HT", "timsTOF", 35329, 32440, 4235,
+     "2025-09-04T20:45:31+00:00", (40.0, 100, 13), (100, "evosep", 11)),
+    ("FL120621_HeLa100ng_DIASpcNwin46_90m.raw", "Orbitrap Fusion Lumos", "Lumos", 32320, 29325, 4563,
+     "2021-06-13T03:58:24+00:00", (100.0, 18, 72), (12, "custom", 88)),
+    ("FL010719_Hela200ng160m.raw", "Orbitrap Fusion Lumos", "Lumos", 29162, 26917, 3993,
+     "2019-07-02T07:32:18.582017+00:00", (200.0, 10, 130), (7, "custom", 164)),
+    ("260121_HeLa100ng_EasyCol_60m_1.raw", "Orbitrap Exploris 480", "Exploris", 11441, 11219, 2609,
+     "2021-03-19T20:49:16.241820+00:00", (100.0, 30, 43), (19, "custom", 88)),
+]
+
+
+def _seed_chain_rows() -> tuple[list[dict], list[str], list[str]]:
+    """The five chains as stored rows: (rows, seed copy ids, 0.376 copy ids)."""
+    rows, seed, kept = [], [], []
+    for n, (name, model, family, prec, pep, prot, when, (amt, spd0, len0), (spd1, lc1, len1)) in enumerate(SEED_CHAINS):
+        common = dict(instrument_model=model, instrument_family=family, n_precursors=prec, n_peptides=pep,
+                      n_proteins=prot, n_psms=0, run_date=when)
+        sid = 100 + 10 * n
+        rows.append(_tic_row(sid, start=2.0, run_name=name, display_name="Anonymous Lab", stan_version="0.2.283",
+                             acquisition_mode="dia", amount_ng=amt, spd=spd0, lc_system="", gradient_length_min=len0,
+                             submitted_at="2026-05-01T01:09:47.684153Z", **common))
+        rows.append(_tic_row(sid + 1, run_name=name, stan_version="0.2.376", amount_ng=50.0, spd=spd1,
+                             lc_system=lc1, gradient_length_min=len1, submitted_at="2026-05-27T00:41:01.624786Z", **common))
+        seed.append(f"s{sid}")
+        kept.append(f"s{sid + 1}")
+        if name.startswith("FL120621"):          # the same acquisition under a second name
+            rows.append(_tic_row(sid + 2, run_name="FL120621_HeLa100ng_DIASpcNwin35_90mGood.raw", stan_version="0.2.376",
+                                 amount_ng=50.0, spd=spd1, lc_system=lc1, gradient_length_min=len1,
+                                 submitted_at="2026-05-27T00:41:04.301119Z", **common))
+    return rows, seed, kept
+
+
 @needs_node
 def test_python_port_matches_the_page_with_unconfirmed_amounts(client, hub, relay, tmp_path):
-    """A copy of an acquisition whose stored amount the file name confirms is
-    the one kept; a held-back copy is never in a TIC cohort; the summary's
-    counts are the page's."""
-    rows = _p3b_rows()
-    base = dict(n_precursors=41000.0, n_peptides=36000, n_proteins=5000, n_psms=0, spd=100, lc_system="evosep")
-    rows += [
-        # one acquisition, two copies: the later one stores 50 ng against a "100ng" name
-        _tic_row(20, run_name="Hela100ng_in20ul-OT2_S3-A1_1_17687.d", amount_ng=100.0, lc_system="",
-                 run_date="2026-05-01T10:00:00Z", display_name="Anonymous Lab", **{k: v for k, v in base.items() if k != "lc_system"}),
-        _tic_row(21, run_name="Hela100ng_in20ul-OT2_S3-A1_1_17687.d", amount_ng=50.0,
-                 run_date="2026-05-01T10:00:01Z", **base),
-        # two copies, both unconfirmed: held back either way
-        _tic_row(22, run_name="evosep_40ng_hela_S2-B2_1_16718.d", run_date="2026-05-02T10:00:00Z",
-                 **dict(base, n_precursors=42000.0)),
-        _tic_row(23, run_name="evosep_40ng_hela_S2-B2_1_16718.d", run_date="2026-05-02T10:00:01Z",
-                 **dict(base, n_precursors=42000.0)),
+    """The copy kept is the one kept before P3b: an unconfirmed amount never
+    decides it, so a degraded seed copy is never swapped in, and the
+    acquisition is held back as a whole. Held-back copies are in no TIC
+    cohort; the page and the port agree on all of it."""
+    chains, seed, kept = _seed_chain_rows()
+    rows = _p3b_rows() + chains
+    base = dict(n_precursors=42000.0, n_peptides=36000, n_proteins=5000, n_psms=0, spd=100, lc_system="evosep")
+    rows += [   # two copies, both unconfirmed: held back either way
+        _tic_row(22, run_name="evosep_40ng_hela_S2-B2_1_16718.d", run_date="2026-05-02T10:00:00Z", **base),
+        _tic_row(23, run_name="evosep_40ng_hela_S2-B2_1_16718.d", run_date="2026-05-02T10:00:01Z", **base),
     ]
     _serve_frame(hub, rows)
+    lb = {r["submission_id"]: r for r in client.get("/api/leaderboard").json()["submissions"]}
+    assert all(lb[k]["amount_check"] == "mismatch" for k in kept) and all(lb[k]["amount_check"] == "" for k in seed)
     js, py = _assert_parity(client, relay, tmp_path)
-    assert "s20" in py["usable"] and "s21" not in py["kept"]          # the copy that agrees with its name
+    assert set(kept) <= set(py["kept"]) and not set(seed) & set(py["kept"])   # the 0.376 copy, as before P3b
+    assert "s121" in py["kept"] and "s122" not in py["kept"]                  # earliest submitted of two 0.376 copies
+    assert not (set(kept) | set(seed)) & set(py["usable"])                    # held back as a whole
     assert not {"s5", "s8", "s22", "s23"} & set(py["usable"])
     assert ("s22" in py["kept"]) != ("s23" in py["kept"])
     drawn = {sid for v in py["groups"].values() for sid, _ in v}
-    assert not {"s5", "s8", "s21", "s22", "s23"} & drawn and {"s6", "s7", "s20"} <= drawn
+    assert not {"s5", "s8", "s22", "s23"} & drawn and not (set(kept) | set(seed)) & drawn
+    assert {"s6", "s7"} <= drawn
+    assert not any(k.endswith("|unrec") for k in py["groups"])                # no seed copy's "LC not recorded" entry
 
 
 # ── page ─────────────────────────────────────────────────────────────
@@ -309,7 +360,7 @@ def _page_rows() -> list[dict]:
         row = _row(i, **over)
         row.pop("run_name")
         row.setdefault("amount_check", "")
-        row.setdefault("faims", False)
+        row.setdefault("faims", None)
         row.setdefault("faims_source", "")
         return row
     lumos = dict(instrument_family="Lumos", instrument_model="Orbitrap Fusion Lumos", spd=9, lc_system="custom",
@@ -432,6 +483,40 @@ def test_held_back_list_escapes_submitter_strings(client, tmp_path):
     assert evil not in html and "&lt;img src=x" in html
 
 
+@needs_node
+def test_a_missing_amount_is_never_a_stand_in_50_ng(client, tmp_path):
+    """Hovers say "amount not recorded" and the point is an open circle, not
+    the 50 ng circle, in Depth by Throughput and the platform violins."""
+    rows = _page_rows()
+    for i in range(5):            # a ranked cohort (5 runs) with no amount recorded
+        r = dict(next(x for x in rows if x["submission_id"] == "s40"))
+        r.update(submission_id=f"s7{i}", amount_ng=None, amount_source=None, n_precursors=33000 + 10 * i,
+                 n_peptides=30000 + i, run_date=f"2026-08-{10 + i}T10:00:00Z")
+        rows.append(r)
+    scenario = f"""(() => {{ {_SETUP} setView({{ amount: 'all' }});
+        const last = (id) => plots.filter(p => p.id === id).slice(-1)[0];
+        const pts = (id) => [].concat(...last(id).traces.filter(t => t.mode === 'markers').map(t =>
+            (t.text || []).map((x, i) => [x, [].concat((t.marker || {{}}).symbol)[i]])));
+        return {{ text: [amountText({{ amount_ng: null }}), amountText({{ amount_ng: 0 }}), amountText({{ amount_ng: 50 }}),
+                         amountText({{ amount_ng: 1000 }})],
+                  shape: [null, 0, 5, 50, 500].map(a => amountShapeOf({{ amount_ng: a }})),
+                  spd: pts('chart-spd-depth'), violin: pts('chart-violin') }}; }})()"""
+    got = _run(client, tmp_path, scenario, data=f"var ROWS = {json.dumps(rows)};")["out"]
+    assert got["text"] == ["amount not recorded", "amount not recorded", "50 ng", "1,000 ng"]
+    assert got["shape"] == ["circle-open", "circle-open", "diamond", "circle", "square"]
+    for chart in ("spd", "violin"):
+        missing = [sym for txt, sym in got[chart] if "amount not recorded" in txt]
+        assert len(missing) == 5 and set(missing) == {"circle-open"}, chart
+        assert not any("SPD, 50 ng" in txt and sym == "circle-open" for txt, sym in got[chart]), chart
+
+
+def test_page_reads_no_stand_in_amount_and_the_lookup_says_faims_is_left_out(client):
+    html = _page(client)
+    assert not re.search(r"amount_ng\s*\|\|\s*50", html)
+    assert ("Runs acquired with FAIMS are left out of these cohorts: there is no FAIMS field here, "
+            "so your run is compared with runs acquired without it.") in html
+
+
 # ── the 2026-09-29 snapshot ──────────────────────────────────────────
 
 def _snapshot_rows() -> list[dict]:
@@ -449,7 +534,9 @@ def _snapshot_rows() -> list[dict]:
 def test_snapshot_holds_back_71_rows_and_marks_15_faims(client, hub, tmp_path):
     """Decision 3 on the 2026-09-29 snapshot (3,305 rows, every one with its
     file name): 71 rows whose file name states another amount, all STAN
-    0.2.376 Clogged PeakTail rows stored as 50 ng, and 15 FAIMS names."""
+    0.2.376 Clogged PeakTail rows stored as 50 ng, and 15 FAIMS names. Once
+    copies are removed they are 69 runs, all held back: the dedupe keeps the
+    copy it kept before P3b, never an older seed copy."""
     snap = _snapshot_rows()
     names = {r["submission_id"]: r["run_name"] for r in snap}
     buf = io.BytesIO()
@@ -467,12 +554,13 @@ def test_snapshot_holds_back_71_rows_and_marks_15_faims(client, hub, tmp_path):
     assert by[("timsTOF HT", 100.0)] == 18 and by[("timsTOF HT", 40.0)] == 10
     assert by[("timsTOF HT", 50000.0)] + by[("Orbitrap Exploris 480", 50000.0)] == 10   # "HeL50ug"
     assert sum(1 for r in mm if "FaimHe1ug" in names[r["submission_id"]]) == 13
-    fa = [r for r in lb if r["faims"]]
+    fa = [r for r in lb if r["faims"] is True]
     assert len(fa) == 15 and {r["faims_source"] for r in fa} == {"filename"}
+    assert all(r["faims"] is None for r in lb if r["faims_source"] == "")
     assert sorted({r["instrument_model"] for r in fa}) == ["Orbitrap Exploris 480", "Orbitrap Fusion Lumos"]
     assert all("faim" in names[r["submission_id"]].lower() for r in fa)
 
-    # The page on those rows: 64 runs unconfirmed once copies are removed,
+    # The page on those rows: 69 runs unconfirmed once copies are removed,
     # the four 1 µg FAIMS runs leave the table for the held-back list, and the
     # two Exploris FAIMS runs are their own (unranked, 1-run) cohorts.
     scenario = f"""(() => {{ {_SETUP}
@@ -484,13 +572,14 @@ def test_snapshot_holds_back_71_rows_and_marks_15_faims(client, hub, tmp_path):
     got = _run(client, tmp_path, scenario, data=f"var ROWS = {json.dumps(lb)};")["out"]
     assert "244 duplicate copies removed" in got["note"]
     assert "2 runs held back from every range and ranking because the stored amount is above 5,000 ng" in got["note"]
-    assert "64 runs held back as amount unconfirmed" in got["note"]
-    assert got["runs"] == "2,971"                                  # 3,035 before P3b
+    assert "69 runs held back as amount unconfirmed" in got["note"]
+    assert got["runs"] == "2,966"                                  # 3,035 before P3b
     for top in ("84,857", "84,461", "82,477", "69,682"):
         assert top not in got["table"] and top in got["held"]
     assert "~96 min gradient (12 SPD) · 88 min run · FAIMS · 50 ng" in got["sparse"]
     assert "~61 min gradient (19 SPD) · 88 min run · FAIMS · 50 ng" in got["sparse"]
     # the TIC summary counts only what the page counts
     s = _summary(client)
-    assert s["usable"] == 2995 and s["traces"]["DIA"] == 2959
+    assert s["usable"] == 2990 and s["traces"]["DIA"] == 2954
     assert re.search(r"(?i)faim", json.dumps(s)) is None
+    assert not [c for c in s["cohorts"] if c["spd"] == 100 and c["lc"] == "unrec"]   # no seed copy swapped in

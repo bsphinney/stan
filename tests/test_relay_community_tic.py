@@ -567,16 +567,14 @@ def test_dates_and_lc_names_are_read_as_the_page_reads_them(client, relay, tmp_p
 @needs_snapshot
 def test_python_port_matches_the_page_on_the_2026_09_29_snapshot(client, hub, relay, tmp_path):
     """§A.4 item 5: the summary is built from exactly the rows the page keeps.
-    3,305 rows -> 3,061 kept (244 copies) -> 2,995 usable (66 held back).
+    3,305 rows -> 3,061 kept (244 copies) -> 2,990 usable (71 held back).
 
     Relay 1.6.0 held back 2 (stored amount above 5,000 ng): 3,059 usable,
     3,023 traces, 626 at 100 SPD Evosep. P3b (1.8.0) also holds back the 71
-    rows whose file name states another amount. They are 64 acquisitions as
-    the page keeps them; the other 7 rows are duplicate copies: 6 of 5
-    acquisitions whose older copy stores the amount the name states (100, 40
-    or 200 ng), which dedupeRuns now keeps as the usable copy, and 1 of one of
-    the 64. Only the held-back set moved: the TIC code and its pins are
-    unchanged."""
+    rows whose file name states another amount: 69 acquisitions as the page
+    keeps them (2 rows are copies). The dedupe keeps the copy it kept before
+    P3b, so no older seed copy is swapped in. Only the held-back set moved:
+    the TIC code and its pins are unchanged."""
     rows = json.loads((SNAP / "api_leaderboard.json").read_text())["submissions"]
     tic = {t["submission_id"]: t for t in json.loads((SNAP / "api_tic_overlay.json").read_text())["traces"]}
     for r in rows:
@@ -587,9 +585,9 @@ def test_python_port_matches_the_page_on_the_2026_09_29_snapshot(client, hub, re
     pl.from_dicts(rows, infer_schema_length=None).write_parquet(buf)
     hub.files["benchmark_latest.parquet"] = buf.getvalue()
     js, py = _assert_parity(client, relay, tmp_path)
-    assert (len(py["kept"]), py["dropped"], len(py["usable"])) == (3061, 244, 2995)
+    assert (len(py["kept"]), py["dropped"], len(py["usable"])) == (3061, 244, 2990)
     assert len(py["groups"]["hela|DIA|100|evosep"]) == 585
-    assert sum(len(v) for v in py["groups"].values()) == 2959
+    assert sum(len(v) for v in py["groups"].values()) == 2954
 
 
 # ── page ─────────────────────────────────────────────────────────────
@@ -885,9 +883,10 @@ def test_tic_code_is_pinned(client):
 # sit?": its script, section and CSS) and PEG Watch's server code are not
 # touched by the TIC change. PEG Watch's page parts and the P2a/P2b read-time
 # rules are pinned in tests/test_relay_community_p2b.py and _p2c.py.
-# P3b (relay 1.8.0) changed one line of the lookup on purpose: it has no
-# FAIMS field, so it compares a run with runs acquired without FAIMS. The
-# test puts that line back before hashing, so the pin stays ede086b's.
+# P3b (relay 1.8.0) changed the lookup on purpose, by one line of script and
+# one line of text: it has no FAIMS field, so it compares a run with runs
+# acquired without FAIMS, and says so. The test takes both back out before
+# hashing, so the pins stay ede086b's.
 UNCHANGED_SINCE_EDE086B = {
     "lookup_js": "c8679618e6ab8fadb8d8066318ad8da410c2330921fcd8842b5f569f25021a3c",
     "lookup_html": "d83ece0137c35bd9aa1a84e50ffd26351cfb2b25a07d2e94bbca32a391016ea1",
@@ -903,6 +902,9 @@ LOOKUP_P3B = (
     "function lkRows() { return rowsOfSample(lkSample()).filter(s => !rowKey(s).f); }",
     "function lkRows() { return rowsOfSample(lkSample()); }",
 )
+# The one line P3b adds to the lookup's form, which says so.
+LOOKUP_HTML_P3B = ('                <p class="ws-hint">Runs acquired with FAIMS are left out of these cohorts: there is no FAIMS '
+                   'field here, so your run is compared with runs acquired without it.</p>\n')
 
 
 def test_lookup_and_peg_server_are_byte_identical_to_ede086b(client):
@@ -920,6 +922,8 @@ def test_lookup_and_peg_server_are_byte_identical_to_ede086b(client):
     }
     assert got["lookup_js"].count(LOOKUP_P3B[0]) == 1
     got["lookup_js"] = got["lookup_js"].replace(*LOOKUP_P3B)
+    assert got["lookup_html"].count(LOOKUP_HTML_P3B) == 1
+    got["lookup_html"] = got["lookup_html"].replace(LOOKUP_HTML_P3B, "")
     assert {k: hashlib.sha256(v.encode()).hexdigest() for k, v in got.items()} == UNCHANGED_SINCE_EDE086B
 
 

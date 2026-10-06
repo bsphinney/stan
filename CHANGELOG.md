@@ -31,69 +31,94 @@ version.
     runs through both copies in the tests. A stored amount above 5,000 ng is
     left to the page's existing hold-back, so the two never overlap.
   - `faims` — the stored value when there is one (STAN 1.2.16's scan-filter
-    check), else the file-name hint, always true or false; `faims_source` says
-    which (`stored`, `filename` or '' for neither). The hint is UC Davis's
-    token, "Faim" or "Faims" on its own ("FL271022_FaimHe1ug_…",
-    "Ex150421_HeLa50ng_FaimsCV-60…"): not after a letter, not followed by a
-    lower-case letter, not negated ("no_FAIMS", "FAIMS_off"), never on a
-    timsTOF. A CV alone is not read. On the 2026-09-29 snapshot it marks exactly
-    the 15 names containing "faim" (13 Lumos, 2 Exploris 480) and none of the 6
-    containing "Fail".
+    check), else true from the file-name hint, else null (nothing known; the
+    page reads anything but true as no FAIMS). `faims_source` says which:
+    `stored`, `filename` or ''. The hint is UC Davis's token, "Faim" or
+    "Faims" ("FL271022_FaimHe1ug_…", "Ex150421_HeLa50ng_FaimsCV-60…"), on its
+    own or joined CamelCase after a letter with a capital F ("HeLaFAIMS_CV45",
+    "200ngFAIMS", "DIAFAIMS", "withFAIMS"), not followed by a lower-case
+    letter except "pro" ("FAIMSpro"), not negated ("no_FAIMS", "noFAIMS",
+    "FAIMS_off"), never on a timsTOF. A CV alone is not read. The rule lives in
+    the relay only (the client reads FAIMS from the Thermo scan filters). On
+    the 2026-09-29 snapshot and the live table of 2026-10-06 it marks exactly
+    the 15 names containing "faim" (13 Lumos "FaimHe1ug", 2 Exploris 480
+    "FaimsCV-60"), none of the 6 containing "Fail", and no timsTOF.
 - **The submissions table marks amounts**: "assumed" where the run recorded
-  that its amount is the lab's default (`amount_source`, sent from STAN 1.2.16;
-  no row on the relay carries one yet), and a row with no amount reads "not
-  recorded" instead of an invented 50 ng. Under the table, a closed list of the
-  held-back runs in view, each marked "unconfirmed" or "above 5,000 ng" with
-  the reason, so a lab can find a run that left the rankings.
+  that its amount is the lab's default (`amount_source`, sent from STAN
+  1.2.16). The live table of 2026-10-06 has 15 such rows (12 Exploris 480, 2
+  timsTOF HT, 1 Lumos, all 50 ng, submitted that day); older rows record no
+  source and carry no mark. A row with no amount reads "not recorded" instead
+  of an invented 50 ng. Under the table, a closed list of the held-back runs
+  in view, each marked "unconfirmed" or "above 5,000 ng" with the reason, so a
+  lab can find a run that left the rankings.
 
 ### Changed
 - **A run whose file name contradicts its stored amount is held back** from
   every range, ranking, percentile and the TIC summaries (`isHeldBack` and its
   Python port `_page_held_back`, changed together and checked against each
-  other). The stats row counts it apart from the >5,000 ng hold-back:
-  "64 runs held back as amount unconfirmed". On the 2026-09-29 snapshot that is
-  71 rows, all STAN 0.2.376 Clogged PeakTail rows stored as 50 ng: 15 Lumos at
-  1 µg (13 "FaimHe1ug" FAIMS runs, "qCHeL1ug", "He1000ng"), 18 timsTOF HT at
-  100 ng, 10 at 40 ng, 10 "HeL50ug" (9 timsTOF HT, 1 Exploris 480), 8 Lumos at
-  100 ng and 10 others. They are 64 runs once duplicate copies are removed: 5
-  more acquisitions have an older copy that stores the amount the name states
-  (100, 40 or 200 ng), which the dedupe now keeps as the usable copy, and 1 row
-  is a copy of one of the 64. The four 1 µg FAIMS runs that led the DIA table
-  (84,857 / 84,461 / 82,477 / 69,682 precursors) are in the held-back list.
+  other). The stats row counts it apart from the >5,000 ng hold-back: "69 runs
+  held back as amount unconfirmed". On the 2026-09-29 snapshot that is 71 rows,
+  all STAN 0.2.376 Clogged PeakTail rows stored as 50 ng: 15 Lumos at 1 µg (13
+  "FaimHe1ug" FAIMS runs, "qCHeL1ug", "He1000ng"), 18 timsTOF HT at 100 ng, 10
+  at 40 ng, 10 "HeL50ug" (9 timsTOF HT, 1 Exploris 480), 8 Lumos at 100 ng and
+  10 others; 69 runs once duplicate copies are removed. The four 1 µg FAIMS
+  runs that led the DIA table (84,857 / 84,461 / 82,477 / 69,682 precursors)
+  are in the held-back list.
+- **The duplicate rule never lets an unconfirmed amount choose the copy.**
+  `dedupeRuns` (and `_page_dedupe`) still prefer a copy that is not flagged
+  and not stored above 5,000 ng, exactly as in 1.7.0, so the copy kept is the
+  one kept before. For 5 acquisitions an older 0.2.282/0.2.283 "Anonymous Lab"
+  seed copy stores the amount the name states, but it carries an
+  identified-ion TIC, another run length and SPD (130 min / 10 SPD against
+  164 min / 7 SPD for `FL010719_Hela200ng160m`), no LC and another lab; the
+  0.2.376 copy stays, and the acquisition is held back as a whole. No amount
+  is copied between copies.
 - **FAIMS is part of the cohort key** (B2): a FAIMS run never shares a cohort
   with runs acquired without it, and every cohort title built from the key
   (reference cards, Best Configurations, violins, Column Comparison, the lab
   trend, the table) adds "· FAIMS". Per decision 9 there is no FAIMS filter:
   the bar's gradient menu is unchanged, and a run without FAIMS keeps the key
   it had. The lookup has no FAIMS field, so it compares a run with runs
-  acquired without FAIMS. On the snapshot the two Exploris 480 FAIMS runs
-  become their own 1-run cohorts (12 and 19 SPD, unranked).
-- **What moves on the 2026-09-29 snapshot** (relay 1.7.0 → 1.8.0): runs in the
-  stats tile 3,035 → 2,971; HeLa DIA 50 ng in view 2,975 → 2,907; the Lumos
-  9 SPD cohort 55 → 41 runs (median unchanged at 47,291, so Best
-  Configurations keeps its order but for Exploris 19 and 38 SPD swapping 10th
-  and 11th); Evosep 100 SPD 626 → 585 (median 35,419 → 35,501); TIC usable
-  rows 3,059 → 2,995, traces 3,023 → 2,959, and the TIC now opens on 60 SPD
-  (597 runs) instead of 100 SPD Evosep (585). The TIC code is byte-identical:
-  only the held-back set it is built from moved.
+  acquired without FAIMS, and says so under its run fields. On the snapshot
+  the two Exploris 480 FAIMS runs become their own 1-run cohorts (12 and 19
+  SPD, unranked).
+- **No chart invents an amount.** The Depth by Throughput and platform-violin
+  hovers read "amount not recorded" where they showed 50 ng, and such a point
+  is an open circle rather than the 50 ng circle.
+- **What moves** (relay 1.7.0 → 1.8.0):
+  - 2026-09-29 snapshot (3,305 rows): runs in the stats tile 3,035 → 2,966;
+    HeLa DIA 50 ng in view 2,975 → 2,906; the Lumos 9 SPD cohort 55 → 41 runs
+    (median unchanged at 47,291, so Best Configurations keeps its order but
+    for Exploris 19 and 38 SPD swapping 10th and 11th; DDA unchanged); Evosep
+    100 SPD 626 → 585 (median 35,419 → 35,501); TIC usable rows 3,059 → 2,990,
+    traces 3,023 → 2,954, menu entries 38 → 37 (7 SPD nanoLC empties).
+  - live table, 2026-10-06 (3,393 rows): 71 rows unconfirmed, 69 runs held
+    back, 15 FAIMS; stats tile 3,112 → 3,043; TIC usable 3,136 → 3,067, traces
+    3,100 → 3,031; Evosep 100 SPD 628 → 587.
+  - In both, the TIC now opens on 60 SPD (597 / 607 runs) instead of 100 SPD
+    Evosep (585 / 587). The TIC code is byte-identical: only the held-back set
+    it is built from moved.
 - The Join card says what the file name is now also used for, and lists the
   amount source and FAIMS among the published fields.
 
 ### Tests
 - New `tests/test_relay_community_p3b.py`: both parser copies on one fixture
   list; the amount check and the FAIMS rule on real snapshot names and edge
-  cases; the derived fields on `/api/leaderboard`; no response (page, API, TIC
-  summaries and every cohort's traces) contains any 6-character piece of a
-  file name; the Python port against the page's JavaScript with unconfirmed
-  copies; the stats note, FAIMS cohorts and titles, the lookup, the table
-  marks and held-back list (escaped) in node; and the snapshot (71 / 64 / 15).
+  cases (CamelCase, "FAIMSpro", negations); the derived fields on
+  `/api/leaderboard`, `faims` null when nothing is known; no response (page,
+  API, TIC summaries and every cohort's traces) contains any 6-character
+  piece of a file name; the Python port against the page's JavaScript on the
+  snapshot's five seed-copy acquisitions, with no seed copy kept; the stats
+  note, FAIMS cohorts and titles, the lookup and its line of text, the table
+  marks and held-back list (escaped), and "amount not recorded" hovers with
+  open-circle points, in node; and the snapshot (71 / 69 / 15).
 - The P1 no-file-name sweep now covers the TIC summaries and traces and names
   that P3b reads. The P2a read-time rule and lookup hash pins keep their
   fc5cb33 / ede086b values: the tests put P3b's listed edits back before
-  hashing, so any other change still fails. TIC and PEG pins are unchanged.
+  hashing (the dedupe's usable() comes back as fc5cb33's own rule), so any
+  other change still fails. TIC and PEG pins are unchanged.
 - The TIC snapshot parity numbers moved as above, with the reason in the test;
-  the P3a test now expects the effective `faims` on an old row (false, with
-  `faims_source` '').
+  the P3a test now expects `faims` null with `faims_source` '' on an old row.
 
 ## [1.2.16] — 2026-10-05
 

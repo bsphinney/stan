@@ -273,9 +273,17 @@ LOOKUP_PANEL_LINE = "    ['lookup',         _NO_COLUMN,   () => renderLookup()],
 # put back to the old one before hashing.
 TIC_PANEL_LINE = "    ['community-tic',  ['sample', 'mode'], () => renderCommunityTIC()],   // its SPD and LC menus are its own (§A.4)\n"
 TIC_PANEL_LINE_FC5CB33 = "    ['community-tic',  ['sample'],   () => renderCommunityTIC()],\n"
-# (P3b text, fc5cb33 text) for each region P3b changed.
+# (P3b text, fc5cb33 text) for each region P3b changed. The dedupe's own
+# usable() keeps fc5cb33's rule exactly (fc5cb33's isHeldBack is P3b's
+# amountImplausible): an unconfirmed amount never decides which copy is kept.
 P3B_EDITS = {
     "dedupe_heldback_js": [(
+        """    // An unconfirmed amount (amount_check, P3b) is not considered here: the
+    // copies it would prefer are older seed rows with an identified-ion TIC,
+    // another run length and SPD, no LC and another lab, so the copy kept is
+    // the one kept before P3b, and the acquisition is held back as a whole.
+    const usable = (s) => (!s.is_flagged && !amountImplausible(s)) ? 1 : 0;""",
+        """    const usable = (s) => (!s.is_flagged && !isHeldBack(s)) ? 1 : 0;"""), (
         """// its amount is confirmed. So is a run whose amount is unconfirmed: the
 // relay found that its file name states a different amount than the stored
 // one (amount_check 'mismatch', relay 1.8.0; the file name itself is never
@@ -292,8 +300,8 @@ const HELD_BACK_NG = 5000;
 function isHeldBack(s) { return (+s.amount_ng || 0) > HELD_BACK_NG; }
 """)],
     "cohort_key_js": [
-        ("""// FAIMS as the relay serves it (relay 1.8.0): the stored value, else what
-// the file name says, always true or false; faims_source says which.
+        ("""// FAIMS as the relay serves it (relay 1.8.0): the stored value, else true
+// from the file name, else null (not known); faims_source says which.
 function faimsOf(s) { return s.faims === true; }
 """, ""),
         ("a: amountBucketOf(s), c: colKey(s), f: faimsOf(s) };", "a: amountBucketOf(s), c: colKey(s) };"),
