@@ -71,7 +71,7 @@ SCRIPT_PATH = Path(__file__).resolve()
 # sha256 of the Space's app.py that hf_space/app.py was last synced from:
 # Space commit d041ef68, SPACE_VERSION 1.1.0, vendored 2026-09-28.
 # `--record-base` rewrites this line after a verified deploy.
-RECORDED_BASE_SHA256 = "98133136cf9fcd507bdd88f6e1e858a568bc1f9eb0dd248b53b48e68b970f08c"
+RECORDED_BASE_SHA256 = "201f2d9045577d212f0c236a74463b442a65897daaca8ac2a5f1231141d1227d"
 # The same for the Space's Dockerfile (unpinned pip installs at d041ef68).
 RECORDED_DOCKERFILE_SHA256 = "963a848c863615304108c022338bc4f85189745fe80d5bd005c6bfb564244dcc"
 
