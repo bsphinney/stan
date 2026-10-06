@@ -142,6 +142,7 @@ FAIMS_YES = [
     "HeLaFAIMS_CV45.raw", "200ngFAIMS.raw", "DIAFAIMS.raw", "withFAIMS.raw", "HeLaFaims.raw",
     "FAIMSpro.raw", "HeLa_FAIMSpro_CV45.raw", "HeLa_FAIMSPro.raw",
     "HeLa50faims.raw",                                         # after a digit: its own token
+    "nanoFAIMS.raw", "HeLanoFAIMS.raw",                        # lower-case "no" inside a word
 ]
 FAIMS_NO = [
     "Ex240625_HeL50_masCalButFailSystCal_30m_2good.raw",      # "Fail" (6 on the snapshot)
@@ -150,6 +151,9 @@ FAIMS_NO = [
     "HeLa_no_FAIMS.raw", "HeLa_noFAIMS.raw", "noFAIMS.raw", "HeLa_non-FAIMS.raw", "nonFAIMS.raw",
     "HeLa_wo_faims.raw", "woFAIMS.raw", "HeLa_without FAIMS.raw", "withoutFAIMS.raw",
     "HeLa_FAIMS_off.raw", "HeLa_FAIMS-OFF.raw", "HeLa_FAIMSoff.raw", "HeLa_FaimSoff.raw",
+    # CamelCase negation after a letter, capital N or W
+    "HeLaNoFAIMS.raw", "HeLaNo_FAIMS.raw", "HeLaNonFAIMS.raw", "HeLaWoFAIMS.raw",
+    "HeLaWithoutFAIMS.raw", "DIANoFAIMS.raw",
     "FL271022_HeLa50ng_CV4680microDia-w6_120m_3.raw",         # a CV alone is not FAIMS
     "", None,
 ]

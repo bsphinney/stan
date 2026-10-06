@@ -2680,8 +2680,11 @@ def _amount_check(run_name: str | None, amount_ng: Any) -> str:
 #   ("FaimHe1ug", "FaimsCV") but a longer word does not ("Fail" never
 #   reaches it; "Faimous" is not FAIMS), except "pro" ("FAIMSpro").
 # A token that says FAIMS was off does not count: "no", "non", "wo" or
-# "without" just before it ("no_FAIMS", "noFAIMS"), or "off" just after it
-# ("FAIMS_off"; "FAIMSoff" never matches). A compensation voltage ("CV-50")
+# "without" just before it ("no_FAIMS", "noFAIMS", and CamelCase after a
+# letter with a capital N or W: "HeLaNoFAIMS", "HeLaWithoutFAIMS"), or "off"
+# just after it ("FAIMS_off"; "FAIMSoff" never matches). A lower-case "no"
+# joined after a letter is part of a word ("nanoFAIMS"), so it does not negate.
+# A compensation voltage ("CV-50")
 # alone is not read: CV is also a coefficient of variation. On the
 # 2026-09-29 snapshot and on the live table of 2026-10-06 this marks exactly
 # the 15 names that contain "faim" in any case, and none that contain "Fail".
@@ -2693,7 +2696,10 @@ _FAIMS_NAME_RE = re.compile(
     r"(?i:faim(?!s)|faims)"
     r"(?:(?i:pro)(?![a-z])|(?![a-z]))"           # then no lower-case letter, but "pro" may follow
 )
-_FAIMS_NOT_BEFORE = re.compile(r"(?<![A-Za-z])(?i:no|non|wo|without)[_\- ]?$")
+_FAIMS_NOT_BEFORE = re.compile(
+    r"(?:(?<![A-Za-z])|(?<=[A-Za-z])(?=[NW]))"  # its own token, or CamelCase after a letter
+    r"(?i:no|non|wo|without)[_\- ]?$"
+)
 _FAIMS_NOT_AFTER = re.compile(r"[_\- ]?(?i:off)(?![a-z])")
 
 
