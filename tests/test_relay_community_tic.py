@@ -395,6 +395,7 @@ def test_lc_class_grouping_matches_the_page_rule(client, hub):
 # ── the Python port against the page's JavaScript ────────────────────
 
 _PARITY_JS = r"""(() => {
+    setFacilityNames(ROWS);          // as setSubmissions does (P3c)
     const d = dedupeRuns(ROWS);
     const usable = d.kept.filter(s => !s.is_flagged && !isHeldBack(s));
     const groups = {}, rowsOf = {};

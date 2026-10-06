@@ -58,6 +58,7 @@ from tests.test_relay_peg import (  # noqa: F401  (fixtures)
     CLAIMS,
     REPO,
     SUBMIT_PAYLOAD,
+    _claim,
     _load_module,
     _page,
     _prepare_relay,
@@ -213,7 +214,7 @@ def test_the_uc_davis_records_parse_cleanly(relay):
     assert problems == []
     assert set(fmap) == {"f1"}
     f1 = fmap["f1"]
-    assert f1.names == frozenset({"clogged peaktail", "cloggedpeaktail"})
+    assert f1.names == frozenset({"Clogged PeakTail", "Clogged Peaktail", "CloggedPeakTail"})
     assert f1.anonymous == (datetime(2026, 4, 30, 23, 29, tzinfo=timezone.utc),
                             datetime(2026, 5, 1, 18, 27, tzinfo=timezone.utc))
 
@@ -231,16 +232,30 @@ def test_live_names(relay):
 
 
 @pytest.mark.parametrize("name,expected", [
-    ("Clogged PeakTail", "f1"), ("clogged peaktail", "f1"), ("CLOGGED PEAKTAIL", "f1"),
-    ("  Clogged   PeakTail ", "f1"), ("Clogged PeakTail", "f1"), ("Clogged​PeakTail", "f1"),
-    ("Ｃlogged PeakTail", "f1"),            # fullwidth C: NFKC, as claims are matched
-    ("cloggedpeaktail", "f1"),
+    # the three listed spellings
+    ("Clogged PeakTail", "f1"), ("Clogged Peaktail", "f1"), ("CloggedPeakTail", "f1"),
+    # what the claim registry takes as the same name: _clean_text's canonical form
+    ("  Clogged   PeakTail ", "f1"), ("Clogged\u00a0PeakTail", "f1"), ("\uff23logged PeakTail", "f1"),
+    ("Clogged\u200bPeakTail", "f1"),           # zero-width space dropped: "CloggedPeakTail", listed
+    # case and spacing variants: other names, which another email could claim
+    ("clogged peaktail", ""), ("CLOGGED PEAKTAIL", ""), ("Clogged peakTail", ""), ("cloggedpeaktail", ""),
     ("Clogged Peak Tail", ""), ("Clogged PeakTails", ""), ("Clogged PeakTai1", ""),
     ("", ""), (None, ""), (42, ""),
 ])
 def test_name_matching(relay, name, expected):
     fmap, _ = relay._parse_facilities(UCD)
     assert relay._facility_of(name, None, fmap) == expected
+
+
+@pytest.mark.parametrize("verified,expected", [(None, "f1"), (True, "f1"), (False, "")])
+def test_a_run_sent_unverified_is_not_stamped(relay, verified, expected):
+    """By name only when name_verified is not False: rows stored before 1.9.0
+    (null) and verified rows are stamped; a run sent under the name without
+    its token is not, whatever its spelling. The anonymous window does not
+    look at it (its rows predate 1.9.0)."""
+    fmap, _ = relay._parse_facilities(UCD)
+    assert relay._facility_of("Clogged PeakTail", None, fmap, verified) == expected
+    assert relay._facility_of("Anonymous Lab", "2026-05-01T12:00:00Z", fmap, verified) == "f1"
 
 
 @pytest.mark.parametrize("when,expected", [
@@ -260,7 +275,8 @@ def test_name_matching(relay, name, expected):
 def test_anonymous_window(relay, when, expected):
     fmap, _ = relay._parse_facilities(UCD)
     assert relay._facility_of("Anonymous Lab", when, fmap) == expected
-    assert relay._facility_of(" anonymous  LAB", when, fmap) == expected
+    assert relay._facility_of(" Anonymous  Lab\u200b", when, fmap) == expected     # its canonical form
+    assert relay._facility_of("anonymous lab", when, fmap) == ""                   # another name
 
 
 @pytest.mark.parametrize("records,problem,kept", [
@@ -270,17 +286,18 @@ def test_anonymous_window(relay, when, expected):
     ({"Clogged PeakTail": {"names": ["X"]}}, "never a name", {}),
     ({"f1": ["X"]}, "not a JSON object", {}),
     ({"f1": {"names": "X"}}, "not a list", {"f1": (set(), None)}),
-    ({"f1": {"names": ["X", ""]}}, "empty or not text", {"f1": ({"x"}, None)}),
-    ({"f1": {"names": ["X", "Anonymous Lab"]}}, "only by anonymous_from", {"f1": ({"x"}, None)}),
-    ({"f1": {"names": ["X"], "label": "UC Davis"}}, "unknown field", {"f1": ({"x"}, None)}),
+    ({"f1": {"names": ["X", ""]}}, "empty or not text", {"f1": ({"X"}, None)}),
+    ({"f1": {"names": ["X", "Anonymous Lab"]}}, "only by anonymous_from", {"f1": ({"X"}, None)}),
+    ({"f1": {"names": ["X"], "label": "UC Davis"}}, "unknown field", {"f1": ({"X"}, None)}),
     ({"f1": {"names": ["X"], "anonymous_from": "2026-05-01T00:00:00Z"}}, "without anonymous_until",
-     {"f1": ({"x"}, None)}),
-    ({"f1": {"names": ["X"], "anonymous_until": "2026-05-01T00:00:00"}}, "time zone", {"f1": ({"x"}, None)}),
-    ({"f1": {"names": ["X"], "anonymous_until": "May 1"}}, "time zone", {"f1": ({"x"}, None)}),
+     {"f1": ({"X"}, None)}),
+    ({"f1": {"names": ["X"], "anonymous_until": "2026-05-01T00:00:00"}}, "time zone", {"f1": ({"X"}, None)}),
+    ({"f1": {"names": ["X"], "anonymous_until": "May 1"}}, "time zone", {"f1": ({"X"}, None)}),
     ({"f1": {"names": ["X"], "anonymous_from": "2026-05-02T00:00:00Z", "anonymous_until": "2026-05-01T00:00:00Z"}},
-     "after anonymous_until", {"f1": ({"x"}, None)}),
+     "after anonymous_until", {"f1": ({"X"}, None)}),
     ({"f1": {}}, "matches no run", {"f1": (set(), None)}),
-    ({"f1": {"names": ["X"]}, "f2": {"names": ["x "]}}, "listed under f1, f2", {"f1": ({"x"}, None), "f2": ({"x"}, None)}),
+    ({"f1": {"names": ["X", "anonymous LAB"]}}, "only by anonymous_from", {"f1": ({"X"}, None)}),
+    ({"f1": {"names": ["X"]}, "f2": {"names": ["X "]}}, "listed under f1, f2", {"f1": ({"X"}, None), "f2": ({"X"}, None)}),
     ([], "not a JSON object", {}),
 ])
 def test_problems_are_reported_and_nothing_is_guessed(relay, records, problem, kept):
@@ -293,29 +310,71 @@ def test_conflicts_leave_rows_unattributed(relay):
     fmap, problems = relay._parse_facilities({
         "f1": {"names": ["Lab A", "Shared"], "anonymous_from": "2026-05-01T00:00:00Z",
                "anonymous_until": "2026-05-03T00:00:00Z"},
-        "f2": {"names": ["Lab B", "shared"], "anonymous_until": "2026-05-02T00:00:00Z"},
+        "f2": {"names": ["Lab B", "Shared", "lab a"], "anonymous_until": "2026-05-02T00:00:00Z"},
     })
-    assert any("overlap" in p for p in problems) and any("'shared'" in p for p in problems)
+    assert any("overlap" in p for p in problems) and any("'Shared'" in p for p in problems)
     assert relay._facility_of("Lab A", None, fmap) == "f1"
+    assert relay._facility_of("lab a", None, fmap) == "f2"          # case kept: another name
     assert relay._facility_of("Shared", None, fmap) == ""
     assert relay._facility_of("Anonymous Lab", "2026-04-01T00:00:00Z", fmap) == "f2"   # f2's open start
     assert relay._facility_of("Anonymous Lab", "2026-05-01T12:00:00Z", fmap) == ""     # both windows
     assert relay._facility_of("Anonymous Lab", "2026-05-02T12:00:00Z", fmap) == "f1"
 
 
+# ── /api/claim-name: no case or spacing lookalike of another lab's name ──
+
+def _claim_name(client, name: str, email: str):
+    return client.post("/api/claim-name", json={"pseudonym": name, "email": email})
+
+
+@pytest.mark.parametrize("pepper", [False, True])
+def test_claim_name_refuses_a_lookalike_of_another_labs_name(client, relay, hub, monkeypatch, pepper):
+    if pepper:
+        monkeypatch.setenv("CLAIMS_PEPPER", "pepper-for-tests")
+    set_claims(hub, {"Clogged PeakTail": claim_entry(relay, TOKEN, email="owner@ucdavis.edu")})
+    for name in ("clogged peaktail", "CLOGGED PEAKTAIL", " Clogged   peakTail ", "cLoGgEd PeAkTaIl"):
+        r = _claim_name(client, name, "someone@else.org")
+        assert r.status_code == 409, (name, r.text)
+        assert "only in case or spacing" in r.json()["detail"] and "'Clogged PeakTail'" in r.json()["detail"]
+    r = _claim_name(client, "Clogged PeakTail", "someone@else.org")             # the name itself, as before
+    assert r.status_code == 409 and "already claimed by a different email" in r.json()["detail"]
+    assert relay._pending_codes == {}
+    assert _claim_name(client, "Clogged Peak Tail", "someone@else.org").status_code == 200   # another name
+    # The owner may claim another spelling, and re-claim the name.
+    assert _claim_name(client, "Clogged Peaktail", "Owner@UCDavis.edu ").status_code == 200
+    token = _claim(client, relay, "Clogged PeakTail", email="owner@ucdavis.edu")
+    set_claims(hub, json.loads(hub.files[CLAIMS]))
+    assert relay._submit_name_verified("Clogged PeakTail", token) is True
+
+
+def test_reclaiming_ones_own_name_is_never_blocked_by_a_lookalike(client, relay, hub):
+    """Two spellings held by different emails before 1.9.0: each owner can
+    still re-claim (rotate the token of) its own; a third email takes neither."""
+    set_claims(hub, {"Clogged PeakTail": claim_entry(relay, TOKEN, email="owner@ucdavis.edu"),
+                     "clogged peaktail": claim_entry(relay, "other", email="someone@else.org")})
+    assert _claim_name(client, "clogged peaktail", "someone@else.org").status_code == 200
+    assert _claim_name(client, "Clogged PeakTail", "owner@ucdavis.edu").status_code == 200
+    assert _claim_name(client, "CLOGGED PEAKTAIL", "third@lab.org").status_code == 409
+    assert _claim_name(client, "clogged peaktail", "owner@ucdavis.edu").status_code == 409   # not the owner's spelling
+
+
 # ── /api/leaderboard carries `facility` ──────────────────────────────
 
 def _lab_rows() -> list[dict]:
-    at = lambda s: {"submitted_at": s}  # noqa: E731
+    def at(s, verified=None):
+        return {"submitted_at": s, "name_verified": verified}
     return [
         _row(1, display_name="Clogged PeakTail", **at("2026-09-01T00:00:00Z")),
         _row(2, display_name="Clogged Peaktail", **at("2026-09-01T00:00:01Z")),
         _row(3, display_name="CloggedPeakTail", **at("2026-09-01T00:00:02Z")),
         _row(4, display_name="Anonymous Lab", **at("2026-04-30T23:29:54.621936Z")),
         _row(5, display_name="Anonymous Lab", **at("2026-05-01T18:26:10.096906Z")),
-        _row(6, display_name="Anonymous Lab", **at("2026-05-02T09:00:00Z")),       # later: unknown
+        _row(6, display_name="Anonymous Lab", **at("2026-05-02T09:00:00Z", False)),   # later: unknown
         _row(7, display_name="n", **at("2026-04-12T00:00:00Z")),
         _row(8, display_name=None, **at("2026-09-01T00:00:00Z")),
+        _row(9, display_name="clogged peaktail", **at("2026-10-07T00:00:00Z", True)),   # another lab's name
+        _row(10, display_name="Clogged PeakTail", **at("2026-10-07T00:00:01Z", False)),  # sent without the token
+        _row(11, display_name="Clogged PeakTail", **at("2026-10-07T00:00:02Z", True)),   # verified
     ]
 
 
@@ -327,7 +386,7 @@ def test_leaderboard_rows_carry_the_facility_id_never_a_name(client, hub):
     _serve(hub, _lab_rows())
     _facilities(hub, UCD)
     assert _served_facilities(client) == {"s1": "f1", "s2": "f1", "s3": "f1", "s4": "f1", "s5": "f1",
-                                          "s6": "", "s7": "", "s8": ""}
+                                          "s6": "", "s7": "", "s8": "", "s9": "", "s10": "", "s11": "f1"}
     body = client.get("/api/leaderboard").text
     assert "anonymous_until" not in body and "anonymous_from" not in body
 
@@ -344,6 +403,18 @@ def test_a_bad_file_attributes_nothing_and_breaks_nothing(client, hub, bad, capl
     assert set(_served_facilities(client).values()) == {""}
     assert client.get("/api/tic-summary").status_code == 200
     assert any(FACILITIES in m for m in caplog.messages)
+
+
+@pytest.mark.parametrize("text", ['{"f1": {"names": ["Clogged PeakTail"]}, "f1": {"names": ["n"]}}',
+                                  '{"f1": {"names": ["Clogged PeakTail"], "names": ["n"]}}'])
+def test_a_key_given_twice_is_refused(client, relay, hub, text, caplog):
+    """{"f1": A, "f1": B} would otherwise silently keep B."""
+    with pytest.raises(ValueError, match="duplicate key 'f1'|duplicate key 'names'"):
+        relay._facilities_json(text)
+    _serve(hub, _lab_rows())
+    hub.files[FACILITIES] = text.encode()
+    assert set(_served_facilities(client).values()) == {""}
+    assert any("duplicate key" in r.getMessage() or "duplicate key" in str(r.exc_info) for r in caplog.records)
 
 
 def test_the_file_is_cached_and_an_outage_keeps_the_last_copy(client, relay, hub):
@@ -405,12 +476,30 @@ LAB_CASES = {
     "no name": [_lab(None), _lab(""), {"display_name": None}, {}],
     "facility, no name": [_lab(None, "f1"), _lab("Anonymous Lab")],
     "facility null": [{"display_name": "A", "facility": None}, {"display_name": "Anonymous Lab", "facility": None}],
+    # a run sent under a facility's name without its token is left unstamped
+    # by the relay, and still counts with the facility that uses the name
+    "unverified under a facility name": [_lab("Clogged PeakTail", "f1"), _lab("Clogged PeakTail")],
+    "unverified + the facility's anonymous rows": [_lab("Clogged PeakTail"), _lab("Anonymous Lab", "f1"),
+                                                   _lab("Clogged PeakTail", "f1")],
+    "a case variant is another lab": [_lab("Clogged PeakTail", "f1"), _lab("clogged peaktail")],
 }
 LAB_EXPECTED = {
     "empty": 0, "one facility, three names": 1, "facility + its anonymous rows": 1,
     "facility + unknown anonymous": 1, "only its anonymous rows": 1, "only unknown anonymous": 1,
     "facility + another lab": 2, "two facilities": 2, "no facilities: names, as before": 3,
     "a name that looks like an id": 2, "no name": 0, "facility, no name": 1, "facility null": 1,
+    "unverified under a facility name": 1, "unverified + the facility's anonymous rows": 1,
+    "a case variant is another lab": 2,
+}
+# The names a facility uses come from every row loaded, not only the rows
+# being counted: a cohort can hold a facility's unstamped runs and none of
+# its stamped ones. (rows loaded, rows counted, labs)
+LAB_SUBSETS = {
+    "unstamped runs + its anonymous rows": (
+        [_lab("Clogged PeakTail", "f1"), _lab("Clogged PeakTail"), _lab("Anonymous Lab", "f1")], [1, 2], 1),
+    "unstamped runs alone": ([_lab("Clogged PeakTail", "f1"), _lab("Clogged PeakTail"), _lab("n")], [1, 2], 2),
+    "the default name never lends a facility": (
+        [_lab("Anonymous Lab", "f1"), _lab("Anonymous Lab"), _lab("n")], [1, 2], 1),
 }
 
 
@@ -423,7 +512,13 @@ def _old_page_lab_count(rows):
 
 
 def test_python_lab_count(relay):
-    assert {k: relay._page_lab_count(v) for k, v in LAB_CASES.items()} == LAB_EXPECTED
+    assert {k: relay._page_lab_count(v, relay._page_facility_names(v))
+            for k, v in LAB_CASES.items()} == LAB_EXPECTED
+    for k, (loaded, idx, labs) in LAB_SUBSETS.items():
+        assert relay._page_lab_count([loaded[i] for i in idx], relay._page_facility_names(loaded)) == labs, k
+    # without the names from every row, the first would count f1 twice
+    loaded, idx, _ = LAB_SUBSETS["unstamped runs + its anonymous rows"]
+    assert relay._page_lab_count([loaded[i] for i in idx]) == 2
     # Without facilities it is exactly the 1.8.0 rule.
     for rows in LAB_CASES.values():
         plain = [{**r, "facility": ""} for r in rows]
@@ -433,12 +528,18 @@ def test_python_lab_count(relay):
 @needs_node
 def test_page_lab_count_matches_the_relay(client, relay, tmp_path):
     scenario = f"""(() => {{
-        const cases = {json.dumps(LAB_CASES)};
-        const out = {{}};
-        for (const [k, rows] of Object.entries(cases)) out[k] = [labCount(rows), labsSubText(rows)];
-        return out; }})()"""
-    got = _run(client, tmp_path, scenario)["out"]
-    assert {k: v[0] for k, v in got.items()} == {k: relay._page_lab_count(v) for k, v in LAB_CASES.items()}
+        const cases = {json.dumps(LAB_CASES)}, subsets = {json.dumps(LAB_SUBSETS)};
+        const out = {{}}, sub = {{}};
+        for (const [k, rows] of Object.entries(cases)) {{ setFacilityNames(rows); out[k] = [labCount(rows), labsSubText(rows)]; }}
+        for (const [k, [loaded, idx]] of Object.entries(subsets)) {{ setFacilityNames(loaded); sub[k] = labCount(idx.map(i => loaded[i])); }}
+        return {{ out, sub }}; }})()"""
+    res = _run(client, tmp_path, scenario)["out"]
+    got = res["out"]
+    assert {k: v[0] for k, v in got.items()} == {
+        k: relay._page_lab_count(v, relay._page_facility_names(v)) for k, v in LAB_CASES.items()}
+    assert res["sub"] == {k: relay._page_lab_count([loaded[i] for i in idx], relay._page_facility_names(loaded))
+                          for k, (loaded, idx, _) in LAB_SUBSETS.items()}
+    assert res["sub"] == {k: labs for k, (_, _, labs) in LAB_SUBSETS.items()}
     sub = {k: v[1] for k, v in got.items()}
     assert sub["one facility, three names"] == "under 3 lab names"
     assert sub["facility + its anonymous rows"] == "under 2 lab names"
@@ -446,19 +547,24 @@ def test_page_lab_count_matches_the_relay(client, relay, tmp_path):
     assert sub["only unknown anonymous"] == ""
     assert sub["facility + another lab"] == ""
     assert sub["no facilities: names, as before"] == "1 run sent as Anonymous Lab, not counted"
+    assert sub["unverified under a facility name"] == ""
+    assert sub["a case variant is another lab"] == ""
 
 
 def _tic_lab_rows() -> list[dict]:
-    """One TIC cohort (HeLa DIA 100 SPD Evosep) holding f1 under three names
-    and in its window, a later 'Anonymous Lab' and another lab; a 60 SPD one
-    with only the later 'Anonymous Lab'; a nanoLC one with f1 and its
-    anonymous rows; a 30 SPD one with two spellings of a lab with no record."""
+    """One TIC cohort (HeLa DIA 100 SPD Evosep) holding f1 under three names,
+    in its window and sent without its token, a later 'Anonymous Lab' and
+    another lab; a 60 SPD one with only the later 'Anonymous Lab'; a nanoLC
+    one with f1, its anonymous rows and a case variant of its name (another
+    lab); a 30 SPD one with two spellings of a lab with no record; a 20 SPD
+    one with only f1's unstamped runs and its anonymous rows."""
     rows = [
         _tic_row(1, display_name="Clogged PeakTail"), _tic_row(2, display_name="Clogged Peaktail"),
         _tic_row(3, display_name="CloggedPeakTail"),
         _tic_row(4, display_name="Anonymous Lab", submitted_at="2026-05-01T00:30:00.000000Z"),
         _tic_row(5, display_name="Anonymous Lab", submitted_at="2026-06-01T00:00:00.000000Z"),
         _tic_row(6, display_name="Lab X"), _tic_row(7, display_name="Lab X"),
+        _tic_row(8, display_name="Clogged PeakTail", name_verified=False),
     ]
     rows += [_tic_row(10 + i, display_name="Anonymous Lab", spd=60, gradient_length_min=21,
                       submitted_at="2026-06-02T00:00:00.000000Z", n_precursors=45000 + i) for i in range(3)]
@@ -466,15 +572,23 @@ def _tic_lab_rows() -> list[dict]:
                       lc_system="custom", instrument_model="Orbitrap Exploris 480", instrument_family="Exploris",
                       gradient_length_min=44, submitted_at="2026-05-01T12:00:00.000000Z",
                       n_precursors=22000 + i) for i in range(4)]
+    rows += [_tic_row(26, display_name="clogged peaktail", spd=38, lc_system="custom", gradient_length_min=44,
+                      instrument_model="Orbitrap Exploris 480", instrument_family="Exploris", n_precursors=22010)]
     rows += [_tic_row(30 + i, display_name=["Lab Y", "lab y"][i % 2], spd=30, gradient_length_min=44,
                       n_precursors=30000 + i) for i in range(2)]
+    rows += [_tic_row(40 + i, display_name="Clogged PeakTail", spd=20, gradient_length_min=58, name_verified=False,
+                      n_precursors=50000 + i) for i in range(2)]
+    rows += [_tic_row(42, display_name="Anonymous Lab", spd=20, gradient_length_min=58, n_precursors=50002,
+                      submitted_at="2026-05-01T01:00:00.000000Z")]
+    for r in rows:
+        r.setdefault("name_verified", None)
     return rows
 
 
 @needs_node
 @pytest.mark.parametrize("with_file,labs", [
-    (True, {100: 2, 60: 1, 38: 1, 30: 2}),
-    (False, {100: 4, 60: 1, 38: 1, 30: 2}),      # names, as in 1.8.0
+    (True, {100: 2, 60: 1, 38: 2, 30: 2, 20: 1}),
+    (False, {100: 4, 60: 1, 38: 2, 30: 2, 20: 1}),      # names, as in 1.8.0
 ])
 def test_tic_lab_counts_follow_the_facilities_as_the_page_does(client, relay, hub, tmp_path, with_file, labs):
     _serve(hub, _tic_lab_rows())
@@ -483,8 +597,11 @@ def test_tic_lab_counts_follow_the_facilities_as_the_page_does(client, relay, hu
     _assert_parity(client, relay, tmp_path)      # the page's labCount == the summary's labs, cohort by cohort
     s = _summary(client)
     got = {spd: _entry(s, "hela", "DIA", spd, lc)["labs"]
-           for spd, lc in ((100, "evosep"), (60, "evosep"), (38, "nanolc"), (30, "evosep"))}
+           for spd, lc in ((100, "evosep"), (60, "evosep"), (38, "nanolc"), (30, "evosep"), (20, "evosep"))}
     assert got == labs
+    if with_file:   # the unstamped runs carry no facility code, and the case variant none
+        served = {r["submission_id"]: r["facility"] for r in client.get("/api/leaderboard").json()["submissions"]}
+        assert served["s8"] == served["s40"] == served["s26"] == "" and served["s42"] == served["s1"] == "f1"
 
 
 def test_tic_summaries_are_rebuilt_when_the_facilities_change(client, relay, hub, monkeypatch):
@@ -529,18 +646,20 @@ def test_snapshot_is_one_facility(client, relay, hub, tmp_path):
 # ── the page: stats tile and lab trend ───────────────────────────────
 
 @needs_node
-@pytest.mark.parametrize("with_file,expected", [
-    (True, ["2", "Contributing facilities", "under 5 lab names"]),
-    (False, ["4", "Contributing facilities", "1 run sent as Anonymous Lab, not counted"]),
+@pytest.mark.parametrize("records,expected", [
+    (UCD, ["2", "Contributing facilities", "under 5 lab names"]),
+    # no file, or no record covering a name: the 1.8.0 wording
+    (None, ["4", "Contributing labs", "under 5 lab names"]),
+    ({"f9": {"names": ["Someone Else"]}}, ["4", "Contributing labs", "under 5 lab names"]),
 ])
-def test_stats_tile(client, hub, tmp_path, with_file, expected):
+def test_stats_tile(client, hub, tmp_path, records, expected):
     rows = [_row(i, display_name=n, submitted_at=t) for i, (n, t) in enumerate([
         ("Clogged PeakTail", "2026-09-01T00:00:00Z"), ("Clogged Peaktail", "2026-09-01T00:00:00Z"),
         ("CloggedPeakTail", "2026-09-01T00:00:00Z"), ("Anonymous Lab", "2026-05-01T00:00:00Z"),
         ("Lab X", "2026-09-01T00:00:00Z")])]
     _serve(hub, rows)
-    if with_file:
-        _facilities(hub, UCD)
+    if records is not None:
+        _facilities(hub, records)
     served = client.get("/api/leaderboard").json()["submissions"]
     got = _run(client, tmp_path, f"""(() => {{ setSubmissions({json.dumps(served)}); renderFilterBar(); updateStats();
         return [els['stat-labs'].textContent, els['stat-labs-label'].textContent, els['stat-labs-sub'].textContent]; }})()""")
@@ -549,15 +668,22 @@ def test_stats_tile(client, hub, tmp_path, with_file, expected):
 
 def test_stats_tile_markup_and_glossary(client):
     html = _page(client)
-    assert '<div class="label" id="stat-labs-label">Contributing facilities</div>' in html
-    assert "<div><b>Lab</b>a contributing facility." in html
+    assert '<div class="label" id="stat-labs-label">Contributing labs</div>' in html
+    assert ("<div><b>Lab</b>a contributing facility. Lab names the site's facility records tie to one facility "
+            "count once; runs under the default name Anonymous Lab that no record covers never count as a "
+            "second lab.</div>") in html
     assert "A facility code (such as <code>f1</code>, never a name)" in html
+    assert "The code links those names publicly: anyone can see that they are one facility." in html
 
 
-def _trend_with(facilities: dict) -> list[dict]:
+def _trend_with(facilities: dict, unstamped_every: int = 0) -> list[dict]:
+    """_trend_rows() stamped as the relay would; with ``unstamped_every`` n,
+    every n-th row of a stamped name is left unstamped (sent without its token)."""
     rows = _trend_rows()
-    for r in rows:
+    for i, r in enumerate(rows):
         r["facility"] = facilities.get(r["display_name"], "")
+        if unstamped_every and r["display_name"] != "Anonymous Lab" and i % unstamped_every == 0:
+            r["facility"] = ""
     return rows
 
 
@@ -591,6 +717,13 @@ def test_lab_trend_never_draws_the_labs_own_facility_as_other_labs(client, tmp_p
         assert not any(n.startswith("Other labs") for n in one[k]["names"]), k
         assert "No other lab in this cohort yet." in one[k]["note"], k
     assert "the cohort holds 45 runs · 1 lab" in one["a"]["sum"]
+    # Some of Lab A's runs sent without its token (unstamped): still its own,
+    # so Anonymous Lab's reference is Lab B alone, and Lab A's is Lab B.
+    part = _run(client, tmp_path, _TREND.format(rows=json.dumps(_trend_with(
+        {"Lab A": "f1", "Anonymous Lab": "f1"}, unstamped_every=3))))["out"]
+    assert "Other labs, 10–90th pct (7 runs · 1 lab)" in part["anon"]["names"]
+    assert "Other labs, 10–90th pct (7 runs · 1 lab)" in part["a"]["names"]
+    assert "the cohort holds 45 runs · 2 labs" in part["a"]["sum"]
 
 
 # ── STAN client: sends its token by default, safe against relay 1.8.0 ──
@@ -770,7 +903,11 @@ def test_script_dry_run_uploads_nothing_and_reports(hub, tmp_path, caplog):
     rows += [_row(10, display_name="Anonymous Lab", submitted_at=datetime(2026, 5, 1, 12, tzinfo=timezone.utc),
                   stan_version="0.2.288"),
              _row(11, display_name="Anonymous Lab", submitted_at=datetime(2026, 6, 1, tzinfo=timezone.utc),
-                  stan_version="1.0.0")]
+                  stan_version="1.0.0"),
+             _row(12, display_name="Clogged PeakTail", submitted_at=datetime(2026, 10, 7, tzinfo=timezone.utc),
+                  stan_version="1.2.17", name_verified=False)]          # sent without the token: not counted
+    for r in rows:
+        r.setdefault("name_verified", None)
     hub.files["benchmark_latest.parquet"] = _benchmark_parquet(rows)
     caplog.set_level("INFO")
     assert script.main([]) == 0
@@ -794,6 +931,15 @@ def test_script_uploads_with_yes_and_only_a_clean_file(hub, tmp_path, caplog):
     assert up["data"] == (json.dumps(UCD, indent=2) + "\n").encode()
     assert script.main(["--yes", "--no-live"]) == 0          # unchanged: nothing to upload
     assert len(hub.uploads) == 1
+
+
+def test_script_refuses_a_key_given_twice(hub, tmp_path, caplog):
+    script = _script()
+    dup = tmp_path / "dup.json"
+    dup.write_text('{"f1": {"names": ["Clogged PeakTail"]}, "f1": {"names": ["n"]}}')
+    assert script.main([str(dup), "--yes", "--no-live"]) == 1
+    assert hub.uploads == []
+    assert any("duplicate key 'f1'" in m for m in caplog.messages)
 
 
 def test_script_refuses_when_the_hub_cannot_be_reached(hub):

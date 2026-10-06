@@ -25,7 +25,7 @@ the TIC overlay's page code and PEG Watch are untouched.
 (`python scripts/set_facilities.py`, then `--yes`): relay 1.8.0 ignores the
 file, so it is safe before the relay. Then the relay (1.9.0), then Hive and
 Azure (1.2.18). A 1.2.18 client against relay 1.8.0 still submits (see below).
-Without the file, 1.9.0 counts lab names exactly as 1.8.0 did.
+Without the file, 1.9.0 counts and words lab counts exactly as 1.8.0 did.
 
 ### Added
 - **Facility records**, `identity/facilities.json` in the dataset: an opaque
@@ -45,9 +45,15 @@ Without the file, 1.9.0 counts lab names exactly as 1.8.0 did.
   ```
 
   "Clogged Peaktail" and "CloggedPeakTail" are the two other spellings claimed
-  on the relay (`/api/names`); neither has a row yet. A name matches in the
-  relay's canonical form, case-folded (doubled, leading and trailing spaces
-  and invisible characters ignored; a missing space is another name). The
+  on the relay (`/api/names`); neither has a row yet. A name matches exactly
+  as the claim registry matches it: in the relay's canonical form (doubled,
+  leading and trailing spaces and invisible characters do not count), with
+  its case and every space kept, so each spelling is listed; another email
+  could claim "clogged peaktail", and it must not be folded in. A run sent
+  under a listed name without its token (`name_verified` false) is not
+  stamped; rows stored before 1.9.0 (null) and verified rows are. A key given
+  twice anywhere in the file (`{"f1": A, "f1": B}`) makes it unreadable,
+  in the relay and in the script, instead of silently keeping B. The
   window takes in the 127 'Anonymous Lab' rows of STAN 0.2.282–0.2.290
   (58 / 32 / 30 / 3 / 4), both ends included; it ends at 18:27:00Z because the
   last of them was submitted at 18:26:10.097Z. Every later 'Anonymous Lab'
@@ -79,22 +85,38 @@ Without the file, 1.9.0 counts lab names exactly as 1.8.0 did.
   one per run; failures are never remembered, so a just re-claimed name's new
   token is checked at once.
 
+- **`/api/claim-name` refuses a lookalike of another lab's name.** A name
+  that differs from a claimed one only in case or in runs of spaces
+  ("clogged peaktail" for "Clogged PeakTail") is refused with 409 when that
+  name is held by a different email, since it would read as that lab on the
+  page; the owner's own email may claim such a spelling, and re-claiming a
+  name one already holds is never blocked by a lookalike.
+
 ### Changed
 - **Labs are counted as facilities** on the community page: `labCount()` and
   its Python port `_page_lab_count()` (the TIC summaries' lab counts) count a
   row with a facility as that facility, under whatever name it was sent, and a
   row without one by its lab name, as before; 'Anonymous Lab' without a
-  facility still never counts as a second lab. That reaches every count: the
+  facility still never counts as a second lab. A run the relay left unstamped
+  because it was sent under a facility's name without the token still counts
+  with that facility (`facilityOf` / `_page_facility`, from the names the
+  stamped rows of the whole table carry), as a run under the same name always
+  has: UC Davis's own runs from machines that send no token never make it a
+  second lab. That reaches every count: the
   stats tile, the bar's "runs in view", the reference cards, Best
   Configurations (and its "best" badges, still off below 2 labs), the chart
   legends and hovers, the TIC take line, the lab trend and the lookup. The
   TIC summaries' cache key includes the records, so a new file rebuilds them.
-- **The stats tile** reads "Contributing facility" / "Contributing facilities",
-  with "under n lab names" when the counted facilities sent under more names
-  than there are facilities, and "n runs sent as Anonymous Lab, not counted"
-  when unattributed 'Anonymous Lab' runs sit beside other labs. A glossary line
-  says that a lab is a contributing facility; the Join card lists the facility
-  code and the token flag among the published fields.
+- **The stats tile** reads "Contributing facility" / "Contributing facilities"
+  once a facility record covers the names, with "under n lab names" when the
+  counted facilities sent under more names than there are facilities, and
+  "n runs sent as Anonymous Lab, not counted" when unattributed 'Anonymous
+  Lab' runs sit beside other labs. With no file, or no record covering a name,
+  it keeps the 1.8.0 wording. A glossary line says that a lab is a
+  contributing facility and that 'Anonymous Lab' runs no record covers never
+  count as a second lab; the Join card lists the facility code and the token
+  flag among the published fields, and says that the code publicly links a
+  facility's names.
 - **The lab trend** never draws the selected lab's own facility, under another
   name, as "other labs": picking 'Anonymous Lab' no longer compares UC Davis
   with itself as Clogged PeakTail.
@@ -117,27 +139,32 @@ Without the file, 1.9.0 counts lab names exactly as 1.8.0 did.
   both modes), Best Configurations, the lab count of all 26 / 6 / 43 / 49
   cohorts in those views (what the lookup quotes), every TIC summary and the
   lab trend for every lab it lists read 1 lab before and after. Without the
-  file the tile reads "1 · Contributing facility · 76 runs sent as Anonymous
-  Lab, not counted" (the 127 rows after copies and hold-backs are removed).
+  file nothing moves at all: the tile still reads "1 · Contributing lab ·
+  under 2 lab names".
 
 ### Tests
-- New `tests/test_relay_community_p3c.py` (101 tests): the token on
+- New `tests/test_relay_community_p3c.py` (115 tests): the token on
   `/api/submit` for claimed and unclaimed names with the right, a wrong, an
   empty and no token, a non-canonical claim key, a registry outage, the
   verified-token memory and a re-claim, and the stored `name_verified`
   column; the records (Brett's file parses cleanly; every live claimed and row
-  name; case, spaces, NFKC and look-alikes; the window to the microsecond, as
-  datetimes and strings; every kind of bad entry reported and left out;
-  conflicts attribute nothing); `facility` on `/api/leaderboard`, never a name;
+  name; exact matching, with case and spacing variants left out; unverified
+  runs not stamped; the window to the microsecond, as datetimes and strings;
+  every kind of bad entry, and a key given twice, reported and left out;
+  conflicts attribute nothing); the claim-name lookalike refusal, peppered or
+  not, and an owner's re-claim; `facility` on `/api/leaderboard`, never a name;
   no, bad, unreachable and changed files, the cache and the admin refresh; the
-  relay never writes the file; `labCount()` against `_page_lab_count()` on 13
-  row sets, and through the TIC summaries with and without the file (the 1.8.0
-  rule when there is none); the stats tile, glossary and Join card; the lab
-  trend; the 2026-09-29 snapshot as one facility; the client against the new
+  relay never writes the file; `labCount()` against `_page_lab_count()` on 16
+  row sets and 3 cohorts counted against the whole table's names, and through
+  the TIC summaries with and without the file (the 1.8.0 rule when there is
+  none; unstamped runs and a case variant included); the stats tile with and
+  without a covering record, glossary and Join card; the lab trend, with some
+  of a lab's runs unstamped; the 2026-09-29 snapshot as one facility; the client against the new
   relay (verified), the real 1.8.0 relay from git (resends without the token,
   once, then an hour off), a wrong token (an error, not resent), the opt-out,
   and which errors drop the token; and `scripts/set_facilities.py` (dry run
-  uploads nothing; a bad file is refused; `--yes` uploads the exact bytes; an
+  uploads nothing; a bad file and a key given twice are refused; `--yes`
+  uploads the exact bytes; an
   unreachable Hub is an error, not an empty dataset).
 - Version pins move to 1.9.0, and the stored-row column checks take
   `name_verified` after the four P3a columns. The P2a rule, lookup, TIC and PEG

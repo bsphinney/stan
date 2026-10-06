@@ -16,9 +16,11 @@ the default input. Today it holds Brett's decision of 2026-10-05: UC Davis is
 one facility, ``f1``, covering "Clogged PeakTail" with the two other
 spellings of it claimed on the relay ("Clogged Peaktail", "CloggedPeakTail"),
 and the 127 'Anonymous Lab' rows submitted from 2026-04-30T23:29Z to
-2026-05-01T18:26Z by STAN 0.2.282-0.2.290. A name matches whatever its case
-and however its spaces are doubled or trimmed, but a space is not optional:
-each spelling is listed. The window ends at 18:27:00Z, the end of that minute:
+2026-05-01T18:26Z by STAN 0.2.282-0.2.290. A name matches exactly as the claim
+registry matches it: doubled or edge spaces and invisible characters do not
+count, but case and every space do, so each spelling is listed. A run sent
+under one of the names without its token (``name_verified`` false, relay
+1.9.0+) is not stamped. The window ends at 18:27:00Z, the end of that minute:
 the last of those rows was submitted at 18:26:10.097Z.
 Later 'Anonymous Lab' rows stay unattributed.
 
@@ -84,7 +86,7 @@ def canonical_text(raw: dict) -> str:
 def check(relay: ModuleType, text: str) -> tuple[dict, dict, list[str]]:
     """(raw JSON, parsed records, problems) for the file's text."""
     try:
-        raw = json.loads(text)
+        raw = relay._facilities_json(text)       # a key given twice is refused
     except ValueError as e:
         return {}, {}, [f"not valid JSON: {e}"]
     fmap, problems = relay._parse_facilities(raw)
@@ -92,14 +94,15 @@ def check(relay: ModuleType, text: str) -> tuple[dict, dict, list[str]]:
 
 
 def attribution(relay: ModuleType, fmap: dict, rows: list[dict]) -> dict:
-    """What the records attribute on ``rows`` (display_name, submitted_at, stan_version)."""
+    """What the records attribute on ``rows`` (display_name, submitted_at,
+    stan_version, name_verified), as the relay will."""
     per_facility: dict[str, Counter] = {fid: Counter() for fid in fmap}
     window_versions: dict[str, Counter] = {fid: Counter() for fid in fmap}
     unattributed_anon: list = []
     names_seen: Counter = Counter()
     for r in rows:
         name = r.get("display_name")
-        fid = relay._facility_of(name, r.get("submitted_at"), fmap)
+        fid = relay._facility_of(name, r.get("submitted_at"), fmap, r.get("name_verified"))
         names_seen[name] += 1
         is_anon = relay._facility_key(name) == relay._ANONYMOUS_KEY
         if fid:
@@ -144,7 +147,7 @@ def live_rows(relay: ModuleType, cache_dir: str) -> list[dict]:
     if path is None:
         return []
     df = pl.read_parquet(path)
-    cols = [c for c in ("display_name", "submitted_at", "stan_version") if c in df.columns]
+    cols = [c for c in ("display_name", "submitted_at", "stan_version", "name_verified") if c in df.columns]
     return df.select(cols).to_dicts()
 
 

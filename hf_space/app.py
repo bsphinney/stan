@@ -1249,6 +1249,51 @@ async def list_names() -> dict:
     return {"names": sorted(claims.keys())}
 
 
+def _claim_lookalike(claims: dict, name: str, email: str) -> str | None:
+    """Another claimed name that is ``name`` once case and runs of spaces are
+    ignored, held by a different email; None when there is none.
+
+    The registry matches names exactly (in canonical form, case kept), so
+    "clogged peaktail" is a different name from "Clogged PeakTail". Claiming
+    it under another email would put a second lab on the page that reads as
+    the first one. The owner's own email may claim such a spelling.
+
+    A re-claim of a name the same email already holds is never refused: two
+    such spellings held by different emails before this check (relay 1.9.0)
+    must not lock each other's owner out of rotating a token.
+
+    Raises:
+        HTTPException: 503 when a peppered claim cannot be compared.
+    """
+    try:
+        if any(e.get("email_hash") and _claim_email_matches(e, email) for e in _claims_for(claims, name)):
+            return None
+    except ClaimsMisconfigured:
+        logger.error("claim-name: '%s' is peppered but CLAIMS_PEPPER is unset", name)
+        raise HTTPException(
+            status_code=503,
+            detail="Lab-name registry is misconfigured on the server. Try again later.",
+        )
+    fold = name.casefold()
+    for key, entry in claims.items():
+        other = _clean_text(key)
+        if other == name or other.casefold() != fold or not isinstance(entry, dict):
+            continue
+        if not entry.get("email_hash"):
+            continue
+        try:
+            same_email = _claim_email_matches(entry, email)
+        except ClaimsMisconfigured:
+            logger.error("claim-name: '%s' is peppered but CLAIMS_PEPPER is unset", other)
+            raise HTTPException(
+                status_code=503,
+                detail="Lab-name registry is misconfigured on the server. Try again later.",
+            )
+        if not same_email:
+            return other
+    return None
+
+
 @app.post("/api/claim-name")
 async def claim_name(req: ClaimRequest, request: Request) -> dict:
     """Start the name-claim process. Sends a 6-digit code to the email.
@@ -1303,6 +1348,17 @@ async def claim_name(req: ClaimRequest, request: Request) -> dict:
                 detail=f"'{pseudonym}' is already claimed by a different email. "
                        "Pick a different name or use the email you originally registered with."
             )
+    # A name that differs from another lab's claimed name only in case or in
+    # runs of spaces would read as that lab on the page (relay 1.9.0, P3c):
+    # refused unless the same email holds the other spelling.
+    other = _claim_lookalike(claims, pseudonym, email)
+    if other is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{pseudonym}' differs from the claimed name '{other}' only in case or spacing, "
+                   "and that name is held by a different email. Pick a clearly different name, or use "
+                   f"the email '{other}' was registered with.",
+        )
 
     # Codes actually sent are capped per (name, email), which also caps how
     # many codes can be guessed at. For a claimed name only the owner's email
@@ -2477,14 +2533,39 @@ def _page_model(r: dict) -> str:
     return "Unknown"
 
 
-def _page_lab_count(rows: list[dict]) -> int:
-    """labCount(): facilities (P3c). A row with a facility counts as that
+def _page_facility_names(rows: list[dict]) -> dict:
+    """setFacilityNames(): each lab name a facility-stamped row carries, and
+    its facility (the first one met), never 'Anonymous Lab'. Built from every
+    row served, as the page builds it from every row it loads."""
+    out: dict = {}
+    for r in rows:
+        f, n = r.get("facility"), r.get("display_name")
+        if _js_truthy(f) and _js_truthy(n) and n != _PAGE_DEFAULT_LAB and n not in out:
+            out[n] = f
+    return out
+
+
+def _page_facility(r: dict, by_name: dict | None) -> Any:
+    """facilityOf(): the row's facility, else the facility that uses its lab
+    name (a run sent under it unverified, which the relay leaves unstamped)."""
+    f = r.get("facility")
+    if _js_truthy(f):
+        return f
+    n = r.get("display_name")
+    if by_name and _js_truthy(n) and n != _PAGE_DEFAULT_LAB:
+        return by_name.get(n)
+    return None
+
+
+def _page_lab_count(rows: list[dict], by_name: dict | None = None) -> int:
+    """labCount(): facilities (P3c). A row with a facility (facilityOf, so
+    also a run sent unverified under a facility's name) counts as that
     facility, whatever name it was sent under; one without counts by its lab
     name, except 'Anonymous Lab', which counts only when nothing else does."""
     labs: set[str] = set()
     anon = False
     for r in rows:
-        f, n = r.get("facility"), r.get("display_name")
+        f, n = _page_facility(r, by_name), r.get("display_name")
         if _js_truthy(f):
             labs.add("facility\n" + _js_text(f))
         elif not _js_truthy(n):
@@ -2586,7 +2667,8 @@ def _tic_own_axis(t: dict) -> list:
     return [t["mi"], round(a, 3), round(b, 3), [int(round(1000 * (v or 0.0))) for v in ys]]
 
 
-def _tic_entry(s: str, track: str, spd: int, lc: str, by_lc: dict[str, list[dict]]) -> tuple[dict, list]:
+def _tic_entry(s: str, track: str, spd: int, lc: str, by_lc: dict[str, list[dict]],
+               by_name: dict | None = None) -> tuple[dict, list]:
     """One menu entry, and every raw run in it (served on demand)."""
     tr = [t for c in TIC_LC_ORDER for t in by_lc.get(c, [])]
     raw = [t for t in tr if not t["idion"]]
@@ -2601,7 +2683,7 @@ def _tic_entry(s: str, track: str, spd: int, lc: str, by_lc: dict[str, list[dict
     entry: dict[str, Any] = {
         "s": s, "t": track, "spd": spd, "lc": lc, "parts": parts,
         "n": len(raw), "nid": len(idt),
-        "labs": _page_lab_count([t["row"] for t in (raw or idt)]),
+        "labs": _page_lab_count([t["row"] for t in (raw or idt)], by_name),
         "inst": Counter(t["model"] for t in raw).most_common(),
         "iinst": Counter(t["model"] for t in idt).most_common(),
         "iver": sorted({_js_text(t["row"].get("stan_version")) for t in idt if _js_truthy(t["row"].get("stan_version"))}),
@@ -2801,12 +2883,20 @@ def _effective_faims(stored: Any, run_name: str | None, model: Any = None,
 # It is kept apart from claims.json, whose record for a name /api/verify-claim
 # replaces on every re-claim. _leaderboard_frame stamps each row's public
 # ``facility`` from it: the id, never a name, or '' when no record covers the
-# row. A name matches in _clean_text's canonical form, case-folded, so
-# "Clogged  Peaktail" is "Clogged PeakTail"; a missing space makes another
-# name, so "CloggedPeakTail" is listed as well. An 'Anonymous Lab' row belongs
-# to a facility only when it was submitted inside that facility's window,
-# both ends included; every other 'Anonymous Lab' row stays unknown and, as
-# before, never counts as a second lab. A row two records would claim is left
+# row. A name matches exactly as the claim registry matches it: in
+# _clean_text's canonical form (doubled or edge spaces and invisible
+# characters dropped), with its case and its spaces kept, so every spelling a
+# facility uses is listed ("Clogged Peaktail", "CloggedPeakTail"); another
+# lab could claim "clogged peaktail" and must not be folded in. A row is
+# stamped by name only when it was not sent unverified (name_verified False,
+# relay 1.9.0+: no token, or an unclaimed name), so a run sent under a
+# facility's name without its token never carries that facility's code;
+# rows stored before 1.9.0 (null) and verified rows are stamped. The page
+# still counts such a run with the facility that uses the name, never as a
+# second lab (facilityOf / _page_facility). An 'Anonymous Lab' row belongs to
+# a facility only when it was submitted inside that facility's window, both
+# ends included; every other 'Anonymous Lab' row stays unknown and, as before,
+# never counts as a second lab. A row two records would claim is left
 # unattributed. With no file, or before one could be read, there are no
 # facilities and the page counts lab names as it did before 1.9.0.
 FACILITIES_FILE = "identity/facilities.json"
@@ -2822,16 +2912,33 @@ _FACILITIES_LOCK = threading.Lock()
 
 @dataclass(frozen=True)
 class _Facility:
-    names: frozenset            # lab names in _facility_key form
+    names: frozenset            # lab names in _facility_key (canonical, case kept) form
     anonymous: tuple | None     # (from or None, until): 'Anonymous Lab' rows submitted in it, ends included
 
 
 def _facility_key(name: Any) -> str:
-    """A lab name as facility records match it: canonical, then case-folded."""
-    return _clean_text(name).casefold() if isinstance(name, str) else ""
+    """A lab name as facility records match it: canonical (_clean_text), case kept,
+    as claims.json keys are matched."""
+    return _clean_text(name) if isinstance(name, str) else ""
 
 
-_ANONYMOUS_KEY = "anonymous lab"
+_ANONYMOUS_KEY = "Anonymous Lab"
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict:
+    """json object_pairs_hook: a key given twice is an error, not "last one wins"."""
+    out: dict = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError(f"duplicate key {k!r}")
+        out[k] = v
+    return out
+
+
+def _facilities_json(text: str) -> Any:
+    """facilities.json decoded, refusing a key given twice at any level
+    ({"f1": A, "f1": B} would otherwise silently keep B)."""
+    return json.loads(text, object_pairs_hook=_no_duplicate_keys)
 
 
 def _facility_instant(value: Any, naive_ok: bool = True) -> datetime | None:
@@ -2889,7 +2996,7 @@ def _parse_facilities(raw: Any) -> tuple[dict[str, _Facility], list[str]]:
             k = _facility_key(n)
             if not k:
                 problems.append(f"{fid}: name {n!r} is empty or not text; skipped")
-            elif k == _ANONYMOUS_KEY:
+            elif k.casefold() == _ANONYMOUS_KEY.casefold():
                 problems.append(f"{fid}: 'Anonymous Lab' is matched only by anonymous_from/anonymous_until; "
                                 "skipped as a name")
             else:
@@ -2928,8 +3035,10 @@ def _parse_facilities(raw: Any) -> tuple[dict[str, _Facility], list[str]]:
     return out, problems
 
 
-def _facility_of(name: Any, submitted_at: Any, fmap: dict[str, _Facility]) -> str:
-    """The facility id a row belongs to, or '' (no record, or two)."""
+def _facility_of(name: Any, submitted_at: Any, fmap: dict[str, _Facility],
+                 name_verified: Any = None) -> str:
+    """The facility id a row belongs to, or '' (no record, or two, or a run
+    sent under a facility's name unverified: ``name_verified`` False)."""
     key = _facility_key(name)
     if not key or not fmap:
         return ""
@@ -2940,6 +3049,8 @@ def _facility_of(name: Any, submitted_at: Any, fmap: dict[str, _Facility]) -> st
         hits = [fid for fid, f in fmap.items()
                 if f.anonymous and (f.anonymous[0] is None or f.anonymous[0] <= t) and t <= f.anonymous[1]]
     else:
+        if name_verified is False:
+            return ""
         hits = [fid for fid, f in fmap.items() if key in f.names]
     return hits[0] if len(hits) == 1 else ""
 
@@ -2956,7 +3067,7 @@ def _facilities() -> dict[str, _Facility]:
     try:
         from huggingface_hub import hf_hub_download
         path = hf_hub_download(HF_DATASET_REPO, FACILITIES_FILE, repo_type="dataset", token=HF_TOKEN)
-        raw = json.loads(Path(path).read_text())
+        raw = _facilities_json(Path(path).read_text())
     except Exception as e:
         if not _hf_missing_file(e):
             logger.warning("%s unreadable; keeping the last copy (%d facilities), retry in %d s",
@@ -2992,8 +3103,9 @@ def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
     * ``faims_source``: 'stored', 'filename' or '';
 
     and the P3c ``facility``: the opaque id of the facility the row's lab
-    name (or, for 'Anonymous Lab', its submission time) belongs to, else ''
-    (_facility_of, from identity/facilities.json).
+    name (unless it was sent unverified) or, for 'Anonymous Lab', its
+    submission time belongs to, else '' (_facility_of, from
+    identity/facilities.json).
 
     The file name stays in the frame: every caller drops
     PRIVATE_SUBMISSION_FIELDS before anything leaves the server.
@@ -3016,15 +3128,16 @@ def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
         faims.append(f)
         sources.append(src)
     fmap = _facilities()
-    by_name: dict[Any, str] = {}
+    by_name: dict[tuple, str] = {}
     facility: list[str] = []
-    for lab, when in zip(col("display_name"), col("submitted_at")):
+    for lab, when, verified in zip(col("display_name"), col("submitted_at"), col("name_verified")):
         if _facility_key(lab) == _ANONYMOUS_KEY:
             facility.append(_facility_of(lab, when, fmap))
         else:
-            if lab not in by_name:
-                by_name[lab] = _facility_of(lab, None, fmap)
-            facility.append(by_name[lab])
+            k = (lab, verified is False)
+            if k not in by_name:
+                by_name[k] = _facility_of(lab, None, fmap, verified)
+            facility.append(by_name[k])
     return df.with_columns(pl.Series("amount_check", checks, dtype=pl.Utf8),
                            pl.Series("faims", faims, dtype=pl.Boolean),
                            pl.Series("faims_source", sources, dtype=pl.Utf8),
@@ -3067,7 +3180,8 @@ def _tic_groups(df: "pl.DataFrame") -> dict:
         for c in by_lc.values():
             c.sort(key=lambda t: (t["when"] is None, t["when"] or 0))
     return {"rows": rows, "kept": kept, "dropped": dropped, "usable": usable, "groups": groups,
-            "models": models, "tracks": tracks, "no_spd": no_spd, "unreadable": unreadable}
+            "models": models, "tracks": tracks, "no_spd": no_spd, "unreadable": unreadable,
+            "by_name": _page_facility_names(rows)}
 
 
 def _tic_build(df: "pl.DataFrame") -> dict:
@@ -3083,7 +3197,7 @@ def _tic_build(df: "pl.DataFrame") -> dict:
         if len(present) > 1:          # "All LC systems" mixes these, and the page says so
             menu.append(("all", by_lc))
         for lc, part in menu:
-            entry, runs = _tic_entry(s, track, spd, lc, part)
+            entry, runs = _tic_entry(s, track, spd, lc, part, g["by_name"])
             cohorts.append(entry)
             traces[(s, track, spd, lc)] = json.dumps(
                 {"s": s, "t": track, "spd": spd, "lc": lc, "n": len(runs), "models": g["models"], "raw": runs},
@@ -4773,7 +4887,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="stats-block" id="stats">
     <div class="stats-row">
         <div class="stat-card"><div class="number" id="stat-submissions">--</div><div class="label">QC runs in the benchmark</div><div class="sub" id="stat-runs-sub"></div></div>
-        <div class="stat-card"><div class="number" id="stat-labs">--</div><div class="label" id="stat-labs-label">Contributing facilities</div><div class="sub" id="stat-labs-sub"></div></div>
+        <div class="stat-card"><div class="number" id="stat-labs">--</div><div class="label" id="stat-labs-label">Contributing labs</div><div class="sub" id="stat-labs-sub"></div></div>
         <div class="stat-card"><div class="number" id="stat-instruments">--</div><div class="label">Instrument models</div><div class="sub" id="stat-models"></div></div>
         <div class="stat-card"><div class="number" id="stat-latest" style="font-size:1.35rem">--</div><div class="label">Latest run</div><div class="sub" id="stat-first"></div></div>
         <!-- The Join tile takes the place of the inert "Hide failed runs · 0 flagged" card (D6). -->
@@ -4783,7 +4897,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="gloss" id="gloss">
         <div><b>SPD</b>samples per day. For Evosep it names the method you ran; for nanoLC it is 1440 &divide; (gradient minutes &times; 1.25).</div>
         <div><b>Middle half (IQR)</b>the range holding the middle 50% of runs, from the 25th to the 75th percentile.</div>
-        <div><b>Lab</b>a contributing facility. Lab names the site knows to be one facility count once; runs sent under the default name Anonymous Lab never add a lab.</div>
+        <div><b>Lab</b>a contributing facility. Lab names the site's facility records tie to one facility count once; runs under the default name Anonymous Lab that no record covers never count as a second lab.</div>
         <div><b>IPS</b>a 0&ndash;100 depth score against a fixed calibration set for the run's instrument and SPD; 60 is the median calibration run. Not shown on this page until a scoring fix ships (see <a href="#methods" style="color:var(--ucd-gold)">Methods</a>).</div>
     </div>
 </div>
@@ -4924,7 +5038,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <div class="share">
                 <div><h4>Published, per QC run</h4><ul>
                     <li>Your lab pseudonym, and whether the run was sent with that name's claim token</li>
-                    <li>A facility code (such as <code>f1</code>, never a name) when the site's facility records say which facility a lab name belongs to, so a facility's lab names count as one lab</li>
+                    <li>A facility code (such as <code>f1</code>, never a name) when the site's facility records say which facility a lab name belongs to, so a facility's lab names count as one lab. The code links those names publicly: anyone can see that they are one facility.</li>
                     <li>Run date, submission time and ID</li>
                     <li>Instrument model and family, acquisition mode</li>
                     <li>LC system, SPD and gradient length</li>
@@ -5414,33 +5528,53 @@ function primaryOf(s) { return trackOf(s) === 'DDA' ? (s.n_psms || 0) : (s.n_pre
 // facility records: every lab name a facility submits under, and the window
 // in which it submitted under the default name. A row with a facility counts
 // as that facility, so Clogged PeakTail and the 127 'Anonymous Lab' rows of
-// 2026-04-30/05-01 (all UC Davis) are one lab. A row without one counts by its
-// lab name, as before. 'Anonymous Lab' is the relay's default name for any
-// unnamed submitter, so such a row with no facility is unknown, not a lab of
-// its own: it counts as one lab only when a cohort holds nothing else, so an
-// unnamed row can never turn a single-lab cohort into a "2 labs" one or
-// unlock a "best" badge. _page_lab_count in the relay is this rule in Python
+// 2026-04-30/05-01 (all UC Davis) are one lab. The relay leaves a run sent
+// under a facility's name without its token unstamped (it may not be that
+// facility's); it still counts with the facility that uses the name, as a run
+// under the same name always has, never as a second lab (facilityOf). A row
+// without either counts by its lab name, as before. 'Anonymous Lab' is the
+// relay's default name for any unnamed submitter, so such a row with no
+// facility is unknown, not a lab of its own: it counts as one lab only when a
+// cohort holds nothing else, so an unnamed row can never turn a single-lab
+// cohort into a "2 labs" one or unlock a "best" badge. _page_facility_names,
+// _page_facility and _page_lab_count in the relay are this rule in Python
 // (the TIC summaries' lab counts); change both together.
 const DEFAULT_LAB_NAME = 'Anonymous Lab';
+// Each lab name a facility-stamped row carries, and its facility (the first
+// one met), from every row loaded; never 'Anonymous Lab'.
+let facilityByName = new Map();
+function setFacilityNames(rows) {
+    facilityByName = new Map();
+    rows.forEach(s => {
+        if (s.facility && s.display_name && s.display_name !== DEFAULT_LAB_NAME && !facilityByName.has(s.display_name))
+            facilityByName.set(s.display_name, s.facility);
+    });
+}
+function facilityOf(s) {
+    if (s.facility) return s.facility;
+    return (s.display_name && s.display_name !== DEFAULT_LAB_NAME && facilityByName.get(s.display_name)) || '';
+}
 function labCount(rows) {
     const labs = new Set();
     let anon = false;
     rows.forEach(s => {
-        if (s.facility) labs.add('facility\n' + s.facility);
+        const f = facilityOf(s);
+        if (f) labs.add('facility\n' + f);
         else if (!s.display_name) return;
         else if (s.display_name === DEFAULT_LAB_NAME) anon = true;
         else labs.add('name\n' + s.display_name);
     });
     return labs.size || (anon ? 1 : 0);
 }
-// The line under the stats tile's count: the lab names the counted labs sent
-// under, when more than one per lab, and the runs under the default name
-// that no facility record covers, which never add a lab.
+// The line under the stats tile's count when facilities are counted: the lab
+// names the counted labs sent under, when more than one per lab, and the runs
+// under the default name that no facility record covers, which never count as
+// a second lab.
 function labsSubText(rows) {
     const names = new Set();
     let unknown = 0;
     rows.forEach(s => {
-        if (!s.facility && s.display_name === DEFAULT_LAB_NAME) unknown++;
+        if (!facilityOf(s) && s.display_name === DEFAULT_LAB_NAME) unknown++;
         else if (s.display_name) names.add(s.display_name);
     });
     const parts = [];
@@ -6141,6 +6275,7 @@ async function loadData() {
 // The rows /api/leaderboard returned, reduced to one per acquisition (D8).
 function setSubmissions(rows) {
     submittedRows = rows.length;
+    setFacilityNames(rows);
     const d = dedupeRuns(rows);
     duplicateCopies = d.dropped;
     allDataRaw = d.kept;
@@ -6158,11 +6293,18 @@ function updateStats() {
     _setText('stat-submissions', fmtN(allData.length));
     _setText('stat-runs-sub', allData.length ? `${sampleLabel} runs, every mode and amount; the filter bar below narrows the view`
                                              : `no ${sampleLabel} runs yet`);
-    // Labs are facilities (P3c): "1 contributing facility · under 2 lab names".
+    // Labs are facilities (P3c): "1 contributing facility · under 2 lab names"
+    // once a facility record covers the names; until then the 1.8.0 wording.
     const nLabs = labCount(allData);
     _setText('stat-labs', String(nLabs));
-    _setText('stat-labs-label', nLabs === 1 ? 'Contributing facility' : 'Contributing facilities');
-    _setText('stat-labs-sub', labsSubText(allData));
+    if (allData.some(facilityOf)) {
+        _setText('stat-labs-label', nLabs === 1 ? 'Contributing facility' : 'Contributing facilities');
+        _setText('stat-labs-sub', labsSubText(allData));
+    } else {
+        const names = new Set(allData.map(s => s.display_name).filter(Boolean));
+        _setText('stat-labs-label', nLabs === 1 ? 'Contributing lab' : 'Contributing labs');
+        _setText('stat-labs-sub', names.size > nLabs ? `under ${names.size} lab names` : '');
+    }
     const models = [...new Set(allData.map(s => s.instrument_model).filter(Boolean))].sort();
     _setText('stat-instruments', String(models.length));
     _setText('stat-models', models.map(shortModel).join(' · '));
@@ -7731,9 +7873,9 @@ function renderLabTrend() {
     // Other labs in this cohort, in the window: never the lab itself, never
     // "Anonymous Lab", which cannot be shown to be a different lab, and never
     // a facility the lab's own runs belong to, under any of its names (P3c).
-    const ownFacilities = new Set(c.rows.filter(s => labOf(s) === lab && s.facility).map(s => s.facility));
+    const ownFacilities = new Set(c.rows.filter(s => labOf(s) === lab).map(facilityOf).filter(Boolean));
     const otherPts = pts.filter(p => p.t >= t0 && labOf(p.s) !== lab && labOf(p.s) !== DEFAULT_LAB_NAME
-        && !(p.s.facility && ownFacilities.has(p.s.facility)));
+        && !ownFacilities.has(facilityOf(p.s)));
     const others = sortedNums(otherPts.map(p => p.v));
     const nOtherLabs = labCount(otherPts.map(p => p.s));
     const msgs = [];

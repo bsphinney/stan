@@ -455,7 +455,7 @@ What ships today vs. what's still planned.
 | Community submission | Done | Hard gates, soft flags, asset MD5 verification, no HF token needed (relay). |
 | Community sync button | Done | Dashboard Community tab; mints a pseudonym if the install has none. Refused on the public read-only host. |
 | Community sync cron | Done | Hive, every 6 h (`scripts/cron_community_sync.sh`). Idempotent via `submitted_to_benchmark`. |
-| Community auth token | Done | `stan community-claim` (or `stan setup`) claims a pseudonym via an emailed code; relay enforces `X-STAN-Auth` on PATCH, and from relay 1.9.0 / STAN 1.2.18 checks it on every submission (`name_verified`; a claimed name with the wrong token is refused, no token still accepted unverified). |
+| Community auth token | Done | `stan community-claim` (or `stan setup`) claims a pseudonym via an emailed code; relay enforces `X-STAN-Auth` on PATCH, and from relay 1.9.0 / STAN 1.2.18 checks it on every submission (`name_verified`; a claimed name with the wrong token is refused, no token still accepted unverified); a name that differs from another email's claimed name only in case or spacing cannot be claimed. |
 | Community FASTA | Done | UniProt human + universal contaminants, MD5-verified, auto-downloaded on first need. |
 | Community speclibs | Done | HeLa empirical libraries for timsTOF (`hela_timstof_202604.parquet`) and Orbitrap/Astral (`hela_orbitrap_202604.parquet`) on HF Dataset; MD5-verified at submission time. |
 | Cohort scoring + percentiles | Done | Computed nightly within `(family, SPD, amount)` cohorts. |
