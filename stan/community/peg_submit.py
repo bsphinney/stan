@@ -689,9 +689,9 @@ def sync_peg(
             result["errors"].append(name_problem)
             return _summary("no_display_name", name_problem)
 
-        # Always sent when present (unlike /api/submit, whose relay auth path
-        # was broken until the PEG relay work): a claimed name without its
-        # token is refused with 403 on this channel.
+        # Always sent when present (as /api/submit's has been since STAN
+        # 1.2.18; its relay auth path was broken until relay 1.9.0): a claimed
+        # name without its token is refused with 403 on this channel.
         token = str(cfg.get("auth_token") or "").strip()
         if enabled and not token and not name_problem:
             hint = UNCLAIMED_HINT.format(name=display_name)

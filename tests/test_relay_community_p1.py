@@ -47,9 +47,9 @@ def test_space_version(client):
     # P1 shipped as 1.2.2, P2a as 1.3.0, P2b as 1.4.0, P2c as 1.5.0; the TIC
     # overlay (tests/test_relay_community_tic.py) as 1.6.0; P3a (schema,
     # tests/test_relay_community_p3a.py) as 1.7.0; P3b (tests/test_relay_community_p3b.py)
-    # is 1.8.0.
-    assert client.get("/api/version").json()["version"] == "1.8.0"
-    assert "community site v1.8.0" in _page(client)
+    # as 1.8.0; P3c (tests/test_relay_community_p3c.py) is 1.9.0.
+    assert client.get("/api/version").json()["version"] == "1.9.0"
+    assert "community site v1.9.0" in _page(client)
 
 
 # ── server: D4, no file names in public responses ────────────────────

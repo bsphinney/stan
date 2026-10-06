@@ -109,7 +109,7 @@ $ErrorActionPreference = 'Stop'
 # These scripts get copied to instrument PCs and then live there on
 # their own, so "is the copy in front of me current?" has to be
 # answerable without a git checkout.
-$ScriptVersion = '1.2.17'
+$ScriptVersion = '1.2.18'
 
 $TaskName = 'STAN Evosep log mirror'
 $InstallDir = Join-Path $env:ProgramData 'STAN'

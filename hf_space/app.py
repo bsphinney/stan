@@ -37,6 +37,7 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, Response
@@ -49,7 +50,7 @@ logger = logging.getLogger(__name__)
 # /api/version. Distinct from PINNED_DIANN_VERSION (a DIA-NN pin) and
 # from the STAN client version — the Space and the client release
 # independently. Bump on every deploy.
-SPACE_VERSION = "1.8.0"
+SPACE_VERSION = "1.9.0"
 
 # Fields a submission row keeps on the server but that no public response
 # may carry (community redesign D4, decision 5). run_name is the raw file
@@ -61,6 +62,9 @@ PRIVATE_SUBMISSION_FIELDS = ("run_name", "fingerprint")
 # (community redesign P3b, relay 1.8.0): the amount check, and FAIMS with
 # where it came from. See _leaderboard_frame.
 P3B_DERIVED_FIELDS = ("amount_check", "faims", "faims_source")
+# What it adds from the admin's identity/facilities.json (P3c, relay 1.9.0):
+# the facility a row belongs to, as an opaque id ('f1'), never a name.
+P3C_DERIVED_FIELDS = ("facility",)
 
 app = FastAPI(title="STAN Community Benchmark", version=SPACE_VERSION)
 
@@ -1531,7 +1535,50 @@ async def admin_refresh_cache(request: Request) -> dict:
     if admin_secret and provided != admin_secret:
         raise HTTPException(status_code=403, detail="Invalid admin secret.")
     _invalidate_submissions_cache()
+    with _FACILITIES_LOCK:          # and re-read identity/facilities.json (P3c)
+        _FACILITIES["next"] = 0.0
     return {"status": "cache cleared"}
+
+
+# A token that verified a name in the last few minutes is not checked again:
+# _peg_identity downloads claims.json on every call, and `stan submit-all`
+# sends one request per run, so a backlog of a few hundred runs would mean as
+# many registry downloads. Only successes are remembered, so a lab that has
+# just re-claimed its name (a new token) is checked against the registry at
+# once and never refused because of this cache; the token it replaced stays
+# good here for at most this long.
+SUBMIT_VERIFIED_TTL_SEC = 300
+_SUBMIT_VERIFIED: dict[tuple[str, str], float] = {}
+_SUBMIT_VERIFIED_LOCK = threading.Lock()
+
+
+def _submit_name_verified(display_name: str, token: str) -> bool:
+    """``name_verified`` for a /api/submit that sent a token (Space 1.9.0).
+
+    True when ``display_name`` is claimed and ``token`` is its token; False
+    when the name is unclaimed (accepted, unverified, as without a token).
+
+    Raises:
+        HTTPException: 403 for a claimed name with another token; 503 when
+            claims.json cannot be read (both from _peg_identity, the check
+            PEG and /api/update use).
+    """
+    name = _clean_text(display_name)
+    if not name:
+        return False
+    key = (name, _hash(token))
+    now = time.monotonic()
+    with _SUBMIT_VERIFIED_LOCK:
+        if _SUBMIT_VERIFIED.get(key, 0.0) > now:
+            return True
+    verified = _peg_identity(name, token)
+    if verified:
+        with _SUBMIT_VERIFIED_LOCK:
+            if len(_SUBMIT_VERIFIED) > 1000:
+                for k in [k for k, exp in _SUBMIT_VERIFIED.items() if exp <= now]:
+                    del _SUBMIT_VERIFIED[k]
+            _SUBMIT_VERIFIED[key] = now + SUBMIT_VERIFIED_TTL_SEC
+    return verified
 
 
 @app.post("/api/submit")
@@ -1539,26 +1586,21 @@ async def submit(sub: BenchmarkSubmission, request: Request) -> dict:
     if not HF_TOKEN:
         raise HTTPException(status_code=500, detail="HF_TOKEN not configured on Space")
 
-    # ── Auth check: only official STAN installations that completed
-    # email verification via `stan setup` can submit. The auth token
-    # is issued during /api/verify-claim and stored in community.yml.
-    # Forks that skip setup or modify the submission code won't have
-    # a valid token.
-    auth_token = request.headers.get("X-STAN-Auth", "")
+    # ── Auth check (Space 1.9.0). The token is the one /api/verify-claim
+    # issued, stored in community.yml and checked by the same code as PEG
+    # and /api/update (_peg_identity, against the claim's token_hash):
+    #   token, claimed name, its token   -> accepted, name_verified
+    #   token, claimed name, other token -> 403
+    #   token, unclaimed name            -> accepted, not verified
+    #   no token                         -> accepted, not verified (grace)
+    # Until 1.9.0 a token made this path call an undefined helper (a 500),
+    # so STAN clients before 1.2.18 never send one. The grace period stays
+    # until every install sends its token; then no token can be refused.
+    auth_token = request.headers.get("X-STAN-Auth", "").strip()
+    name_verified = False
     if auth_token:
-        # Verify the token matches the claimed display_name
-        claimed = _load_claimed_names()
-        name_record = claimed.get(sub.display_name)
-        if name_record and name_record.get("token") != auth_token:
-            raise HTTPException(
-                status_code=403,
-                detail="Auth token does not match the claimed display name. "
-                       "Run `stan setup` to re-verify your lab identity.",
-            )
+        name_verified = await run_in_threadpool(_submit_name_verified, sub.display_name, auth_token)
     else:
-        # No token — warn but still accept for now (grace period while
-        # existing installations update to v0.2.73+). Once adoption is
-        # widespread, change this to a hard reject.
         logger.warning(
             "Submission from '%s' has no X-STAN-Auth token — "
             "accepting during grace period. Will require auth in a future release.",
@@ -1685,6 +1727,7 @@ async def submit(sub: BenchmarkSubmission, request: Request) -> dict:
         "lc_flow": [sub.lc_flow],
         "amount_source": [sub.amount_source],
         "faims": [sub.faims],
+        "name_verified": [name_verified],
     }
 
     schema = pa.schema([
@@ -1738,6 +1781,10 @@ async def submit(sub: BenchmarkSubmission, request: Request) -> dict:
         pa.field("lc_flow", pa.string()),          # nano | capillary | micro
         pa.field("amount_source", pa.string()),    # declared | parsed | assumed
         pa.field("faims", pa.bool_()),             # FAIMS on; null when unknown
+        # Space 1.9.0: the submission carried the claimed name's token
+        # (X-STAN-Auth, checked by _peg_identity). False when no token was
+        # sent or the name is unclaimed; null on rows stored before 1.9.0.
+        pa.field("name_verified", pa.bool_()),
     ])
 
     table = pa.table(row, schema=schema)
@@ -2431,11 +2478,22 @@ def _page_model(r: dict) -> str:
 
 
 def _page_lab_count(rows: list[dict]) -> int:
-    """labCount(): 'Anonymous Lab' counts only when nothing else does."""
-    names = {r.get("display_name") for r in rows if _js_truthy(r.get("display_name"))}
-    anon = _PAGE_DEFAULT_LAB in names
-    names.discard(_PAGE_DEFAULT_LAB)
-    return len(names) or (1 if anon else 0)
+    """labCount(): facilities (P3c). A row with a facility counts as that
+    facility, whatever name it was sent under; one without counts by its lab
+    name, except 'Anonymous Lab', which counts only when nothing else does."""
+    labs: set[str] = set()
+    anon = False
+    for r in rows:
+        f, n = r.get("facility"), r.get("display_name")
+        if _js_truthy(f):
+            labs.add("facility\n" + _js_text(f))
+        elif not _js_truthy(n):
+            continue
+        elif n == _PAGE_DEFAULT_LAB:
+            anon = True
+        else:
+            labs.add("name\n" + _js_text(n))
+    return len(labs) or (1 if anon else 0)
 
 
 def _page_run_lengths(rows: list[dict]) -> list[int] | None:
@@ -2728,6 +2786,202 @@ def _effective_faims(stored: Any, run_name: str | None, model: Any = None,
     return None, ""
 
 
+# ── Facilities (community redesign P3c, relay 1.9.0, spec §A.5, D2) ──
+#
+# Labs are counted as facilities, not as lab names. identity/facilities.json
+# in the dataset maps an opaque public id to the lab names one facility
+# submits under, and to the window in which it submitted under the default
+# name 'Anonymous Lab':
+#
+#   {"f1": {"names": ["Clogged PeakTail", "Clogged Peaktail", "CloggedPeakTail"],
+#           "anonymous_from": "2026-04-30T23:29:00Z",
+#           "anonymous_until": "2026-05-01T18:27:00Z"}}
+#
+# The admin writes it (scripts/set_facilities.py); the relay only reads it.
+# It is kept apart from claims.json, whose record for a name /api/verify-claim
+# replaces on every re-claim. _leaderboard_frame stamps each row's public
+# ``facility`` from it: the id, never a name, or '' when no record covers the
+# row. A name matches in _clean_text's canonical form, case-folded, so
+# "Clogged  Peaktail" is "Clogged PeakTail"; a missing space makes another
+# name, so "CloggedPeakTail" is listed as well. An 'Anonymous Lab' row belongs
+# to a facility only when it was submitted inside that facility's window,
+# both ends included; every other 'Anonymous Lab' row stays unknown and, as
+# before, never counts as a second lab. A row two records would claim is left
+# unattributed. With no file, or before one could be read, there are no
+# facilities and the page counts lab names as it did before 1.9.0.
+FACILITIES_FILE = "identity/facilities.json"
+FACILITIES_TTL_SEC = 300       # re-read at most this often (one HEAD when unchanged)
+FACILITIES_RETRY_SEC = 60      # after a failed read, keep the last copy this long
+# An opaque id: 'f' and a number. A pattern rather than a free string, so a
+# facility's id can never be (or spell out) its name.
+_FACILITY_ID_RE = re.compile(r"f[1-9][0-9]{0,5}")
+_FACILITY_FIELDS = frozenset({"names", "anonymous_from", "anonymous_until"})
+_FACILITIES: dict = {"map": {}, "stamp": "", "next": 0.0}
+_FACILITIES_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class _Facility:
+    names: frozenset            # lab names in _facility_key form
+    anonymous: tuple | None     # (from or None, until): 'Anonymous Lab' rows submitted in it, ends included
+
+
+def _facility_key(name: Any) -> str:
+    """A lab name as facility records match it: canonical, then case-folded."""
+    return _clean_text(name).casefold() if isinstance(name, str) else ""
+
+
+_ANONYMOUS_KEY = "anonymous lab"
+
+
+def _facility_instant(value: Any, naive_ok: bool = True) -> datetime | None:
+    """A datetime or an ISO 8601 string as an aware UTC datetime, else None.
+
+    A stored submitted_at without a zone is UTC, as the relay writes it; a
+    window in facilities.json must say its zone (``naive_ok=False``).
+    """
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str) and value.strip():
+        s = value.strip()
+        if s[-1] in "zZ":
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+        except ValueError:
+            return None
+    else:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc) if naive_ok else None
+    return dt.astimezone(timezone.utc)
+
+
+def _parse_facilities(raw: Any) -> tuple[dict[str, _Facility], list[str]]:
+    """facilities.json as {id: _Facility}, and every problem found in it.
+
+    An entry or field with a problem is left out, never guessed at: the
+    relay logs the problems, and scripts/set_facilities.py refuses to upload
+    a file that has any. Conflicts (a name under two ids, overlapping
+    anonymous windows) are reported here; _facility_of leaves such rows
+    unattributed.
+    """
+    if not isinstance(raw, dict):
+        return {}, [f"{FACILITIES_FILE} is not a JSON object"]
+    problems: list[str] = []
+    out: dict[str, _Facility] = {}
+    for fid, entry in raw.items():
+        if not isinstance(fid, str) or not _FACILITY_ID_RE.fullmatch(fid):
+            problems.append(f"{fid!r}: an id is 'f' and a number (f1, f2, ...), never a name; entry skipped")
+            continue
+        if not isinstance(entry, dict):
+            problems.append(f"{fid}: not a JSON object; entry skipped")
+            continue
+        extra = sorted(set(entry) - _FACILITY_FIELDS)
+        if extra:
+            problems.append(f"{fid}: unknown field(s) {', '.join(extra)}; ignored")
+        names = entry.get("names", [])
+        if not isinstance(names, list):
+            problems.append(f"{fid}: names is not a list; no names used")
+            names = []
+        keys: set[str] = set()
+        for n in names:
+            k = _facility_key(n)
+            if not k:
+                problems.append(f"{fid}: name {n!r} is empty or not text; skipped")
+            elif k == _ANONYMOUS_KEY:
+                problems.append(f"{fid}: 'Anonymous Lab' is matched only by anonymous_from/anonymous_until; "
+                                "skipped as a name")
+            else:
+                keys.add(k)
+        window = None
+        lo_raw, hi_raw = entry.get("anonymous_from"), entry.get("anonymous_until")
+        if lo_raw is not None or hi_raw is not None:
+            lo = _facility_instant(lo_raw, naive_ok=False) if lo_raw is not None else None
+            hi = _facility_instant(hi_raw, naive_ok=False) if hi_raw is not None else None
+            if hi_raw is None:
+                problems.append(f"{fid}: anonymous_from without anonymous_until would take every later "
+                                "'Anonymous Lab' run; no window")
+            elif hi is None or (lo_raw is not None and lo is None):
+                problems.append(f"{fid}: anonymous window {lo_raw!r}..{hi_raw!r} is not ISO 8601 with a time "
+                                "zone; no window")
+            elif lo is not None and lo > hi:
+                problems.append(f"{fid}: anonymous_from is after anonymous_until; no window")
+            else:
+                window = (lo, hi)
+        if not keys and window is None:
+            problems.append(f"{fid}: no usable names and no anonymous window; it matches no run")
+        out[fid] = _Facility(frozenset(keys), window)
+    owners: dict[str, list[str]] = defaultdict(list)
+    for fid, f in out.items():
+        for k in f.names:
+            owners[k].append(fid)
+    for k, fids in sorted(owners.items()):
+        if len(fids) > 1:
+            problems.append(f"name {k!r} is listed under {', '.join(fids)}; its runs are left unattributed")
+    windows = [(fid, f.anonymous) for fid, f in out.items() if f.anonymous]
+    for i, (fa, (alo, ahi)) in enumerate(windows):
+        for fb, (blo, bhi) in windows[i + 1:]:
+            if (alo is None or alo <= bhi) and (blo is None or blo <= ahi):
+                problems.append(f"the anonymous windows of {fa} and {fb} overlap; "
+                                "'Anonymous Lab' runs in both are left unattributed")
+    return out, problems
+
+
+def _facility_of(name: Any, submitted_at: Any, fmap: dict[str, _Facility]) -> str:
+    """The facility id a row belongs to, or '' (no record, or two)."""
+    key = _facility_key(name)
+    if not key or not fmap:
+        return ""
+    if key == _ANONYMOUS_KEY:
+        t = _facility_instant(submitted_at)
+        if t is None:
+            return ""
+        hits = [fid for fid, f in fmap.items()
+                if f.anonymous and (f.anonymous[0] is None or f.anonymous[0] <= t) and t <= f.anonymous[1]]
+    else:
+        hits = [fid for fid, f in fmap.items() if key in f.names]
+    return hits[0] if len(hits) == 1 else ""
+
+
+def _facilities() -> dict[str, _Facility]:
+    """The facility records, re-read from the dataset at most every
+    FACILITIES_TTL_SEC. No file means no facilities; a file that cannot be
+    read keeps the last good copy (none at first) and is retried sooner."""
+    now = time.monotonic()
+    with _FACILITIES_LOCK:
+        if now < _FACILITIES["next"]:
+            return _FACILITIES["map"]
+        _FACILITIES["next"] = now + FACILITIES_TTL_SEC   # one reader refreshes; the rest keep the copy
+    try:
+        from huggingface_hub import hf_hub_download
+        path = hf_hub_download(HF_DATASET_REPO, FACILITIES_FILE, repo_type="dataset", token=HF_TOKEN)
+        raw = json.loads(Path(path).read_text())
+    except Exception as e:
+        if not _hf_missing_file(e):
+            logger.warning("%s unreadable; keeping the last copy (%d facilities), retry in %d s",
+                           FACILITIES_FILE, len(_FACILITIES["map"]), FACILITIES_RETRY_SEC, exc_info=True)
+            with _FACILITIES_LOCK:
+                _FACILITIES["next"] = now + FACILITIES_RETRY_SEC
+                return _FACILITIES["map"]
+        fmap, stamp = {}, ""
+    else:
+        fmap, problems = _parse_facilities(raw)
+        for p in problems:
+            logger.warning("%s: %s", FACILITIES_FILE, p)
+        stamp = json.dumps(raw, sort_keys=True)
+    with _FACILITIES_LOCK:
+        _FACILITIES["map"], _FACILITIES["stamp"] = fmap, stamp
+    return fmap
+
+
+def _facilities_stamp() -> str:
+    """The facility records' content, for caches built from facility counts."""
+    _facilities()
+    with _FACILITIES_LOCK:
+        return _FACILITIES["stamp"]
+
+
 def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
     """The submissions in /api/leaderboard order (most precursors first),
     with the P3b fields worked out from the private file name (run_name):
@@ -2735,7 +2989,11 @@ def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
     * ``amount_check``: 'mismatch' or '' (_amount_check);
     * ``faims``: the stored value when there is one, else True from the
       file-name hint, else null (_effective_faims);
-    * ``faims_source``: 'stored', 'filename' or ''.
+    * ``faims_source``: 'stored', 'filename' or '';
+
+    and the P3c ``facility``: the opaque id of the facility the row's lab
+    name (or, for 'Anonymous Lab', its submission time) belongs to, else ''
+    (_facility_of, from identity/facilities.json).
 
     The file name stays in the frame: every caller drops
     PRIVATE_SUBMISSION_FIELDS before anything leaves the server.
@@ -2757,9 +3015,20 @@ def _leaderboard_frame(df: "pl.DataFrame") -> "pl.DataFrame":
         f, src = _effective_faims(stored, name, model, family)
         faims.append(f)
         sources.append(src)
+    fmap = _facilities()
+    by_name: dict[Any, str] = {}
+    facility: list[str] = []
+    for lab, when in zip(col("display_name"), col("submitted_at")):
+        if _facility_key(lab) == _ANONYMOUS_KEY:
+            facility.append(_facility_of(lab, when, fmap))
+        else:
+            if lab not in by_name:
+                by_name[lab] = _facility_of(lab, None, fmap)
+            facility.append(by_name[lab])
     return df.with_columns(pl.Series("amount_check", checks, dtype=pl.Utf8),
                            pl.Series("faims", faims, dtype=pl.Boolean),
-                           pl.Series("faims_source", sources, dtype=pl.Utf8))
+                           pl.Series("faims_source", sources, dtype=pl.Utf8),
+                           pl.Series("facility", facility, dtype=pl.Utf8))
 
 
 def _tic_groups(df: "pl.DataFrame") -> dict:
@@ -2839,8 +3108,9 @@ _TIC_CACHE_LOCK = threading.Lock()
 
 
 def _tic_fingerprint(df: "pl.DataFrame") -> tuple | None:
+    # The facility records too (P3c): the summaries' lab counts follow them.
     try:
-        return (tuple(df.columns), tuple(df.hash_rows().to_list()))
+        return (tuple(df.columns), tuple(df.hash_rows().to_list()), _facilities_stamp())
     except Exception:
         return None
 
@@ -4503,7 +4773,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div class="stats-block" id="stats">
     <div class="stats-row">
         <div class="stat-card"><div class="number" id="stat-submissions">--</div><div class="label">QC runs in the benchmark</div><div class="sub" id="stat-runs-sub"></div></div>
-        <div class="stat-card"><div class="number" id="stat-labs">--</div><div class="label" id="stat-labs-label">Contributing labs</div><div class="sub" id="stat-labs-sub"></div></div>
+        <div class="stat-card"><div class="number" id="stat-labs">--</div><div class="label" id="stat-labs-label">Contributing facilities</div><div class="sub" id="stat-labs-sub"></div></div>
         <div class="stat-card"><div class="number" id="stat-instruments">--</div><div class="label">Instrument models</div><div class="sub" id="stat-models"></div></div>
         <div class="stat-card"><div class="number" id="stat-latest" style="font-size:1.35rem">--</div><div class="label">Latest run</div><div class="sub" id="stat-first"></div></div>
         <!-- The Join tile takes the place of the inert "Hide failed runs · 0 flagged" card (D6). -->
@@ -4513,6 +4783,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <div class="gloss" id="gloss">
         <div><b>SPD</b>samples per day. For Evosep it names the method you ran; for nanoLC it is 1440 &divide; (gradient minutes &times; 1.25).</div>
         <div><b>Middle half (IQR)</b>the range holding the middle 50% of runs, from the 25th to the 75th percentile.</div>
+        <div><b>Lab</b>a contributing facility. Lab names the site knows to be one facility count once; runs sent under the default name Anonymous Lab never add a lab.</div>
         <div><b>IPS</b>a 0&ndash;100 depth score against a fixed calibration set for the run's instrument and SPD; 60 is the median calibration run. Not shown on this page until a scoring fix ships (see <a href="#methods" style="color:var(--ucd-gold)">Methods</a>).</div>
     </div>
 </div>
@@ -4652,7 +4923,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
             <h3>What leaves your lab, and what is published</h3>
             <div class="share">
                 <div><h4>Published, per QC run</h4><ul>
-                    <li>Your lab pseudonym</li>
+                    <li>Your lab pseudonym, and whether the run was sent with that name's claim token</li>
+                    <li>A facility code (such as <code>f1</code>, never a name) when the site's facility records say which facility a lab name belongs to, so a facility's lab names count as one lab</li>
                     <li>Run date, submission time and ID</li>
                     <li>Instrument model and family, acquisition mode</li>
                     <li>LC system, SPD and gradient length</li>
@@ -5137,19 +5409,44 @@ function fc(f) { return FC[f] || '#6b82a0'; }
 // track (D1).
 function trackOf(s) { return (s.acquisition_mode || '').toLowerCase().includes('dda') ? 'DDA' : 'DIA'; }
 function primaryOf(s) { return trackOf(s) === 'DDA' ? (s.n_psms || 0) : (s.n_precursors || 0); }
-// Labs are counted by pseudonym until submissions carry a facility id; the
-// header disclosure says that today nearly every run is one facility's (D2).
-// Labs, counted conservatively until submissions carry a facility id (P3).
-// 'Anonymous Lab' is the relay's default name for any unnamed submitter, so
-// it is not a lab of its own: today every such row is UC Davis (the same
-// facility as 'Clogged PeakTail'), and tomorrow it could be anyone. It counts
-// as one lab only when a cohort holds nothing else, so an unnamed row can
-// never turn a single-lab cohort into a "2 labs" one or unlock a "best" badge.
+// Labs are counted as facilities (relay 1.9.0, P3c; spec §A.5, D2). The relay
+// stamps each row with `facility`, an opaque id ('f1') from the admin's
+// facility records: every lab name a facility submits under, and the window
+// in which it submitted under the default name. A row with a facility counts
+// as that facility, so Clogged PeakTail and the 127 'Anonymous Lab' rows of
+// 2026-04-30/05-01 (all UC Davis) are one lab. A row without one counts by its
+// lab name, as before. 'Anonymous Lab' is the relay's default name for any
+// unnamed submitter, so such a row with no facility is unknown, not a lab of
+// its own: it counts as one lab only when a cohort holds nothing else, so an
+// unnamed row can never turn a single-lab cohort into a "2 labs" one or
+// unlock a "best" badge. _page_lab_count in the relay is this rule in Python
+// (the TIC summaries' lab counts); change both together.
 const DEFAULT_LAB_NAME = 'Anonymous Lab';
 function labCount(rows) {
-    const names = new Set(rows.map(s => s.display_name).filter(Boolean));
-    const anon = names.delete(DEFAULT_LAB_NAME);
-    return names.size || (anon ? 1 : 0);
+    const labs = new Set();
+    let anon = false;
+    rows.forEach(s => {
+        if (s.facility) labs.add('facility\n' + s.facility);
+        else if (!s.display_name) return;
+        else if (s.display_name === DEFAULT_LAB_NAME) anon = true;
+        else labs.add('name\n' + s.display_name);
+    });
+    return labs.size || (anon ? 1 : 0);
+}
+// The line under the stats tile's count: the lab names the counted labs sent
+// under, when more than one per lab, and the runs under the default name
+// that no facility record covers, which never add a lab.
+function labsSubText(rows) {
+    const names = new Set();
+    let unknown = 0;
+    rows.forEach(s => {
+        if (!s.facility && s.display_name === DEFAULT_LAB_NAME) unknown++;
+        else if (s.display_name) names.add(s.display_name);
+    });
+    const parts = [];
+    if (names.size > labCount(rows)) parts.push(`under ${names.size} lab names`);
+    if (unknown && names.size) parts.push(`${fmtN(unknown)} run${unknown === 1 ? '' : 's'} sent as ${DEFAULT_LAB_NAME}, not counted`);
+    return parts.join(' · ');
 }
 function runsLabsText(nRuns, nLabs) {
     return `${nRuns.toLocaleString()} run${nRuns === 1 ? '' : 's'} · ${nLabs} lab${nLabs === 1 ? '' : 's'}`;
@@ -5861,11 +6158,11 @@ function updateStats() {
     _setText('stat-submissions', fmtN(allData.length));
     _setText('stat-runs-sub', allData.length ? `${sampleLabel} runs, every mode and amount; the filter bar below narrows the view`
                                              : `no ${sampleLabel} runs yet`);
+    // Labs are facilities (P3c): "1 contributing facility · under 2 lab names".
     const nLabs = labCount(allData);
-    const names = new Set(allData.map(s => s.display_name).filter(Boolean));
     _setText('stat-labs', String(nLabs));
-    _setText('stat-labs-label', nLabs === 1 ? 'Contributing lab' : 'Contributing labs');
-    _setText('stat-labs-sub', names.size > nLabs ? `under ${names.size} lab names` : '');
+    _setText('stat-labs-label', nLabs === 1 ? 'Contributing facility' : 'Contributing facilities');
+    _setText('stat-labs-sub', labsSubText(allData));
     const models = [...new Set(allData.map(s => s.instrument_model).filter(Boolean))].sort();
     _setText('stat-instruments', String(models.length));
     _setText('stat-models', models.map(shortModel).join(' · '));
@@ -7298,8 +7595,11 @@ function renderCommunityTIC() {
 // the whole instrument family, every SPD and both modes, and 1,008 of the
 // 1,026 runs in Clogged PeakTail's Exploris band were its own. "Anonymous
 // Lab" is any unnamed submitter, so its runs never count as another lab's
-// (labCount() makes the same call). Only lab pseudonyms are shown, and every
-// one is escaped, in the menus and inside Plotly names and hovers.
+// (labCount() makes the same call), and neither do the runs of the lab's own
+// facility under its other names (P3c): a facility is one lab, so picking
+// Anonymous Lab never draws Clogged PeakTail as "other labs". Only lab
+// pseudonyms are shown, and every one is escaped, in the menus and inside
+// Plotly names and hovers.
 const TREND_BASE_MIN = 20, TREND_BASE_WIN = 30, TREND_RECENT = 15;
 const TREND_MIN_RUNS = 5;   // a lab needs this many runs in a ranked cohort to be listed
 const TREND_MIN_REF = 5;    // other labs' runs needed for a reference band
@@ -7428,9 +7728,12 @@ function renderLabTrend() {
     mine.forEach((p, i) => { if (i >= TREND_RECENT - 1) p.rm = quant(sortedNums(mine.slice(i - TREND_RECENT + 1, i + 1).map(x => x.v)), 0.5); });
     const t0 = trendState.win === '1y' ? asOf - 365 * DAY_MS : mine[0].t - 15 * DAY_MS, t1 = asOf + 5 * DAY_MS;
     const shown = mine.filter(p => p.t >= t0);
-    // Other labs in this cohort, in the window: never the lab itself, and
-    // never "Anonymous Lab", which cannot be shown to be a different lab.
-    const otherPts = pts.filter(p => p.t >= t0 && labOf(p.s) !== lab && labOf(p.s) !== DEFAULT_LAB_NAME);
+    // Other labs in this cohort, in the window: never the lab itself, never
+    // "Anonymous Lab", which cannot be shown to be a different lab, and never
+    // a facility the lab's own runs belong to, under any of its names (P3c).
+    const ownFacilities = new Set(c.rows.filter(s => labOf(s) === lab && s.facility).map(s => s.facility));
+    const otherPts = pts.filter(p => p.t >= t0 && labOf(p.s) !== lab && labOf(p.s) !== DEFAULT_LAB_NAME
+        && !(p.s.facility && ownFacilities.has(p.s.facility)));
     const others = sortedNums(otherPts.map(p => p.v));
     const nOtherLabs = labCount(otherPts.map(p => p.s));
     const msgs = [];

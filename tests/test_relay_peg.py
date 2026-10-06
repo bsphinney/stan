@@ -242,7 +242,7 @@ def quartiles(values: list[float]) -> list[float]:
 # ── identity (spec §4.5, D3) ─────────────────────────────────────────
 
 def test_space_version(client):
-    assert client.get("/api/version").json()["version"] == "1.8.0"
+    assert client.get("/api/version").json()["version"] == "1.9.0"
 
 
 def test_unclaimed_name_is_accepted_but_unverified(client, relay):
@@ -903,14 +903,15 @@ def test_api_submit_commits_byte_for_byte_what_the_base_relay_did(hub, monkeypat
     # Space 1.7.0 (P3a) deliberately appends four optional cohort columns to
     # the stored row; byte equality ended there. Everything the 1.1.0 relay
     # wrote is still written, unchanged, and the new columns read "not
-    # recorded" for a client that does not send them.
+    # recorded" for a client that does not send them. Space 1.9.0 (P3c)
+    # appends name_verified, false for a submission without a token.
     path = new_commits[0]["paths"][0]
     base_t = pq.read_table(io.BytesIO(base_commits[0]["files"][path]))
     new_t = pq.read_table(io.BytesIO(new_commits[0]["files"][path]))
-    assert new_t.column_names == base_t.column_names + list(P3A_COLUMNS)
+    assert new_t.column_names == base_t.column_names + list(P3A_COLUMNS) + ["name_verified"]
     assert new_t.select(base_t.column_names).equals(base_t)
-    assert new_t.select(list(P3A_COLUMNS)).to_pylist() == [
-        {"lc_model": "", "lc_flow": "", "amount_source": "", "faims": None}]
+    assert new_t.select(list(P3A_COLUMNS) + ["name_verified"]).to_pylist() == [
+        {"lc_model": "", "lc_flow": "", "amount_source": "", "faims": None, "name_verified": False}]
 
 
 def test_api_submit_still_writes_one_submissions_file(relay, hub, monkeypatch):
@@ -921,7 +922,7 @@ def test_api_submit_still_writes_one_submissions_file(relay, hub, monkeypatch):
     assert commits[0]["message"] == "Batch submit 1 runs"
     assert commits[0]["paths"] == ["submissions/12345678-1234-5678-1234-567812345678.parquet"]
     table = pq.read_table(io.BytesIO(commits[0]["files"][commits[0]["paths"][0]]))
-    assert table.num_columns == 44 + len(P3A_COLUMNS) and table.num_rows == 1
+    assert table.num_columns == 44 + len(P3A_COLUMNS) + 1 and table.num_rows == 1   # + name_verified (1.9.0)
     assert table.column("tic_intensity").to_pylist() == ["[10.0, 20.0, 5.0]"]
 
 
@@ -1650,7 +1651,7 @@ def run_page_js(tmp_path: Path, html: str, calls: list) -> list:
 
 def test_page_has_the_peg_section_linked_from_the_header(client):
     html = _page(client)
-    assert "community site v1.8.0" in html
+    assert "community site v1.9.0" in html
     assert '<a href="#peg">PEG Watch</a>' in html
     assert html.count('id="peg"') == 1
     for endpoint in ("/api/peg/leaderboard", "/api/peg/trend", "/api/peg/lc-compare"):

@@ -14,6 +14,7 @@ import re
 import time
 import urllib.request
 import urllib.error
+from typing import NoReturn
 
 from stan import __version__
 from stan.community.amount import (
@@ -32,6 +33,14 @@ logger = logging.getLogger(__name__)
 
 RELAY_URL = "https://brettsp-stan.hf.space"
 
+# Relays before 1.9.0 answer a submission that carries X-STAN-Auth with a
+# bare 500. After one such answer the token is left off until this time
+# (time.monotonic()), so a long-running dashboard picks it up again once the
+# relay is updated. TOKEN_RETRY_AFTER_SEC is how long that is.
+TOKEN_RETRY_AFTER_SEC = 3600
+_TOKEN_REFUSED_UNTIL = 0.0
+_FALSY = frozenset({"0", "false", "no", "off"})
+
 
 
 class DuplicateSubmission(RuntimeError):
@@ -47,6 +56,101 @@ class DuplicateSubmission(RuntimeError):
     def __init__(self, detail: str, existing_submission_id: str | None) -> None:
         super().__init__(f"Community relay rejected submission: {detail}")
         self.existing_submission_id = existing_submission_id
+
+
+def _auth_token_to_send(community_config: dict) -> str:
+    """The claim token (community.yml ``auth_token``) to send, or ''.
+
+    Sent by default from STAN 1.2.18 (relay 1.9.0 checks it). Left off when
+    ``STAN_SEND_AUTH`` is 0/false/no/off, and for TOKEN_RETRY_AFTER_SEC after
+    a relay failed on it (_token_refused).
+    """
+    if os.environ.get("STAN_SEND_AUTH", "").strip().lower() in _FALSY:
+        return ""
+    if time.monotonic() < _TOKEN_REFUSED_UNTIL:
+        return ""
+    return str(community_config.get("auth_token") or "").strip()
+
+
+def _token_refused() -> None:
+    """Leave the token off for TOKEN_RETRY_AFTER_SEC: the relay failed on it."""
+    global _TOKEN_REFUSED_UNTIL
+    _TOKEN_REFUSED_UNTIL = time.monotonic() + TOKEN_RETRY_AFTER_SEC
+    logger.warning(
+        "The community relay failed on this install's auth token (a relay "
+        "before 1.9.0); sending without it, unverified. The token is tried "
+        "again in %d minutes.", TOKEN_RETRY_AFTER_SEC // 60,
+    )
+
+
+def _unhandled_server_error(code: int, body: str) -> bool:
+    """A 500 that is not one of the relay's own answers.
+
+    The relay's own errors carry a JSON ``detail``; an exception it did not
+    handle is FastAPI's plain "Internal Server Error", which is what relays
+    before 1.9.0 answer to every submission that carries a token.
+    """
+    if code != 500:
+        return False
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return True
+    return not (isinstance(parsed, dict) and "detail" in parsed)
+
+
+def _http_error_body(e: urllib.error.HTTPError) -> str:
+    try:
+        return e.read().decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 - the status alone still says enough
+        return ""
+
+
+def _raise_relay_error(e: urllib.error.HTTPError, body: str, auth_token: str) -> NoReturn:
+    """Turn a relay HTTP error into DuplicateSubmission or RuntimeError."""
+    logger.error("Relay HTTP %s: %s", e.code, body)
+    try:
+        detail = json.loads(body).get("detail", body)
+    except Exception:  # noqa: BLE001 - not JSON, or not an object
+        detail = body
+    if e.code == 409 and "Duplicate submission" in str(detail):
+        m = re.search(r"Existing submission_id: ([0-9a-fA-F-]{36})", str(detail))
+        raise DuplicateSubmission(str(detail), m.group(1) if m else None) from e
+    if e.code == 403 and auth_token:
+        detail = (f"{detail} The relay refused this install's auth_token for the lab name: "
+                  "run `stan community-claim` to re-verify by email and store a fresh one.")
+    raise RuntimeError(f"Community relay rejected submission: {detail}") from e
+
+
+def _post_submission(data: bytes, auth_token: str) -> dict:
+    """POST one submission to the relay; its JSON answer.
+
+    Retries transient network errors (URLError) only. Hive compute nodes
+    intermittently fail to resolve hf.space -- v1_smoke 2026-05-01 lost 31
+    otherwise-good submissions to "[Errno -5] No address associated with
+    hostname". HTTPErrors are the relay's answers and are raised as they are.
+    """
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": f"STAN/{__version__}",
+    }
+    if auth_token:
+        headers["X-STAN-Auth"] = auth_token
+    req = urllib.request.Request(f"{RELAY_URL}/api/submit", data=data, headers=headers)
+    last_err: urllib.error.URLError | None = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError:
+            raise
+        except urllib.error.URLError as e:
+            last_err = e
+            logger.warning("Relay reach attempt %d/3 failed: %s", attempt + 1, e)
+            if attempt < 2:
+                time.sleep(2 ** attempt)  # 1s, 2s
+    logger.error("Failed to reach relay after 3 attempts: %s", last_err)
+    raise RuntimeError(f"Could not reach community relay: {last_err}") from last_err
 
 
 # Metrics the relay requires for a v1 DIA row (hf_space/app.py
@@ -467,75 +571,32 @@ def submit_to_benchmark(
     if speclib_md5 and "dia" in (run.get("mode") or "").lower():
         submit_payload["speclib_md5"] = speclib_md5
 
-    # Send the auth_token from community.yml so the relay can verify
-    # this is an official STAN installation that went through email
-    # verification. Forks that skip `stan setup` won't have a token.
-    #
-    # 2026-05-20: the relay's auth path calls an undefined helper
-    # (_load_claimed_names) and throws NameError → HTTP 500 → every
-    # submission with X-STAN-Auth set fails. The relay's grace-period
-    # branch accepts un-authed submissions, so we drop the header
-    # client-side until the HF Space app.py is patched. Setting
-    # STAN_SEND_AUTH=1 re-enables the header (for testing the fix).
-    auth_token = ""
-    if os.environ.get("STAN_SEND_AUTH"):
-        auth_token = community_config.get("auth_token", "")
-
+    # The claim token from community.yml (`stan community-claim`) goes with
+    # every submission, so the relay can mark the row name_verified (relay
+    # 1.9.0+): a claimed name with its token is verified, a claimed name with
+    # another token is refused (403), and a name without a claim is accepted
+    # unverified, as a submission without a token still is.
+    data = json.dumps(submit_payload).encode("utf-8")
+    auth_token = _auth_token_to_send(community_config)
     try:
-        data = json.dumps(submit_payload).encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": f"STAN/{__version__}",
-        }
-        if auth_token:
-            headers["X-STAN-Auth"] = auth_token
-        req = urllib.request.Request(
-            f"{RELAY_URL}/api/submit",
-            data=data,
-            headers=headers,
-        )
-
-        # Retry on transient network errors (URLError) only. Hive
-        # compute nodes intermittently fail to resolve hf.space —
-        # v1_smoke 2026-05-01 lost 31 otherwise-good submissions to
-        # "[Errno -5] No address associated with hostname". HTTPErrors
-        # are real rejections (4xx/5xx) and must not be retried.
-        last_err: urllib.error.URLError | None = None
-        for attempt in range(3):
-            try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    result = json.loads(resp.read())
-                break
-            except urllib.error.HTTPError:
-                raise
-            except urllib.error.URLError as e:
-                last_err = e
-                logger.warning(
-                    "Relay reach attempt %d/3 failed: %s", attempt + 1, e,
-                )
-                if attempt < 2:
-                    time.sleep(2 ** attempt)  # 1s, 2s
-        else:
-            logger.error("Failed to reach relay after 3 attempts: %s", last_err)
-            raise RuntimeError(
-                f"Could not reach community relay: {last_err}"
-            ) from last_err
-
-        if result.get("status") != "accepted":
-            raise RuntimeError(
-                f"Relay rejected submission: {result.get('detail', result.get('error', 'unknown'))}"
-            )
+        result = _post_submission(data, auth_token)
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        logger.error("Relay HTTP %s: %s", e.code, body)
+        body = _http_error_body(e)
+        if not (auth_token and _unhandled_server_error(e.code, body)):
+            _raise_relay_error(e, body, auth_token)
+        # Relays before 1.9.0 answer any submission that carries a token with
+        # a bare 500 (an undefined helper on their auth path): send this one
+        # again without it, and leave it off for a while.
+        _token_refused()
         try:
-            detail = json.loads(body).get("detail", body)
-        except Exception:
-            detail = body
-        if e.code == 409 and "Duplicate submission" in str(detail):
-            m = re.search(r"Existing submission_id: ([0-9a-fA-F-]{36})", str(detail))
-            raise DuplicateSubmission(str(detail), m.group(1) if m else None) from e
-        raise RuntimeError(f"Community relay rejected submission: {detail}") from e
+            result = _post_submission(data, "")
+        except urllib.error.HTTPError as e2:
+            _raise_relay_error(e2, _http_error_body(e2), "")
+
+    if result.get("status") != "accepted":
+        raise RuntimeError(
+            f"Relay rejected submission: {result.get('detail', result.get('error', 'unknown'))}"
+        )
 
     # Get submission_id from relay response
     submission_id = result.get("submission_id", "")

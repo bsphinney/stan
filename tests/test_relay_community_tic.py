@@ -217,10 +217,11 @@ def _panel() -> str:
 # ── server ───────────────────────────────────────────────────────────
 
 def test_space_version_is_1_6_0_or_later(client, relay):
-    # The TIC overlay shipped as 1.6.0; P3a (schema) as 1.7.0; P3b is 1.8.0.
-    assert relay.SPACE_VERSION == "1.8.0"
-    assert client.get("/api/version").json()["version"] == "1.8.0"
-    assert "community site v1.8.0" in _page(client)
+    # The TIC overlay shipped as 1.6.0; P3a (schema) as 1.7.0; P3b as 1.8.0;
+    # P3c (facilities) is 1.9.0.
+    assert relay.SPACE_VERSION == "1.9.0"
+    assert client.get("/api/version").json()["version"] == "1.9.0"
+    assert "community site v1.9.0" in _page(client)
 
 
 def test_summary_shape(client, hub):

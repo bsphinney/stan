@@ -61,8 +61,9 @@ def test_parquet_types(client, relay):
     assert schema.field("lc_flow").type == pa.string()
     assert schema.field("amount_source").type == pa.string()
     assert schema.field("faims").type == pa.bool_()
-    # Appended after every column the 1.6.0 relay wrote, which are unchanged.
-    assert schema.names[-4:] == list(P3A)
+    # Appended after every column the 1.6.0 relay wrote, which are unchanged;
+    # relay 1.9.0 (P3c) appends name_verified after them.
+    assert schema.names[-5:] == list(P3A) + ["name_verified"]
 
 
 @pytest.mark.parametrize("sent,stored", [

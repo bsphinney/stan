@@ -760,11 +760,12 @@ Nothing is lost while that lasts — the clients retry next tick.
   readers' failed-acquisition filter catches such a row only when the run
   also identified no precursors.
 - **No retraction** on the relay, and `run_key` is unsalted (Privacy).
-- **Benchmark auth holes, pre-existing and untouched:** `/api/submit`
-  with `X-STAN-Auth` calls an undefined `_load_claimed_names` (a 500, so
-  the benchmark client drops the header); `/api/update` accepts any
-  non-empty `X-STAN-Auth`; the admin endpoints are open when
-  `ADMIN_SECRET` is unset.
+- **Benchmark auth holes, pre-existing and untouched here:** `/api/submit`
+  with `X-STAN-Auth` called an undefined `_load_claimed_names` (a 500, so
+  the benchmark client dropped the header) until relay 1.9.0, which checks
+  it with `_peg_identity` (STAN 1.2.18 sends it again); `/api/update`
+  accepted any non-empty `X-STAN-Auth` until relay 1.2.2; the admin endpoints are
+  open when `ADMIN_SECRET` is unset.
 - **Space dependencies are pinned** in `hf_space/Dockerfile` (fixed in
   the same release): they used to be unpinned, and huggingface_hub 2.0
   dropped the `huggingface_hub.hf_api.CommitOperationAdd` re-export the
