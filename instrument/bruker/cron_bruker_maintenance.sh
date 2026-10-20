@@ -4,9 +4,21 @@
 # authenticated -> no DB password), extracts a compact JSON of maintenance
 # analytics, and publishes it to a stable path for the dashboard.
 #
-# Installed in brettsp's crontab, nightly after the instrument has copied the
-# day's 18:00 backup to Quobyte:
-#   0 20 * * * flock -n /tmp/stan_bruker_maint.lock /quobyte/proteomics-grp/STAN/cron_bruker_maintenance.sh
+# Installed in brettsp's crontab (login2), nightly after the instrument has
+# copied the day's 18:00 backup to Quobyte:
+#   30 22 * * * flock -n /tmp/stan_bruker_maint.lock bash /quobyte/proteomics-grp/STAN/cron_bruker_maintenance.sh
+#
+# 22:30, not 20:00. The copy landed at ~20:41 every night 2026-10-09..19, so a
+# 20:00 run always read YESTERDAY's backup -- which, with the age counted from
+# midnight, made the feed-freshness alert fire every day on a healthy feed.
+# And ~20:41 is not fixed: copy_bruker_backup.ps1 repeats every 240 min from
+# whenever its task was registered, and the backup is finished by ~18:10, so
+# the copy can land at any time up to ~22:10. 22:30 is after all of them.
+# Re-registering the task with a shorter -EveryMinutes is the only thing that
+# makes an earlier slot safe.
+#
+# `bash <script>`, not the script itself: a lost execute bit is how
+# cron_evosep.sh went silent for eight days in 2026-09.
 #
 # Login-node-safe: the heavy restore runs inside the pinned apptainer against a
 # throwaway postgres in $TMPDIR, torn down on exit. Read-only on all Bruker

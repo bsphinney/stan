@@ -15,18 +15,24 @@ how old the DATA is, never when the job last ran.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
+from stan.notify import should_send
 from stan.reports.instrument_watch import (
     BRUKER_STALE_DAYS,
     EVOSEP_STALE_DAYS,
+    bruker_backup_time,
     check_feed_freshness,
 )
 
 NOW = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 
 
-def _evosep(last_run: str | None) -> dict:
-    return {"summary": {"last_run": last_run}, "instrument_host": "TIMS-10878"}
+def _evosep(last_run: str | None, generated_at: str | None = None) -> dict:
+    doc = {"summary": {"last_run": last_run}, "instrument_host": "TIMS-10878"}
+    if generated_at:
+        doc["generated_at"] = generated_at
+    return doc
 
 
 def _bruker(backup_date: str | None) -> dict:
@@ -122,6 +128,204 @@ class TestDegradesQuietly:
 
     def test_empty_documents_do_not_raise(self):
         assert check_feed_freshness({}, {}, now=NOW) == []
+
+
+PDT = ZoneInfo("America/Los_Angeles")
+
+
+def _backup(stamp: str, last_acq: str | None = None) -> dict:
+    """A Bruker document as cron_bruker_maintenance.sh writes it."""
+    doc = {
+        "backup_date": stamp[:10],
+        "backup_path": ("/quobyte/proteomics-grp/STAN/BrukerDBBackup/daily/"
+                        f"{stamp}/compass.backup"),
+        "instrument": {"name": "HPZ6", "status": "NOTREADY",
+                       "status_text": "standby"},
+    }
+    if last_acq:
+        doc["summary"] = {"last_run": last_acq}
+    return doc
+
+
+class TestBrukerAlertsOnlyWhenBackupsStop:
+    """Until 1.2.19 the Bruker alert fired every day on a healthy feed.
+
+    The copy lands at ~20:41, the rebuild ran at 20:00 and so always read the
+    day before, and the age was counted from that day's midnight in UTC. On
+    2026-10-20 the 2026-10-19 backup was sitting on Hive while the alert said
+    the backups had stopped. These pin the schedule as it now runs: rebuild
+    at 22:30, age from the folder's own 18:00 stamp.
+    """
+
+    def test_the_2026_10_20_false_alarm_is_silent(self):
+        """The doc the 20:00 run published that night: the 10-18 backup."""
+        now = datetime(2026, 10, 20, 10, 20, tzinfo=PDT)
+        assert check_feed_freshness(None, _backup("2026-10-18_180000"),
+                                    now=now) == []
+
+    def test_same_answer_on_hives_utc_clock(self):
+        """Production passes a UTC `now`; the zone must not change the age."""
+        now = datetime(2026, 10, 20, 17, 20, tzinfo=timezone.utc)
+        assert check_feed_freshness(None, _backup("2026-10-18_180000"),
+                                    now=now) == []
+
+    def test_healthy_feed_just_before_the_rebuild_is_silent(self):
+        now = datetime(2026, 10, 19, 22, 29, tzinfo=PDT)
+        assert check_feed_freshness(None, _backup("2026-10-18_180000"),
+                                    now=now) == []
+
+    def test_one_missed_backup_is_ridden_out(self):
+        """10, 14 and 17 Oct 2026 have no daily backup. A single gap is
+        routine and must not page anyone."""
+        now = datetime(2026, 10, 20, 22, 29, tzinfo=PDT)
+        assert check_feed_freshness(None, _backup("2026-10-18_180000"),
+                                    now=now) == []
+
+    def test_the_line_is_60_real_hours_across_the_dst_change(self):
+        """1 Nov 2026 falls back an hour. 18:00 PDT on 31 Oct is 01:00 UTC on
+        1 Nov; 60 h later is 13:00 UTC, 05:00 PST."""
+        backup = _backup("2026-10-31_180000")
+        silent = datetime(2026, 11, 3, 12, 30, tzinfo=timezone.utc)
+        loud = datetime(2026, 11, 3, 13, 30, tzinfo=timezone.utc)
+        assert check_feed_freshness(None, backup, now=silent) == []
+        assert [a.kind for a in check_feed_freshness(None, backup, now=loud)] \
+            == ["bruker_stale"]
+
+    def test_two_missed_backups_alert_the_next_morning(self):
+        now = datetime(2026, 10, 21, 6, 30, tzinfo=PDT)
+        alerts = check_feed_freshness(None, _backup("2026-10-18_180000"),
+                                      now=now)
+        assert [a.kind for a in alerts] == ["bruker_stale"]
+        assert "2026-10-18 18:00" in alerts[0].detail[0]
+
+    def test_the_folder_stamp_beats_the_bare_date(self):
+        at = bruker_backup_time(_backup("2026-10-16_180444"))
+        assert at == datetime(2026, 10, 16, 18, 4, 44, tzinfo=PDT)
+
+    def test_bare_date_is_still_read_without_a_path(self):
+        at = bruker_backup_time({"backup_date": "2026-10-16"})
+        assert at == datetime(2026, 10, 16, tzinfo=PDT)
+
+    def test_an_impossible_stamp_falls_back_to_the_date(self):
+        doc = _backup("2026-10-16_256099")
+        assert bruker_backup_time(doc) == datetime(2026, 10, 16, tzinfo=PDT)
+
+
+class TestNaiveTimesAreInstrumentLocal:
+    def test_evosep_age_is_not_inflated_by_the_utc_offset(self):
+        """2.96 d old in Davis. Read as UTC it was 3.25 d and alerted."""
+        now = datetime(2026, 10, 18, 20, 0, tzinfo=PDT)
+        assert check_feed_freshness(_evosep("2026-10-15T20:54:08"), None,
+                                    now=now) == []
+
+
+class TestEvosepSilenceIsExplained:
+    """Silent Evosep logs mean either an idle timsTOF or a dead copy, and only
+    the Compass backup -- which records every acquisition and travels by its
+    own copy -- can say which."""
+
+    NOW = datetime(2026, 10, 20, 10, 20, tzinfo=PDT)
+    LAST_LOG = "2026-10-15T20:54:08"
+    #: When the live Evosep document was written on 2026-10-20.
+    WRITTEN = "2026-10-20T13:57:24Z"
+
+    def test_the_2026_10_20_idle_timstof_is_said_as_idle(self):
+        """The real state: last acquisition 10-15 20:38, status standby,
+        the 10-19 backup on Hive."""
+        alerts = check_feed_freshness(
+            _evosep(self.LAST_LOG),
+            _backup("2026-10-19_180000", "2026-10-15T20:38:01"), now=self.NOW)
+        assert len(alerts) == 1
+        a = alerts[0]
+        assert a.kind == "evosep_stale"
+        assert a.severity == "info"
+        assert "idle" in a.headline
+        assert "standby" in " ".join(a.detail)
+
+    def test_idle_is_said_once_not_daily(self):
+        """Three days on, with the nightly backups still arriving."""
+        a1 = check_feed_freshness(
+            _evosep(self.LAST_LOG),
+            _backup("2026-10-19_180000", "2026-10-15T20:38:01"),
+            now=self.NOW)[0]
+        a2 = check_feed_freshness(
+            _evosep(self.LAST_LOG),
+            _backup("2026-10-22_180000", "2026-10-15T20:38:01"),
+            now=self.NOW + timedelta(days=3))[0]
+        assert a1.signature == a2.signature
+        previous = {"signature": a1.signature,
+                    "last_sent": self.NOW.isoformat()}
+        assert should_send(a2, previous,
+                           now=self.NOW + timedelta(days=3)) == (False, "suppressed")
+
+    def test_acquiring_without_logs_is_critical(self):
+        alerts = check_feed_freshness(
+            _evosep(self.LAST_LOG, self.WRITTEN),
+            _backup("2026-10-19_180000", "2026-10-19T17:30:00"), now=self.NOW)
+        a = alerts[0]
+        assert a.severity == "critical"
+        assert "kept acquiring" in a.headline
+        assert "copy_evosep_logs.bat" in " ".join(a.detail)
+
+    def test_acquiring_escalates_out_of_an_idle_spell(self):
+        idle = check_feed_freshness(
+            _evosep(self.LAST_LOG, self.WRITTEN),
+            _backup("2026-10-19_180000", "2026-10-15T20:38:01"), now=self.NOW)[0]
+        busy = check_feed_freshness(
+            _evosep(self.LAST_LOG, self.WRITTEN),
+            _backup("2026-10-19_180000", "2026-10-19T17:30:00"), now=self.NOW)[0]
+        previous = {"signature": idle.signature,
+                    "last_sent": self.NOW.isoformat()}
+        assert should_send(busy, previous, now=self.NOW) == (True, "escalated")
+
+    def test_a_restart_is_not_called_a_dead_copy(self):
+        """The timsTOF comes back at 09:00 with Evosep logs flowing, but the
+        published document was written at 08:00 and is not rebuilt until it
+        is 20 h old. The 22:30 Bruker rebuild already shows the new runs. That
+        evening is a document catching up, not a broken copy."""
+        now = datetime(2026, 10, 21, 22, 40, tzinfo=PDT)
+        alerts = check_feed_freshness(
+            _evosep(self.LAST_LOG, "2026-10-21T15:00:00Z"),
+            _backup("2026-10-21_180000", "2026-10-21T17:30:00"), now=now)
+        assert alerts == []
+
+    def test_acquiring_without_a_refresh_date_keeps_the_plain_alert(self):
+        """No `generated_at` means no way to tell catching-up from broken, and
+        a watchdog that cannot tell says the plain thing rather than nothing."""
+        alerts = check_feed_freshness(
+            _evosep(self.LAST_LOG),
+            _backup("2026-10-19_180000", "2026-10-19T17:30:00"), now=self.NOW)
+        assert [a.kind for a in alerts] == ["evosep_stale"]
+        assert alerts[0].severity == "warning"
+        assert "stopped arriving" in alerts[0].headline
+
+    def test_a_stale_backup_cannot_vouch_for_idle(self):
+        """The PC stops sending everything Friday night. Its last backup still
+        postdates the last Evosep log, but "idle, nothing to fix" would
+        contradict the bruker_stale alert firing beside it."""
+        alerts = check_feed_freshness(
+            _evosep(self.LAST_LOG, self.WRITTEN),
+            _backup("2026-10-16_180000", "2026-10-15T20:38:01"), now=self.NOW)
+        assert sorted(a.kind for a in alerts) == ["bruker_stale", "evosep_stale"]
+        evosep = [a for a in alerts if a.kind == "evosep_stale"][0]
+        assert evosep.severity != "info"
+        assert "stopped arriving" in evosep.headline
+
+    def test_a_backup_older_than_the_silence_proves_nothing(self):
+        """Taken before the last Evosep log, it cannot speak for the gap."""
+        alerts = check_feed_freshness(
+            _evosep(self.LAST_LOG),
+            _backup("2026-10-15_180000", "2026-10-15T17:50:00"), now=self.NOW)
+        evosep = [a for a in alerts if a.kind == "evosep_stale"][0]
+        assert evosep.severity == "warning"
+        assert "stopped arriving" in evosep.headline
+
+    def test_odd_bruker_summaries_do_not_raise(self):
+        """A raise here kills the whole tick, clog alerts included."""
+        for odd in (["x"], "x", 7):
+            doc = _backup("2026-10-19_180000")
+            doc["summary"] = odd
+            check_feed_freshness(_evosep(self.LAST_LOG), doc, now=self.NOW)
 
 
 class TestPublishFreshnessIsADifferentQuestion:

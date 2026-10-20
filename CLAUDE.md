@@ -142,7 +142,7 @@ Canonical copies live in `scripts/`.
 | `cron_evosep.sh` | */30 min | Evosep column health extractor |
 | `cron_ioncloud.sh` | hourly | Feature-cloud backfill from existing 4DFF sidecars |
 | `cron_community_sync.sh` | */6 h | Push to the community benchmark, then `stan peg-sync` (PEG board) |
-| `cron_bruker_maintenance.sh` | daily 20:00 | Compass BACKUP → maintenance document |
+| `cron_bruker_maintenance.sh` | daily 22:30 | Compass BACKUP → maintenance document. **After the copy, which lands by ~22:10** — at 20:00 it read yesterday's backup. **Runs via `bash`** |
 | `cron_stan_db_backup.sh` | daily 03:17 | pg_dump PG Farm → Flinders. **Runs via `bash`, not as an executable** |
 | `cron_stan_alerts.sh` | */20 min | Feed + publish staleness → Slack. **Runs via `bash`, not as an executable** |
 

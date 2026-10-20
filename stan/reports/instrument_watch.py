@@ -39,7 +39,10 @@ roughly one alert every other day — and would have caught the 23:18 clog on
 from __future__ import annotations
 
 import logging
+import re
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from stan.notify import Alert
 
@@ -79,9 +82,10 @@ COLUMN_DRIFT_PCT = 25.0
 LOOKBACK_HOURS = 24.0
 
 #: Compass failures need a wider window than the Evosep logs, and the reason
-#: is a lag, not a preference. The Bruker document is rebuilt nightly at 20:00
+#: is a lag, not a preference. The Bruker document is rebuilt nightly at 22:30
 #: from a backup the instrument wrote at 18:00, so a failure at 14:38 is not
-#: visible to anything until ~29 h later. Under the 24 h window it would be
+#: visible to anything until ~8 h later -- and ~32 h later on a night the
+#: backup is missed or lands after the rebuild. Under the 24 h window it would be
 #: dropped in silence — the precise failure mode this whole change exists to
 #: end. Three days matches bruker_alert.py's own `--lookback-days 3`, and is
 #: safe to widen because each failure is keyed per event and said once ever.
@@ -171,12 +175,21 @@ def _parse(ts) -> datetime | None:
     writes "2026-08-31 14:38". Neither carries a zone; both are instrument
     local time. They are only ever compared against each other and against
     `now`, so treating them as UTC keeps the arithmetic consistent — the
-    lookback window is a day wide, which absorbs the offset.
+    lookback window is a day wide, which absorbs the offset. An age, which
+    the offset does not cancel out of, uses `_parse_local` instead.
     """
+    dt = _parse_raw(ts)
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _parse_raw(ts) -> datetime | None:
+    """Parse either document's timestamp, keeping its zone -- usually none."""
     if not ts:
         return None
     if isinstance(ts, datetime):
-        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+        return ts
     s = str(ts).strip().replace("Z", "+00:00")
     for parse in (
         lambda v: datetime.fromisoformat(v),
@@ -184,8 +197,7 @@ def _parse(ts) -> datetime | None:
         lambda v: datetime.strptime(v, "%Y-%m-%d %H:%M:%S"),
     ):
         try:
-            dt = parse(s)
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+            return parse(s)
         except (ValueError, TypeError):
             continue
     return None
@@ -669,10 +681,171 @@ def check_bruker(doc: dict, now: datetime | None = None,
 #: Evosep gets more slack than Bruker because its logs only appear when the
 #: Evosep actually runs: a Friday-to-Tuesday holiday weekend is four quiet
 #: days and entirely normal. Bruker's backup is written at 18:00 whether or
-#: not anyone acquires, so two days means two unconditional misses and is
-#: genuinely broken.
+#: not anyone acquires, so it is held to a tighter line.
+#:
+#: Not 2.0, though, which is what it was until 1.2.19 -- and which alerted
+#: every day on a perfectly healthy feed. The copy lands on Hive at ~20:41,
+#: cron_bruker_maintenance.sh ran at 20:00 and so always read the day before,
+#: and the age was counted from that day's midnight in UTC. A document was
+#: already 2.1 d "old" the moment it was published.
+#:
+#: The arithmetic now, with the cron at 22:30 and the age taken from the
+#: backup's own 18:00 stamp: a healthy document is at most 28.5 h old
+#: (yesterday's backup, just before tonight's rebuild). One missed or late
+#: backup -- 10, 14 and 17 Oct 2026 have none -- takes that to 52.5 h, 2.19 d.
+#: Two in a row cross 2.5 d at 06:00 the morning after the second. So 2.5 is
+#: the line that rides out one miss and catches two.
 EVOSEP_STALE_DAYS = 3.0
-BRUKER_STALE_DAYS = 2.0
+BRUKER_STALE_DAYS = 2.5
+
+#: The instruments' clock. Both documents write naive local times, which
+#: `_parse` calls UTC -- harmless when they are compared with each other, but
+#: an AGE measured against the real `now` came out 7-8 h too old.
+try:
+    INSTRUMENT_TZ = ZoneInfo("America/Los_Angeles")
+except ZoneInfoNotFoundError:   # no tz database on this host
+    logger.warning("no tz database; reading instrument times as UTC, "
+                   "which ages both feeds by 7-8 h")
+    INSTRUMENT_TZ = timezone.utc
+
+#: How far the last Compass acquisition may trail the last Evosep log and
+#: still be "the same last run". Each acquisition's Evosep procedure starts
+#: minutes before it; an hour absorbs that and any drift between the clocks.
+IDLE_SLACK = timedelta(hours=1)
+
+#: How long after an acquisition the published Evosep document must have
+#: been written before its silence about that acquisition means anything:
+#: the instrument copies the logs every 60 min, and the extract runs on the
+#: next tick. The document is only republished once it is 20 h old
+#: (cron_evosep.sh PUBLISH_MAX_AGE_H), so when the timsTOF comes back from an
+#: idle spell the Compass backup can show the new runs a whole evening before
+#: the document does.
+EVOSEP_REFRESH_SLACK = timedelta(hours=2)
+
+#: Compass names each backup folder for the moment it was taken:
+#: .../daily/2026-10-18_180000/compass.backup.
+_BACKUP_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})(\d{2})")
+
+
+def _parse_local(ts) -> datetime | None:
+    """`_parse`, except that a naive time is instrument-local, not UTC.
+
+    Only for measuring an age against the real clock. The failure checks keep
+    `_parse`, because their alert keys are built from the parsed time and a
+    shifted key would re-send every event already reported.
+    """
+    dt = _parse_raw(ts)
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=INSTRUMENT_TZ)
+
+
+def bruker_backup_time(doc: dict | None) -> datetime | None:
+    """When the Compass backup behind ``doc`` was taken.
+
+    `backup_date` is only the day, and counted from its midnight an 18:00
+    backup reads 18 h older than it is. The folder name in `backup_path`
+    carries the time, so it wins; the bare date is the fallback.
+    """
+    doc = _as_dict(doc)
+    stamps = _BACKUP_STAMP.findall(str(doc.get("backup_path") or ""))
+    if stamps:
+        day, hh, mm, ss = stamps[-1]
+        at = _parse_local(f"{day}T{hh}:{mm}:{ss}")
+        if at is not None:
+            return at
+    return _parse_local(doc.get("backup_date"))
+
+
+def _as_dict(value) -> dict:
+    """``value`` if it is a dict, else empty -- for reading odd documents."""
+    return value if isinstance(value, dict) else {}
+
+
+def _explain_evosep_silence(alert: Alert, evosep: dict | None,
+                            evosep_at: datetime, bruker: dict | None,
+                            bruker_at: datetime | None,
+                            now: datetime) -> Alert | None:
+    """Say whether silent Evosep logs mean an idle timsTOF or a dead copy.
+
+    Evosep logs only exist when the Evosep runs, so their absence alone cannot
+    tell "nobody is acquiring" from "the copy stopped". The Compass backup
+    can: it records every acquisition, and it reaches Hive by its own copy.
+
+    The tempting signal -- no new raws on Flinders, so call it idle and stay
+    quiet -- would be wrong. Those raws come off the same PC, so a PC that
+    stops sending everything would read as idle, and the alert would go
+    silent exactly when it mattered. Nothing here is muted: idle is said once,
+    acquiring-without-logs is said louder than before.
+
+    Each verdict needs its own evidence, and without it the alert stays as it
+    was:
+
+      * Only a backup taken AFTER the last Evosep log can testify about the
+        silence at all.
+      * "Idle" also needs that backup to be current. A PC that stops sending
+        everything leaves a last backup that still postdates the last Evosep
+        log, and calling that idle would contradict the bruker_stale alert
+        firing beside it.
+      * "Kept acquiring" needs an Evosep document written after those
+        acquisitions. Until then this returns None -- no alert this tick --
+        because the document is only republished every 20 h and has simply
+        not caught up yet. check_publish_freshness covers it never doing so.
+    """
+    summary = _as_dict(_as_dict(bruker).get("summary"))
+    last_acq = _parse_local(summary.get("last_run"))
+    if last_acq is None or bruker_at is None or bruker_at <= evosep_at:
+        return alert
+    status = _as_dict(_as_dict(bruker).get("instrument")).get("status_text") or "?"
+    last_log = evosep_at.strftime("%Y-%m-%d %H:%M")
+
+    if last_acq <= evosep_at + IDLE_SLACK:
+        if (now - bruker_at).total_seconds() / 86400.0 > BRUKER_STALE_DAYS:
+            return alert
+        return replace(
+            alert,
+            severity="info",
+            headline=(f"timsTOF idle since {last_acq:%a %d %b %H:%M} "
+                      "-- no Evosep logs expected"),
+            detail=[
+                f"*Last acquisition (Compass):* "
+                f"{last_acq:%Y-%m-%d %H:%M}, status `{status}`",
+                f"*Last Evosep log:* {last_log}",
+                f"*Checked against the backup of:* {bruker_at:%Y-%m-%d %H:%M}",
+                "Nothing to fix on the instrument PC. Said once; it speaks "
+                "again if acquisitions resume without Evosep logs.",
+            ],
+            # One message per idle spell: the signature names the spell, and
+            # no cool-off means it is never repeated while that holds.
+            signature=f"idle:{evosep_at:%Y%m%dT%H%M}",
+            cool_off_hours=None,
+            extra={**alert.extra, "last_acquisition": last_acq.isoformat()},
+        )
+
+    written = _parse_local(_as_dict(evosep).get("generated_at"))
+    if written is None:
+        return alert
+    if written < last_acq + EVOSEP_REFRESH_SLACK:
+        return None
+
+    whole = alert.extra["whole_days"]
+    return replace(
+        alert,
+        severity="critical",
+        headline=(f"Evosep logs stopped arriving {whole} days ago "
+                  "while the timsTOF kept acquiring"),
+        detail=[
+            f"*Last Evosep log:* {last_log}",
+            f"*Compass recorded acquisitions through:* "
+            f"{last_acq:%Y-%m-%d %H:%M}",
+            "*Feed:* Y:\\STAN\\evosep_logs -- copy_evosep_logs.bat "
+            "on the instrument",
+            "Either that copy has stopped, or those runs did not use the "
+            "Evosep.",
+        ],
+        signature=f"acquiring:{whole}d",
+        extra={**alert.extra, "last_acquisition": last_acq.isoformat()},
+    )
 
 
 def check_feed_freshness(evosep: dict | None, bruker: dict | None,
@@ -697,6 +870,9 @@ def check_feed_freshness(evosep: dict | None, bruker: dict | None,
     `generated_at` deliberately goes unread -- it says the job ran, not that
     anything arrived.
 
+    A silent Evosep feed is then checked against the Compass backup, which
+    records every acquisition: see `_explain_evosep_silence`.
+
     Args:
         evosep: Evosep column-health document, or None if absent.
         bruker: Bruker maintenance document, or None if absent.
@@ -709,35 +885,32 @@ def check_feed_freshness(evosep: dict | None, bruker: dict | None,
     now = now or datetime.now(timezone.utc)
     alerts: list[Alert] = []
 
+    evosep_at = _parse_local(_as_dict(_as_dict(evosep).get("summary")).get("last_run"))
+    bruker_at = bruker_backup_time(bruker)
     feeds = [
-        ("evosep_stale", "Evosep procedure logs", EVOSEP_STALE_DAYS,
-         ((evosep or {}).get("summary") or {}).get("last_run"),
+        ("evosep_stale", "Evosep procedure logs", EVOSEP_STALE_DAYS, evosep_at,
          evosep_label(evosep) if evosep else station,
          "Y:\\STAN\\evosep_logs -- copy_evosep_logs.bat on the instrument"),
-        ("bruker_stale", "Bruker Compass backup", BRUKER_STALE_DAYS,
-         (bruker or {}).get("backup_date"),
+        ("bruker_stale", "Bruker Compass backup", BRUKER_STALE_DAYS, bruker_at,
          bruker_label(bruker) if bruker else station,
          "Y:\\STAN\\BrukerDBBackup -- copy_bruker_backup.bat on the instrument"),
     ]
 
-    for kind, what, max_days, newest, label, where in feeds:
-        if not newest:
-            continue
-        at = _parse(newest)
+    for kind, what, max_days, at, label, where in feeds:
         if at is None:
             continue
         age_days = (now - at).total_seconds() / 86400.0
         if age_days <= max_days:
             continue
         whole = int(age_days)
-        alerts.append(Alert(
+        alert = Alert(
             key=f"{kind}:{station}",
             kind=kind,
             instrument=label,
             severity="critical" if age_days >= max_days * 3 else "warning",
             headline=f"{what} stopped arriving {whole} days ago",
             detail=[
-                f"*Newest data:* {str(newest)[:16].replace('T', ' ')} "
+                f"*Newest data:* {at:%Y-%m-%d %H:%M} "
                 f"({whole}d old, alerting past {max_days:g}d)",
                 f"*Feed:* {where}",
                 "The panel keeps rendering, so this is invisible on the "
@@ -749,8 +922,14 @@ def check_feed_freshness(evosep: dict | None, bruker: dict | None,
             signature=f"{whole}d",
             cool_off_hours=24.0,
             at=at.strftime("%Y-%m-%d %H:%M"),
-            extra={"age_days": round(age_days, 1), "newest": str(newest)},
-        ))
+            extra={"age_days": round(age_days, 1), "newest": at.isoformat(),
+                   "whole_days": whole},
+        )
+        if kind == "evosep_stale":
+            alert = _explain_evosep_silence(alert, evosep, at, bruker,
+                                            bruker_at, now)
+        if alert is not None:
+            alerts.append(alert)
     return alerts
 
 #: How long a published telemetry document may go unrefreshed. Evosep
@@ -764,7 +943,7 @@ _PUBLISHED_DOCS = (
     ("evosep_publish_stale", "evosep_column_health",
      "Evosep column health", "cron_evosep.sh (every 30 min)"),
     ("bruker_publish_stale", "bruker_maintenance",
-     "Bruker maintenance", "cron_bruker_maintenance.sh (nightly 20:00)"),
+     "Bruker maintenance", "cron_bruker_maintenance.sh (nightly 22:30)"),
 )
 
 

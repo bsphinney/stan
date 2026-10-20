@@ -11,6 +11,47 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.19] — 2026-10-20
+
+The feed-freshness alerts (`stan instrument-watch`, via
+`cron_stan_alerts.sh`) stop crying wolf. Hive-side only: nothing changes on
+the instrument PCs, and nothing stored changes.
+
+### Fixed
+- **The Bruker "backup stopped arriving" alert fired every day on a healthy
+  feed.** The instrument's copy lands at ~20:41, `cron_bruker_maintenance.sh`
+  ran at 20:00 and so always read the previous day's backup, and the age was
+  counted from that day's midnight in UTC. The document was already 2.1 days
+  "old" when published, past the 2-day line. Now the cron runs at **22:30**
+  (via `bash`), the age is taken from the backup folder's own stamp
+  (`daily/<date>_180000`) in instrument-local time, and the line is
+  **2.5 days**: one missed backup (routine — 10, 14 and 17 Oct have none)
+  stays quiet, two in a row alert the next morning. 22:30 rather than 21:30
+  because the copy task repeats every 240 min from whenever it was
+  registered, so ~20:41 is an accident of registration; any slot up to ~22:10
+  is possible.
+- Naive instrument timestamps are read as `America/Los_Angeles` when measuring
+  an age, so the Evosep check no longer adds 7–8 hours either. Failure alert
+  keys still use the old parse, so no reported event is re-sent.
+
+### Changed
+- **A silent Evosep feed now says why.** The Compass backup records every
+  acquisition and reaches Hive by its own copy, so when it was taken after
+  the last Evosep log it decides between two messages:
+  - no acquisitions since the last log → *"timsTOF idle since …"*, severity
+    info, sent **once** per idle spell;
+  - acquisitions after the last log → *"Evosep logs stopped arriving N days
+    ago while the timsTOF kept acquiring"*, **critical**, daily.
+  Nothing is muted. Deciding "idle" from new raws on Flinders was rejected:
+  they come off the same PC, so a PC that stopped sending everything would
+  read as idle and silence the alert exactly when it mattered.
+  Each verdict needs its own evidence or the plain alert stands: "idle" needs
+  a backup that is itself current (not past `BRUKER_STALE_DAYS`), and "kept
+  acquiring" needs an Evosep document written ≥ 2 h after those acquisitions.
+  The published Evosep document is only rebuilt every 20 h, so when the
+  timsTOF returns from an idle spell the Compass backup can show the new runs
+  a whole evening first; that tick sends nothing rather than a false critical.
+
 ## [1.2.18] — 2026-10-06
 
 Community redesign **P3c**: labs counted as facilities, and the token checked
