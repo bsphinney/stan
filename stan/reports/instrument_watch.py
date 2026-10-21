@@ -1163,11 +1163,21 @@ SLURM_JOBS = {
     "stan_db_backup": 1,    # daily
 }
 
+#: The cron (a :data:`CRON_LOGS` key) that submits each of SLURM_JOBS. Its
+#: heartbeat limit is also how long the job may go without finishing a run,
+#: and its log being here is what says the job is scheduled on this host.
+SLURM_JOB_CRON = {
+    "stan-ioncloud":  "ioncloud",
+    "stan_count_acq": "count_acquisitions",
+    "stan_db_backup": "db_backup",
+}
+
 #: The per-file jobs -- one per raw file: stan-mon-<run> and the
 #: dispatcher's stan-<run> searches -- are not runs of one job, so "in a row"
 #: does not fit them. An array (stan-peg-thermo, stan-4dffcloud) is a bulk
-#: run somebody started by hand, not a file, and is not counted. This many files whose latest attempt failed within the
-#: window is news (Brett, 2026-10-21). Blanks and washes are not counted:
+#: run somebody started by hand, not a file, and is not counted. This many
+#: files whose latest attempt failed within the window is news (Brett,
+#: 2026-10-21). Blanks and washes are not counted:
 #: the monitor finds nothing to measure in them and records that as a
 #: failure, so over 30 days they were 22 of the 24 files that failed, and
 #: counting them posted on 6 days instead of 1.
@@ -1428,6 +1438,148 @@ def _failing_files(rows: list[dict], now: datetime, station: str) -> Alert | Non
     )
 
 
+def _cron_log(root: str, cron: str) -> tuple[str | None, datetime | None]:
+    """The newest log of one :data:`CRON_LOGS` cron, and when it was written.
+
+    Both None when the cron has no log here: it is not scheduled on this
+    host.
+    """
+    import glob
+    import os
+
+    try:
+        hits = glob.glob(os.path.join(root, CRON_LOGS[cron][0]))
+        if not hits:
+            return None, None
+        newest = max(hits, key=os.path.getmtime)
+        return newest, datetime.fromtimestamp(os.path.getmtime(newest),
+                                              tz=timezone.utc)
+    except OSError:
+        return None, None
+
+
+def _last_line(path: str) -> str:
+    """The last non-empty line of a log, from its last 4 KB."""
+    import os
+
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 4096))
+            lines = fh.read(4096).decode(errors="replace").splitlines()
+    except (OSError, ValueError):
+        return ""
+    return next((ln.strip() for ln in reversed(lines) if ln.strip()), "")[:200]
+
+
+def _stalled(name: str, rows: list[dict], now: datetime, station: str,
+             root: str) -> Alert | None:
+    """Alert when no run of a scheduled job has finished for its cron's limit.
+
+    The streak check judges runs that finish, and waits for an unfinished
+    run's verdict. A run held in the queue never gives one, and its cron
+    logs "already queued" every tick, so the heartbeat sees a fresh log too.
+    On 2026-10-07 counter run 24684245 sat in the queue from 11:30 to 13:57
+    while its cron wrote "skip: counter already queued/running" nine times,
+    and on 2026-10-19 an ion-cloud task hung for 8 h the same way; nothing
+    could say so. This asks when a run last finished, completed or failed,
+    which catches that, a hung run, a cron that ABORTs before submitting
+    every tick, and an sbatch that fails, alike. A cancelled or preempted
+    run gives no verdict here either: a job preempted every time never does
+    its work.
+
+    A cron whose log has gone stale is the heartbeat's to report, and this
+    stays out of it: the cron is not running, which says more, and two
+    alerts a day about one cause is one too many.
+    """
+    cron = SLURM_JOB_CRON.get(name)
+    if cron is None:
+        return None
+    log, written = _cron_log(root, cron)
+    if log is None:
+        return None                        # not scheduled on this host
+    max_h = CRON_LOGS[cron][1]
+    if (now - written).total_seconds() / 3600.0 > max_h:
+        return None                        # check_cron_heartbeat's case
+
+    runs: dict[int, list[dict]] = {}
+    for r in rows:
+        runs.setdefault(r["run"], []).append(r)
+    last_end, last_how, good_end = None, "", None
+    for tasks in runs.values():
+        states = {t["state"] for t in tasks}
+        if not states <= _ENDED_STATES:
+            continue
+        ends = [_parse_local(t["end"]) for t in tasks]
+        if not all(ends):
+            continue
+        end = max(ends)
+        if states & _FAILED_STATES:
+            how = "failed"
+        elif "COMPLETED" in states:
+            how = "completed"
+            if good_end is None or end > good_end:
+                good_end = end
+        else:
+            continue                       # cancelled or preempted: no verdict
+        if last_end is None or end > last_end:
+            last_end, last_how = end, how
+    if last_end is None:
+        age_h = JOB_LOOKBACK_HOURS         # at least: sacct shows no more
+    else:
+        age_h = (now - last_end).total_seconds() / 3600.0
+    if age_h <= max_h:
+        return None
+
+    def _when(t: datetime | None) -> str:
+        return (f"{t.astimezone(INSTRUMENT_TZ):%a %d %b %H:%M}" if t
+                else f"none in the last {JOB_LOOKBACK_HOURS:g} h")
+
+    if last_end is None:
+        headline = f"{name} has not finished a run in {JOB_LOOKBACK_HOURS:g} h"
+    else:
+        headline = f"{name} has not finished a run for {int(age_h)} h"
+    newest = runs[max(runs)] if runs else []
+    states = {t["state"] for t in newest}
+    if not newest or states <= _ENDED_STATES:
+        doing = "no run queued or running"
+    elif "RUNNING" in states:
+        start = min((s for s in (_parse_local(t["start"]) for t in newest) if s),
+                    default=None)
+        doing = f"run {newest[0]['jobid'].partition('_')[0]} running" + (
+            f" since {start.astimezone(INSTRUMENT_TZ):%a %H:%M}" if start else "")
+    else:
+        doing = (f"run {newest[0]['jobid'].partition('_')[0]} "
+                 + ("waiting in the queue" if states & {"PENDING", "REQUEUED"}
+                    else "/".join(sorted(states)).lower()))
+    detail = [f"*Last finished run:* {_when(last_end)}"
+              + (f" ({last_how})" if last_how else "")
+              + f", alerting past {max_h:g} h"]
+    if good_end != last_end:
+        detail.append(f"*Last good run:* {_when(good_end)}")
+    detail.append(f"*Now:* {doing}")
+    last_line = _last_line(log)
+    if last_line:
+        detail.append(f"*Its cron last wrote:* `{last_line}`")
+    detail.append(f"*Cron log:* {log}")
+    # PG Farm keeps no backup of its own, so a missed one is critical at once.
+    severity = ("critical" if SLURM_JOBS[name] == 1 or age_h >= 24
+                else "warning")
+    return Alert(
+        key=f"job_stalled:{name}",
+        kind="job_stalled",
+        instrument=station,
+        severity=severity,
+        headline=headline,
+        detail=detail,
+        # As for a failing streak: once a day, and once more if it turns
+        # critical. Nothing that moves tick to tick belongs here.
+        signature=severity,
+        cool_off_hours=24.0,
+        extra={"job": name, "hours": round(age_h, 1)},
+    )
+
+
 def _unwatched(station: str, why: str) -> Alert:
     """Failing jobs cannot be checked: said once a day, never swallowed."""
     return Alert(
@@ -1445,7 +1597,8 @@ def _unwatched(station: str, why: str) -> Alert:
 
 def check_job_failures(now: datetime | None = None,
                        station: str = DEFAULT_STATION,
-                       sacct_text: str | None = None) -> list[Alert]:
+                       sacct_text: str | None = None,
+                       log_dir: str | None = None) -> list[Alert]:
     """Alert on a STAN SLURM job that keeps FAILING, not just going quiet.
 
     The other half of :func:`check_cron_heartbeat`, which measures silence.
@@ -1460,12 +1613,15 @@ def check_job_failures(now: datetime | None = None,
         station: Instrument tag for the alert.
         sacct_text: ``sacct -X -n -P`` output in :data:`_SACCT_FIELDS` order;
             None runs sacct.
+        log_dir: Where the cron logs are; :data:`CRON_LOG_DIR` by default.
 
     Returns:
-        Alerts for :data:`SLURM_JOBS` streaks and per-file failures. Empty on
-        a host without SLURM.
+        Alerts for :data:`SLURM_JOBS` streaks, for those that have not
+        finished a run in too long, and for per-file failures. Empty on a
+        host without SLURM.
     """
     now = now or datetime.now(timezone.utc)
+    root = log_dir or CRON_LOG_DIR
     if sacct_text is None:
         try:
             sacct_text = _sacct_text(JOB_LOOKBACK_HOURS)
@@ -1479,16 +1635,26 @@ def check_job_failures(now: datetime | None = None,
         if sacct_text is None:
             # No SLURM is a single-lab install -- unless STAN's cron logs are
             # here, in which case this is Hive and sacct has moved.
-            if _cron_logs_present(CRON_LOG_DIR):
+            if _cron_logs_present(root):
                 return [_unwatched(station, "sacct is not on PATH or at "
                                             f"{SACCT_FALLBACK}")]
             return []
     rows = _parse_sacct(sacct_text)
+    if not rows and _cron_logs_present(root):
+        # On Hive the counter alone runs every 15 min, so an empty history
+        # is sacct's output changing, not every job stopping at once --
+        # which would read as three critical stalls about healthy jobs.
+        return [_unwatched(station, "sacct listed no jobs this check can "
+                                    f"read for the last {JOB_LOOKBACK_HOURS:g} h")]
 
     alerts = []
     for name, need in sorted(SLURM_JOBS.items()):
-        a = _failing_streak(name, need, [r for r in rows if r["name"] == name],
-                            now, station)
+        mine = [r for r in rows if r["name"] == name]
+        # Not finishing comes first: failed runs and then nothing at all is
+        # a job that has stopped, and "has failed 3 runs in a row" would
+        # hide that until the failures left sacct's window two days later.
+        a = (_stalled(name, mine, now, station, root)
+             or _failing_streak(name, need, mine, now, station))
         if a:
             alerts.append(a)
     per_file = [r for r in rows

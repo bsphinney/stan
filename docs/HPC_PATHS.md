@@ -77,7 +77,7 @@ Cadences are taken from each script's install comment and CLAUDE.md. The crontab
 | `cron_community_sync.sh` | every 6 h at :25 | `stan submit-all --backend pg`, then `stan peg-sync --backend pg` |
 | `cron_bruker_maintenance.sh` (**bash**) | daily 22:30 | Compass backup → maintenance document (after the instrument's copy, which lands by ~22:10) |
 | `cron_stan_db_backup.sh` (**bash**) | daily 03:17 | Submits `stan_db_backup.sbatch` (`pg_dump` via `postgres16.sif`) |
-| `cron_stan_alerts.sh` (**bash**) | every 20 min | `stan instrument-watch`: feed, publish, cron-heartbeat and failing-job (`sacct`) checks → Slack |
+| `cron_stan_alerts.sh` (**bash**) | every 20 min | `stan instrument-watch`: feed, publish, cron-heartbeat, and failing- or stalled-job (`sacct`) checks → Slack |
 
 ## Containers (Apptainer)
 

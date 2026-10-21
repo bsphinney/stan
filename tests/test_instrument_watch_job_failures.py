@@ -407,6 +407,192 @@ class TestSaidOnceADay:
         assert should_send(b, self._sent(a, t1), now=t2) == (False, "suppressed")
 
 
+class TestNoRunFinishedInTooLong:
+    """The streak check waits for an unfinished run's verdict, and a run
+    held in the queue never gives one; its cron logs "already queued" every
+    tick, so the heartbeat sees a fresh log as well."""
+
+    def _crons(self, tmp_path, *crons, at=NOW, **last):
+        """The named crons' logs as on Hive, last written ``at``; ``last``
+        gives a log's final line. A job whose cron has no log here is not
+        scheduled here."""
+        import os
+
+        for cron in crons + tuple(last):
+            log = tmp_path / iw.CRON_LOGS[cron][0]
+            log.write_text("2026-10-07 11:30:02 incremental Submitted batch job 1\n"
+                           + last.get(cron, "") + "\n")
+            os.utime(log, (at.timestamp(), at.timestamp()))
+        return str(tmp_path)
+
+    def _counter_on_7_oct(self, held=True):
+        """Counter run 24684245: submitted 11:30, held until 13:57."""
+        t = lambda h, m: datetime(2026, 10, 7, h, m, tzinfo=LOCAL)  # noqa: E731
+        rows = [_row("24684009", "stan_count_acq", "COMPLETED", t(11, 0)),
+                _row("24684095", "stan_count_acq", "COMPLETED", t(11, 15))]
+        if held:
+            rows.append("|".join(["24684245", "24684245", "stan_count_acq",
+                                  "PENDING", "Unknown", "Unknown", "", ""]))
+        return "\n".join(rows)
+
+    def test_a_run_held_in_the_queue_is_reported(self, tmp_path):
+        now = datetime(2026, 10, 7, 17, 30, tzinfo=LOCAL)
+        root = self._crons(tmp_path, at=now, count_acquisitions=(
+            "2026-10-07 17:30:02 skip: counter already queued/running"))
+        [a] = check_job_failures(now=now, sacct_text=self._counter_on_7_oct(),
+                                 log_dir=root)
+        assert a.key == "job_stalled:stan_count_acq"
+        assert a.severity == "warning"
+        assert a.headline == "stan_count_acq has not finished a run for 6 h"
+        body = "\n".join(a.detail)
+        assert "Wed 07 Oct 11:15 (completed)" in body
+        assert "run 24684245 waiting in the queue" in body
+        assert "skip: counter already queued/running" in body
+
+    def test_the_real_2_5_h_wait_was_not_news(self, tmp_path):
+        """It cleared itself at 13:57; the limit is the heartbeat's 6 h."""
+        now = datetime(2026, 10, 7, 13, 50, tzinfo=LOCAL)
+        assert check_job_failures(
+            now=now, sacct_text=self._counter_on_7_oct(),
+            log_dir=self._crons(tmp_path, "count_acquisitions", at=now)) == []
+
+    def test_one_hung_task_holds_up_the_run(self, tmp_path):
+        """2026-10-19: three tasks of 24911582 finished at 16:17 and one
+        ran until its 8 h limit; the cron skipped seven times."""
+        rows = (_ioncloud(8.1, 1, None)
+                + [_row(f"2_{t}", "stan-ioncloud", "COMPLETED", NOW - timedelta(hours=7.1))
+                   for t in (0, 1, 3)]
+                + [_row("2_2", "stan-ioncloud", "RUNNING", NOW - timedelta(hours=7.1))])
+        [a] = check_job_failures(now=NOW, sacct_text="\n".join(rows),
+                                 log_dir=self._crons(tmp_path, "ioncloud"))
+        assert a.key == "job_stalled:stan-ioncloud"
+        assert a.headline == "stan-ioncloud has not finished a run for 8 h"
+        assert "run 2 running since" in "\n".join(a.detail)
+
+    def test_failed_runs_and_then_nothing_is_a_stop_not_a_streak(self, tmp_path):
+        """"Has failed 3 runs in a row" would hide that nothing has run
+        since, until the failures left sacct's window two days later."""
+        rows = (_ioncloud(12.2, 1, None) + _ioncloud(11.2, 2, 1)
+                + _ioncloud(10.2, 3, 1) + _ioncloud(9.2, 4, 1))
+        root = self._crons(tmp_path, ioncloud=(
+            "2026-10-21T11:17:02-07:00 ABORT: squeue failed; refusing to "
+            "submit blind"))
+        [a] = check_job_failures(now=NOW, sacct_text="\n".join(rows), log_dir=root)
+        assert a.key == "job_stalled:stan-ioncloud"
+        body = "\n".join(a.detail)
+        assert "(failed)" in body and "*Last good run:*" in body
+        assert "no run queued or running" in body
+        assert "ABORT: squeue failed" in body
+
+    def test_a_job_still_finishing_runs_that_fail_is_a_streak(self, tmp_path):
+        [a] = _job(check_job_failures(now=NOW, sacct_text=_hourly(10),
+                                      log_dir=self._crons(tmp_path, "ioncloud")),
+                   "stan-ioncloud")
+        assert a.key == "job_failing:stan-ioncloud"
+
+    def test_a_cron_that_submits_nothing_is_reported(self, tmp_path):
+        """ABORT every tick: no run at all for 48 h, and a log as fresh as
+        ever. Other jobs' rows are there, as they always are on Hive."""
+        root = self._crons(tmp_path, ioncloud=(
+            "2026-10-21T11:17:02-07:00 ABORT: squeue failed; refusing to "
+            "submit blind"))
+        others = "\n".join(_row(str(i), "stan_count_acq", "COMPLETED",
+                                NOW - timedelta(minutes=15 * i)) for i in range(1, 5))
+        [ion] = check_job_failures(now=NOW, sacct_text=others, log_dir=root)
+        assert ion.key == "job_stalled:stan-ioncloud"
+        assert ion.headline == "stan-ioncloud has not finished a run in 48 h"
+        assert ion.severity == "critical"
+        body = "\n".join(ion.detail)
+        assert "no run queued or running" in body
+        assert "ABORT: squeue failed" in body
+
+    def test_an_empty_history_is_sacct_not_every_job_stopping(self, tmp_path):
+        """Three critical stalls about healthy jobs would be the wrong
+        message when sacct's output is what changed."""
+        root = self._crons(tmp_path, "ioncloud", "count_acquisitions", "db_backup")
+        for text in ("", "a|format|sacct|changed\n"):
+            [a] = check_job_failures(now=NOW, sacct_text=text, log_dir=root)
+            assert a.key == "job_failing:unreadable"
+
+    def test_a_cron_gone_quiet_is_left_to_the_heartbeat(self, tmp_path):
+        """2026-09-28 18:15 to 09-29 10:00 nothing on login2's crontab ran.
+        Its stale logs are the heartbeat's to report; a second alert a day
+        about the same cause is one too many."""
+        last = datetime(2026, 9, 28, 18, 15, tzinfo=LOCAL)
+        now = datetime(2026, 9, 29, 10, 0, tzinfo=LOCAL)
+        rows = [_row("24183459", "stan_count_acq", "COMPLETED", last)]
+        assert check_job_failures(
+            now=now, sacct_text="\n".join(rows),
+            log_dir=self._crons(tmp_path, "count_acquisitions", at=last)) == []
+
+    def test_a_missed_backup_is_critical_at_once(self, tmp_path):
+        rows = [_row("100", "stan_db_backup", "COMPLETED", NOW - timedelta(hours=31))]
+        [a] = check_job_failures(now=NOW, sacct_text="\n".join(rows),
+                                 log_dir=self._crons(tmp_path, "db_backup"))
+        assert a.key == "job_stalled:stan_db_backup"
+        assert a.severity == "critical"
+
+    def test_a_run_that_never_finishes_is_reported(self, tmp_path):
+        rows = (_ioncloud(8.2, 1, None)
+                + [_row(f"2_{t}", "stan-ioncloud", "RUNNING", NOW - timedelta(hours=7.2))
+                   for t in range(4)])
+        [a] = _job(check_job_failures(now=NOW, sacct_text="\n".join(rows),
+                                      log_dir=self._crons(tmp_path, "ioncloud")),
+                   "stan-ioncloud")
+        assert a.key == "job_stalled:stan-ioncloud"
+
+    def test_the_run_after_a_failure_is_waited_for(self, tmp_path):
+        """2026-10-19 03:20: the 18 Oct backup had failed (and said so), and
+        the next one was running. "No good backup in 48 h" then was a second
+        message about the same failure, minutes before the run fixed it."""
+        rows = [_row("100", "stan_db_backup", "COMPLETED", NOW - timedelta(hours=48.1)),
+                _row("200", "stan_db_backup", "FAILED", NOW - timedelta(hours=24.1)),
+                _row("300", "stan_db_backup", "RUNNING", NOW - timedelta(minutes=3))]
+        assert check_job_failures(now=NOW, sacct_text="\n".join(rows),
+                                  log_dir=self._crons(tmp_path, "db_backup")) == []
+
+    def test_a_job_preempted_every_time_is_reported(self, tmp_path):
+        rows = [_row("1", "stan_count_acq", "COMPLETED", NOW - timedelta(hours=8))]
+        rows += [_row(str(10 + i), "stan_count_acq", "PREEMPTED",
+                      NOW - timedelta(minutes=15 * i)) for i in range(1, 25)]
+        [a] = check_job_failures(now=NOW, sacct_text="\n".join(rows),
+                                 log_dir=self._crons(tmp_path, "count_acquisitions"))
+        assert a.key == "job_stalled:stan_count_acq"
+
+    def test_a_job_not_scheduled_here_is_not_watched(self, tmp_path):
+        """Another lab's SLURM install runs none of these jobs."""
+        rows = [_row("1", "someone_else", "COMPLETED", NOW - timedelta(hours=1))]
+        assert check_job_failures(now=NOW, sacct_text="\n".join(rows),
+                                  log_dir=str(tmp_path)) == []
+
+    def test_once_a_day_and_once_more_when_it_turns_critical(self, tmp_path):
+        import os
+
+        base = datetime(2026, 10, 7, 11, 15, tzinfo=LOCAL)
+        root = self._crons(tmp_path, "count_acquisitions", at=base)
+        log = os.path.join(root, iw.CRON_LOGS["count_acquisitions"][0])
+        rows = [_row("1", "stan_count_acq", "COMPLETED", base)]
+        sent, store, t = [], None, base
+        while t <= base + timedelta(hours=60):
+            os.utime(log, (t.timestamp(), t.timestamp()))   # "already queued"
+            for a in check_job_failures(now=t, sacct_text="\n".join(rows),
+                                        log_dir=root):
+                ok, why = should_send(a, store, now=t)
+                if ok:
+                    store = {"signature": a.signature, "last_sent": t.isoformat()}
+                    sent.append(((t - base).total_seconds() / 3600, why))
+            t += timedelta(minutes=20)
+        # 6 h: warning; 24 h: critical; then daily. (In life the run falls
+        # out of sacct's 48 h window, which changes nothing here.)
+        assert [round(h) for h, _ in sent] == [6, 24, 48]
+        assert [w for _, w in sent] == ["new", "escalated", "cooled_off"]
+
+    def test_every_job_has_a_cron_and_a_limit_sacct_can_see(self):
+        assert set(iw.SLURM_JOB_CRON) == set(iw.SLURM_JOBS)
+        for cron in iw.SLURM_JOB_CRON.values():
+            assert iw.CRON_LOGS[cron][1] < iw.JOB_LOOKBACK_HOURS
+
+
 class TestWhenSacctIsMissingOrBroken:
 
     def test_no_slurm_means_no_check(self, monkeypatch, tmp_path):

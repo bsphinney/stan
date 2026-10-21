@@ -51,7 +51,7 @@ The dispatcher's config file is portable, but the scripts that run inside each S
 | `scripts/cron_*.sh` | **No.** They contain UC Davis paths | Copy the *pattern* (Phase 4), not the files |
 | `stan/community/scripts/link_flinders_qc.py` | **No.** Its source archive paths are hardcoded | Write your own linker if you need one (Phase 3) |
 | Cron heartbeat (`check_cron_heartbeat` in `stan/reports/instrument_watch.py`) | **No.** Its log directory and job names are hardcoded | Write a small watchdog (Step 4.3) |
-| Failing SLURM jobs (`check_job_failures` in `stan/reports/instrument_watch.py`) | **Partly.** The per-file `stan-*` QC jobs are watched wherever `sacct` runs; the scheduled-job names in `SLURM_JOBS` are UC Davis values | Edit `SLURM_JOBS` to name your own scheduled jobs |
+| Failing SLURM jobs (`check_job_failures` in `stan/reports/instrument_watch.py`) | **Partly.** The per-file `stan-*` QC jobs are watched wherever `sacct` runs; the scheduled-job names in `SLURM_JOBS` and their crons in `SLURM_JOB_CRON` are UC Davis values | Edit `SLURM_JOBS` and `SLURM_JOB_CRON` to name your own scheduled jobs |
 
 Because you will carry a patch, install STAN from a git clone on a site branch (Step 2.2), the same way UC Davis does: its venv imports straight from a checkout. The maintainer's to-do list for making these values configurable is at the end of this guide ([Known gaps](#known-gaps-in-12x-for-the-maintainer)).
 
@@ -760,7 +760,7 @@ UC Davis runs everything in this guide at scale. Its specifics are **not** instr
 | Raw file delivery | `flinders_copy.ps1` robocopy task → Flinders NFS archive (nested by month) → `link_flinders_qc.py --all-runs` symlinks into flat watch dirs | Phase 3 |
 | Dispatch | `cron_flinders_dispatch.sh` every 5 min on `login2`; `max_submissions_per_run: 60`; jobs on `low` / `publicgrp-low-qos` / `publicgrp` | Phase 4 |
 | Database | PG Farm (UC Davis Library Postgres) via `STAN_DB_BACKEND=pg` with a service-account secret; nightly `pg_dump` in SLURM ([PG_FARM.md](PG_FARM.md)) | SQLite + Step 4.4 |
-| Watchdog | `cron_stan_alerts.sh` → `stan instrument-watch` (feed, publish, cron-heartbeat and failing-job checks → Slack) | Step 4.3 |
+| Watchdog | `cron_stan_alerts.sh` → `stan instrument-watch` (feed, publish, cron-heartbeat, and failing- or stalled-job checks → Slack) | Step 4.3 |
 | Community | `cron_community_sync.sh` every 6 h: `submit-all --backend pg`, then `peg-sync --backend pg` | Step 5.2 |
 | Dashboard | Hosted on Azure (`ucd.stan-proteomics.org`), reading PG | Step 5.1 |
 

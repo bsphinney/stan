@@ -370,6 +370,12 @@ crontab line invokes it as **`bash <script>`** rather than executing it
 — so a lost execute bit cannot repeat the failure on the watchdog
 itself. Worth considering for the other entries.
 
+It still shares a crontab, and a host, with everything it watches. From
+18:15 on 2026-09-28 to 10:00 the next day nothing on login2's crontab ran
+— the watchdog included — and nothing said so. No check on that host can
+report the host stopping; that needs something elsewhere watching for the
+`stan_alerts` heartbeat.
+
 **Four different questions, and all are needed:**
 
 - `check_feed_freshness` — has the DATA stopped arriving? Reads
@@ -390,7 +396,12 @@ itself. Worth considering for the other entries.
   for four weeks. Only the jobs named in `SLURM_JOBS` (each with its own
   run-in-a-row bar) and STAN's per-file `stan-*` jobs (3 files in 24 h,
   blanks and washes left out) are watched; FRAN shares the account and its
-  jobs never post here.
+  jobs never post here. It also asks the question in between: has a
+  scheduled job FINISHED a run lately, by its cron's heartbeat limit? A run
+  held in the queue, or hung, gives the streak no verdict to judge, and its
+  cron logs "already queued" every tick so the heartbeat stays green. On
+  2026-10-19 an ion-cloud task hung for 8 h exactly like that, unreported.
+  A cron whose log is itself stale is left to the heartbeat.
 
 On 2026-09-17 only the second was true: Evosep logs were landing through
 the current day while the panel served a document written eight days

@@ -11,6 +11,62 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.22] — 2026-10-21
+
+Closes the known gap left in 1.2.21. Hive only: nothing changes on the
+instrument PCs, and nothing stored changes.
+
+### Added
+- **The watchdog now reports a scheduled job that has stopped finishing
+  runs.** The failing-job check judges runs that finish, and waits for an
+  unfinished run's verdict. A run held in the queue, or hung, never gives
+  one. Its cron logs "already queued" every tick, so the cron heartbeat
+  stays green too. Both happened in the last 30 days, unreported:
+  - **2026-10-19:** an ion-cloud task hung from 16:17 until its 8 h time
+    limit at 00:17, and the cron skipped seven times;
+  - **2026-10-07:** counter run 24684245 waited in the queue from 11:30 to
+    13:57.
+- **How it works:**
+  - **The limit.** Each of `stan-ioncloud`, `stan_count_acq` and
+    `stan_db_backup` may go its cron's heartbeat limit without finishing a
+    run, completed or failed: 6 h, 6 h and 30 h. So the 2.5 h queue wait
+    was not news, and the 8 h hang would have posted at 21:20.
+  - **What counts.** A cancelled or preempted run is not a finish, so a
+    job preempted every time is reported.
+  - **What it catches.** A held or hung run, a cron that ABORTs before
+    submitting every tick, and an `sbatch` that fails. Failed runs followed
+    by nothing at all are reported as this, not as a failing streak, which
+    would have hidden it for two days.
+  - **What it leaves alone.** A cron whose log has gone stale is the
+    heartbeat's to report, so one cause does not post twice a day. If
+    `sacct` lists no readable jobs at all, that is one "cannot check"
+    warning rather than a critical alert about every job.
+  - **The message.** It gives the last finished run, what the job is doing
+    now (waiting in the queue, running since when, or nothing queued) and
+    the cron log's last line.
+  - **Cadence.** Warning, then critical at 24 h (at once for the backup),
+    and at most once a day.
+  - **Which host.** A job counts as scheduled here only when its cron's log
+    is here (`SLURM_JOB_CRON`), so another lab's SLURM install is not told
+    about jobs it never runs.
+- **Replayed on the last 30 days,** with each cron log written on its
+  schedule, it adds two messages and no false alarms:
+  - the 19 Oct hang, at 21:20;
+  - one counter line at 10:00 on 2026-09-29. From 18:15 the day before,
+    nothing on login2's crontab ran, the watchdog included. On its first
+    tick back, the counter had finished nothing for 15 h. That line would
+    have gone out beside the heartbeat's alerts for the ion-cloud and backup
+    crons' stale logs.
+
+  The replay sees a run from its start, so it does not exercise the
+  queue-wait wording; the tests do.
+- **Known:** on the first tick after one of these crons is installed, or
+  is back after an outage longer than its limit, its first run may not have
+  finished yet. It then posts one critical "has not finished a run" (for
+  48 h when nothing earlier is visible). That is true, but by the time it
+  is read the job is usually running again. The 29 Sep counter line is this
+  case.
+
 ## [1.2.21] — 2026-10-21
 
 The watchdog (`stan instrument-watch`, every 20 min via
