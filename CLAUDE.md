@@ -370,7 +370,7 @@ crontab line invokes it as **`bash <script>`** rather than executing it
 — so a lost execute bit cannot repeat the failure on the watchdog
 itself. Worth considering for the other entries.
 
-**Three different staleness questions, and all are needed:**
+**Four different questions, and all are needed:**
 
 - `check_feed_freshness` — has the DATA stopped arriving? Reads
   `summary.last_run` / `backup_date`.
@@ -383,6 +383,14 @@ itself. Worth considering for the other entries.
   deleted crontab line identically — all of which look the same from
   outside and all of which matter. `stan_alerts` is in the table too, so
   the watchdog's own silence is reported by anything else still watching.
+- `check_job_failures` — is a SLURM job FAILING while it still talks? Reads
+  `sacct`, the scheduler's own record of how each run ended. From
+  2026-09-23 to 2026-10-21 shard 1 of `stan-ioncloud` failed every hour
+  while its log was written every hour, so the heartbeat counted it healthy
+  for four weeks. Only the jobs named in `SLURM_JOBS` (each with its own
+  run-in-a-row bar) and STAN's per-file `stan-*` jobs (3 files in 24 h,
+  blanks and washes left out) are watched; FRAN shares the account and its
+  jobs never post here.
 
 On 2026-09-17 only the second was true: Evosep logs were landing through
 the current day while the panel served a document written eight days

@@ -11,6 +11,56 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.21] — 2026-10-21
+
+The watchdog (`stan instrument-watch`, every 20 min via
+`cron_stan_alerts.sh`) now also reports a SLURM job that keeps failing. Hive
+only: nothing changes on the instrument PCs, and nothing stored changes.
+
+### Added
+- **`check_job_failures`: a job that fails while it still writes its log.**
+  The cron heartbeat measures silence, so it counted `stan-ioncloud` healthy
+  for the four weeks its shard 1 failed every hour (fixed in 1.2.20). This
+  asks `sacct` how each run of STAN's jobs ended over the last 48 h.
+  - **Scheduled jobs, each with its own bar:** `stan-ioncloud` 3 failed runs
+    in a row, `stan_count_acq` 4, `stan_db_backup` 1. Critical once the
+    failures span 24 h, and always for the backup. A cancelled or preempted
+    run neither extends a streak nor ends it, and a run still going is
+    waited for.
+  - **Per-file QC jobs (`stan-mon-<run>` and the dispatcher's `stan-<run>`
+    searches):** 3 raw files whose latest attempt failed within 24 h. Not
+    counted:
+    - a file whose retry worked;
+    - blanks and washes (`is_blank_or_wash`, the same rule the PEG tab and
+      the benchmark use): the monitor finds nothing to measure in a blank
+      and records a failure;
+    - array jobs (`stan-peg-thermo`, `stan-4dffcloud`), which are bulk runs
+      started by hand, not files.
+  - Each message gives the cause from the job's own log: the JSON status
+    line's `error` when there is one, else the first error line. Streak
+    messages also give the log's path.
+  - One message when it starts, then at most one a day while it continues,
+    however the failures fall: a job that works now and then between
+    failures is not news every time it fails again. It goes quiet once
+    runs succeed.
+  - If `sacct` fails, or is missing on a host that has STAN's cron logs, or
+    the check itself raises, that is said once a day too, and the rest of
+    the tick's alerts still go out.
+  - Only STAN's job names are watched. FRAN runs under the same account and
+    its jobs never post to STAN's channel.
+  - **Replayed against the last 30 days of Hive's real job history,** it
+    would have posted:
+    - the ion-cloud alert at 15:20 on 2026-09-21, two hours after the job's
+      first failed run (on other shards; shard 1's four weeks began on
+      2026-09-23), then once a day;
+    - the backup's one real failure on 2026-10-18 (`could not obtain a PG
+      Farm token`), which nothing reported at the time;
+    - one per-file message, on 2026-10-02. Counting blanks, it would have
+      posted on six days.
+  - **Known gap:** a run held in the queue indefinitely is waited for
+    indefinitely, and the cron heartbeat stays green too, because the cron
+    logs "already queued" every tick. Fixing it needs sacct's Submit time.
+
 ## [1.2.20] — 2026-10-21
 
 Nothing changes on the instrument PCs, and nothing stored is rewritten. The
