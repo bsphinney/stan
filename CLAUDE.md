@@ -1006,6 +1006,25 @@ tracks main, so `git pull` there is the deploy.)
 | `feature_cloud_4dff.py` + `.sbatch` | Generate the *missing* sidecars with 4DFF first, then publish. Expensive (minutes + ~100 MB per run). |
 | `cron_ioncloud.sh` | Hourly tick that submits the cheap one. Installed at `17 * * * *`. |
 
+**One unreadable sidecar fails its shard every hour, forever.** The
+backfill exits 1 on any extraction error, and the run is re-offered each
+tick because it still has no cloud. From 2026-09-23 to 2026-10-21 shard 1
+failed hourly on a single tTOF run (`09212026_HE50_60-spd-dia_S1-A2_1_24515`)
+whose finished `.features` had arrived beside a 512-byte `-journal` copied
+off the instrument. A `mode=ro` open refuses a file with a hot journal
+(`attempt to write a readonly database`). **Open every sidecar with
+`stan.metrics.feature_cloud.connect_sidecar`, never `sqlite3.connect`.**
+- **What it does.** It reads past a stale journal that holds no page, with
+  `immutable=1`, which writes nothing. It does so only once the pair is an
+  hour old and, if the file grew under the unfinished write, after `PRAGMA
+  quick_check` passes. It refuses anything else.
+- **Why not read-write.** A read-write open lets SQLite roll the journal
+  back. That journal's write began on an empty file, so the rollback
+  truncates the 19,710-feature sidecar to 0 bytes. The drift detector, the
+  dashboard fallback and `read_features` all opened read-write until 1.2.20.
+- **Why nothing alerted.** The job wrote its log every hour, so the
+  heartbeat counted it healthy.
+
 Anything new placed on Hive must go under `/quobyte/proteomics-grp/STAN/`,
 **not** `/quobyte/proteomics-grp/brett/` — Python puts the script's own
 directory first on `sys.path` and the `stan/` checkout there shadows the

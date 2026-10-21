@@ -40,9 +40,9 @@ on a HeLa diaPASEF run, which is plenty (~50k-200k z=2 features per
 from __future__ import annotations
 
 import logging
-import sqlite3
 from pathlib import Path
 
+from stan.metrics.feature_cloud import connect_sidecar
 from stan.metrics.features import find_features_file
 from stan.metrics.window_drift import (
     DriftResult,
@@ -77,7 +77,9 @@ def _query_z2_features(features_path: Path):
     Returns three lists. Empty lists if the table has no z=2 rows or
     the file doesn't contain the expected columns.
     """
-    with sqlite3.connect(str(features_path)) as con:
+    # Read-only: a read-write open beside a stale -journal truncates the
+    # sidecar (stan.metrics.feature_cloud.connect_sidecar).
+    with connect_sidecar(features_path) as con:
         cols = {
             r[1] for r in
             con.execute("PRAGMA table_info(LcTimsMsFeature)").fetchall()

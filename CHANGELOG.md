@@ -11,6 +11,48 @@ deferred items: [`docs/V1_PRERELEASE_CHECKLIST.md`](docs/V1_PRERELEASE_CHECKLIST
 
 ---
 
+## [1.2.20] — 2026-10-21
+
+Nothing changes on the instrument PCs, and nothing stored is rewritten. The
+fix is in the Hive backfill. The dashboard's sidecar fallback changes too,
+so it reaches every `stan dashboard` host.
+
+### Fixed
+- **The hourly ion-cloud job (`stan-ioncloud`) failed every hour for four
+  weeks on one run.** Shard 1 had exited 1 every tick since 2026-09-23. The
+  cause was tTOF run `09212026_HE50_60-spd-dia_S1-A2_1_24515`: its finished
+  `.features` sidecar (19,710 features, 11,009 pages) arrived on Flinders
+  beside a 512-byte `-journal` copied off the instrument. The journal holds
+  no page record, and its write began on an empty file: 4DFF wrote the
+  whole sidecar and never deleted the journal. SQLite treats a journal that
+  no process holds as "hot" and will not read the database until it has
+  rolled that journal back, which a `mode=ro` connection cannot do
+  (`attempt to write a readonly database`).
+  - **The new open.** `connect_sidecar` (in `stan.metrics.feature_cloud`) now
+    reads such a file as it lies, with `immutable=1`, which writes nothing.
+    It does so only when all of these hold:
+    - the journal holds no page;
+    - the pair has been untouched for an hour, so a 4DFF is unlikely to
+      still be writing it;
+    - when the file grew under the unfinished write, `PRAGMA quick_check`
+      passes.
+
+    Otherwise it raises an error that names the reason. A rollback is never
+    attempted: for this run, SQLite's own recovery would truncate the
+    sidecar to 0 bytes.
+  - **Verified against the real file on Hive:** quick_check ok, 4,927 of
+    19,710 points, z = 1–4, and the file and journal byte-identical
+    afterwards.
+- **Three readers opened sidecars read-write, which would have destroyed this
+  one.** On a host that can write the `.d`, SQLite would recover the
+  journal and leave the file empty. The three readers:
+  - the feature-based drift detector (`feature_drift._query_z2_features`,
+    reached through `stan backfill-window-drift`);
+  - the dashboard's sidecar fallback for the ion cloud;
+  - `features.read_features`.
+
+  All three now go through `connect_sidecar`.
+
 ## [1.2.19] — 2026-10-20
 
 The feed-freshness alerts (`stan instrument-watch`, via

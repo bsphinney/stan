@@ -1515,9 +1515,13 @@ async def api_run_features_by_charge(run_id: str, source: str = "runs") -> dict:
         }
 
     # Read the LcTimsMsFeature table. Use a fresh sqlite3 connection —
-    # do NOT import from stan.metrics.features (race risk).
+    # do NOT import from stan.metrics.features (race risk). Read-only via
+    # connect_sidecar: a read-write open beside a stale -journal truncates
+    # the sidecar inside the raw .d.
+    from stan.metrics.feature_cloud import connect_sidecar
+
     try:
-        fcon = _sqlite.connect(str(feat_path))
+        fcon = connect_sidecar(feat_path)
         fcon.row_factory = _sqlite.Row
         total = fcon.execute(
             "SELECT COUNT(*) FROM LcTimsMsFeature WHERE Intensity > 0"
@@ -1571,7 +1575,7 @@ async def api_run_features_by_charge(run_id: str, source: str = "runs") -> dict:
                 im_max = im
             n_kept += 1
         fcon.close()
-    except _sqlite.Error as exc:
+    except (_sqlite.Error, RuntimeError) as exc:
         raise HTTPException(
             status_code=500,
             detail=f"failed to read .features file: {exc}",

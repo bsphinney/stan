@@ -417,15 +417,16 @@ def read_features(features_path: str | Path, columns: list[str] | None = None):
     Columns that exist in the schema but not in a particular 4DFF
     version are silently dropped from the selection.
     """
-    import sqlite3
-
     import polars as pl
+
+    from stan.metrics.feature_cloud import connect_sidecar
 
     features_path = Path(features_path)
     if not features_path.exists():
         raise FileNotFoundError(f"Features file not found: {features_path}")
 
-    with sqlite3.connect(str(features_path)) as con:
+    # Read-only: a read-write open beside a stale -journal truncates the sidecar.
+    with connect_sidecar(features_path) as con:
         have = {
             r[1] for r in
             con.execute("PRAGMA table_info(LcTimsMsFeature)").fetchall()

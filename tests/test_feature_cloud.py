@@ -123,6 +123,156 @@ def test_extract_missing_table_raises(tmp_path: Path) -> None:
         extract_feature_cloud(feat)
 
 
+def _age(*paths: Path, seconds: float = 2 * 3600) -> None:
+    """Backdate files past STALE_JOURNAL_AGE_S, as robocopy's kept mtimes are."""
+    import os
+    import time
+
+    t = time.time() - seconds
+    for p in paths:
+        os.utime(p, (t, t))
+
+
+def _leave_stale_journal(feat: Path, orig_pages: int | None = None,
+                         age_s: float = 2 * 3600) -> Path:
+    """Leave a header-only ``-journal`` beside ``feat`` that nothing holds.
+
+    ``orig_pages`` is the header's "database size when the write began".
+    tTOF run 24515 has 0 there, beside a finished 11,009-page sidecar
+    (19,710 features): 4DFF wrote the whole file in one transaction and
+    never deleted the journal. SQLite calls the journal hot, and a
+    ``mode=ro`` open refuses the whole file, so shard 1 of the ion-cloud
+    job failed every hour for four weeks on that one run.
+    """
+    con = sqlite3.connect(str(feat))
+    page = con.execute("PRAGMA page_size").fetchone()[0]
+    con.close()
+    if orig_pages is None:
+        orig_pages = feat.stat().st_size // page
+    header = (
+        bytes.fromhex("d9d505f920a163d7")         # journal magic
+        + (0).to_bytes(4, "big")                  # nRec
+        + (7).to_bytes(4, "big")                  # checksum nonce
+        + orig_pages.to_bytes(4, "big")
+        + (512).to_bytes(4, "big")                # sector size
+        + page.to_bytes(4, "big")
+    )
+    journal = Path(f"{feat}-journal")
+    journal.write_bytes(header.ljust(512, b"\0"))
+    _age(feat, journal, seconds=age_s)
+    return journal
+
+
+def _crash_mid_write(feat: Path) -> None:
+    """Kill a writer after it has overwritten pages it had not committed."""
+    import subprocess
+    import sys
+
+    code = (
+        "import os, sqlite3, sys\n"
+        "con = sqlite3.connect(sys.argv[1], isolation_level=None)\n"
+        "con.execute('PRAGMA cache_size=1')\n"     # spill pages to the file
+        "con.execute('BEGIN')\n"
+        "con.execute('UPDATE LcTimsMsFeature SET Intensity = 7')\n"
+        "os._exit(0)\n"
+    )
+    subprocess.run([sys.executable, "-c", code, str(feat)],
+                   check=True, timeout=60)
+
+
+def _many_rows(n: int = 2000) -> list[tuple]:
+    return [(400.0 + i * 0.01, 2, float(i), 0.9, 1e4) for i in range(n)]
+
+
+def test_extract_reads_past_a_stale_journal_that_changed_nothing(
+        tmp_path: Path) -> None:
+    feat = tmp_path / "stuck.d.features"
+    _make_features_db(feat, _many_rows())
+    journal = _leave_stale_journal(feat)
+    before = (feat.read_bytes(), journal.read_bytes())
+
+    cloud = extract_feature_cloud(feat, max_points=10_000)
+
+    assert cloud.n_total == 2000
+    assert set(cloud.intensity) == {1e4}
+    # Read as it lies: the raw .d is never written, journal included.
+    assert (feat.read_bytes(), journal.read_bytes()) == before
+
+
+def test_extract_reads_the_run_24515_shape(tmp_path: Path) -> None:
+    """Journal began on an empty file; the finished file passes quick_check."""
+    feat = tmp_path / "24515.d.features"
+    _make_features_db(feat, _many_rows())
+    journal = _leave_stale_journal(feat, orig_pages=0)
+    before = (feat.read_bytes(), journal.read_bytes())
+
+    cloud = extract_feature_cloud(feat, max_points=10_000)
+
+    assert cloud.n_total == 2000
+    assert (feat.read_bytes(), journal.read_bytes()) == before
+
+
+def test_drift_reads_the_run_24515_shape_without_truncating_it(
+        tmp_path: Path) -> None:
+    """The drift detector used to open sidecars read-write, which here
+    would let SQLite roll the journal back and cut the file to 0 bytes."""
+    from stan.metrics.feature_drift import _query_z2_features
+
+    feat = tmp_path / "24515.d.features"
+    _make_features_db(feat, _many_rows())
+    journal = _leave_stale_journal(feat, orig_pages=0)
+    before = (feat.read_bytes(), journal.read_bytes())
+
+    mz, _mob, _inten = _query_z2_features(feat)
+
+    assert len(mz) == 2000
+    assert (feat.read_bytes(), journal.read_bytes()) == before
+
+
+def test_extract_refuses_an_unfinished_write_that_fails_quick_check(
+        tmp_path: Path) -> None:
+    feat = tmp_path / "torn.d.features"
+    _make_features_db(feat, _many_rows(20_000))
+    with feat.open("r+b") as fh:                  # lose the back half
+        fh.truncate(feat.stat().st_size // 2)
+    _leave_stale_journal(feat, orig_pages=0)
+
+    with pytest.raises(RuntimeError, match="quick_check"):
+        extract_feature_cloud(feat)
+
+
+def test_extract_waits_while_a_4dff_may_still_be_writing(tmp_path: Path) -> None:
+    """A journal and file touched in the last hour may have a live writer:
+    the NFS locks that would say so are not trusted across nodes."""
+    feat = tmp_path / "live.d.features"
+    _make_features_db(feat, _many_rows())
+    _leave_stale_journal(feat, orig_pages=0, age_s=0)
+
+    with pytest.raises(RuntimeError, match="may still be writing"):
+        extract_feature_cloud(feat)
+
+
+def test_extract_refuses_a_journal_holding_pages(tmp_path: Path) -> None:
+    """An interrupted write left uncommitted pages in the file itself.
+
+    Reading those bytes as they lie would publish values that were never
+    committed (Intensity 7 here) as the run's cloud, and it would be kept:
+    the backfill never rebuilds a stored cloud.
+    """
+    feat = tmp_path / "crashed.d.features"
+    _make_features_db(feat, _many_rows())
+    _crash_mid_write(feat)
+    journal = Path(f"{feat}-journal")
+    assert journal.stat().st_size > 4096, "writer did not spill a page"
+    _age(feat, journal)
+    before = (feat.read_bytes(), journal.read_bytes())
+
+    with pytest.raises(RuntimeError, match="never committed"):
+        extract_feature_cloud(feat)
+
+    assert (feat.read_bytes(), journal.read_bytes()) == before
+
+
 # ─────────────────────────────────────────────────────────────
 #  JSON cache round-trip
 # ─────────────────────────────────────────────────────────────

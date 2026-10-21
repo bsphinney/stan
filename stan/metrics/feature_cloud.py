@@ -35,10 +35,25 @@ other.
 from __future__ import annotations
 
 import logging
+import os
+import sqlite3
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+#: First 8 bytes of every SQLite rollback-journal header.
+_JOURNAL_MAGIC = bytes.fromhex("d9d505f920a163d7")
+
+#: How long a journal and its database must sit untouched before the
+#: journal counts as stale. A 4DFF run on Hive is capped at 45 minutes
+#: (feature_cloud_4dff.py --timeout-min), so an hour is past any write
+#: still in progress there. Robocopy keeps the source mtime, so for a pair
+#: carried off the instrument this only delays; quick_check is the gate.
+STALE_JOURNAL_AGE_S = 3600
+
+_REDO = " Move it and its -journal aside and re-run 4DFF on this .d."
 
 # Points kept per run. Matches the house convention set by
 # ``stan.db.insert_drift_peak_cloud`` — keep the two clouds on the same
@@ -91,6 +106,137 @@ class FeatureCloud:
         return out
 
 
+def _check_stale_journal(features_path: Path) -> bool:
+    """Decide whether a sidecar beside a hot ``-journal`` can be read as it lies.
+
+    The journal header holds the record count (nRec), the database's size
+    in pages when the write began, the sector size and the page size.
+    Records start one sector in, each a 4-byte page number, the page and a
+    4-byte checksum. SQLite journals a page before overwriting it, and
+    undoes growth by truncating back to the starting size. So:
+
+    * A journal holding a page means the file may hold uncommitted bytes.
+      Refused.
+    * No page, same size: the write changed nothing, and the file as it
+      lies is the committed state. Returns True.
+    * No page, larger file: the write began on a smaller (usually empty)
+      file and wrote the rest, but never deleted its journal, which is its
+      commit point. SQLite's own recovery would truncate it back, which for
+      tTOF run 24515 means 0 bytes and all 19,710 features gone. Returns
+      False, and the caller runs ``PRAGMA quick_check``. That catches a
+      torn, short or zero-filled file. It cannot catch a crash mid-commit
+      that left older but valid versions of some pages; no check can, and
+      that window is narrow.
+
+    A pair touched within :data:`STALE_JOURNAL_AGE_S` is refused for now:
+    a 4DFF may still be writing it.
+
+    Raises:
+        RuntimeError: The file cannot be read safely; the message says why.
+    """
+    journal = Path(f"{features_path}-journal")
+    try:
+        jstat = journal.stat()
+        dstat = features_path.stat()
+        with journal.open("rb") as fh:
+            head = fh.read(28)
+    except OSError as e:
+        raise RuntimeError(f"{features_path}: its -journal cannot be read ({e}).") from e
+    if len(head) < 28 or head[:8] != _JOURNAL_MAGIC:
+        raise RuntimeError(f"{features_path}: its -journal has no valid header.{_REDO}")
+    nrec, orig, sector, page = (
+        int.from_bytes(head[i:i + 4], "big") for i in (8, 16, 20, 24)
+    )
+    if not (sector and page):
+        raise RuntimeError(f"{features_path}: its -journal has no valid header.{_REDO}")
+    if nrec not in (0, 0xFFFFFFFF) or jstat.st_size >= sector + page + 8:
+        raise RuntimeError(
+            f"{features_path}: an interrupted write left pages in its "
+            f"-journal that were never committed.{_REDO}"
+        )
+    age = time.time() - max(jstat.st_mtime, dstat.st_mtime)
+    if age < 0:
+        raise RuntimeError(
+            f"{features_path}: it or its -journal is stamped "
+            f"{-age / 60:.0f} min in the future, so its age is unknown."
+        )
+    if age < STALE_JOURNAL_AGE_S:
+        raise RuntimeError(
+            f"{features_path}: written {age / 60:.0f} min ago beside a "
+            "-journal, so a 4DFF may still be writing it. Try again later."
+        )
+    pages, torn = divmod(dstat.st_size, page)
+    if orig > pages:
+        raise RuntimeError(
+            f"{features_path}: {pages} pages, fewer than the {orig} its "
+            f"interrupted write began with.{_REDO}"
+        )
+    return orig == pages and not torn
+
+
+def connect_sidecar(features_path: str | os.PathLike[str]) -> sqlite3.Connection:
+    """Open a 4DFF ``.features`` sidecar read-only, writing nothing to the ``.d``.
+
+    The sidecar's counterpart to :func:`stan.tdf.connect_tdf`. Never open a
+    sidecar read-write: beside a stale journal SQLite then "recovers" it,
+    which for tTOF run 24515 truncates 19,710 features to 0 bytes.
+
+    ``mode=ro`` is the normal open: it honours a live writer's locks, which
+    matters because 4DFF on Hive writes sidecars in place. But a
+    ``-journal`` no process holds is "hot", and SQLite will not read the
+    database until it has rolled the journal back, which a read-only
+    connection cannot do: SQLITE_READONLY_ROLLBACK, "attempt to write a
+    readonly database". Robocopy carries such journals off the instrument
+    PC. Run 24515 has had one since 2026-09-21, and shard 1 of the hourly
+    ion-cloud job failed on it every hour from 2026-09-23.
+
+    Such a file is opened ``immutable=1``, which reads the bytes as they
+    lie and writes nothing, when :func:`_check_stale_journal` allows it.
+    If its write never finished, ``PRAGMA quick_check`` must also pass.
+    Anything else raises. A rollback would write into the raw ``.d``, and
+    a journal copied off the instrument need not match the database beside
+    it. Reading past uncommitted pages would publish them as the run's
+    cloud, which the backfill never rebuilds.
+
+    Raises:
+        RuntimeError: A stale journal makes the file unsafe to read.
+        sqlite3.Error: Any other failure to open it.
+    """
+    features_path = Path(features_path)
+    # as_uri() escapes '#', '?' and '%'; an f-string URI does not (stan/tdf.py).
+    uri = Path(os.path.abspath(features_path)).as_uri()
+    con = sqlite3.connect(f"{uri}?mode=ro", uri=True)
+    try:
+        con.execute("PRAGMA schema_version").fetchone()
+        return con
+    except sqlite3.OperationalError as e:
+        con.close()
+        name = getattr(e, "sqlite_errorname", None)  # Python 3.11+
+        hot = name == "SQLITE_READONLY_ROLLBACK" if name else "readonly" in str(e)
+        if not hot:
+            raise
+        exact = _check_stale_journal(features_path)
+    con = sqlite3.connect(f"{uri}?mode=ro&immutable=1", uri=True)
+    if not exact:
+        try:
+            verdict = con.execute("PRAGMA quick_check").fetchall()
+        except sqlite3.DatabaseError as e:
+            verdict = [(str(e),)]
+        if verdict != [("ok",)]:
+            con.close()
+            raise RuntimeError(
+                f"{features_path}: its write never finished and the file "
+                f"fails quick_check ({verdict[0][0]}).{_REDO}"
+            )
+    logger.warning(
+        "%s: read as it lies past a stale -journal (%s)",
+        features_path.name,
+        "it changed nothing" if exact
+        else "its write never deleted it; quick_check ok",
+    )
+    return con
+
+
 def extract_feature_cloud(
     features_path: str | Path,
     max_points: int = DEFAULT_MAX_POINTS,
@@ -118,15 +264,15 @@ def extract_feature_cloud(
 
     Raises:
         FileNotFoundError: The file does not exist.
-        RuntimeError: ``LcTimsMsFeature`` is missing (4DFF aborted).
+        RuntimeError: ``LcTimsMsFeature`` is missing (4DFF aborted), or a
+            stale ``-journal`` makes the file unsafe to read
+            (:func:`connect_sidecar`).
     """
-    import sqlite3
-
     features_path = Path(features_path)
     if not features_path.exists():
         raise FileNotFoundError(f"Features file not found: {features_path}")
 
-    con = sqlite3.connect(f"file:{features_path}?mode=ro", uri=True)
+    con = connect_sidecar(features_path)
     try:
         have = {
             r[1]
