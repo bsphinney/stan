@@ -45,6 +45,18 @@ class _Resp:
         return False
 
 
+def _raising(*a, **k):
+    raise RuntimeError("SSL SYSCALL error: EOF detected")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_pg(monkeypatch):
+    """No test here may reach PG Farm: its alert_state is the live one."""
+    import stan.db_pg
+
+    monkeypatch.setattr(stan.db_pg, "_connect", _raising)
+
+
 @pytest.fixture
 def posted(monkeypatch):
     """Capture what would have gone to Slack. No socket is ever opened."""
@@ -312,15 +324,246 @@ def test_a_corrupt_state_file_does_not_stop_alerting(tmp_path, posted):
     assert notify.notify([_standing()], store=store, now=NOW)["sent"] is True
 
 
-def test_pg_failure_falls_back_to_the_file(monkeypatch, tmp_path, posted):
-    """Alerting must work before migrations/2026-09-02_alert_state.sql is applied."""
+def test_pg_is_given_up_only_after_consecutive_failures(monkeypatch, tmp_path):
+    """Alerting must work before migrations/2026-09-02_alert_state.sql is applied.
+
+    It used to stop trying PG after ONE failure, for the rest of the tick --
+    which is how a single blip on 2026-10-25 21:30 made Friday's alerts new.
+    """
     store = AlertStore(use_pg=True, path=tmp_path / "s.json")
-    monkeypatch.setattr(store, "_pg_get",
-                        lambda key: (_ for _ in ()).throw(RuntimeError("no such table")))
-    assert store.last("anything") is None
-    assert store._use_pg is False, "stop trying PG once it has failed"
+    calls = {"get": 0, "put": 0}
+
+    def get(key):
+        calls["get"] += 1
+        raise RuntimeError("no such table")
+
+    def put(alert, now):
+        calls["put"] += 1
+        raise RuntimeError("no such table")
+
+    monkeypatch.setattr(store, "_pg_get", get)
+    monkeypatch.setattr(store, "_pg_put", put)
+    assert notify._PG_MAX_CONSECUTIVE_FAILURES == 2
+    assert store.last("a") is None and store.last("b") is None
+    assert calls["get"] == 2
+    assert store.last("c") is None
+    assert calls["get"] == 2, "two failures in a row: stop asking PG this run"
+    assert store.degraded is True and store.last_source == "file"
     store.record(_standing(), now=NOW)
-    assert (tmp_path / "s.json").exists()
+    assert calls["put"] == 0
+    row = json.loads((tmp_path / "s.json").read_text())[_standing().key]
+    assert row["pg_pending"] is True, "still owed to PG"
+
+
+def test_a_success_resets_the_consecutive_count(monkeypatch, tmp_path):
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    answers = [RuntimeError("blip"), None, RuntimeError("blip"), None]
+    calls = {"n": 0}
+
+    def flaky(key):
+        a = answers[calls["n"]]
+        calls["n"] += 1
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    monkeypatch.setattr(store, "_pg_get", flaky)
+    for key in "abcd":
+        store.last(key)
+    assert calls["n"] == 4, "fail, ok, fail: never two in a row, never given up"
+    assert store.last_source == "pg" and store.degraded is True
+
+
+def test_a_pg_blip_does_not_resend_a_two_day_old_event(monkeypatch, tmp_path, posted):
+    """Replays 2026-10-25 21:30: PG failed once, Friday's failures went out as new."""
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_get", _raising)
+    old = Alert(key="evotip:tims10878:20261023T1230", kind="evotip",
+                instrument="timsTOF HPZ6", headline="Evotip missing / not picked up",
+                at="2026-10-23 12:32")
+    now = datetime(2026, 10, 26, 4, 30, tzinfo=timezone.utc)   # Sun 21:30 PDT
+    res = notify.notify([old], store=store, now=now)
+    assert old.key in res["held"]
+    texts = [c["body"]["text"] for c in posted]
+    assert not any("Evotip missing" in t for t in texts)
+    assert any("alert memory (PG) is unavailable" in t for t in texts)
+
+
+def test_a_fresh_event_still_goes_out_while_pg_is_down(monkeypatch, tmp_path, posted):
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_get", _raising)
+    fresh = Alert(key="evotip:tims10878:20261024T0200", kind="evotip",
+                  instrument="TIMS-10878", headline="queue STOPPED — No Evotip",
+                  at="2026-10-24 02:04")
+    now = datetime(2026, 10, 24, 9, 5, tzinfo=timezone.utc)    # 02:05 PDT
+    res = notify.notify([fresh], store=store, now=now)
+    assert res["sent"] and fresh.key not in res["held"]
+
+
+def test_pg_is_retried_after_one_failure(monkeypatch, tmp_path):
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    calls = {"n": 0}
+    def flaky(key):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("blip")
+        return {"last_sent": "2026-10-23T21:00:29+00:00", "signature": "",
+                "kind": "evotip", "thread": None, "ack": None}
+    monkeypatch.setattr(store, "_pg_get", flaky)
+    assert store.last("a") is None and store.last_source == "file"
+    assert store.last("b") is not None and store.last_source == "pg"
+
+
+def test_sends_during_a_failure_reach_pg_later(monkeypatch, tmp_path):
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_put", _raising)
+    store.record(_standing(), now=NOW)
+    row = json.loads((tmp_path / "s.json").read_text())[_standing().key]
+    assert row["pg_pending"] is True
+    pushed = []
+    monkeypatch.setattr(store, "_pg_put", lambda a, now: pushed.append(a.key))
+    assert store.sync_pending_to_pg() == 1 and pushed == [_standing().key]
+
+
+def test_sync_clears_the_flag_and_pushes_what_was_sent(monkeypatch, tmp_path):
+    down = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(down, "_pg_put", _raising)
+    down.record(_standing(), now=NOW)
+    pushed = []
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")   # next tick
+    monkeypatch.setattr(store, "_pg_put",
+                        lambda a, now: pushed.append((a.key, a.signature, now)))
+    assert store.sync_pending_to_pg() == 1
+    assert pushed == [(_standing().key, "critical:30", NOW)], \
+        "the send time, not the sync time: PG keeps greatest(last_sent)"
+    row = json.loads((tmp_path / "s.json").read_text())[_standing().key]
+    assert "pg_pending" not in row
+    assert store.sync_pending_to_pg() == 0
+
+
+def test_a_pending_send_is_not_resent_when_pg_answers_first(monkeypatch, tmp_path,
+                                                             posted):
+    """Sync failed (blip), then PG answered the lookup: PG does not know yet."""
+    path = tmp_path / "s.json"
+    down = AlertStore(use_pg=True, path=path)
+    monkeypatch.setattr(down, "_pg_put", _raising)
+    down.record(_standing(), now=NOW)                 # sent while PG was down
+
+    store = AlertStore(use_pg=True, path=path)
+    monkeypatch.setattr(store, "sync_pending_to_pg", lambda: 0)
+    monkeypatch.setattr(store, "_pg_get", lambda key: None)   # PG: never sent
+    monkeypatch.setattr(store, "_pg_put", lambda a, now: None)
+    res = notify.notify([_standing()], store=store, now=NOW + timedelta(minutes=30))
+    assert res["sent"] is False and res["n_suppressed"] == 1
+    assert not posted
+
+
+def test_successful_pg_writes_are_mirrored_to_the_file(monkeypatch, tmp_path):
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_put", lambda a, now: None)
+    store.record(_standing(), now=NOW)
+    assert _standing().key in json.loads((tmp_path / "s.json").read_text())
+
+
+def test_ambiguous_local_time_on_dst_fallback_is_not_held(monkeypatch, tmp_path, posted):
+    """2026-11-01 01:30 happens twice in Los Angeles."""
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_get", _raising)
+    a = Alert(key="evotip:tims10878:20261101T0130", kind="evotip",
+              instrument="TIMS-10878", headline="h", at="2026-11-01 01:30")
+    now = datetime(2026, 11, 1, 9, 35, tzinfo=timezone.utc)    # second 01:35 PST
+    assert a.key not in notify.notify([a], store=store, now=now)["held"]
+
+
+def test_pg_failure_is_logged_at_warning_without_secrets(monkeypatch, tmp_path, caplog):
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_get", lambda k: (_ for _ in ()).throw(
+        RuntimeError(f"bad {HOOK}")))
+    store.last("x")
+    rec = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert rec and "RuntimeError" in rec[0].getMessage() and HOOK not in caplog.text
+
+
+def test_pg_failure_warns_once_per_store(monkeypatch, tmp_path, caplog):
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_get", _raising)
+    store.last("x")
+    store.last("y")
+    assert len([r for r in caplog.records if r.levelname == "WARNING"]) == 1
+
+
+def test_a_file_only_store_never_holds_anything(tmp_path, posted):
+    """A single-lab SQLite install has no PG to wait for: holding there would
+    drop every point alert older than an hour, permanently."""
+    store = AlertStore(use_pg=False, path=tmp_path / "s.json")
+    old = Alert(key="evotip:tims10878:20261023T1230", kind="evotip",
+                instrument="timsTOF HPZ6", headline="Evotip missing",
+                at="2026-10-23 12:32")
+    now = datetime(2026, 10, 26, 4, 30, tzinfo=timezone.utc)
+    res = notify.notify([old], store=store, now=now)
+    assert res["held"] == [] and res["sent"] is True
+    assert any("Evotip missing" in c["body"]["text"] for c in posted)
+
+
+@pytest.mark.parametrize("at", [None, "", "not a time"])
+def test_an_event_with_no_usable_time_is_never_held(monkeypatch, tmp_path, posted, at):
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_get", _raising)
+    a = Alert(key="evotip:x", kind="evotip", instrument="i", headline="h", at=at)
+    res = notify.notify([a], store=store, now=NOW)
+    assert res["held"] == [] and res["sent"] is True
+
+
+def test_a_standing_condition_is_never_held(monkeypatch, tmp_path, posted):
+    """Feed stale, watcher down: those are about now, PG or no PG."""
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_get", _raising)
+    a = _standing()
+    a.at = "2026-08-20 12:00"
+    res = notify.notify([a], store=store, now=NOW)
+    assert res["held"] == [] and res["sent"] is True
+
+
+def test_the_held_notice_cools_off(monkeypatch, tmp_path, posted):
+    store = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(store, "_pg_get", _raising)
+    old = Alert(key="evotip:old", kind="evotip", instrument="i", headline="h",
+                at="2026-10-23 12:32")
+    now = datetime(2026, 10, 26, 4, 30, tzinfo=timezone.utc)
+    notify.notify([old], store=store, now=now)
+    later = AlertStore(use_pg=True, path=tmp_path / "s.json")
+    monkeypatch.setattr(later, "_pg_get", _raising)
+    res = notify.notify([old], store=later, now=now + timedelta(hours=1))
+    assert old.key in res["held"]
+    assert notify.HELD_NOTICE_KEY in res["suppressed"]
+    assert len(posted) == 1
+
+
+def test_file_lock_is_a_no_op_without_fcntl(monkeypatch, tmp_path):
+    """Windows single-lab installs have no fcntl; recording must still work."""
+    monkeypatch.setattr(notify, "fcntl", None)
+    store = AlertStore(use_pg=False, path=tmp_path / "s.json")
+    store.record(_standing(), now=NOW)
+    assert store.last(_standing().key)["signature"] == "critical:30"
+
+
+def test_the_file_lock_lives_next_to_the_state(tmp_path):
+    store = AlertStore(use_pg=False, path=tmp_path / "s.json")
+    pytest.importorskip("fcntl")
+    store.record(_standing(), now=NOW)
+    assert (tmp_path / "s.json.lock").exists()
+
+
+def test_a_write_keeps_rows_another_process_added(tmp_path):
+    """Two crons share one fallback file; a write must not clobber the other's."""
+    path = tmp_path / "s.json"
+    mine = AlertStore(use_pg=False, path=path)
+    assert mine.last("theirs") is None                # cache loaded, empty
+    AlertStore(use_pg=False, path=path).record(
+        Alert(key="theirs", kind="k", instrument="i", headline="h"), now=NOW)
+    mine.record(_standing(), now=NOW)
+    data = json.loads(path.read_text())
+    assert "theirs" in data and _standing().key in data
 
 
 def test_mention_prefixes_text_and_first_block(monkeypatch, unconfigured):

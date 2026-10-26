@@ -60,13 +60,38 @@ The PG path is DDL-free, the same contract as `get_evosep_column_health_pg`:
 the table is owned by `brettsp` and the service account has DML only. When the
 table is missing (migration not yet applied) or PG is unreachable, this falls
 back to a JSON file. That fallback is deliberate — alerting must work before
-the migration lands, and the cost of the fallback is only that two hosts could
-each send the same alert once. A single flock'd cron is the only writer, so in
-practice it is exact.
+the migration lands.
+
+WHEN PG BLINKS
+--------------
+On 2026-10-25 21:30 one failed PG lookup switched the store to the file for
+the rest of the tick. The file held a different, much smaller memory, so
+Friday's two failures went out again as "new". Once alerts wake a phone, that
+is being woken at night about two-day-old failures. So:
+
+  * **PG is retried per call.** A store gives up on PG only after
+    `_PG_MAX_CONSECUTIVE_FAILURES` failures in a row, for the rest of its
+    life (one tick). The first failure is logged at WARNING with its type.
+  * **The file is a real mirror.** Every successful PG write also writes the
+    file, so the fallback remembers what was sent.
+  * **It mirrors both ways.** A write that only reached the file is flagged
+    `pg_pending` and written back by `sync_pending_to_pg` at the start of the
+    next `notify`; until then `last()` prefers it over a PG answer that has
+    not caught up. Otherwise the next normal tick re-sends it: the same bug
+    in reverse.
+  * **Old point events are held, not guessed.** When PG failed and the file
+    has never heard of a point event older than an hour, `notify` holds it
+    and posts one standing notice instead. Fresh events still go out; so do
+    standing conditions, which are about now. A file-only store (a
+    single-lab SQLite install) never holds anything: it has no PG to wait
+    for.
+  * **Every file read-modify-write is under a lock** on `<state>.lock`, so
+    two crons sharing the file cannot drop each other's rows.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -76,6 +101,13 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from stan.instrument_time import parse_local
+
+try:  # POSIX only. A Windows single-lab install has one writer and no lock.
+    import fcntl
+except ImportError:  # pragma: no cover - exercised by monkeypatching to None
+    fcntl = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -399,20 +431,51 @@ def _state_path() -> Path:
     return Path.home() / ".stan" / "alert_state.json"
 
 
+#: Failures in a row after which a store stops asking PG for the rest of its
+#: life (one tick). One failure is a blip and worth retrying -- treating it as
+#: an outage is the 2026-10-25 bug. Two in a row is an outage, and asking again
+#: for every alert would only add a connect timeout per alert to the tick.
+_PG_MAX_CONSECUTIVE_FAILURES = 2
+
+#: Credential-shaped text that can appear in a driver error. Scrubbed before a
+#: PG failure reaches a cron log on a group share.
+_SECRET_ASSIGNMENT = re.compile(r"(?i)\b(password|pgpassword|token|secret)(\s*[=:]\s*)\S+")
+_JWT = re.compile(r"\beyJ[\w-]+\.[\w-]+\.[\w-]+")
+
+
+def _scrub_error(e: BaseException) -> str:
+    """One log line for ``e``, with anything credential-shaped removed."""
+    text = _scrub(str(e), None)
+    text = _SECRET_ASSIGNMENT.sub(r"\1\2<redacted>", text)
+    text = _JWT.sub("<jwt>", text)
+    return " ".join(text.split())[:300]
+
+
 class AlertStore:
     """What has already been said, and when.
 
     PG Farm first, a JSON file when PG has no table or is unreachable. The
     fallback is not a degraded mode to be fixed later: it is what makes the
     alerter useful on a host that has never had the migration applied.
+
+    ``_use_pg`` is what the store was configured for and never changes; a
+    failure does not flip it (see the module docstring, WHEN PG BLINKS).
+    ``last_source`` says where the latest ``last()`` got its answer, and
+    ``degraded`` whether any PG call has failed in this instance.
     """
 
     def __init__(self, use_pg: bool | None = None, path: Path | None = None):
         self._path = path or _state_path()
         self._file_cache: dict | None = None
+        #: Keys changed in memory whose write to the file has not landed yet.
+        self._unsaved: set[str] = set()
         if use_pg is None:
             use_pg = os.environ.get("STAN_DB_BACKEND", "").lower() == "pg"
         self._use_pg = bool(use_pg)
+        self._pg_failures = 0              # consecutive
+        self._pg_warned = False
+        self.degraded = False
+        self.last_source = "pg" if self._use_pg else "file"
 
     # -- backends ------------------------------------------------
 
@@ -445,6 +508,13 @@ class AlertStore:
         # the same jsonb (see _THREAD/_ACK), and a plain overwrite would drop
         # the thread id on the next update -- turning every reply back into a
         # new channel message, silently.
+        #
+        # `last_sent` keeps the later of the two, because `sync_pending_to_pg`
+        # writes sends from an outage after the fact and must not wind back a
+        # row that has been sent since. For a live send `now` is the later
+        # anyway. `signature` is still overwritten: the file row being synced
+        # was mirrored from every send this host made, so it is never older
+        # than what this host put in PG.
         with _connect() as pg, pg.cursor() as cur:
             cur.execute(
                 "INSERT INTO alert_state"
@@ -452,7 +522,7 @@ class AlertStore:
                 "  instrument, detail)"
                 " VALUES (%s, %s, %s, 1, %s, %s, %s, %s)"
                 " ON CONFLICT (alert_key) DO UPDATE SET"
-                "  last_sent = excluded.last_sent,"
+                "  last_sent = GREATEST(alert_state.last_sent, excluded.last_sent),"
                 "  n_sent = alert_state.n_sent + 1,"
                 "  signature = excluded.signature,"
                 "  detail = COALESCE(alert_state.detail, '{}'::jsonb)"
@@ -488,81 +558,260 @@ class AlertStore:
         return [{"key": r[0], "kind": (r[2] or {}).get(_THREAD, {}).get("kind") or r[1],
                  "thread": (r[2] or {}).get(_THREAD) or {}} for r in rows]
 
+    # -- PG health -----------------------------------------------
+
+    def _pg_active(self) -> bool:
+        """Configured for PG, and not yet given up on in this instance."""
+        return self._use_pg and self._pg_failures < _PG_MAX_CONSECUTIVE_FAILURES
+
+    def _pg_ok(self) -> None:
+        self._pg_failures = 0
+
+    def _pg_failed(self, e: Exception, what: str) -> None:
+        self._pg_failures += 1
+        self.degraded = True
+        if not self._pg_warned:
+            self._pg_warned = True
+            logger.warning("alert_state %s failed in PG (%s: %s); answering from "
+                           "the file at %s", what, type(e).__name__,
+                           _scrub_error(e), self._path)
+        else:
+            logger.debug("alert_state %s failed in PG again (%s: %s)", what,
+                         type(e).__name__, _scrub_error(e))
+        if self._pg_failures == _PG_MAX_CONSECUTIVE_FAILURES:
+            logger.info("alert_state: %d PG failures in a row; using only the "
+                        "file at %s for the rest of this run",
+                        self._pg_failures, self._path)
+
+    # -- file ----------------------------------------------------
+
+    @contextlib.contextmanager
+    def _file_lock(self):
+        """Hold an exclusive lock on ``<state>.lock`` around a read-modify-write.
+
+        Several crons fall back to the same file, so two can write it in the
+        same minute; without the lock the later write drops the earlier one's
+        rows. A no-op where fcntl does not exist (Windows single-lab installs
+        have one writer), and when the lock cannot be taken: writing without
+        it risks a duplicate message, never a lost alert.
+        """
+        lock_path = self._path.with_name(self._path.name + ".lock")
+        fh = None
+        if fcntl is not None:
+            try:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                fh = open(lock_path, "a")  # held open across the yield
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            except OSError as e:
+                logger.warning("could not lock %s (%s); writing without the lock",
+                               lock_path, type(e).__name__)
+                if fh is not None:
+                    fh.close()
+                    fh = None
+        try:
+            yield
+        finally:
+            if fh is not None:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+
+    def _file_load(self) -> dict | None:
+        """The file as it is on disk now.
+
+        ``{}`` when it is absent or corrupt (start clean, as always). None when
+        it exists but cannot be read right now, so a writer knows not to
+        replace everything in it with one row.
+        """
+        try:
+            data = json.loads(self._path.read_text())
+        except FileNotFoundError:
+            return {}
+        except ValueError:                 # JSONDecodeError, bad UTF-8
+            logger.warning("unreadable alert state at %s; starting clean",
+                           self._path)
+            return {}
+        except OSError as e:
+            logger.warning("could not read alert state at %s (%s)", self._path,
+                           type(e).__name__)
+            return None
+        if not isinstance(data, dict):
+            logger.warning("alert state at %s is not a JSON object; starting clean",
+                           self._path)
+            return {}
+        return data
+
     def _file(self) -> dict:
         if self._file_cache is None:
-            try:
-                self._file_cache = json.loads(self._path.read_text())
-            except FileNotFoundError:
-                self._file_cache = {}
-            except Exception:
-                logger.warning("unreadable alert state at %s; starting clean",
-                               self._path, exc_info=True)
-                self._file_cache = {}
+            self._file_cache = self._file_load() or {}
         return self._file_cache
 
-    def _file_flush(self) -> None:
+    def _file_write(self, data: dict) -> bool:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self._file_cache or {}, indent=1, sort_keys=True))
+            tmp = self._path.with_name(f"{self._path.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
             os.replace(tmp, self._path)
+            return True
         except Exception:
             # Failing to remember costs a duplicate message next tick, which
             # is strictly better than failing to alert.
             logger.warning("could not persist alert state", exc_info=True)
+            return False
+
+    def _file_update(self, key: str, mutate) -> None:
+        """Read-modify-write one row under the lock. Never raises.
+
+        Re-reads the file inside the lock rather than writing this instance's
+        copy, which may be minutes old and miss another cron's rows.
+        """
+        with self._file_lock():
+            disk = self._file_load()
+            data = disk if disk is not None else dict(self._file())
+            row = dict(data.get(key) or {})
+            mutate(row)
+            data[key] = row
+            self._file_cache = data
+            if disk is not None and self._file_write(data):
+                self._unsaved.discard(key)
+            else:
+                self._unsaved.add(key)
+
+    def _owed_to_pg(self, key: str, pg_row: dict | None) -> dict | None:
+        """The file's row for ``key`` if it records a send PG has not caught up on.
+
+        `sync_pending_to_pg` normally clears these first, but it can fail on a
+        blip while the lookups after it succeed. PG would then say "never
+        sent" about something that went out during the outage.
+        """
+        row = self._file().get(key)
+        if not row or not row.get("pg_pending"):
+            return None
+        mine = _parse(row.get("last_sent"))
+        if mine is None:
+            return None
+        theirs = _parse((pg_row or {}).get("last_sent"))
+        return row if theirs is None or mine > theirs else None
 
     # -- api -----------------------------------------------------
 
     def last(self, key: str) -> dict | None:
         """The record for ``key``, or None if it has never been sent."""
-        if self._use_pg:
+        if self._pg_active():
             try:
-                return self._pg_get(key)
-            except Exception:
-                logger.info("alert_state unavailable in PG; using the file "
-                            "fallback at %s", self._path)
-                self._use_pg = False
+                row = self._pg_get(key)
+            except Exception as e:  # noqa: BLE001 — retried next call, see _pg_failed
+                self._pg_failed(e, "lookup")
+            else:
+                self._pg_ok()
+                owed = self._owed_to_pg(key, row)
+                if owed is not None:
+                    self.last_source = "file"
+                    return owed
+                self.last_source = "pg"
+                return row
+        self.last_source = "file"
         return (self._file().get(key) or None)
 
     def record(self, alert: Alert, now: datetime | None = None) -> None:
-        """Remember that ``alert`` was just sent."""
+        """Remember that ``alert`` was just sent: PG, and always the file."""
         now = now or datetime.now(timezone.utc)
-        if self._use_pg:
+        owed = self._use_pg
+        if self._pg_active():
             try:
                 self._pg_put(alert, now)
-                return
-            except Exception:
-                logger.info("could not record alert_state in PG; using the file "
-                            "fallback", exc_info=True)
-                self._use_pg = False
-        row = dict(self._file().get(alert.key) or {})
-        row.update({
-            "last_sent": now.isoformat(timespec="seconds"),
-            "signature": alert.signature,
-            "kind": alert.kind,
-        })
-        self._file()[alert.key] = row      # keeps `thread` / `ack`
-        self._file_flush()
+            except Exception as e:  # noqa: BLE001
+                self._pg_failed(e, "write")
+            else:
+                self._pg_ok()
+                owed = False
+
+        def apply(row: dict) -> None:
+            row.update({
+                "last_sent": now.isoformat(timespec="seconds"),
+                "signature": alert.signature,
+                "kind": alert.kind,
+                "instrument": alert.instrument,
+            })                             # keeps `thread` / `ack`
+            if owed:
+                row["pg_pending"] = True
+
+        self._file_update(alert.key, apply)
 
     def _merge(self, key: str, field: str, patch: dict,
                kind: str | None = None) -> None:
         """Attach thread or acknowledgement state to a key. Never raises."""
-        if self._use_pg:
+        owed = self._use_pg
+        if self._pg_active():
             try:
                 self._pg_merge_detail(key, {field: patch}, kind)
-                return
-            except Exception:
-                logger.info("could not merge %s into alert_state in PG; using "
-                            "the file fallback", field, exc_info=True)
-                self._use_pg = False
-        row = dict(self._file().get(key) or {})
-        existing = dict(row.get(_FILE_FIELD[field]) or {})
-        existing.update(patch)
-        row[_FILE_FIELD[field]] = existing
-        if kind and not row.get("kind"):
-            row["kind"] = kind
-        self._file()[key] = row
-        self._file_flush()
+            except Exception as e:  # noqa: BLE001
+                self._pg_failed(e, f"{field} merge")
+            else:
+                self._pg_ok()
+                owed = False
+
+        def apply(row: dict) -> None:
+            existing = dict(row.get(_FILE_FIELD[field]) or {})
+            existing.update(patch)
+            row[_FILE_FIELD[field]] = existing
+            if kind and not row.get("kind"):
+                row["kind"] = kind
+            if owed:
+                row["pg_pending"] = True
+
+        self._file_update(key, apply)
+
+    def sync_pending_to_pg(self) -> int:
+        """Write rows that only reached the file back to PG. Never raises.
+
+        Without this the tick after an outage asks PG, PG has never heard of
+        what went out during it, and it all goes out again. Oldest first;
+        stops at the first failure and leaves the rest flagged for next time.
+        A row changed in the file while this ran keeps its flag. Returns how
+        many rows reached PG.
+        """
+        if not self._pg_active():
+            return 0
+        disk = self._file_load()
+        if not disk:
+            return 0
+        owed = sorted(((k, dict(r)) for k, r in disk.items()
+                       if isinstance(r, dict) and r.get("pg_pending")),
+                      key=lambda kr: str(kr[1].get("last_sent") or ""))
+        done: list[tuple[str, dict]] = []
+        for key, row in owed:
+            patch = {f: row[ff] for f, ff in _FILE_FIELD.items() if row.get(ff)}
+            sent_at = _parse(row.get("last_sent"))
+            try:
+                if sent_at is not None:
+                    self._pg_put(Alert(key=key, kind=row.get("kind") or "",
+                                       instrument=row.get("instrument") or "",
+                                       headline="", signature=row.get("signature") or "",
+                                       extra=patch), sent_at)
+                elif patch:
+                    self._pg_merge_detail(key, patch, row.get("kind"))
+            except Exception as e:  # noqa: BLE001
+                self._pg_failed(e, "sync")
+                break
+            self._pg_ok()
+            done.append((key, row))
+        if not done:
+            return 0
+
+        with self._file_lock():
+            now_disk = self._file_load()
+            if now_disk is not None:
+                for key, row in done:
+                    if now_disk.get(key) == row:
+                        cleared = dict(row)
+                        cleared.pop("pg_pending", None)
+                        now_disk[key] = cleared
+                if self._file_write(now_disk):
+                    self._file_cache = now_disk
+        logger.info("alert_state: wrote %d send(s) recorded during a PG outage "
+                    "back to PG", len(done))
+        return len(done)
 
     def set_thread(self, key: str, channel: str, ts: str, kind: str,
                    now: datetime | None = None) -> None:
@@ -587,13 +836,14 @@ class AlertStore:
 
     def open_threads(self) -> list[dict]:
         """Incidents with a thread that has not been closed off."""
-        if self._use_pg:
+        if self._pg_active():
             try:
-                return self._pg_open_threads()
-            except Exception:
-                logger.info("could not list open threads in PG; using the file "
-                            "fallback", exc_info=True)
-                self._use_pg = False
+                rows = self._pg_open_threads()
+            except Exception as e:  # noqa: BLE001
+                self._pg_failed(e, "thread list")
+            else:
+                self._pg_ok()
+                return rows
         out = []
         for key, row in (self._file() or {}).items():
             th = (row or {}).get("thread") or {}
@@ -603,8 +853,25 @@ class AlertStore:
         return out
 
     def flush(self) -> None:
-        if not self._use_pg:
-            self._file_flush()
+        """Persist any change an earlier write could not. Never raises.
+
+        Every write already goes to the file as it happens (PG or not), so
+        this only retries the ones that failed, merged onto the file as it is
+        now rather than over it.
+        """
+        if not self._unsaved:
+            return
+        with self._file_lock():
+            disk = self._file_load()
+            if disk is None:
+                return
+            cache = self._file_cache or {}
+            for key in self._unsaved:
+                if key in cache:
+                    disk[key] = cache[key]
+            if self._file_write(disk):
+                self._file_cache = disk
+                self._unsaved.clear()
 
 
 def _parse(ts) -> datetime | None:
@@ -790,8 +1057,61 @@ def _thread_group(a: Alert) -> str | None:
     return a.thread_key or None
 
 
+#: Key of the standing notice posted while point events are being held.
+HELD_NOTICE_KEY = "alert_memory_unavailable"
+
+#: How many held keys the notice lists before saying "and N more".
+_HELD_LISTED = 10
+
+
+def _hold(alert: Alert, previous: dict | None, store, now: datetime,
+          older_than: timedelta) -> bool:
+    """True for a point event PG could not vouch for that is too old to be news.
+
+    Only when the store is configured for PG and this lookup fell back to the
+    file because PG failed (``last_source == "file"``). A file-only store
+    -- a single-lab SQLite install -- has no PG to wait for, and holding there
+    would drop every point alert older than ``older_than`` for good. An event
+    with no readable time is never held: its age is unknown, and an unknown
+    age is not evidence that it is old.
+
+    Age is measured in instrument-local time (`parse_local`); `_parse` would
+    call a naive local time UTC and age a fresh event by 7-8 h.
+    """
+    if alert.cool_off_hours is not None or previous is not None:
+        return False
+    if not getattr(store, "_use_pg", False):
+        return False
+    if getattr(store, "last_source", None) != "file":
+        return False
+    try:
+        at = parse_local(alert.at)
+        if at is None:
+            return False
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return now - at > older_than
+    except Exception:  # noqa: BLE001 — never hold on a time we could not read
+        return False
+
+
+def _held_notice(held: list[str]) -> Alert:
+    shown = ", ".join(held[:_HELD_LISTED])
+    if len(held) > _HELD_LISTED:
+        shown += f" and {len(held) - _HELD_LISTED} more"
+    return Alert(
+        key=HELD_NOTICE_KEY, kind="alert_memory", instrument="STAN",
+        severity="warning",
+        headline=f"STAN's alert memory (PG) is unavailable; {len(held)} older events held",
+        detail=[f"Held: {shown}.",
+                "Each goes out when PG answers, if it was never sent; "
+                "past its lookback it is dropped, and this notice is the record."],
+        signature="held", cool_off_hours=12.0)
+
+
 def notify(alerts: list[Alert], store: AlertStore | None = None,
-           dry_run: bool = False, now: datetime | None = None) -> dict:
+           dry_run: bool = False, now: datetime | None = None,
+           hold_older_than: timedelta = timedelta(hours=1)) -> dict:
     """Send whatever is news, threaded by incident where possible.
 
     With a bot token, the first alert of an incident opens a thread and every
@@ -799,6 +1119,10 @@ def notify(alerts: list[Alert], store: AlertStore | None = None,
     gets the story. Without one, everything falls back to the webhook and a
     single batched message — which is what another lab running STAN with only
     a webhook gets permanently, so that path stays first-class.
+
+    While PG cannot answer, a point event the file has never heard of and that
+    is older than ``hold_older_than`` is held rather than sent (see `_hold`),
+    and one standing notice says how many. ``result["held"]`` lists them.
 
     Never raises. Returns a summary suitable for printing from a cron.
     """
@@ -808,20 +1132,50 @@ def notify(alerts: list[Alert], store: AlertStore | None = None,
     store = store if store is not None else AlertStore()
     alerts = collapse(alerts)
 
+    # Sends that only reached the file during an earlier outage go back to PG
+    # first, so this tick's lookups see them. Not on a dry run: it writes.
+    if getattr(store, "_use_pg", False) and not dry_run:
+        try:
+            store.sync_pending_to_pg()
+        except Exception as e:  # noqa: BLE001 — it never raises; belt and braces
+            logger.warning("could not write pending alert state back to PG (%s)",
+                           type(e).__name__)
+
     fresh: list[Alert] = []
     suppressed: list[str] = []
+    held: list[str] = []
     for a in alerts:
         try:
-            send, why = should_send(a, store.last(a.key), now=now)
+            previous = store.last(a.key)
+            send, why = should_send(a, previous, now=now)
         except Exception:  # noqa: BLE001 — a broken store must not lose the alert
             logger.warning("alert state lookup failed for %s; sending", a.key,
                            exc_info=True)
             send, why = True, "state_unavailable"
+        else:
+            if send and _hold(a, previous, store, now, hold_older_than):
+                held.append(a.key)
+                continue
         if send:
             a.extra = {**a.extra, "why": why}
             fresh.append(a)
         else:
             suppressed.append(a.key)
+
+    if held:
+        logger.warning("alert memory (PG) unavailable; held %d point event(s) "
+                       "older than %s: %s", len(held), hold_older_than,
+                       ", ".join(held))
+        notice = _held_notice(held)
+        try:
+            send, why = should_send(notice, store.last(notice.key), now=now)
+        except Exception:  # noqa: BLE001
+            send, why = True, "state_unavailable"
+        if send:
+            notice.extra = {"why": why}
+            fresh.append(notice)
+        else:
+            suppressed.append(notice.key)
 
     threaded = slack_api.threading_available()
     result = {
@@ -829,6 +1183,7 @@ def notify(alerts: list[Alert], store: AlertStore | None = None,
         "n_fresh": len(fresh),
         "n_suppressed": len(suppressed),
         "suppressed": suppressed,
+        "held": held,
         "fresh": [{"key": a.key, "severity": a.severity, "headline": a.headline,
                    "why": a.extra.get("why")} for a in fresh],
         "slack_configured": slack_configured() or threaded,
