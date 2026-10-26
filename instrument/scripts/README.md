@@ -30,6 +30,29 @@ BOM), the `.bat` is CRLF without a BOM. Full guide: `docs/user_guide.md`,
 
 ---
 
+## check_watcher_security.ps1  - run ON the instrument, before installing the watcher
+
+READ-ONLY. The watcher starts a hidden PowerShell through a VBScript every
+minute, which is also a common malware pattern, so this reports what on the PC
+could block or report it: antivirus and EDR agents running, Defender
+attack-surface-reduction rules and detections in the last 30 days,
+AppLocker/WDAC, PowerShell execution policy, language mode and logging
+policies, whether Windows Script Host is enabled, domain/MDM management, and
+the run history of the STAN scheduled tasks already on the PC (same hidden
+PowerShell pattern, hourly). Saves to `Y:\brett\security_check\<HOST>_<stamp>.txt`.
+
+```bat
+check_watcher_security.bat              report only
+check_watcher_security.bat /trylaunch   also start ONE hidden PowerShell through a
+                                        VBScript, the way the watcher does, and say
+                                        whether it ran or was blocked
+```
+
+An EDR agent may report the `/trylaunch` test to its console, so decide
+whether to tell IT first.
+
+---
+
 ## dump_bruker_db.ps1  — run ON the instrument
 
 Read-only survey + dump of Bruker's HyStar PostgreSQL database, written to

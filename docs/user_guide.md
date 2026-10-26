@@ -828,6 +828,12 @@ It @mentions you, says what stopped (Evotip not seated, pressure limit, MS conne
 - The hourly Evosep and nightly Bruker alerts stay quiet about a stop already reported, and lead with `vial · sample · time` rather than a log folder name.
 - The QC summary for an aborted injection says `no data: injection aborted (<reason>), see the HH:MM alert` instead of a red IPS 0.
 
+### Before installing: will security software flag it?
+
+To avoid a window flashing on the acquisition PC, the watcher starts a **hidden PowerShell through a small VBScript, every minute**. Malware does the same, so antivirus, an endpoint-protection (EDR) agent or an app-control policy may block it, quarantine it, or report it to whoever manages the PC. If it is blocked, the watcher goes silent and Hive pages "watcher down"; if IT is alerted, they may contact you or take the PC off the network, which would also stop the raw-file copies.
+
+Run `check_watcher_security.bat` on the PC first (read-only; same folder as the watcher). It reports the antivirus and EDR agents running, Defender's attack-surface-reduction rules and recent detections, AppLocker/WDAC, PowerShell policy and logging, whether VBScript is enabled, whether the PC is domain- or MDM-managed, and how the STAN copy tasks already on the PC have been running (they use the same hidden-PowerShell pattern, hourly). The report is saved to `Y:\brett\security_check\`. `check_watcher_security.bat /trylaunch` also starts **one** hidden PowerShell through a VBScript, exactly the way the watcher does, and says whether it ran and whether Defender logged anything. If the report shows an EDR agent or a managed PC, tell whoever manages it before installing (or before `/trylaunch`), and give them the task name `STAN HyStar watcher`, the files `C:\ProgramData\STAN\watch_hystar_errors.ps1` and `.vbs`, and what they do.
+
 ### Install (once, on the instrument PC)
 
 1. Copy `watch_hystar_errors.ps1` and `watch_hystar_errors.bat` together to the PC (from the share, for example `Y:\brett\scripts\`).

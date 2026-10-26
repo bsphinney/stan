@@ -95,7 +95,7 @@ param(
 # tests/test_instrument_copy_scripts.ps1, which fail if they drift. This
 # script lives on the instrument PC on its own, so "is the copy in front of
 # me current?" has to be answerable without a git checkout.
-$ScriptVersion = '1.2.23'
+$ScriptVersion = '1.2.24'
 
 function Read-NewLogText {
     <#
