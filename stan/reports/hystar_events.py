@@ -14,7 +14,10 @@ This module is what Hive does with them, once a minute, from
   * **Relay.** An event the PC could not post (``posted_by_pc: false``) goes
     out from here: the PC's own payload, verbatim, plus one context line
     saying Hive relayed it. Only after Slack accepts it is it recorded and
-    moved to ``processed/``, so a failed relay is retried next tick.
+    moved to ``processed/``, so a failed relay is retried next tick. A stop
+    the PC read over 2 h late (back from a long uninstall, or off) is filed
+    ``stale`` and only recorded; the PC's one ``stale_summary`` event, with
+    no @mention, is what says those stops happened.
   * **Remember.** Every stop marks the keys the hourly paths would use for
     the same failure (`suppression_keys`) in alert_state, so the Evosep and
     Bruker alerts stay quiet about an injection the watcher already reported.
@@ -70,12 +73,13 @@ _NOT_EVENTS = frozenset({HEARTBEAT, PAUSE})
 
 #: Which hourly-path kinds a stop of each watcher category stands for.
 #: ``aborted`` is the Evosep path's word for a run cut short, which every
-#: stop on the Evosep side also is. A HyStar crash has no hourly twin.
+#: stop also is: an MS-side stop (connection lost, MS software error) aborts
+#: the LC run too (ruling R22). A HyStar crash has no hourly twin.
 SUPPRESS_KINDS: dict[str, tuple[str, ...]] = {
     "evotip": ("evotip", "aborted"),
     "overpressure": ("overpressure", "aborted"),
-    "connection_lost": ("connection_lost",),
-    "ms_error": ("ms_error",),
+    "connection_lost": ("connection_lost", "aborted"),
+    "ms_error": ("ms_error", "aborted"),
     "hystar_crash": (),
     "evosep_hw": ("aborted",),
     "other": ("aborted",),
@@ -231,9 +235,11 @@ def suppression_keys(event: dict, station: str = DEFAULT_STATION,
     """The hourly paths' keys for the failure this stop reports.
 
     ``{kind}:{station}:{bucket}`` for each 10-min bucket from ``at -
-    window_min`` to ``at``, built exactly as `instrument_watch` builds them.
-    Only a ``stop`` suppresses anything: a reminder, restart or test is not
-    a failure the hourly paths would also report.
+    window_min`` to ``at + 1 min``, built exactly as `instrument_watch`
+    builds them. The extra minute is ruling R22: Compass's ``start_date``
+    for the emptied run is written just after the stop and can fall in the
+    next bucket. Only a ``stop`` suppresses anything: a reminder, restart or
+    test is not a failure the hourly paths would also report.
     """
     if (event or {}).get("type") != "stop":
         return []
@@ -248,6 +254,9 @@ def suppression_keys(event: dict, station: str = DEFAULT_STATION,
         if b not in buckets:
             buckets.append(b)
         t += timedelta(minutes=BUCKET_MINUTES)
+    after = _bucket(at + timedelta(minutes=1))
+    if after not in buckets:
+        buckets.append(after)
     return [f"{kind}:{station}:{b}" for kind in kinds for b in buckets]
 
 
@@ -282,6 +291,15 @@ def _record_keys(event: dict, store: AlertStore, now: datetime,
     store.flush()
 
 
+def _wants_relay(event: dict) -> bool:
+    """Whether Hive must post this event: the PC did not, and it is not
+    ``stale``. A stale event (ruling R19: a stop the watcher read over 2 h
+    late) is history; the PC files it with ``posted_by_pc: true`` and sums
+    such stops up in one ``stale_summary`` event, so it is recorded, never
+    relayed, whatever its ``posted_by_pc`` says."""
+    return event.get("posted_by_pc") is not True and event.get("stale") is not True
+
+
 def _relay(event: dict, store: AlertStore, now: datetime,
            station: str = DEFAULT_STATION) -> str:
     """``"relayed"``, ``"recorded"``, ``"already"`` or ``"failed"``."""
@@ -291,7 +309,7 @@ def _relay(event: dict, store: AlertStore, now: datetime,
     except Exception:  # noqa: BLE001 — unknown is "not yet"; a repeat beats silence
         logger.debug("own-key lookup failed for %s", event.get("id"), exc_info=True)
     relayed = False
-    if event.get("posted_by_pc") is not True:
+    if _wants_relay(event):
         if not post_slack(_relay_payload(event)):
             logger.warning("could not relay HyStar event %s; retrying next tick",
                            event.get("id"))
@@ -304,8 +322,9 @@ def _relay(event: dict, store: AlertStore, now: datetime,
 def relay_event(event: dict, store: AlertStore, now: datetime) -> bool:
     """Post the event if the PC could not, and record its keys.
 
-    ``posted_by_pc`` true: record only. Anything else: post ``payload``
-    verbatim plus the relay note, and record only once Slack accepted it.
+    ``posted_by_pc`` true, or ``stale`` true: record only. Anything else:
+    post ``payload`` verbatim plus the relay note, and record only once
+    Slack accepted it.
     Returns whether the event is done with (safe to move to processed/).
     """
     return _relay(event, store, now) != "failed"
@@ -555,7 +574,7 @@ def run_hystar_tick(root: Path = DEFAULT_EVENT_ROOT, dry_run: bool = False,
 
         for ev in events:
             if dry_run:
-                if ev.get("posted_by_pc") is not True:
+                if _wants_relay(ev):
                     summary["would_relay"].append(ev["id"])
                 continue
             try:

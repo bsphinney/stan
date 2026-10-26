@@ -566,6 +566,33 @@ def test_a_malformed_mention_id_is_ignored(monkeypatch, unconfigured):
     assert notify.slack_mention_id() is None
 
 
+def test_a_mention_with_no_member_id_warns_once(monkeypatch, unconfigured, caplog):
+    """Deploy safety: an urgent alert that renders without its @mention looks
+    sent and buzzes no phone. Say so at WARNING, once per process (one cron
+    tick), not once per alert."""
+    monkeypatch.setattr(notify, "slack_mention_id", lambda: None)
+    monkeypatch.setattr(notify, "_mention_missing_warned", False, raising=False)
+    urgent = Alert(key="k", kind="watcher_down", instrument="TIMS-10878",
+                   headline="No heartbeat", severity="critical", mention=True)
+    with caplog.at_level("WARNING", logger="stan.notify"):
+        render_alerts([urgent, urgent])
+        render_alerts([urgent])
+    warned = [r for r in caplog.records
+              if r.levelname == "WARNING" and "mention" in r.getMessage()]
+    assert len(warned) == 1, caplog.text
+    assert "STAN_SLACK_MENTION" in warned[0].getMessage()
+
+
+def test_no_warning_when_the_mention_resolves_or_is_not_asked(monkeypatch, unconfigured, caplog):
+    monkeypatch.setattr(notify, "_mention_missing_warned", False, raising=False)
+    with caplog.at_level("WARNING", logger="stan.notify"):
+        monkeypatch.setattr(notify, "slack_mention_id", lambda: "U0ABC1234")
+        render_alerts([Alert(key="k", kind="x", instrument="i", headline="h", mention=True)])
+        monkeypatch.setattr(notify, "slack_mention_id", lambda: None)
+        render_alerts([Alert(key="k", kind="x", instrument="i", headline="h")])
+    assert not [r for r in caplog.records if r.levelname == "WARNING"], caplog.text
+
+
 # ── a stalled lock holder must not freeze every alerting cron ────
 
 

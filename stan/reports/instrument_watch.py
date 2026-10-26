@@ -1114,15 +1114,22 @@ def check_cron_heartbeat(now: datetime | None = None,
         if age_h <= max_h:
             continue
         hours = int(age_h)
+        # A sub-hour threshold (hystar_events: 0.5 h) read "for 0 h": say
+        # minutes below an hour. The signature stays in days either way.
+        if hours < 1:
+            age_txt, ago_txt = f"{int(age_h * 60)} min", f"{int(age_h * 60)} min"
+        else:
+            age_txt, ago_txt = f"{hours} h", f"{hours}h"
+        limit_txt = f"{max_h * 60:g} min" if max_h < 1 else f"{max_h:g}h"
         alerts.append(Alert(
             key=f"cron_silent:{name}",
             kind="cron_silent",
             instrument=station,
             severity="critical" if age_h >= max_h * 4 else "warning",
-            headline=f"cron_{name}.sh has written nothing for {hours} h",
+            headline=f"cron_{name}.sh has written nothing for {age_txt}",
             detail=[
                 f"*Last output:* {seen:%Y-%m-%d %H:%M} UTC "
-                f"({hours}h ago, alerting past {max_h:g}h)",
+                f"({ago_txt} ago, alerting past {limit_txt})",
                 f"*Log:* {newest}",
                 "The job is not running, or is dying before it can log. "
                 "Check the execute bit first -- that is how this failed on "

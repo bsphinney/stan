@@ -209,6 +209,43 @@ def test_an_event_with_no_time_suppresses_nothing():
     assert suppression_keys({**_load("stop_saturday.json"), "at": None}) == []
 
 
+def test_the_bucket_a_minute_after_the_stop_is_marked_too():
+    """R22: Compass's start_date can land in the next 10-min bucket (the .d
+    is written ~1 s after the stop), so the hourly key for that bucket must
+    be silenced as well."""
+    ev = {**_load("stop_saturday.json"), "at": "2026-10-24T02:09:30", "category": "ms_error"}
+    buckets = {k.rsplit(":", 1)[1] for k in suppression_keys(ev)}
+    assert "20261024T0210" in buckets
+    assert "20261024T0200" in buckets and "20261024T0100" in buckets
+    assert "20261024T0220" not in buckets
+
+
+def test_ms_side_stops_also_silence_the_aborted_run():
+    """R22: a stop on the MS side aborts the LC run as well, and the Evosep
+    path would report that as ``aborted``."""
+    assert set(SUPPRESS_KINDS["connection_lost"]) == {"connection_lost", "aborted"}
+    assert set(SUPPRESS_KINDS["ms_error"]) == {"ms_error", "aborted"}
+    for category in ("connection_lost", "ms_error"):
+        keys = suppression_keys({**_load("stop_saturday.json"), "category": category})
+        assert "aborted:tims10878:20261024T0200" in keys, category
+
+
+def test_a_stale_event_is_recorded_never_relayed(tmp_path, posted, store):
+    """R19: a stop the watcher read over 2 h late is filed "stale" for the
+    record and never relayed, even by a file that says the PC did not post it."""
+    host = tmp_path / HOST
+    host.mkdir()
+    ev = {**_load("stop_saturday_unposted.json"), "stale": True}
+    (host / "stale.json").write_text(json.dumps(ev))
+    res = run_hystar_tick(tmp_path, store=store, now=SAT_0206)
+    assert posted == [] and res["relayed"] == [] and res["recorded"] == [ev["id"]]
+    assert store.last("evotip:tims10878:20261024T0200") is not None
+    dry = tmp_path / "dry"
+    (dry / HOST).mkdir(parents=True)
+    (dry / HOST / "stale.json").write_text(json.dumps(ev))
+    assert run_hystar_tick(dry, store=store, now=SAT_0206, dry_run=True)["would_relay"] == []
+
+
 # ── event I/O ────────────────────────────────────────────────────
 
 

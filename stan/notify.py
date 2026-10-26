@@ -362,6 +362,10 @@ _SEVERITY_ICON = {"critical": ":red_circle:", "warning": ":large_orange_diamond:
 #: Ordered worst-first, so a batch is headlined by its worst member.
 _SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
 
+#: Set once the "asked for an @mention but have no member ID" warning has
+#: been logged, so a cron tick says it once, not once per alert.
+_mention_missing_warned = False
+
 
 def render_alerts(alerts: list[Alert]) -> tuple[str, list[dict]]:
     """Turn alerts into (notification text, Slack blocks).
@@ -369,7 +373,13 @@ def render_alerts(alerts: list[Alert]) -> tuple[str, list[dict]]:
     Written to be legible on a phone at 2am: the notification line names the
     instrument and the fault with a number in it, so the decision "do I get
     up" can be made from the lock screen without opening anything.
+
+    An alert that asks for an @mention when no member ID is configured still
+    goes out, without one, and logs a WARNING once per process: it reads as
+    sent and buzzes no phone, which is the failure this whole path exists to
+    prevent (a deploy that forgot ``.stan_slack_mention``).
     """
+    global _mention_missing_warned
     ordered = sorted(alerts, key=lambda a: (_SEVERITY_RANK.get(a.severity, 3), a.key))
     worst = ordered[0]
     icon = _SEVERITY_ICON.get(worst.severity, ":large_orange_diamond:")
@@ -379,6 +389,14 @@ def render_alerts(alerts: list[Alert]) -> tuple[str, list[dict]]:
         member = slack_mention_id()
         if member:
             mention = f"<@{member}> "
+        elif not _mention_missing_warned:
+            _mention_missing_warned = True
+            logger.warning(
+                "an alert asked for an @mention (%s) but no Slack member ID is "
+                "configured ($%s, community.yml slack_mention_user, or "
+                "~/.stan/%s): it goes out without one and will not buzz a phone",
+                ", ".join(sorted({a.kind for a in ordered if a.mention})),
+                MENTION_ENV, MENTION_FILE)
 
     text = f"{mention}{icon} {worst.instrument} — {worst.headline}"
     if len(ordered) > 1:

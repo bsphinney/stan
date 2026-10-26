@@ -460,6 +460,25 @@ class TestCronHeartbeat:
                  if not a.extra.get("missing_log")]
         assert quiet[0].severity == "critical"
 
+    def test_a_sub_hour_silence_is_told_in_minutes(self, tmp_path):
+        """cron_hystar_events alerts past 0.5 h; "written nothing for 0 h"
+        said nothing a person could use."""
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        d = self._logs(tmp_path, {"hystar_events": 0.75})
+        (a,) = [a for a in check_cron_heartbeat(log_dir=d)
+                if not a.extra.get("missing_log")]
+        assert a.headline == "cron_hystar_events.sh has written nothing for 45 min"
+        assert "(45 min ago, alerting past 30 min)" in a.detail[0]
+        assert a.signature == "0d", "the dedup signature must not change"
+
+    def test_an_hour_or_more_is_still_told_in_hours(self, tmp_path):
+        from stan.reports.instrument_watch import check_cron_heartbeat
+        d = self._logs(tmp_path, {"hystar_events": 3.5})
+        (a,) = [a for a in check_cron_heartbeat(log_dir=d)
+                if not a.extra.get("missing_log")]
+        assert a.headline == "cron_hystar_events.sh has written nothing for 3 h"
+        assert "(3h ago, alerting past 30 min)" in a.detail[0]
+
     def test_the_watchdog_watches_itself(self, tmp_path):
         """stan_alerts is in the table, so if the watchdog stops and anything
         else still runs a watch, its own silence is reported."""

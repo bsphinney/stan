@@ -11,12 +11,27 @@ logger = logging.getLogger(__name__)
 #: The instruments' clock. Both documents write naive local times, which
 #: `_parse` calls UTC -- harmless when they are compared with each other, but
 #: an AGE measured against the real `now` came out 7-8 h too old.
+#:
+#: Windows has no tz database of its own; pyproject installs ``tzdata`` there.
+#: Without it the clock falls back to UTC, quietly at import (stan.notify
+#: imports this module, so a WARNING here would print on every command), and
+#: says so once, at WARNING, when an instrument-local time is first read.
 try:
     INSTRUMENT_TZ = ZoneInfo("America/Los_Angeles")
+    _TZ_FALLBACK = False
 except ZoneInfoNotFoundError:   # no tz database on this host
-    logger.warning("no tz database; reading instrument times as UTC, "
-                   "which ages both feeds by 7-8 h")
+    logger.debug("no tz database; instrument times will be read as UTC")
     INSTRUMENT_TZ = timezone.utc
+    _TZ_FALLBACK = True
+_fallback_warned = False
+
+
+def _warn_fallback_once() -> None:
+    global _fallback_warned
+    if _TZ_FALLBACK and not _fallback_warned:
+        _fallback_warned = True
+        logger.warning("no tz database (pip install tzdata); reading instrument "
+                       "times as UTC, which ages both feeds by 7-8 h")
 
 
 def parse_raw(ts) -> datetime | None:
@@ -51,4 +66,7 @@ def parse_local(ts: str | datetime | None) -> datetime | None:
     dt = parse_raw(ts)
     if dt is None:
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=INSTRUMENT_TZ, fold=1)
+    if dt.tzinfo:
+        return dt
+    _warn_fallback_once()
+    return dt.replace(tzinfo=INSTRUMENT_TZ, fold=1)

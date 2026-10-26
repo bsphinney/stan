@@ -24,6 +24,9 @@ dependencies = [
     "mss>=9.0",
     "pygetwindow>=0.0.9",
     "Pillow>=10.0",
+    # Windows has no tz database for zoneinfo; stan.instrument_time needs one
+    # to read the instruments' naive local times as America/Los_Angeles.
+    'tzdata; sys_platform == "win32"',
 ]
 
 [project.optional-dependencies]
