@@ -27,8 +27,11 @@ import logging
 import os
 import subprocess
 import threading
+from datetime import datetime
 
 from stan.gating.evaluator import GateDecision, GateResult
+from stan.reports.hystar_events import find_stop_for_run
+from stan.reports.injection_identity import identity_line, sample_from_run_name
 
 logger = logging.getLogger(__name__)
 
@@ -149,8 +152,22 @@ def qc_summary_enabled() -> bool:
     return val.strip().lower() not in ("0", "false", "no", "off", "")
 
 
+def _aborted_line(instrument: str, run_name: str, stop: dict) -> str:
+    """The line for an injection HyStar aborted: no data, and why."""
+    sample, vial = sample_from_run_name(run_name)
+    who = identity_line(vial or stop.get("vial"), sample, None)
+    when = stop.get("posted_at") or stop.get("at") or ""
+    try:
+        hhmm = f"{datetime.fromisoformat(str(when)):%H:%M}"
+    except ValueError:
+        hhmm = str(when)[11:16]
+    return (f":black_square_for_stop: *{instrument}* *{who}* \u2014 no data: "
+            f"injection aborted ({stop.get('title')}), see the {hhmm} alert")
+
+
 def format_qc_summary(instrument: str, run_name: str, metrics: dict,
-                      decision: GateDecision | None = None) -> str:
+                      decision: GateDecision | None = None,
+                      stop: dict | None = None) -> str:
     """One line: what was identified, and anything that flagged.
 
     Deliberately reads the FLAGS OFF THE GATE DECISION rather than
@@ -160,7 +177,14 @@ def format_qc_summary(instrument: str, run_name: str, metrics: dict,
 
     PEG is the exception, because it is not a gate: it is computed after
     ``insert_run`` and carried in ``metrics`` by the caller.
+
+    ``stop`` is the HyStar queue-stop recorded for this same injection. The
+    timsTOF still writes an empty ``.d`` for an aborted injection, which would
+    otherwise read as "IPS 0, no identifications" in red: a bad QC run rather
+    than a missing tip.
     """
+    if stop:
+        return _aborted_line(instrument, run_name, stop)
     parts = []
     n_prec = metrics.get("n_precursors")
     n_psms = metrics.get("n_psms")
@@ -211,7 +235,8 @@ def format_qc_summary(instrument: str, run_name: str, metrics: dict,
 
 
 def send_qc_summary(instrument: str, run_name: str, metrics: dict,
-                    decision: GateDecision | None = None) -> bool:
+                    decision: GateDecision | None = None,
+                    run_date: str | datetime | None = None) -> bool:
     """Post the one-line QC summary. No-ops without a webhook, never raises.
 
     CALL THIS AFTER PEG IS COMPUTED. On the Hive path PEG and window drift run
@@ -223,8 +248,16 @@ def send_qc_summary(instrument: str, run_name: str, metrics: dict,
     webhook = _get_slack_webhook()
     if not webhook:
         return False
+    stop = None
+    # Only the timsTOF is watched; a vial-less stop must not relabel an
+    # Orbitrap run that happens to fall in the same window.
+    if "timstof" in instrument.lower():
+        try:
+            stop = find_stop_for_run(run_name, run_date)
+        except Exception:  # noqa: BLE001 - a QC run must never fail over this
+            logger.debug("HyStar stop lookup failed", exc_info=True)
     try:
-        text = format_qc_summary(instrument, run_name, metrics, decision)
+        text = format_qc_summary(instrument, run_name, metrics, decision, stop=stop)
     except Exception:  # noqa: BLE001 - a QC run must never fail over Slack
         logger.debug("QC summary formatting failed", exc_info=True)
         return False

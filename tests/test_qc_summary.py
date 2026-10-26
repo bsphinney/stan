@@ -187,3 +187,65 @@ def test_a_run_that_was_never_searched_is_not_called_dead():
     """No ID key at all != zero IDs. Monitor-pipeline runs must not be flagged."""
     line = format_qc_summary("i", "r", {"n_ms2_frames": 12000}, None)
     assert "no identifications" not in line
+
+
+# --- aborted injection (HyStar stop) -------------------------------------
+
+STOP = {"type": "stop", "category": "evotip", "title": "No Evotip", "vial": "S1-A5",
+        "at": "2026-10-24T02:04:24", "posted_at": "2026-10-24T02:05:09"}
+_ABORTED = "10212026_HE50_100-spd-dia_S1-A5_1_25352.d"
+
+
+def _wait_for_async_post():
+    import threading
+    for t in threading.enumerate():
+        if t.name == "stan-slack-alert":
+            t.join(5)
+
+
+def test_aborted_injection_is_labelled_not_red():
+    line = format_qc_summary("timsTOF HT", _ABORTED,
+                             {"n_precursors": 0, "ips_score": 0}, None, stop=STOP)
+    assert line == (":black_square_for_stop: *timsTOF HT* *S1-A5 · 10212026_HE50_100-spd-dia* "
+                    "— no data: injection aborted (No Evotip), see the 02:05 alert")
+
+
+def test_stop_time_falls_back_to_at():
+    stop = {k: v for k, v in STOP.items() if k != "posted_at"}
+    line = format_qc_summary("timsTOF HT", _ABORTED, {"n_precursors": 0}, None, stop=stop)
+    assert line.endswith("see the 02:04 alert")
+
+
+def test_a_bad_run_without_a_stop_still_looks_bad():
+    line = format_qc_summary("timsTOF HT", "x_S1-A6_1_1.d",
+                             {"n_precursors": 0, "ips_score": 0}, None)
+    assert "no identifications" in line and "injection aborted" not in line
+
+
+def test_send_looks_the_stop_up(monkeypatch, posted):
+    monkeypatch.delenv("STAN_SLACK_QC_SUMMARY", raising=False)
+    monkeypatch.setattr("stan.alerts.find_stop_for_run", lambda name, when: STOP)
+    send_qc_summary("timsTOF HT", _ABORTED, {"n_precursors": 0, "ips_score": 0}, None,
+                    run_date="2026-10-24T09:04:25+00:00")
+    _wait_for_async_post()
+    assert "injection aborted" in posted[0]["body"]["text"]
+
+
+def test_orbitrap_run_is_never_relabelled(monkeypatch, posted):
+    monkeypatch.delenv("STAN_SLACK_QC_SUMMARY", raising=False)
+    monkeypatch.setattr("stan.alerts.find_stop_for_run", lambda name, when: STOP)
+    send_qc_summary("Lumos", "x_1_1.raw", {"n_precursors": 0, "ips_score": 0}, None,
+                    run_date="2026-10-24T09:04:25+00:00")
+    _wait_for_async_post()
+    assert "injection aborted" not in posted[0]["body"]["text"]
+
+
+def test_lookup_failure_never_breaks_the_summary(monkeypatch, posted):
+    monkeypatch.delenv("STAN_SLACK_QC_SUMMARY", raising=False)
+
+    def boom(name, when):
+        raise RuntimeError("x")
+    monkeypatch.setattr("stan.alerts.find_stop_for_run", boom)
+    assert send_qc_summary("timsTOF HT", _ABORTED, {"n_precursors": 0}, None) is True
+    _wait_for_async_post()
+    assert "no identifications" in posted[0]["body"]["text"]

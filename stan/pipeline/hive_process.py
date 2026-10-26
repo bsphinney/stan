@@ -799,7 +799,8 @@ def process_raw(
         # report every run as PEG-free. Never raises, no-ops without a webhook.
         try:
             from stan.alerts import send_qc_summary
-            send_qc_summary(instrument, raw_path.name, metrics, decision)
+            send_qc_summary(instrument, raw_path.name, metrics, decision,
+                            run_date=acq_date)
         except Exception:  # noqa: BLE001 - Slack must not fail a QC run
             logger.debug("QC summary failed", exc_info=True)
 
