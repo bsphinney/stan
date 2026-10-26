@@ -1107,6 +1107,139 @@ else {
     Write-Host "  skip Hive reader cross-check (python3 with stan not importable): $pyOut"
 }
 
+# ------------------------------------------------- 29. review fix round 1
+Write-Host ""
+Write-Host "29. every file the watcher opens lets HyStar rename it (FileShare Delete)"
+$opens = @()
+foreach ($c in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+    if ($c.GetCommandName() -eq "New-Object" -and $c.Extent.Text -match "FileStream") { $opens += $c.Extent.Text }
+}
+foreach ($m in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true)) {
+    $tx = $m.Expression.Extent.Text
+    $mn = $m.Member.Extent.Text
+    if (($tx -match "FileStream\]$" -and $mn -eq "new") -or ($tx -match "IO\.File\]$" -and $mn -match "^Open")) { $opens += $m.Extent.Text }
+}
+Check "file opens found (logbook, journal, sample log, fingerprint)" ($opens.Count -ge 4) "True"
+$noDelete = 0
+foreach ($o in $opens) {
+    if ($o -notmatch "FileShare\]::Delete") { $noDelete++; Write-Host "    no Delete share: $(($o -split "`n")[0])" }
+}
+Check "every open shares Delete"  $noDelete 0
+
+Write-Host ""
+Write-Host "30. a tick that cannot save its state never posts a stop twice"
+if ($null -ne (Get-Command chflags -ErrorAction SilentlyContinue)) {
+    # chflags uchg: state.json stays readable but cannot be replaced or
+    # deleted, like a file held by AV/backup or owned by an elevated install
+    $d = New-TickDirs "nosave"
+    Write-Logbook $d.Logbook (Rec-Header)
+    Reset-Posts
+    $null = Run-Tick $d ([datetime]"2026-10-24 02:00:00")
+    $seedLen = File-Length $d.Logbook
+    $stFile = Join-Path $d.State "state.json"
+    & chflags uchg $stFile
+    try {
+        # Hive's alerting goes quiet too: that note must not repeat either
+        $hiveLog = Join-Path $d.Hive "cron_stan_alerts_20261024.log"
+        [System.IO.File]::WriteAllText($hiveLog, "tick")
+        [System.IO.File]::SetLastWriteTime($hiveLog, ([datetime]"2026-10-24 01:00:00"))
+        Add-Logbook $d.Logbook (Rec-Stop ([datetime]"2026-10-24 02:04:24") $EvotipMsg)
+        $null = Run-Tick $d ([datetime]"2026-10-24 02:05:00")
+        $null = Run-Tick $d ([datetime]"2026-10-24 02:06:00")
+        $null = Run-Tick $d ([datetime]"2026-10-24 02:07:00")
+        Check "state really was not saved"           (JStr $stFile "offset") $seedLen
+        Check "one stop post across three ticks"     (Count-Posts "*queue STOPPED*") 1
+        Check "one Hive-quiet note across three"     (Count-Posts "*gone quiet*") 1
+        [System.IO.File]::Delete($hiveLog)
+        Reset-Posts
+        Check "one event file each (stop, quiet)"    (Event-Types $d.Share) "stop,hive_quiet"
+        $log = Read-WatchLogText $d
+        Check "watch.log: state not saved"           $log.Contains("state not saved") "True"
+        Check "watch.log: already delivered"         $log.Contains("already delivered") "True"
+        Add-Logbook $d.Logbook (Rec-Stop ([datetime]"2026-10-24 02:20:00") $PressureMsg)
+        $null = Run-Tick $d ([datetime]"2026-10-24 02:21:00")
+        $null = Run-Tick $d ([datetime]"2026-10-24 02:22:00")
+        Check "a later stop still pages, once"       $script:Posts.Count 1
+        Check "and is filed once"                    (Get-EventFiles $d.Share).Count 3
+    }
+    finally { & chflags nouchg $stFile }
+
+    # posted, then the tick could not file it anywhere (queue folder blocked,
+    # share down) and could not save: a later tick files it, posted_by_pc
+    # true with the first post's time, and does not post again
+    $d = New-TickDirs "posted_not_filed"
+    Write-Logbook $d.Logbook (Rec-Header)
+    Reset-Posts
+    $null = Run-Tick $d ([datetime]"2026-10-24 03:00:00")
+    $stFile = Join-Path $d.State "state.json"
+    & chflags uchg $stFile
+    try {
+        [System.IO.File]::WriteAllText((Join-Path $d.State "pending"), "a file where the queue folder should be")
+        $blocker = Join-Path $d.Root "blocked"
+        [System.IO.File]::WriteAllText($blocker, "x")
+        $realShare = $d.Share
+        $d.Share = Join-Path $blocker "TIMS-10878"
+        Add-Logbook $d.Logbook (Rec-Stop ([datetime]"2026-10-24 03:04:24") $EvotipMsg)
+        $null = Run-Tick $d ([datetime]"2026-10-24 03:05:00")
+        Check "posted while nothing could be filed"  $script:Posts.Count 1
+        $d.Share = $realShare
+        $null = Run-Tick $d ([datetime]"2026-10-24 03:06:00")
+        Check "a later tick does not post it again"  $script:Posts.Count 1
+        $files = Get-EventFiles $realShare
+        Check "but files it"                         $files.Count 1
+        if ($files.Count -ge 1) {
+            Check "as posted by the PC, at the first post" "$(JStr $files[0] 'posted_by_pc')|$(JStr $files[0] 'posted_at')" "true|2026-10-24T03:05:00"
+        }
+    }
+    finally { & chflags nouchg $stFile }
+}
+else {
+    Write-Host "  skip (no chflags here to make state.json unwritable)"
+}
+
+Write-Host ""
+Write-Host "31. a direct post does not wait for the share"
+# The queue is non-empty and the share is down. The sender brings the share
+# back when it is called: only if the flush comes AFTER the post does the old
+# queued event reach the share in the same tick.
+$d = New-TickDirs "post_first"
+$script:BlockerPath = Join-Path $d.Root "blocked"
+[System.IO.File]::WriteAllText($script:BlockerPath, "x")
+$d.Share = Join-Path $script:BlockerPath "TIMS-10878"
+$script:BlockedShare = $d.Share
+Write-Logbook $d.Logbook (Rec-Header)
+Reset-Posts
+$null = Run-Tick $d ([datetime]"2026-10-24 04:00:00")
+Add-Logbook $d.Logbook (Rec-Stop ([datetime]"2026-10-24 04:04:24") $EvotipMsg)
+$null = Run-Tick $d ([datetime]"2026-10-24 04:05:00")
+$pendingDir = Join-Path $d.State "pending"
+Check "share down: queued"                ([System.IO.Directory]::GetFiles($pendingDir, "*.json").Count) 1
+$Restorer = {
+    param($p)
+    [void]$script:Posts.Add($p)
+    if ([System.IO.File]::Exists($script:BlockerPath)) {
+        [System.IO.File]::Delete($script:BlockerPath)
+        [void][System.IO.Directory]::CreateDirectory($script:BlockedShare)
+    }
+    return @{ Ok = $true; Status = 200 }
+}
+Add-Logbook $d.Logbook (Rec-Stop ([datetime]"2026-10-24 04:20:00") $PressureMsg)
+$null = Run-Tick $d ([datetime]"2026-10-24 04:21:00") $Restorer
+Check "the post went out"                 $script:Posts.Count 2
+Check "flushed after it: queue empty"     ([System.IO.Directory]::GetFiles($pendingDir, "*.json").Count) 0
+Check "both on the share, in one tick"    (Get-EventFiles $d.Share).Count 2
+Check "heartbeat written after the posts" ([System.IO.File]::Exists((Join-Path $d.Share "heartbeat.json"))) "True"
+# watch.log keeps the tick's steps in order: the post comes before any line
+# about the share (a flush first would log "share unavailable" first)
+$tickLines = @()
+foreach ($ln in ((Read-WatchLogText $d) -split "`n")) { if ($ln.StartsWith("2026-10-24 04:21:00")) { $tickLines += $ln } }
+$iPost = -1; $iShare = -1
+for ($i = 0; $i -lt $tickLines.Count; $i++) {
+    if ($iPost -lt 0 -and $tickLines[$i].Contains("posted (200)")) { $iPost = $i }
+    if ($iShare -lt 0 -and $tickLines[$i].Contains("share")) { $iShare = $i }
+}
+Check "post logged before any share step" (($iPost -ge 0) -and ($iShare -gt $iPost)) "True"
+
 Remove-Item -LiteralPath $TickRoot -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ""

@@ -20,7 +20,9 @@
         records are followed by stack lines with no 0x13 prefix.
       * Record kinds by prefix: E: error, S: session start (HyStar restarted),
         H: header/footer, D: debug.
-    Read-only: the file is opened with FileShare.ReadWrite and never written.
+    Read-only: every Bruker and Evosep file is opened for reading with
+    FileShare ReadWrite + Delete, so HyStar can keep writing it AND rename it
+    (logbook rotation) while it is open here; nothing of theirs is written.
 #>
 param(
     [switch]$Scheduled
@@ -39,10 +41,12 @@ function Read-NewLogText {
         [Parameter(Mandatory = $true)][string]$Path,
         [long]$Offset = 0
     )
+    # Delete in the share mode: without it HyStar could not rename (rotate)
+    # the logbook while this handle is open.
     $fs = New-Object System.IO.FileStream($Path,
         [System.IO.FileMode]::Open,
         [System.IO.FileAccess]::Read,
-        [System.IO.FileShare]::ReadWrite)
+        ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
     try {
         $length = $fs.Length
         $start = $Offset
@@ -395,7 +399,8 @@ function Get-EvosepVial {
         $journal = Join-Path $best 'journal.txt'
         if (-not [System.IO.File]::Exists($journal)) { return $null }
         $fs = New-Object System.IO.FileStream($journal,
-            [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
         try {
             $sr = New-Object System.IO.StreamReader($fs)
             $text = $sr.ReadToEnd()
@@ -424,7 +429,8 @@ function Get-HyStarSample {
     try {
         if (-not [System.IO.File]::Exists($LogbookPath)) { return $null }
         $fs = New-Object System.IO.FileStream($LogbookPath,
-            [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
         try {
             $len = $fs.Length
             $take = [long]262144
@@ -690,9 +696,8 @@ function Get-LogFingerprint {
         [int]$Bytes = 200
     )
     try {
-        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
         $fs = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open,
-            [System.IO.FileAccess]::Read, $share)
+            [System.IO.FileAccess]::Read, ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
         try {
             $n = [int][Math]::Min([long]$Bytes, $fs.Length)
             $buf = New-Object byte[] $n
@@ -1007,6 +1012,89 @@ function Invoke-Sender {
     }
 }
 
+function Read-DeliveryLedger {
+    <#
+    StateDir\delivered.txt: one line per step, "<key> TAB posted TAB <at>"
+    right after a successful post, "<key> TAB done" once the event file is
+    queued. Returns a hashtable key -> @{ Posted; PostedAt; Done }.
+
+    Why: state.json is saved once, at the end of a tick. A tick that ends
+    after a post but before that save (power loss, the task's time limit, or
+    a state.json that cannot be replaced, which repeats every tick) re-reads
+    the same records next tick and decides 'new' again. The event ids come
+    out the same (same old state), so this ledger, written the moment each
+    post succeeds, is what keeps a stop from paging Brett twice. Local only:
+    it must not wait for the share. Trimmed to its last 1,000 lines (about
+    500 events) once past 2,000.
+    #>
+    param([Parameter(Mandatory = $true)][string]$StateDir)
+    $map = @{}
+    try {
+        $path = Join-Path $StateDir 'delivered.txt'
+        if (-not [System.IO.File]::Exists($path)) { return $map }
+        $lines = [System.IO.File]::ReadAllLines($path)
+        foreach ($line in $lines) {
+            $parts = $line.Split([char]9)
+            if ($parts.Length -lt 2 -or [string]::IsNullOrEmpty($parts[0])) { continue }
+            $e = $map[$parts[0]]
+            if ($null -eq $e) {
+                $e = @{ Posted = $false; PostedAt = $null; Done = $false }
+                $map[$parts[0]] = $e
+            }
+            if ($parts[1] -eq 'posted') {
+                $e.Posted = $true
+                if ($parts.Length -ge 3 -and -not [string]::IsNullOrEmpty($parts[2])) { $e.PostedAt = $parts[2] }
+            }
+            elseif ($parts[1] -eq 'done') { $e.Done = $true }
+        }
+        if ($lines.Length -gt 2000) {
+            $keep = New-Object System.Text.StringBuilder
+            for ($i = $lines.Length - 1000; $i -lt $lines.Length; $i++) { [void]$keep.AppendLine($lines[$i]) }
+            $tmp = Join-Path $StateDir 'delivered.tmp'
+            Write-Utf8File -Path $tmp -Text $keep.ToString()
+            try { [System.IO.File]::Replace($tmp, $path, [NullString]::Value) }
+            catch { [System.IO.File]::Delete($tmp) }
+        }
+    }
+    catch { }
+    return $map
+}
+
+function Add-DeliveryLedger {
+    <#
+    Records one step for Key: in the in-memory Ledger first (so this process
+    never posts the same event twice even when the file cannot be written),
+    then appended to StateDir\delivered.txt. A write failure is logged.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [Parameter(Mandatory = $true)][hashtable]$Ledger,
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][string]$Step,
+        $PostedAt = $null,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log
+    )
+    $e = $Ledger[$Key]
+    if ($null -eq $e) {
+        $e = @{ Posted = $false; PostedAt = $null; Done = $false }
+        $Ledger[$Key] = $e
+    }
+    $line = "$Key`t$Step"
+    if ($Step -eq 'posted') {
+        $e.Posted = $true
+        $e.PostedAt = $PostedAt
+        $line = "$Key`tposted`t$PostedAt"
+    }
+    else { $e.Done = $true }
+    try {
+        [System.IO.File]::AppendAllText((Join-Path $StateDir 'delivered.txt'), "$line$([Environment]::NewLine)",
+            (New-Object System.Text.UTF8Encoding $false))
+    }
+    catch {
+        [void]$Log.Add("delivered-ids ledger not written for $Key ($($_.Exception.GetType().Name)): a tick that also fails to save its state could post it again")
+    }
+}
+
 function Get-PendingFiles {
     # The queued event files, oldest first (their names start with a counter).
     param([Parameter(Mandatory = $true)][string]$PendingDir)
@@ -1018,10 +1106,13 @@ function Get-PendingFiles {
 
 function Save-EventFile {
     <#
-    Puts one event file on the share; when the share cannot take it, or older
-    events are still queued (order matters), queues it in StateDir\pending\
-    instead. Returns 'written', 'exists', 'queued' or 'lost' (not even the
-    local queue could take it).
+    Puts one event file in the local queue, StateDir\pending\, numbered after
+    whatever is already there. Invoke-PendingFlush moves the queue to the
+    share, oldest first, once the tick's posts are done: a post never waits
+    on the share (an unreachable share costs an SMB timeout), and the share
+    sees events in order. Only when the local queue cannot take the file is
+    the share written directly. Returns 'queued', 'written', 'exists' or
+    'lost'.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$Id,
@@ -1031,17 +1122,8 @@ function Save-EventFile {
         [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log
     )
     $pendingDir = Join-Path $StateDir 'pending'
-    $queued = @(Get-PendingFiles -PendingDir $pendingDir)
-    if ($queued.Count -eq 0 -and -not [string]::IsNullOrEmpty($ShareDir)) {
-        try {
-            [void][System.IO.Directory]::CreateDirectory($ShareDir)
-            return (Publish-JsonFile -Dir $ShareDir -BaseName $Id -Text $Text -NoOverwrite)
-        }
-        catch {
-            [void]$Log.Add("share not writable for $Id ($($_.Exception.GetType().Name): $($_.Exception.Message)); queued")
-        }
-    }
     try {
+        $queued = @(Get-PendingFiles -PendingDir $pendingDir)
         [void][System.IO.Directory]::CreateDirectory($pendingDir)
         $next = 1
         foreach ($q in $queued) {
@@ -1053,9 +1135,18 @@ function Save-EventFile {
         return 'queued'
     }
     catch {
-        [void]$Log.Add("could not queue $Id either ($($_.Exception.GetType().Name): $($_.Exception.Message))")
-        return 'lost'
+        [void]$Log.Add("could not queue $Id locally ($($_.Exception.GetType().Name): $($_.Exception.Message)); trying the share")
     }
+    if (-not [string]::IsNullOrEmpty($ShareDir)) {
+        try {
+            [void][System.IO.Directory]::CreateDirectory($ShareDir)
+            return (Publish-JsonFile -Dir $ShareDir -BaseName $Id -Text $Text -NoOverwrite)
+        }
+        catch {
+            [void]$Log.Add("share not writable for $Id either ($($_.Exception.GetType().Name): $($_.Exception.Message))")
+        }
+    }
+    return 'lost'
 }
 
 function Invoke-PendingFlush {
@@ -1064,7 +1155,7 @@ function Invoke-PendingFlush {
     first share failure so the share sees them in order. An event already
     there is not rewritten. A queued file that cannot be read here is set
     aside as .bad rather than holding every later event behind it forever.
-    Returns how many are still queued.
+    Returns @{ Flushed; Left; ShareDown }.
     #>
     param(
         [string]$ShareDir = "",
@@ -1073,11 +1164,14 @@ function Invoke-PendingFlush {
     )
     $files = @(Get-PendingFiles -PendingDir (Join-Path $StateDir 'pending'))
     $left = $files.Count
-    if ($left -eq 0 -or [string]::IsNullOrEmpty($ShareDir)) { return $left }
+    $flushed = 0
+    if ($left -eq 0 -or [string]::IsNullOrEmpty($ShareDir)) {
+        return @{ Flushed = 0; Left = $left; ShareDown = $false }
+    }
     try { [void][System.IO.Directory]::CreateDirectory($ShareDir) }
     catch {
-        [void]$Log.Add("share still unavailable; $left event file(s) queued")
-        return $left
+        [void]$Log.Add("share unavailable ($($_.Exception.GetType().Name)); $left event file(s) queued")
+        return @{ Flushed = 0; Left = $left; ShareDown = $true }
     }
     foreach ($f in $files) {
         $name = [System.IO.Path]::GetFileNameWithoutExtension($f)
@@ -1092,25 +1186,31 @@ function Invoke-PendingFlush {
         }
         try { $r = Publish-JsonFile -Dir $ShareDir -BaseName $id -Text $text -NoOverwrite }
         catch {
-            [void]$Log.Add("share still unavailable ($($_.Exception.GetType().Name)); $left event file(s) queued")
+            [void]$Log.Add("share did not take $id ($($_.Exception.GetType().Name)); $left event file(s) queued")
             break
         }
         $left--
+        $flushed++
         [void]$Log.Add("queued $id -> share ($r)")
         # On the share now; a copy left here would only be found 'exists'
         # (or, once Hive has moved it, rewritten and recorded as 'already').
         try { [System.IO.File]::Delete($f) }
         catch { [void]$Log.Add("could not remove queued $id ($($_.Exception.GetType().Name))") }
     }
-    return $left
+    return @{ Flushed = $flushed; Left = $left; ShareDown = $false }
 }
 
 function Send-WatchEvent {
     <#
     Delivers one event: the direct Slack post first, so posted_by_pc is final
-    before the file exists, then the event file. A failed post is not retried
-    from here: posted_by_pc false is Hive's cue to relay it. Skip: why no post
-    is tried (an earlier post this tick failed).
+    before the file exists, then the event file into the local queue. A
+    failed post is not retried from here: posted_by_pc false is Hive's cue to
+    relay it. Skip: why no post is tried (an earlier post this tick failed).
+
+    The delivery ledger is checked first (key: LedgerKey, else the event id).
+    Done: nothing is posted or filed again. Posted but not yet filed: the
+    file goes out as posted_by_pc true with the first post's time, and no
+    second post. A successful post is recorded the moment Slack accepts it.
     Returns @{ Posted; Status; Filed; Tried }.
     #>
     param(
@@ -1120,27 +1220,51 @@ function Send-WatchEvent {
         [string]$ShareDir = "",
         [Parameter(Mandatory = $true)][string]$StateDir,
         [Parameter(Mandatory = $true)][datetime]$Now,
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log,
+        [Parameter(Mandatory = $true)][hashtable]$Ledger,
+        [string]$LedgerKey = ""
     )
-    $posted = $false
-    $status = 'no webhook configured'
-    if (-not [string]::IsNullOrEmpty($Skip)) { $status = $Skip }
-    elseif ($null -ne $Sender) {
-        $res = Invoke-Sender -Sender $Sender -Payload $Event['payload']
-        $posted = $res.Ok
-        $status = $res.Status
-    }
-    $Event['posted_by_pc'] = $posted
-    if ($posted) { $Event['posted_at'] = ConvertTo-IsoLocal $Now }
-    $text = ConvertTo-Json -InputObject $Event -Depth 10
-    $filed = Save-EventFile -Id $Event['id'] -Text $text -ShareDir $ShareDir -StateDir $StateDir -Log $Log
-    $how = "posted ($status)"
-    if (-not $posted) { $how = "NOT posted ($status); Hive will relay it" }
+    $key = $LedgerKey
+    if ([string]::IsNullOrEmpty($key)) { $key = [string]$Event['id'] }
     $what = "$($Event['type'])"
     if ($null -ne $Event['title']) { $what = "$what '$($Event['title'])'" }
+    $seen = $Ledger[$key]
+    if ($null -ne $seen -and $seen.Done) {
+        [void]$Log.Add("$what at $($Event['at']) ($key) already delivered: not posted or filed again")
+        return @{ Posted = $false; Status = 'already delivered'; Filed = 'already'; Tried = $false }
+    }
+    $posted = $false
+    $tried = $false
+    $status = 'no webhook configured'
+    if ($null -ne $seen -and $seen.Posted) {
+        $posted = $true
+        $status = 'posted on an earlier tick'
+        $Event['posted_by_pc'] = $true
+        $Event['posted_at'] = $seen.PostedAt
+    }
+    else {
+        if (-not [string]::IsNullOrEmpty($Skip)) { $status = $Skip }
+        elseif ($null -ne $Sender) {
+            $tried = $true
+            $res = Invoke-Sender -Sender $Sender -Payload $Event['payload']
+            $posted = $res.Ok
+            $status = $res.Status
+        }
+        $Event['posted_by_pc'] = $posted
+        if ($posted) {
+            $Event['posted_at'] = ConvertTo-IsoLocal $Now
+            Add-DeliveryLedger -StateDir $StateDir -Ledger $Ledger -Key $key -Step 'posted' -PostedAt $Event['posted_at'] -Log $Log
+        }
+    }
+    $text = ConvertTo-Json -InputObject $Event -Depth 10
+    $filed = Save-EventFile -Id $Event['id'] -Text $text -ShareDir $ShareDir -StateDir $StateDir -Log $Log
+    if ($filed -ne 'lost') {
+        Add-DeliveryLedger -StateDir $StateDir -Ledger $Ledger -Key $key -Step 'done' -Log $Log
+    }
+    $how = "posted ($status)"
+    if (-not $posted) { $how = "NOT posted ($status); Hive will relay it" }
     [void]$Log.Add("$what at $($Event['at']) id $($Event['id']): $how; file $filed")
-    $tried = ($null -ne $Sender -and [string]::IsNullOrEmpty($Skip))
-    return @{ Posted = $posted; Status = $status; Filed = $filed; Tried = $tried }
+    return @{ Posted = ($posted -and $tried); Status = $status; Filed = $filed; Tried = $tried }
 }
 
 function Invoke-RecordAlert {
@@ -1246,7 +1370,7 @@ function Get-HiveWatchNote {
     cron_stan_alerts_*.log older than 45 min gives one 'hive_quiet'; once a
     fresh one appears, one 'hive_back'. Only with a sender: with no route to
     Slack the PC has no one to tell. A log folder it cannot see (share down)
-    decides nothing. Returns @{ Kind; LastAt } or $null; updates State.
+    decides nothing. Returns @{ Kind; LastAt; Key } or $null; updates State.
     #>
     param(
         [Parameter(Mandatory = $true)][hashtable]$State,
@@ -1262,15 +1386,18 @@ function Get-HiveWatchNote {
     $newest = $newestUtc.ToLocalTime()
     $quiet = (($Now.ToUniversalTime() - $newestUtc).TotalMinutes -gt 45)
     $wasQuiet = ($State['hiveQuiet'] -eq $true)
+    # Key: the same for every tick that decides about one quiet episode, so
+    # the delivery ledger stops a repeat when state.json cannot be saved.
     if ($quiet -and -not $wasQuiet) {
         $State['hiveQuiet'] = $true
         $State['hiveQuietSince'] = $newest
-        return @{ Kind = 'hive_quiet'; LastAt = $newest }
+        return @{ Kind = 'hive_quiet'; LastAt = $newest; Key = "hive_quiet:$(ConvertTo-IsoLocal $newest)" }
     }
     if ($wasQuiet -and -not $quiet) {
+        $since = ConvertTo-IsoLocal $State['hiveQuietSince']
         $State['hiveQuiet'] = $false
         $State['hiveQuietSince'] = $null
-        return @{ Kind = 'hive_back'; LastAt = $newest }
+        return @{ Kind = 'hive_back'; LastAt = $newest; Key = "hive_back:$since" }
     }
     return $null
 }
@@ -1399,15 +1526,22 @@ function Write-WatchLog {
 function Invoke-WatchTick {
     <#
     One full tick. Never throws. Returns a summary hashtable
-    @{ Seeded; Records; Events; Posted; Filed; Queued; Errors }.
+    @{ Seeded; Records; Events; Posted; Filed; Queued; Errors }
+    (Filed: event files that reached the share this tick; Queued: left in
+    the local queue).
 
-      1. state.json from StateDir (missing or unreadable: start at the end)
-      2. queued event files go to the share first, oldest first
-      3. new logbook records, through rotation (Get-LogbookRecords)
-      4. each record decided (Invoke-RecordAlert); an event is posted through
-         Sender (@{ Ok; Status }) and filed on the share or queued
-      5. Hive's alerting watched (only with a Sender)
-      6. state saved, heartbeat.json written, watch.log appended
+      1. state.json and the delivery ledger from StateDir (no state, or
+         unreadable: start at the end of the logbook)
+      2. new logbook records, through rotation (Get-LogbookRecords)
+      3. each record decided (Invoke-RecordAlert); an event is posted through
+         Sender (@{ Ok; Status }), recorded in the ledger, and its file put
+         in the local queue. Nothing so far touches the share: a direct post
+         never waits on an unreachable share (spec 4.1).
+      4. Hive's alerting watched (only with a Sender; its logs are on the
+         share, so after the stop posts)
+      5. state saved, then the queue flushed to the share, oldest first,
+         then heartbeat.json (skipped when the flush just found the share
+         unreachable), then watch.log appended
 
     Sender: a scriptblock taking the payload hashtable and returning
     @{ Ok = <bool>; Status = <int|string> }, or $null for no direct post
@@ -1449,8 +1583,7 @@ function Invoke-WatchTick {
             $state = $null
         }
         if ($null -eq $state) { $state = ConvertTo-WatchState $null }
-
-        $null = Invoke-PendingFlush -ShareDir $ShareDir -StateDir $StateDir -Log $log
+        $ledger = Read-DeliveryLedger -StateDir $StateDir
 
         $records = @()
         try {
@@ -1480,15 +1613,15 @@ function Invoke-WatchTick {
                 $ev = Invoke-RecordAlert -State $state -Record $rec -ProcedureRoot $ProcedureRoot `
                     -SampleLogPath $SampleLogPath -HostName $HostName -MemberId $MemberId -Version $Version -Log $log
                 if ($null -eq $ev) { continue }
-                $sent = Send-WatchEvent -Event $ev -Sender $Sender -Skip $skipPost -ShareDir $ShareDir -StateDir $StateDir -Now $Now -Log $log
+                $sent = Send-WatchEvent -Event $ev -Sender $Sender -Skip $skipPost -ShareDir $ShareDir `
+                    -StateDir $StateDir -Now $Now -Log $log -Ledger $ledger
                 $summary['Events'] = $summary['Events'] + 1
                 if ($sent.Posted) { $summary['Posted'] = $summary['Posted'] + 1 }
                 elseif ($sent.Tried) {
                     $lastError = "Slack post failed: $($sent.Status)"
                     $skipPost = "not tried: a post failed earlier this tick"
                 }
-                if ($sent.Filed -eq 'queued') { $summary['Queued'] = $summary['Queued'] + 1 }
-                elseif ($sent.Filed -ne 'lost') { $summary['Filed'] = $summary['Filed'] + 1 }
+                if ($sent.Filed -eq 'written' -or $sent.Filed -eq 'exists') { $summary['Filed'] = $summary['Filed'] + 1 }
             }
             catch {
                 $summary['Errors'] = $summary['Errors'] + 1
@@ -1510,7 +1643,8 @@ function Invoke-WatchTick {
                 }
                 $ev = New-WatchEvent -State $state -Type $note.Kind -HostName $HostName -At $Now `
                     -Source 'watcher' -Title $title -Message $payload.text -Payload $payload -Version $Version
-                $sent = Send-WatchEvent -Event $ev -Sender $Sender -Skip $skipPost -ShareDir $ShareDir -StateDir $StateDir -Now $Now -Log $log
+                $sent = Send-WatchEvent -Event $ev -Sender $Sender -Skip $skipPost -ShareDir $ShareDir `
+                    -StateDir $StateDir -Now $Now -Log $log -Ledger $ledger -LedgerKey $note.Key
                 $summary['Events'] = $summary['Events'] + 1
                 if ($sent.Posted) { $summary['Posted'] = $summary['Posted'] + 1 }
             }
@@ -1535,7 +1669,22 @@ function Invoke-WatchTick {
                 [void]$log.Add($lastError)
             }
         }
-        if (-not [string]::IsNullOrEmpty($ShareDir)) {
+        # Only now the share: everything above was local.
+        $shareDown = $false
+        try {
+            $fl = Invoke-PendingFlush -ShareDir $ShareDir -StateDir $StateDir -Log $log
+            $summary['Filed'] = $summary['Filed'] + $fl.Flushed
+            $summary['Queued'] = $fl.Left
+            $shareDown = $fl.ShareDown
+        }
+        catch {
+            $summary['Errors'] = $summary['Errors'] + 1
+            [void]$log.Add("queue not flushed: $($_.Exception.GetType().Name): $($_.Exception.Message)")
+        }
+        if ($shareDown) {
+            [void]$log.Add("heartbeat not written: the share is unreachable")
+        }
+        elseif (-not [string]::IsNullOrEmpty($ShareDir)) {
             $offset = $null
             if ($null -ne $state) { $offset = $state['offset'] }
             $errText = $null
