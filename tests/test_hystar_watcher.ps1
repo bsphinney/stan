@@ -216,7 +216,11 @@ $want = @(
     @("UCEERR_RENDERTHREADFAILURE", "hystar_crash", "HyStar crashed"),
     @("Evosep One: mcu reset", "evosep_hw", "Evosep hardware fault"),
     @("Evosep One: Unable to access autosampler", "evosep_hw", "Evosep hardware fault"),
-    @("Evosep One: Object reference not set to an instance of an object.", "other", "Stopped")
+    @("Evosep One: Object reference not set to an instance of an object.", "other", "Stopped"),
+    # Final review #7: 8 real "High pressure pump(s) did not meet criteria"
+    # stops were titled "Pressure limit"; it is a pump self-test, not a clog.
+    @("Evosep One: High pressure pump(s) did not meet criteria (max displacement 9 uL):", "evosep_hw", "Evosep hardware fault"),
+    @("Evosep One: Low pressure pump(s) did not meet criteria (max displacement 9 uL):", "evosep_hw", "Evosep hardware fault")
 )
 foreach ($w in $want) {
     $c = Get-StopCategory $w[0]
@@ -311,11 +315,11 @@ Check "restart with no shutdown ever"          (Test-UnexpectedRestart -State @{
 Write-Host ""
 Write-Host "13. Evosep vial lookup"
 $procRoot = Join-Path $repoRoot "tests/fixtures/evosep_procedures"
-Check "vial at 02:04:24"        (Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:04:24")) "S1-A5"
-Check "newest folder > 90 min"  ((Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 04:00:00")) -eq $null) "True"
-Check "older folder, its vial"  (Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-23 20:10:00")) "S1-B3"
-Check "start after At ignored"  ((Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:00:00")) -eq $null) "True"
-Check "missing root -> null"    ((Get-EvosepVial -ProcedureRoot (Join-Path $repoRoot "nope") -At ([datetime]"2026-10-24 02:04:24")) -eq $null) "True"
+Check "vial at 02:04:24"        (Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:04:24") -Category "evotip") "S1-A5"
+Check "newest folder > 90 min"  ((Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 04:00:00") -Category "overpressure") -eq $null) "True"
+Check "older folder, its vial"  (Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-23 20:10:00") -Category "overpressure") "S1-B3"
+Check "start after At ignored"  ((Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:00:00") -Category "overpressure") -eq $null) "True"
+Check "missing root -> null"    ((Get-EvosepVial -ProcedureRoot (Join-Path $repoRoot "nope") -At ([datetime]"2026-10-24 02:04:24") -Category "evotip") -eq $null) "True"
 
 # --------------------------------------------------------- 14. sample (tail)
 Write-Host ""
@@ -360,8 +364,17 @@ Check "identity vial only" $pl4.text.EndsWith("Pressure limit $dot S1-A5 $dot 02
 
 $rem = Format-ReminderPayload -Event @{ Title = "No Evotip"; Count = 126; FirstAt = [datetime]"2026-10-24 02:04:24" } -MemberId "U1"
 Check "reminder" $rem.text "<@U1> :red_circle: TIMS-10878 still stopping $dash No Evotip: 126 times since 02:04"
-$rst = Format-RestartPayload -Event @{ At = [datetime]"2026-10-24 09:05:00" } -MemberId "U1"
-Check "restart" $rst.text "<@U1> :red_circle: TIMS-10878 HyStar restarted $dash no shutdown logged $dot 09:05"
+# R18: an S: line only appears when someone is already restarting HyStar, so
+# it is told, not paged: no @mention.
+$rst = Format-RestartPayload -Event @{ At = [datetime]"2026-10-24 09:05:00" }
+Check "restart (R18: no @mention)" $rst.text ":red_circle: TIMS-10878 HyStar restarted $dash no shutdown logged $dot 09:05"
+$rstFn = $null
+foreach ($fa in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+    if ($fa.Name -eq "Format-RestartPayload") { $rstFn = $fa }
+}
+$rstMention = $false
+if ($null -ne $rstFn) { $rstMention = ($rstFn.Extent.Text -match 'MemberId|Get-MentionPrefix') }
+Check "R18: Format-RestartPayload cannot mention anyone" $rstMention "False"
 $hq = Format-HiveQuietPayload -At ([datetime]"2026-10-24 09:05:00")
 Check "hive quiet" $hq.text ":large_orange_diamond: STAN's Hive alerting has gone quiet $dash last check 09:05"
 Check "hive back" (Format-HiveQuietPayload -Back).text ":white_check_mark: STAN's Hive alerting is back"
@@ -968,7 +981,9 @@ Reset-Posts
 $null = Run-Tick $d ([datetime]"2026-10-24 05:00:00")
 Add-Logbook $d.Logbook (Rec-Session ([datetime]"2026-10-24 06:00:00"))
 $null = Run-Tick $d ([datetime]"2026-10-24 06:01:00")
-Check "restart with no shutdown: one page" (Count-Posts "*HyStar restarted*") 1
+Check "restart with no shutdown: one post" (Count-Posts "*HyStar restarted*") 1
+Check "R18: and it does not @mention"      (Count-Posts "*<@*HyStar restarted*") 0
+Check "R18: nor does its event's payload"  ((Read-JsonFile (Get-EventFiles $d.Share)[0]).payload.text -match '<@') "False"
 Add-Logbook $d.Logbook ((Rec-Stop ([datetime]"2026-10-24 07:00:00") $FanMsg) + (Rec-Stop ([datetime]"2026-10-24 07:03:00") $FanMsg) + (Rec-Session ([datetime]"2026-10-24 07:07:00")))
 $null = Run-Tick $d ([datetime]"2026-10-24 07:08:00")
 Check "stop + folded stop + restart 4 min later: one stop page only" "$(Count-Posts '*queue STOPPED*')|$(Count-Posts '*HyStar restarted*')" "1|1"
@@ -2087,6 +2102,288 @@ $iLock = $schedText.IndexOf("Enter-TickLock")
 $iTick = $schedText.IndexOf("Invoke-WatchTick")
 Check "the scheduled branch takes the lock before the tick" (($iLock -ge 0) -and ($iLock -lt $iTick)) "True"
 Check "and leaves without a tick when it is held" ($schedText -match '(?s)if \(-not \(Enter-TickLock\)\) \{.*?exit 0') "True"
+
+# =============================================================================
+# Final whole-branch review: the fixes (final-findings.md items 1-8).
+
+# A procedure folder <root>\<serial>\<name> holding a journal.txt for Vial.
+function New-Procedure([string]$root, [string]$name, [string]$vial) {
+    $dir = Join-Path (Join-Path $root "S00230") $name
+    [void][System.IO.Directory]::CreateDirectory($dir)
+    $j = "53621`r`nVersion:1.0`r`nProcedure.Name:100 samples per day`r`nProcedure.Logname:$name`r`nProcedure.Vialposition:Slot1:5 ($vial)`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $dir "journal.txt"), $j)
+}
+# Hive's tick against <events root>, with a JSON alert memory that survives
+# between runs and a fake Slack: what it relayed, recorded, and posted.
+$HiveTickPy = @'
+import json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+import stan.reports.hystar_events as he
+from stan.notify import AlertStore
+posts = []
+def fake_post(payload, webhook=None):
+    posts.append(payload)
+    return True
+he.post_slack = fake_post
+store = AlertStore(use_pg=False, path=Path(sys.argv[2]))
+res = he.run_hystar_tick(Path(sys.argv[1]), store=store, now=datetime.now(timezone.utc))
+print(json.dumps({
+    "relayed": len(res["relayed"]), "recorded": len(res["recorded"]),
+    "already": len(res["already"]), "errors": len(res["errors"]),
+    "posts": len(posts),
+    "mentions": sum(1 for p in posts if "<@" in str(p.get("text"))),
+    "texts": [str(p.get("text")) for p in posts],
+}))
+'@
+
+# ------------------------------------------ 44. R20: the vial, by category
+Write-Host ""
+Write-Host "44. R20: a vial only where it can be right (evotip 10 min; MS/pressure 90 min; else none)"
+# The fixture's 100-samples-per-day_2026-10-24_02-03-36 holds S1-A5.
+Check "evotip 48 s after the start: its vial"    (Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:04:24") -Category "evotip") "S1-A5"
+Check "evotip exactly 10 min after: its vial"     (Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:13:36") -Category "evotip") "S1-A5"
+Check "evotip 11 min after: none (the previous, finished sample)" ((Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:14:40") -Category "evotip") -eq $null) "True"
+foreach ($c in @("overpressure", "connection_lost", "ms_error")) {
+    Check "$($c) 56 min into the run: its vial"     (Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 03:00:00") -Category $c) "S1-A5"
+    Check "$($c) 91 min after the start: none"      ((Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 03:34:40") -Category $c) -eq $null) "True"
+}
+foreach ($c in @("evosep_hw", "hystar_crash", "other", "")) {
+    Check "'$($c)': never a vial, even 48 s after a start" ((Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:04:24") -Category $c) -eq $null) "True"
+}
+# Through the tick: each stop asks for its own category's window.
+$d = New-TickDirs "r20"
+Write-Logbook $d.Logbook (Rec-Header)
+Reset-Posts
+$null = Run-Tick $d ([datetime]"2026-10-24 02:00:00")
+Add-Logbook $d.Logbook ((Rec-Stop ([datetime]"2026-10-24 02:04:24") $FanMsg) + (Rec-Stop ([datetime]"2026-10-24 02:16:00") $EvotipMsg) + (Rec-Stop ([datetime]"2026-10-24 02:30:00") $PressureMsg))
+$null = Run-Tick $d ([datetime]"2026-10-24 02:31:00")
+$byTitle = @{}
+foreach ($f in (Get-EventFiles $d.Share)) { $byTitle[(JStr $f "title")] = (JStr $f "vial") }
+Check "tick: a fan fault 48 s after a start names no vial" $byTitle["Evosep hardware fault"] "<null>"
+Check "tick: an Evotip 12 min after the start names none"  $byTitle["No Evotip"] "<null>"
+Check "tick: a pressure stop 26 min into the run names it" $byTitle["Pressure limit"] "S1-A5"
+Check "tick: the vial-less Evotip check line (R11)" (Count-Posts "*queue STOPPED*No Evotip*") 1
+$evoPost = $null
+foreach ($pp in $script:Posts) { if ($pp.text -like "*No Evotip*") { $evoPost = $pp } }
+if ($null -ne $evoPost) {
+    Check "tick: Evotip post says 'the Evotip position'" ($evoPost.blocks[1].text.text.Contains("the Evotip position")) "True"
+}
+
+# ------------------------------------------- 45. R20: DST, the repeated hour
+Write-Host ""
+Write-Host "45. R20: no vial or sample at an ambiguous local time (Sun 2026-11-01 01:00-02:00)"
+$pacific = $null
+foreach ($tzId in @("America/Los_Angeles", "Pacific Standard Time")) {
+    if ($null -eq $pacific) {
+        try { $pacific = [System.TimeZoneInfo]::FindSystemTimeZoneById($tzId) } catch { $pacific = $null }
+    }
+}
+Check "Get-EvosepVial: -TimeZone defaults to the PC's zone"  (Get-FunctionParamDefault (Get-FunctionAst "Get-EvosepVial") "TimeZone") "[System.TimeZoneInfo]::Local"
+Check "Get-HyStarSample: -TimeZone defaults to the PC's zone" (Get-FunctionParamDefault (Get-FunctionAst "Get-HyStarSample") "TimeZone") "[System.TimeZoneInfo]::Local"
+if ($null -eq $pacific) {
+    Write-Host "  skip (no Pacific time zone on this machine)"
+}
+else {
+    # By name, 01:07 (the first, PDT, pass) outranks 01:05 (the second, PST)
+    # for a 01:10 PST stop; either could be the right one, so neither is said.
+    $dstProc = Join-Path $TickRoot "dst_procedures"
+    New-Procedure $dstProc "100-samples-per-day_2026-11-01_01-05-00" "S1-C5"
+    New-Procedure $dstProc "100-samples-per-day_2026-11-01_01-07-00" "S1-C7"
+    $amb = [datetime]"2026-11-01 01:10:00"
+    Check "01:10 on 2026-11-01 is ambiguous in Pacific time"   $pacific.IsAmbiguousTime($amb) "True"
+    Check "vial: none at an ambiguous time"      ((Get-EvosepVial -ProcedureRoot $dstProc -At $amb -Category "evotip" -TimeZone $pacific) -eq $null) "True"
+    Check "vial: found where the hour is not repeated" (Get-EvosepVial -ProcedureRoot $dstProc -At $amb -Category "evotip" -TimeZone ([System.TimeZoneInfo]::Utc)) "S1-C7"
+    Check "vial: after the repeated hour, as usual" (Get-EvosepVial -ProcedureRoot $dstProc -At ([datetime]"2026-11-01 02:10:00") -Category "overpressure" -TimeZone $pacific) "S1-C7"
+    $dstLog = Join-Path $TickRoot "dst_hystar.log"
+    [System.IO.File]::WriteAllText($dstLog, "2026/11/01 01:06:00,100 PHASE.INJECTED D:\Data\dst_sample_S1-C7_1_4821.d`r`n", [System.Text.Encoding]::Unicode)
+    Check "sample: none at an ambiguous time"    ((Get-HyStarSample -LogbookPath $dstLog -At $amb -TimeZone $pacific) -eq $null) "True"
+    Check "sample: found where the hour is not repeated" (Get-HyStarSample -LogbookPath $dstLog -At $amb -TimeZone ([System.TimeZoneInfo]::Utc)) "dst_sample"
+}
+
+# ------------------------------------- 46. #8: list only the days that can match
+Write-Host ""
+Write-Host "46. the vial lookup lists only today's/yesterday's procedure names, as Test-InjectionSince does"
+$gev = Get-FunctionAst "Get-EvosepVial"
+$unfiltered = 0
+foreach ($m in $gev.FindAll({ $args[0] -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true)) {
+    if ($m.Member.Extent.Text -ne "GetDirectories") { continue }
+    if ($m.Arguments.Count -lt 2 -and $m.Arguments[0].Extent.Text -ne '$ProcedureRoot') { $unfiltered++ }
+}
+Check "no serial folder is listed without a day pattern" $unfiltered 0
+Check "Get-EvosepVial takes its patterns from Get-ProcedureDayPatterns" (@(Find-Commands $gev "Get-ProcedureDayPatterns").Count -ge 1) "True"
+Check "and so does Test-InjectionSince" (@(Find-Commands (Get-FunctionAst "Test-InjectionSince") "Get-ProcedureDayPatterns").Count -ge 1) "True"
+Check "patterns: one day"       (@(Get-ProcedureDayPatterns -From ([datetime]"2026-10-24 00:34:24") -To ([datetime]"2026-10-24 02:04:24")) -join ",") "*_2026-10-24_*"
+Check "patterns: over midnight" (@(Get-ProcedureDayPatterns -From ([datetime]"2026-10-23 22:50:00") -To ([datetime]"2026-10-24 00:20:00")) -join ",") "*_2026-10-23_*,*_2026-10-24_*"
+Check "patterns: > 2 days, all" (@(Get-ProcedureDayPatterns -From ([datetime]"2026-10-20 00:00:00") -To ([datetime]"2026-10-24 00:20:00")) -join ",") "*"
+$midProc = Join-Path $TickRoot "midnight_procedures"
+New-Procedure $midProc "100-samples-per-day_2026-10-23_23-50-00" "S1-D2"
+New-Procedure $midProc "100-samples-per-day_2026-10-22_23-55-00" "S1-D9"
+Check "a run started before midnight still names its vial" (Get-EvosepVial -ProcedureRoot $midProc -At ([datetime]"2026-10-24 00:20:00") -Category "overpressure") "S1-D2"
+
+# --------------------------------------------- 47. R21: a UTC start boundary
+Write-Host ""
+Write-Host "47. R21: the every-minute trigger starts at a UTC time (the fall-back hour cannot pause it)"
+$nb = [datetime]"2026-11-01 01:30:00"
+$ub = Get-UtcStartBoundary -Now $nb
+Check "boundary ends with Z"               $ub.EndsWith("Z") "True"
+Check "boundary is plain ISO, seconds, Z"  ($ub -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') "True"
+Check "a minute from now, in UTC"          $ub "$($nb.ToUniversalTime().AddMinutes(1).ToString("yyyy-MM-dd'T'HH:mm:ss", $Inv))Z"
+$it = Get-FunctionAst "Install-Task"
+$regOff = -1
+foreach ($r in (Find-Commands $it "Register-ScheduledTask")) { $regOff = $r.Extent.StartOffset }
+$utcOff = -1; $localSaved = -1; $localBack = $false
+foreach ($a in $it.FindAll({ $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
+    $lt = $a.Left.Extent.Text; $rt = $a.Right.Extent.Text
+    if ($lt -eq '$repeat.StartBoundary' -and $rt -match 'Get-UtcStartBoundary') { $utcOff = $a.Extent.StartOffset }
+    if ($lt -eq '$localStart' -and $rt -eq '$repeat.StartBoundary') { $localSaved = $a.Extent.StartOffset }
+    if ($lt -eq '$repeat.StartBoundary' -and $rt -eq '$localStart') { $localBack = $true }
+}
+Check "Install-Task sets the UTC boundary before registering" (($utcOff -ge 0) -and ($utcOff -lt $regOff)) "True"
+Check "having kept the local one first"     (($localSaved -ge 0) -and ($localSaved -lt $utcOff)) "True"
+Check "and falls back to it if refused"     $localBack "True"
+$warnUtc = $false
+foreach ($sc in $it.FindAll({ $args[0] -is [System.Management.Automation.Language.ExpandableStringExpressionAst] -or $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)) {
+    if ($sc.Value -match '^WARNING' -and $sc.Value -match 'UTC') { $warnUtc = $true }
+}
+Check "with a printed WARNING"              $warnUtc "True"
+Check "still registered in one place"       (@(Find-Commands $it "Register-ScheduledTask").Count) 1
+$ii = Get-FunctionAst "Invoke-Install"
+Check "the install reads the trigger back"  (@(Find-Commands $ii "Get-TaskRepeatBoundary").Count -ge 1) "True"
+$gtb = Get-FunctionAst "Get-TaskRepeatBoundary"
+Check "from the registered task"            (@(Find-Commands $gtb "Get-ScheduledTask").Count -ge 1) "True"
+$rb = Get-TriggerReadback -Boundary "2026-10-27T21:31:00Z"
+Check "read-back: UTC is fine"              "$($rb.Color)|$($rb.Text.StartsWith('WARNING'))" "Gray|False"
+$rb = Get-TriggerReadback -Boundary "2026-10-27T14:31:00"
+Check "read-back: local time is a red WARNING" "$($rb.Color)|$($rb.Text.StartsWith('WARNING'))" "Red|True"
+$rb = Get-TriggerReadback -Boundary ""
+Check "read-back: unreadable says so"       "$($rb.Color)|$($rb.Text -match 'not read')" "Yellow|True"
+
+# ---------------------------------- 48. #1: a state folder that cannot be written
+Write-Host ""
+Write-Host "48. state folder not writable: nothing posted directly, so nothing pages twice; Hive relays once"
+if ($null -ne (Get-Command chmod -ErrorAction SilentlyContinue)) {
+    $d = New-TickDirs "ro_state"
+    $eventsRoot = Join-Path $d.Root "events"
+    $d.Share = Join-Path $eventsRoot "TIMS-10878"
+    [void][System.IO.Directory]::CreateDirectory($d.Share)
+    $hiveStore = Join-Path $d.Root "hive_alert_state.json"
+    Write-Logbook $d.Logbook (Rec-Header)
+    Reset-Posts
+    $t48 = [datetime]"2026-10-27 02:00:00"
+    $null = Run-Tick $d $t48
+    Check "seeded while the folder was writable" ([System.IO.File]::Exists((Join-Path $d.State "state.json"))) "True"
+    & chmod 555 $d.State
+    try {
+        Add-Logbook $d.Logbook (Rec-Stop $t48.AddMinutes(1) $EvotipMsg)
+        $ids = @{}; $allUnposted = $true; $hbErr = ""; $relayed = 0; $hivePosts = 0; $hiveRuns = 0
+        for ($i = 1; $i -le 5; $i++) {
+            $null = Run-Tick $d $t48.AddMinutes(1 + $i)
+            foreach ($f in (Get-EventFiles $d.Share)) {
+                $ids[(JStr $f "id")] = 1
+                if ((JStr $f "posted_by_pc") -ne "false") { $allUnposted = $false }
+            }
+            $hbErr = JStr (Join-Path $d.Share "heartbeat.json") "last_error"
+            $hr = Run-HivePython $HiveTickPy @($eventsRoot, $hiveStore)
+            if ($null -ne $hr) { $hiveRuns++; $relayed += [int]$hr.relayed; $hivePosts += [int]$hr.posts }
+        }
+        Check "5 ticks: no direct post at all"        $script:Posts.Count 0
+        Check "the stop reached the share every tick" ($ids.Count -ge 1) "True"
+        Check "always the same event id"              $ids.Count 1
+        Check "always posted_by_pc false"             $allUnposted "True"
+        Check "heartbeat last_error names the folder" ($hbErr -match 'state folder') "True"
+        Check "watch.log says so (it is still writable)" ((Read-WatchLogText $d) -match 'state folder') "True"
+        if ($hiveRuns -eq 5) {
+            Check "Hive relays it exactly once"       "$relayed|$hivePosts" "1|1"
+        }
+    }
+    finally { & chmod 755 $d.State }
+    # Writable again: the next tick posts directly as usual. It re-reads from
+    # the last offset it could save, so a stop from the unwritable spell that
+    # is under 2 h old is posted once more (known residual: nothing on the PC
+    # could remember that Hive relayed it); older ones go into the summary.
+    Add-Logbook $d.Logbook (Rec-Stop $t48.AddMinutes(20) $PressureMsg)
+    $null = Run-Tick $d $t48.AddMinutes(21)
+    $null = Run-Tick $d $t48.AddMinutes(22)
+    Check "writable again: the next stop posts directly" (Count-Posts "*queue STOPPED*Pressure limit*") 1
+    Check "the spell's stop: once more at most, then never" (Count-Posts "*No Evotip*") 1
+}
+else {
+    Write-Host "  skip (no chmod here to make the state folder read-only)"
+}
+
+# ------------------------------------------------ 49. R19: the age cap
+Write-Host ""
+Write-Host "49. R19: stops over 2 h old when read are filed, not paged; one quiet summary per tick"
+Check "2 h old exactly: not stale" (Test-StaleRecord -At ([datetime]"2026-10-24 10:00:00") -Now ([datetime]"2026-10-24 12:00:00")) "False"
+Check "2 h 1 min old: stale"       (Test-StaleRecord -At ([datetime]"2026-10-24 09:59:00") -Now ([datetime]"2026-10-24 12:00:00")) "True"
+Check "after now (clock back): not stale" (Test-StaleRecord -At ([datetime]"2026-10-24 12:30:00") -Now ([datetime]"2026-10-24 12:00:00")) "False"
+$d = New-TickDirs "stale"
+$eventsRoot = Join-Path $d.Root "events"
+$d.Share = Join-Path $eventsRoot "TIMS-10878"
+[void][System.IO.Directory]::CreateDirectory($d.Share)
+Write-Logbook $d.Logbook (Rec-Header)
+Reset-Posts
+$null = Run-Tick $d ([datetime]"2026-10-24 06:00:00")
+# The PC was off from 06:00 to 12:00; five stops 10 min apart were logged.
+$old = ""
+for ($i = 0; $i -lt 5; $i++) { $old = "$old$(Rec-Stop ([datetime]"2026-10-24 08:00:00").AddMinutes(10 * $i) $PressureMsg)" }
+Add-Logbook $d.Logbook $old
+$null = Run-Tick $d ([datetime]"2026-10-24 12:00:00")
+Check "5 old stops: exactly one post"        $script:Posts.Count 1
+Check "and it @mentions no one"              (Count-Posts "*<@*") 0
+if ($script:Posts.Count -ge 1) {
+    Check "the summary" $script:Posts[0].text ":large_orange_diamond: TIMS-10878 $dash 5 older stops while the watcher wasn't running (latest 08:40)"
+}
+$staleN = 0; $staleOk = $true; $sumFile = $null
+foreach ($f in (Get-EventFiles $d.Share)) {
+    $t = JStr $f "type"
+    if ($t -eq "stop") {
+        $staleN++
+        if ((JStr $f "stale") -ne "true" -or (JStr $f "posted_by_pc") -ne "true" -or (JStr $f "posted_at") -ne "<null>") { $staleOk = $false }
+    }
+    if ($t -eq "stale_summary") { $sumFile = $f }
+}
+Check "5 stop files"                          $staleN 5
+Check "each stale, posted_by_pc true, never posted" $staleOk "True"
+Check "plus the summary's own file"           ($null -ne $sumFile) "True"
+if ($null -ne $sumFile) {
+    Check "summary: posted by the PC, counts 5" "$(JStr $sumFile 'posted_by_pc')|$(JStr $sumFile 'count')" "true|5"
+}
+$null = Run-Tick $d ([datetime]"2026-10-24 12:01:00")
+Check "the next tick says nothing more"       $script:Posts.Count 1
+$hr = Run-HivePython $HiveTickPy @($eventsRoot, (Join-Path $d.Root "hive_alert_state.json"))
+if ($null -ne $hr) {
+    Check "Hive records all six, relays none"   "$($hr.recorded)|$($hr.relayed)|$($hr.posts)" "6|0|0"
+}
+# No route to Slack: the stale stops are still never relayed one by one;
+# Hive relays the one summary, unmentioned.
+$d = New-TickDirs "stale_noroute"
+$eventsRoot = Join-Path $d.Root "events"
+$d.Share = Join-Path $eventsRoot "TIMS-10878"
+[void][System.IO.Directory]::CreateDirectory($d.Share)
+Write-Logbook $d.Logbook (Rec-Header)
+Reset-Posts
+$null = Run-Tick $d ([datetime]"2026-10-24 06:00:00")
+Add-Logbook $d.Logbook $old
+$script:SendOk = $false; $script:SendStatus = 404
+$null = Run-Tick $d ([datetime]"2026-10-24 12:00:00")
+Check "no route: the summary was tried once" $script:Posts.Count 1
+$hr = Run-HivePython $HiveTickPy @($eventsRoot, (Join-Path $d.Root "hive_alert_state.json"))
+if ($null -ne $hr) {
+    Check "Hive relays only the summary"        "$($hr.relayed)|$($hr.recorded)|$($hr.posts)|$($hr.mentions)" "1|5|1|0"
+}
+# One old stop and one fresh one: the fresh one pages, the old one is summed
+# up (a different day: the date is given).
+$d = New-TickDirs "stale_mixed"
+Write-Logbook $d.Logbook (Rec-Header)
+Reset-Posts
+$null = Run-Tick $d ([datetime]"2026-10-22 20:00:00")
+Add-Logbook $d.Logbook ((Rec-Stop ([datetime]"2026-10-22 23:15:00") $FanMsg) + (Rec-Stop ([datetime]"2026-10-24 12:29:00") $PressureMsg))
+$null = Run-Tick $d ([datetime]"2026-10-24 12:30:00")
+Check "mixed: the fresh stop pages"          (Count-Posts "<@U0ABC1234> *queue STOPPED*Pressure limit*") 1
+Check "mixed: the old one is summed up"      (Count-Posts ":large_orange_diamond: TIMS-10878 $dash 1 older stop while the watcher wasn't running (latest 2026-10-22 23:15)") 1
+Check "mixed: nothing else"                  $script:Posts.Count 2
 
 Remove-Item -LiteralPath $TickRoot -Recurse -Force -ErrorAction SilentlyContinue
 

@@ -282,6 +282,12 @@ function Get-StopCategory {
         $category = 'evotip'; $title = 'No Evotip'
         $check = '*Check:* the Evotip in {vial}, and that the tray matches the sample list. The queue stays stopped until someone restarts it.'
     }
+    elseif ($Message -match 'did not meet criteria') {
+        # "High pressure pump(s) did not meet criteria": a pump self-test, not
+        # a pressure limit. Ahead of the pressure pattern, which it would
+        # otherwise match on "High pressure" (8 real stops were mistitled).
+        $category = 'evosep_hw'; $title = 'Evosep hardware fault'
+    }
     elseif ($Message -match 'pressure limit exceeded|High pressure') {
         $category = 'overpressure'; $title = 'Pressure limit'
     }
@@ -431,35 +437,84 @@ function Test-UnexpectedRestart {
     return $false
 }
 
+function Get-ProcedureDayPatterns {
+    <#
+    The folder-name patterns for Evosep procedures (<method>_yyyy-MM-dd_HH-mm-ss)
+    that can have started between From and To: one per day, so a serial
+    folder of 31,000 procedures costs a name filter, not a walk. More than
+    2 days apart: '*', every name. Shared by Get-EvosepVial and
+    Test-InjectionSince. Unrolled on return: callers wrap it in @().
+    #>
+    param(
+        [Parameter(Mandatory = $true)][datetime]$From,
+        [Parameter(Mandatory = $true)][datetime]$To
+    )
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $patterns = New-Object System.Collections.ArrayList
+    if (($To.Date - $From.Date).TotalDays -gt 2) { [void]$patterns.Add('*') }
+    else {
+        $day = $From.Date
+        while ($day -le $To.Date) {
+            [void]$patterns.Add("*_$($day.ToString('yyyy-MM-dd', $inv))_*")
+            $day = $day.AddDays(1)
+        }
+    }
+    return $patterns.ToArray()
+}
+
 function Get-EvosepVial {
     <#
-    ProcedureRoot holds the serial folders (...\Procedure logs). The newest
-    <method>_yyyy-MM-dd_HH-mm-ss folder starting within 90 min before At wins;
-    its start comes from the folder NAME (no per-folder stat). Only that
-    folder's journal.txt is read. Returns e.g. 'S1-A5', or $null.
+    The vial of the Evosep procedure a stop interrupted, e.g. 'S1-A5', or
+    $null. Ruling R20: a vial only where it can be right. The newest
+    <method>_yyyy-MM-dd_HH-mm-ss folder (ProcedureRoot holds the serial
+    folders, ...\Procedure logs: ruling R6) that started at or before At,
+    and no earlier than Category allows:
+      evotip                              10 min before At. The tip is
+                                          picked up at the start, so an
+                                          older folder is the previous,
+                                          finished sample.
+      overpressure, connection_lost,
+      ms_error                            90 min (a run is under way)
+      anything else                       never: a fan fault or a HyStar
+                                          crash belongs to no one sample.
+    Never at an ambiguous local time in TimeZone (DST fall-back repeats
+    01:00-02:00; by name, a folder from the first pass outranks the right
+    one from the second). Names are listed per day (Get-ProcedureDayPatterns)
+    and the start comes from the NAME (no per-folder stat). Only the chosen
+    folder's journal.txt is read. Never throws.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ProcedureRoot,
-        [Parameter(Mandatory = $true)][datetime]$At
+        [Parameter(Mandatory = $true)][datetime]$At,
+        [string]$Category = "",
+        [System.TimeZoneInfo]$TimeZone = [System.TimeZoneInfo]::Local
     )
     try {
+        $minutes = 0
+        if ($Category -eq 'evotip') { $minutes = 10 }
+        elseif ($Category -eq 'overpressure' -or $Category -eq 'connection_lost' -or $Category -eq 'ms_error') { $minutes = 90 }
+        if ($minutes -le 0) { return $null }
+        if ($null -ne $TimeZone -and $TimeZone.IsAmbiguousTime($At)) { return $null }
         if (-not [System.IO.Directory]::Exists($ProcedureRoot)) { return $null }
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
         $best = $null
         $bestStart = [datetime]::MinValue
-        $earliest = $At.AddMinutes(-90)
+        $earliest = $At.AddMinutes(-$minutes)
+        $patterns = @(Get-ProcedureDayPatterns -From $earliest -To $At)
         foreach ($serial in [System.IO.Directory]::GetDirectories($ProcedureRoot)) {
-            foreach ($dir in [System.IO.Directory]::GetDirectories($serial)) {
-                $name = [System.IO.Path]::GetFileName($dir)
-                $m = [regex]::Match($name, '_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$')
-                if (-not $m.Success) { continue }
-                $start = [datetime]::MinValue
-                $ok = [datetime]::TryParseExact($m.Groups[1].Value, 'yyyy-MM-dd_HH-mm-ss',
-                    [System.Globalization.CultureInfo]::InvariantCulture,
-                    [System.Globalization.DateTimeStyles]::None, [ref]$start)
-                if (-not $ok) { continue }
-                if ($start -gt $At) { continue }
-                if ($start -lt $earliest) { continue }
-                if ($best -eq $null -or $start -gt $bestStart) { $best = $dir; $bestStart = $start }
+            foreach ($pattern in $patterns) {
+                foreach ($dir in [System.IO.Directory]::GetDirectories($serial, $pattern)) {
+                    $name = [System.IO.Path]::GetFileName($dir)
+                    $m = [regex]::Match($name, '_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$')
+                    if (-not $m.Success) { continue }
+                    $start = [datetime]::MinValue
+                    $ok = [datetime]::TryParseExact($m.Groups[1].Value, 'yyyy-MM-dd_HH-mm-ss', $inv,
+                        [System.Globalization.DateTimeStyles]::None, [ref]$start)
+                    if (-not $ok) { continue }
+                    if ($start -gt $At) { continue }
+                    if ($start -lt $earliest) { continue }
+                    if ($best -eq $null -or $start -gt $bestStart) { $best = $dir; $bestStart = $start }
+                }
             }
         }
         if ($best -eq $null) { return $null }
@@ -487,13 +542,17 @@ function Get-HyStarSample {
     10 min before At that names a sample folder (...\name_S1-A5_1_1234.d or a
     plain name.d). The line format is UNCONFIRMED, so anything that does not
     match this strict shape gives $null (an alert with no sample is fine; a
-    wrong sample is not).
+    wrong sample is not). None at an ambiguous local time in TimeZone (DST
+    fall-back, ruling R20): a line from either pass of the repeated hour
+    could be the one.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$LogbookPath,
-        [Parameter(Mandatory = $true)][datetime]$At
+        [Parameter(Mandatory = $true)][datetime]$At,
+        [System.TimeZoneInfo]$TimeZone = [System.TimeZoneInfo]::Local
     )
     try {
+        if ($null -ne $TimeZone -and $TimeZone.IsAmbiguousTime($At)) { return $null }
         if (-not [System.IO.File]::Exists($LogbookPath)) { return $null }
         $fs = New-Object System.IO.FileStream($LogbookPath,
             [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
@@ -618,16 +677,40 @@ function Format-ReminderPayload {
 }
 
 function Format-RestartPayload {
+    # Ruling R18: told, never paged (no @mention). An S: line only appears
+    # when someone is already restarting HyStar, so a planned restart is one
+    # harmless message, and a reboot at night wakes Brett once (the
+    # watcher-down page), not twice.
     param(
         [Parameter(Mandatory = $true)][hashtable]$Event,
-        [string]$MemberId = "",
         [Alias('Host')][string]$HostName = 'TIMS-10878'
     )
     $dash = [char]0x2014
     $dot = [char]0x00B7
-    $mention = Get-MentionPrefix $MemberId
     $hm = ([datetime]$Event.At).ToString('HH:mm')
-    $text = "$mention`:red_circle: $HostName HyStar restarted $dash no shutdown logged $dot $hm"
+    $text = ":red_circle: $HostName HyStar restarted $dash no shutdown logged $dot $hm"
+    return @{ text = $text; blocks = @(, (New-SectionBlock $text)) }
+}
+
+function Format-StaleSummaryPayload {
+    <#
+    Ruling R19: the one message a tick sends for the stops it read more than
+    2 h after they happened (Test-StaleRecord). No @mention: nobody is woken
+    by history. "latest" is HH:mm, with the date when it was not today.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][int]$Count,
+        [Parameter(Mandatory = $true)][datetime]$Latest,
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [Alias('Host')][string]$HostName = 'TIMS-10878'
+    )
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $dash = [char]0x2014
+    $what = "$Count older stops"
+    if ($Count -eq 1) { $what = '1 older stop' }
+    $when = $Latest.ToString('HH:mm', $inv)
+    if ($Latest.Date -ne $Now.Date) { $when = $Latest.ToString('yyyy-MM-dd HH:mm', $inv) }
+    $text = ":large_orange_diamond: $HostName $dash $what while the watcher wasn't running (latest $when)"
     return @{ text = $text; blocks = @(, (New-SectionBlock $text)) }
 }
 
@@ -975,15 +1058,7 @@ function Test-InjectionSince {
         if ($to -le $from) { return $false }
         if (-not [System.IO.Directory]::Exists($ProcedureRoot)) { return $false }
         $inv = [System.Globalization.CultureInfo]::InvariantCulture
-        $patterns = New-Object System.Collections.ArrayList
-        if (($to.Date - $from.Date).TotalDays -gt 2) { [void]$patterns.Add('*') }
-        else {
-            $day = $from.Date
-            while ($day -le $to.Date) {
-                [void]$patterns.Add("*_$($day.ToString('yyyy-MM-dd', $inv))_*")
-                $day = $day.AddDays(1)
-            }
-        }
+        $patterns = @(Get-ProcedureDayPatterns -From $from -To $to)
         foreach ($serial in [System.IO.Directory]::GetDirectories($ProcedureRoot)) {
             foreach ($pattern in $patterns) {
                 foreach ($dir in [System.IO.Directory]::GetDirectories($serial, $pattern)) {
@@ -1278,6 +1353,9 @@ function Send-WatchEvent {
     Done: nothing is posted or filed again. Posted but not yet filed: the
     file goes out as posted_by_pc true with the first post's time, and no
     second post. A successful post is recorded the moment Slack accepts it.
+    -Stale (ruling R19, a record over 2 h old when read): never posted; filed
+    with "stale": true and posted_by_pc true, so Hive records its keys and
+    never relays it. The tick's one summary says it happened.
     Returns @{ Posted; Status; Filed; Tried }.
     #>
     param(
@@ -1289,7 +1367,8 @@ function Send-WatchEvent {
         [Parameter(Mandatory = $true)][datetime]$Now,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log,
         [Parameter(Mandatory = $true)][hashtable]$Ledger,
-        [string]$LedgerKey = ""
+        [string]$LedgerKey = "",
+        [switch]$Stale
     )
     $key = $LedgerKey
     if ([string]::IsNullOrEmpty($key)) { $key = [string]$Event['id'] }
@@ -1308,6 +1387,11 @@ function Send-WatchEvent {
         $status = 'posted on an earlier tick'
         $Event['posted_by_pc'] = $true
         $Event['posted_at'] = $seen.PostedAt
+    }
+    elseif ($Stale) {
+        $status = 'over 2 h old when read: in the summary, not posted'
+        $Event['posted_by_pc'] = $true
+        $Event['stale'] = $true
     }
     else {
         if (-not [string]::IsNullOrEmpty($Skip)) { $status = $Skip }
@@ -1329,7 +1413,8 @@ function Send-WatchEvent {
         Add-DeliveryLedger -StateDir $StateDir -Ledger $Ledger -Key $key -Step 'done' -Log $Log
     }
     $how = "posted ($status)"
-    if (-not $posted) { $how = "NOT posted ($status); Hive will relay it" }
+    if ($Stale -and -not $posted) { $how = "not posted ($status); Hive records it and never relays it" }
+    elseif (-not $posted) { $how = "NOT posted ($status); Hive will relay it" }
     [void]$Log.Add("$what at $($Event['at']) id $($Event['id']): $how; file $filed")
     return @{ Posted = ($posted -and $tried); Status = $status; Filed = $filed; Tried = $tried }
 }
@@ -1359,7 +1444,7 @@ function Invoke-RecordAlert {
             [void]$Log.Add("HyStar session start at $(ConvertTo-IsoLocal $at) follows a shutdown: no alert")
             return $null
         }
-        $payload = Format-RestartPayload -Event @{ At = $at } -MemberId $MemberId -Host $HostName
+        $payload = Format-RestartPayload -Event @{ At = $at } -Host $HostName
         return (New-WatchEvent -State $State -Type 'restart' -HostName $HostName -At $at `
                 -Source $Record.Source -Title 'HyStar restarted' -Message $Record.Message `
                 -DedupKey (Get-DedupKey ([string]$Record.Message)) -Payload $payload -Version $Version)
@@ -1404,7 +1489,9 @@ function Invoke-RecordAlert {
                 -DedupKey $key -Count ([int]$entry.Count) -FirstAt $entry.FirstAt -Payload $payload -Version $Version)
     }
     $vial = $null
-    if (-not [string]::IsNullOrEmpty($ProcedureRoot)) { $vial = Get-EvosepVial -ProcedureRoot $ProcedureRoot -At $at }
+    if (-not [string]::IsNullOrEmpty($ProcedureRoot)) {
+        $vial = Get-EvosepVial -ProcedureRoot $ProcedureRoot -At $at -Category $cat.Category
+    }
     $sample = $null
     if (-not [string]::IsNullOrEmpty($SampleLogPath)) { $sample = Get-HyStarSample -LogbookPath $SampleLogPath -At $at }
     $info = @{
@@ -1590,6 +1677,40 @@ function Write-WatchLog {
     catch { }
 }
 
+function Test-StaleRecord {
+    # Ruling R19: a record read more than 2 h after its time (a reinstall
+    # after a long uninstall, the PC off and then on) is history, not news.
+    # A time after Now (the clock set back) is not old.
+    param(
+        [Parameter(Mandatory = $true)][datetime]$At,
+        [Parameter(Mandatory = $true)][datetime]$Now
+    )
+    return (($Now - $At).TotalMinutes -gt 120)
+}
+
+function Test-StateDirWritable {
+    <#
+    "" when a small file can be created and removed in StateDir, else why
+    not. state.json and delivered.txt both live there, so a full C: or a
+    broken ACL loses both at once: every tick would then re-read the same
+    records from the old offset, decide 'new' with the same ids, find no
+    ledger line, and page the same stop again, every minute, while the
+    heartbeat stayed fresh. Never throws.
+    #>
+    param([Parameter(Mandatory = $true)][string]$StateDir)
+    $probe = Join-Path $StateDir "write_probe_$PID.tmp"
+    try {
+        [System.IO.File]::WriteAllText($probe, 'x')
+        [System.IO.File]::Delete($probe)
+        return ""
+    }
+    catch {
+        $why = "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+        try { if ([System.IO.File]::Exists($probe)) { [System.IO.File]::Delete($probe) } } catch { }
+        return $why
+    }
+}
+
 function Invoke-WatchTick {
     <#
     One full tick. Never throws. Returns a summary hashtable
@@ -1598,14 +1719,22 @@ function Invoke-WatchTick {
     the local queue).
 
       1. state.json and the delivery ledger from StateDir (no state, or
-         unreadable: start at the end of the logbook)
+         unreadable: start at the end of the logbook). StateDir must take a
+         small file (Test-StateDirWritable): when it cannot, nothing is
+         posted directly this tick, because nothing could remember the post.
+         Every event goes to the share with posted_by_pc false instead; its
+         id is the same every tick (the state is not saved), so Hive's own
+         key relays each exactly once. Heartbeat last_error says so.
       2. new logbook records, through rotation (Get-LogbookRecords)
       3. each record decided (Invoke-RecordAlert); an event is posted through
          Sender (@{ Ok; Status }), recorded in the ledger, and its file put
          in the local queue. Nothing so far touches the share: a direct post
-         never waits on an unreachable share (spec 4.1).
-      4. Hive's alerting watched (only with a Sender; its logs are on the
-         share, so after the stop posts)
+         never waits on an unreachable share (spec 4.1). A record more than
+         2 h old (ruling R19) is filed as stale, never posted, and the tick
+         then posts ONE summary of those stops, with no @mention.
+      4. Hive's alerting watched (only with a Sender, and a StateDir that
+         can remember the note; its logs are on the share, so after the
+         stop posts)
       5. state saved, then the queue flushed to the share, oldest first,
          then heartbeat.json (skipped when the flush just found the share
          unreachable), then watch.log appended
@@ -1635,6 +1764,11 @@ function Invoke-WatchTick {
     # relays them): with no route, each post would wait out its 10 s timeout
     # and a backlog could outlast the scheduled task's time limit.
     $skipPost = ""
+    # Set when StateDir cannot be written: the reason, for the heartbeat.
+    $stateDirError = $null
+    # Ruling R19: how many stops this tick read over 2 h late, and the newest.
+    $staleStops = 0
+    $staleLatest = $null
     try {
         if ([string]::IsNullOrEmpty($Version)) { $Version = [string]$ScriptVersion }
         if ([string]::IsNullOrEmpty($HostName)) { $HostName = [string]$env:COMPUTERNAME }
@@ -1644,6 +1778,12 @@ function Invoke-WatchTick {
             if (-not [string]::IsNullOrEmpty($logDir)) { $SampleLogPath = Join-Path $logDir 'CompassHyStarLogbook.log' }
         }
         [void][System.IO.Directory]::CreateDirectory($StateDir)
+        $why = Test-StateDirWritable -StateDir $StateDir
+        if (-not [string]::IsNullOrEmpty($why)) {
+            $stateDirError = "state folder not writable ($why): nothing is posted directly; Hive relays every event"
+            $skipPost = "not tried: the state folder cannot be written, so the post could not be remembered"
+            [void]$log.Add($stateDirError)
+        }
         try { $state = Read-WatchState -StateDir $StateDir }
         catch {
             [void]$log.Add("state.json unreadable ($($_.Exception.GetType().Name)); starting again at the end of the logbook")
@@ -1680,8 +1820,13 @@ function Invoke-WatchTick {
                 $ev = Invoke-RecordAlert -State $state -Record $rec -ProcedureRoot $ProcedureRoot `
                     -SampleLogPath $SampleLogPath -HostName $HostName -MemberId $MemberId -Version $Version -Log $log
                 if ($null -eq $ev) { continue }
+                $stale = Test-StaleRecord -At ([datetime]$rec.At) -Now $Now
                 $sent = Send-WatchEvent -Event $ev -Sender $Sender -Skip $skipPost -ShareDir $ShareDir `
-                    -StateDir $StateDir -Now $Now -Log $log -Ledger $ledger
+                    -StateDir $StateDir -Now $Now -Log $log -Ledger $ledger -Stale:$stale
+                if ($stale -and $ev['type'] -eq 'stop') {
+                    $staleStops++
+                    if ($null -eq $staleLatest -or [datetime]$rec.At -gt $staleLatest) { $staleLatest = [datetime]$rec.At }
+                }
                 $summary['Events'] = $summary['Events'] + 1
                 if ($sent.Posted) { $summary['Posted'] = $summary['Posted'] + 1 }
                 elseif ($sent.Tried) {
@@ -1697,8 +1842,40 @@ function Invoke-WatchTick {
             }
         }
 
+        if ($staleStops -gt 0) {
+            try {
+                $payload = Format-StaleSummaryPayload -Count $staleStops -Latest $staleLatest -Now $Now -Host $HostName
+                # At the newest stale stop, not Now: a tick that re-reads the
+                # same records (its state not saved) makes the same id and
+                # ledger key, so the summary is never sent twice.
+                $ev = New-WatchEvent -State $state -Type 'stale_summary' -HostName $HostName -At $staleLatest `
+                    -Source 'watcher' -Title 'Older stops' -Message $payload.text -Count $staleStops `
+                    -Payload $payload -Version $Version
+                $sent = Send-WatchEvent -Event $ev -Sender $Sender -Skip $skipPost -ShareDir $ShareDir `
+                    -StateDir $StateDir -Now $Now -Log $log -Ledger $ledger `
+                    -LedgerKey "stale_summary:$(ConvertTo-IsoLocal $staleLatest):$staleStops"
+                $summary['Events'] = $summary['Events'] + 1
+                if ($sent.Posted) { $summary['Posted'] = $summary['Posted'] + 1 }
+                elseif ($sent.Tried) {
+                    $lastError = "Slack post failed: $($sent.Status)"
+                    $skipPost = "not tried: a post failed earlier this tick"
+                }
+                if ($sent.Filed -eq 'written' -or $sent.Filed -eq 'exists') { $summary['Filed'] = $summary['Filed'] + 1 }
+            }
+            catch {
+                $summary['Errors'] = $summary['Errors'] + 1
+                $lastError = "older-stops summary failed: $($_.Exception.GetType().Name): $($_.Exception.Message)"
+                [void]$log.Add($lastError)
+            }
+        }
+
         try {
-            $note = Get-HiveWatchNote -State $state -HiveLogsDir $HiveLogsDir -Now $Now -Sender $Sender
+            # A note about Hive is the PC's to post, or no one's: with a
+            # StateDir that cannot remember it, it would be filed afresh
+            # (a new id) every tick, and Hive would relay every one.
+            $hiveSender = $Sender
+            if ($null -ne $stateDirError) { $hiveSender = $null }
+            $note = Get-HiveWatchNote -State $state -HiveLogsDir $HiveLogsDir -Now $Now -Sender $hiveSender
             if ($null -ne $note) {
                 if ($note.Kind -eq 'hive_quiet') {
                     $payload = Format-HiveQuietPayload -At $note.LastAt
@@ -1756,6 +1933,14 @@ function Invoke-WatchTick {
             if ($null -ne $state) { $offset = $state['offset'] }
             $errText = $null
             if ($null -ne $lastError) { $errText = Get-ScrubbedText $lastError }
+            # The unwritable state folder is the cause; "state not saved" is
+            # only its echo. Anything else wrong this tick is kept beside it.
+            if ($null -ne $stateDirError) {
+                $errText = Get-ScrubbedText $stateDirError
+                if ($null -ne $lastError -and -not ([string]$lastError).StartsWith('state not saved')) {
+                    $errText = Get-ScrubbedText "$stateDirError; $lastError"
+                }
+            }
             try {
                 Write-Heartbeat -ShareDir $ShareDir -Now $Now -Version $Version -LogbookPath $LogbookPath `
                     -Offset $offset -LastError $errText
@@ -2159,6 +2344,52 @@ function Test-TaskLaunchCurrent {
     catch { return $false }
 }
 
+function Get-UtcStartBoundary {
+    <#
+    Ruling R21: the repeating trigger's StartBoundary as a UTC ISO time with
+    a Z, a minute after Now (Task Scheduler's "synchronize across time
+    zones"). A local -Once boundary repeating every minute can have its next
+    run computed as 02:00 when the clocks go back at 02:00, which leaves an
+    hour without ticks: a false watcher-down page, and late alerts.
+    #>
+    param([Parameter(Mandatory = $true)][datetime]$Now)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $utc = $Now.ToUniversalTime().AddMinutes(1).ToString("yyyy-MM-dd'T'HH:mm:ss", $inv)
+    return "$($utc)Z"
+}
+
+function Get-TaskRepeatBoundary {
+    # The StartBoundary of the registered task's repeating trigger, as Task
+    # Scheduler reports it; "" when it cannot be read.
+    try {
+        $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        foreach ($tr in @($t.Triggers)) {
+            $rep = $tr.Repetition
+            if ($null -ne $rep -and -not [string]::IsNullOrEmpty([string]$rep.Interval)) {
+                return [string]$tr.StartBoundary
+            }
+        }
+    }
+    catch { }
+    return ""
+}
+
+function Get-TriggerReadback {
+    <#
+    What the install says about the repeating trigger it read back (R21):
+    @{ Text; Color }. UTC (ends with Z) is as intended; a local boundary
+    means Task Scheduler refused UTC and the install fell back.
+    #>
+    param([AllowEmptyString()][string]$Boundary = "")
+    if ([string]::IsNullOrEmpty($Boundary)) {
+        return @{ Text = "Could not read the every-minute trigger back. In Task Scheduler, its start time should end in Z (UTC)."; Color = 'Yellow' }
+    }
+    if ($Boundary.EndsWith('Z')) {
+        return @{ Text = "The every-minute trigger runs on UTC (from $Boundary): the clocks going back cannot pause it."; Color = 'Gray' }
+    }
+    return @{ Text = "WARNING: the every-minute trigger runs on local time (from $Boundary). On the night the clocks go back it may pause for an hour, and Hive will page 'watcher down'."; Color = 'Red' }
+}
+
 function Enter-TickLock {
     <#
     One tick at a time. The task's 5-minute limit ends wscript.exe, not the
@@ -2261,6 +2492,12 @@ function Install-Task {
     $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
         -RepetitionInterval (New-TimeSpan -Minutes 1) `
         -RepetitionDuration (New-TimeSpan -Days 3650)
+    # Ruling R21: a UTC start (Z), so the hour repeated when the clocks go
+    # back cannot pause the ticks. The local boundary is kept: if Task
+    # Scheduler refuses the UTC one, the task is registered with it instead,
+    # with a warning (and Invoke-Install reads the trigger back either way).
+    $localStart = $repeat.StartBoundary
+    $repeat.StartBoundary = Get-UtcStartBoundary -Now (Get-Date)
     # IgnoreNew: a slow tick is skipped, never stacked. 5 min: a tick is a
     # stat, a seek and a few KB; one that runs longer is stuck. The shim
     # waits for the tick, so both see it running; but the limit ends
@@ -2271,13 +2508,24 @@ function Install-Task {
         -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
         -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries
     $principal = New-ScheduledTaskPrincipal -UserId $desk.Name -LogonType Interactive -RunLevel Limited
-    try {
-        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atLogon, $repeat) `
-            -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+    $registered = $false
+    $why = ''
+    foreach ($attempt in @('utc', 'local')) {
+        if ($attempt -eq 'local') {
+            Say "WARNING: Task Scheduler refused a UTC start for the every-minute trigger ($why). Registering it on local time instead: on the night the clocks go back it may pause for an hour." 'Red'
+            $repeat.StartBoundary = $localStart
+        }
+        try {
+            Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atLogon, $repeat) `
+                -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+            $registered = $true
+            break
+        }
+        catch { $why = $_.Exception.Message }
     }
-    catch {
+    if (-not $registered) {
         Say ''
-        Say "Could not create the scheduled task: $($_.Exception.Message)" 'Red'
+        Say "Could not create the scheduled task: $why" 'Red'
         return $false
     }
     # Never claim success without looking.
@@ -2814,6 +3062,9 @@ function Invoke-Install {
     elseif (-not [string]::IsNullOrEmpty($exe)) {
         Say "WARNING: each tick starts $exe itself (no wscript.exe or VBScript here), so a console window may flash every minute." 'Red'
     }
+    # R21, read back the same way: UTC, or the local fallback with a warning.
+    $trig = Get-TriggerReadback -Boundary (Get-TaskRepeatBoundary)
+    Say $trig.Text $trig.Color
     $auto = Get-AutoLogonStatus
     Say "Auto-logon after a reboot: $auto"
     if ($auto -eq 'off') {
