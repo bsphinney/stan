@@ -237,7 +237,15 @@ $storm = Parse-Fixture "fan_storm.log"
 # The fixture holds unrelated stops from other days too; the fan-fault storm
 # is the contiguous run of "fan detection" stops, 2 min apart.
 $fan = @()
-foreach ($e in $storm) { if ($e.Type -eq "stop" -and $e.Message -match "fan detection") { $fan += $e } }
+# The first fan stop (13:19) is a lone one 12 min before the storm proper
+# (13:31 on, every ~2 min), so it is correctly its own alert; start at 13:31.
+$seen = 0
+foreach ($e in $storm) {
+    if ($e.Type -eq "stop" -and $e.Message -match "fan detection") {
+        $seen++
+        if ($seen -gt 1) { $fan += $e }
+    }
+}
 Check "storm: fan stops seen > 100" ($fan.Count -gt 100) "True"
 $st = @{ keys = @{}; lastShutdownAt = $null }
 $nNew = 0; $nRem = 0
