@@ -27,22 +27,12 @@ from stan.notify import (
     should_send,
 )
 
+#: The same URL the shared `posted` fixture (tests/conftest.py) installs.
 HOOK = "https://hooks.slack.com/services/T000/B000/xxxxxxxxxxxxxxxxxxxxxxxx"
 NOW = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
 
 
 # ── fakes ────────────────────────────────────────────────────────
-
-
-class _Resp:
-    def __init__(self, status=200):
-        self.status = status
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
 
 
 def _raising(*a, **k):
@@ -57,20 +47,8 @@ def _no_real_pg(monkeypatch):
     monkeypatch.setattr(stan.db_pg, "_connect", _raising)
 
 
-@pytest.fixture
-def posted(monkeypatch):
-    """Capture what would have gone to Slack. No socket is ever opened."""
-    calls = []
-
-    def _fake(req, timeout=None):
-        calls.append({"url": req.full_url,
-                      "body": json.loads(req.data.decode()),
-                      "headers": dict(req.headers)})
-        return _Resp(200)
-
-    monkeypatch.setattr(notify.urllib.request, "urlopen", _fake)
-    monkeypatch.setenv(notify.WEBHOOK_ENV, HOOK)
-    return calls
+# `posted` (capture what would have gone to Slack) lives in tests/conftest.py,
+# shared with test_hystar_events.py and test_qc_summary.py.
 
 
 # ── webhook resolution ───────────────────────────────────────────
@@ -586,3 +564,49 @@ def test_no_mention_without_an_id_or_flag(monkeypatch, unconfigured):
 def test_a_malformed_mention_id_is_ignored(monkeypatch, unconfigured):
     monkeypatch.setenv("STAN_SLACK_MENTION", "@channel")
     assert notify.slack_mention_id() is None
+
+
+# ── a stalled lock holder must not freeze every alerting cron ────
+
+
+def _hold_lock(path):
+    """Take the state file's lock on a separate open file, as another cron would."""
+    fcntl = pytest.importorskip("fcntl")
+    fh = open(path.with_name(path.name + ".lock"), "a")
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    return fh
+
+
+def test_a_held_lock_is_waited_for_only_so_long(monkeypatch, tmp_path, caplog):
+    """Every alert cron shares one file on /quobyte. A holder that hangs (a
+    stuck NFS op, a SIGSTOPped tick) must cost a WARNING, not a silent pager."""
+    import time
+
+    path = tmp_path / "s.json"
+    monkeypatch.setattr(notify, "_LOCK_WAIT_SECONDS", 0.3)
+    holder = _hold_lock(path)
+    try:
+        store = AlertStore(use_pg=False, path=path)
+        t0 = time.monotonic()
+        with caplog.at_level("WARNING", logger="stan.notify"):
+            store.record(Alert(key="k", kind="k", instrument="i", headline="h"), now=NOW)
+        elapsed = time.monotonic() - t0
+    finally:
+        holder.close()
+    assert elapsed < 3.0, f"blocked {elapsed:.1f}s behind a held lock"
+    assert "without the lock" in caplog.text
+    assert store.last("k") is not None, "the write still happened"
+
+
+def test_a_lock_released_in_time_is_taken(monkeypatch, tmp_path, caplog):
+    import threading
+
+    path = tmp_path / "s.json"
+    monkeypatch.setattr(notify, "_LOCK_WAIT_SECONDS", 5.0)
+    holder = _hold_lock(path)
+    threading.Timer(0.3, holder.close).start()
+    store = AlertStore(use_pg=False, path=path)
+    with caplog.at_level("WARNING", logger="stan.notify"):
+        store.record(Alert(key="k", kind="k", instrument="i", headline="h"), now=NOW)
+    assert "without the lock" not in caplog.text
+    assert store.last("k") is not None

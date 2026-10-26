@@ -1,0 +1,48 @@
+{
+ "schema": 1,
+ "id": "TIMS-10878_20261024T020424_1",
+ "type": "stop",
+ "host": "TIMS-10878",
+ "station": "tims10878",
+ "at": "2026-10-24T02:04:24",
+ "source": "ApplicationException",
+ "category": "evotip",
+ "title": "No Evotip",
+ "message": "Evosep One: No Evotip was present during the analysis and the sample was aborted. Please check if the Evotip position in the autosampler matches the sample list.",
+ "vial": "S1-A5",
+ "sample": null,
+ "dedup_key": "evosep one: no evotip was present during the analysis and the sample was aborted. please check if the evotip position in the autosampler matches the sample list.",
+ "count": 1,
+ "first_at": "2026-10-24T02:04:24",
+ "payload": {
+  "text": "<@U0ABC1234> :red_circle: TIMS-10878 queue STOPPED — No Evotip · S1-A5 · 02:04",
+  "blocks": [
+   {
+    "type": "section",
+    "text": {
+     "type": "mrkdwn",
+     "text": "<@U0ABC1234> :red_circle: *TIMS-10878 queue STOPPED — No Evotip*\n*S1-A5 · 02:04*"
+    }
+   },
+   {
+    "type": "section",
+    "text": {
+     "type": "mrkdwn",
+     "text": "> Evosep One: No Evotip was present during the analysis and the sample was aborted. Please check if the Evotip position in the autosampler matches the sample list.\n*Check:* the Evotip in S1-A5, and that the tray matches the sample list. The queue stays stopped until someone restarts it.\n_HyStar stopped the queue at 2026-10-24 02:04:24 · posted by the TIMS-10878 watcher_"
+    }
+   },
+   {
+    "type": "context",
+    "elements": [
+     {
+      "type": "mrkdwn",
+      "text": "<https://ucd.stan-proteomics.org|STAN dashboard> · Maintenance tab"
+     }
+    ]
+   }
+  ]
+ },
+ "posted_by_pc": true,
+ "posted_at": "2026-10-24T02:05:09",
+ "watcher_version": "1.2.23"
+}

@@ -1045,6 +1045,9 @@ CRON_LOGS = {
     "community_sync":     ("cron_community_sync_20*.log", 14.0),
     "bruker_maint":       ("cron_bruker_maint_20*.log", 30.0),
     "db_backup":          ("db_backup_submit.log", 30.0),
+    # Every minute, and even an idle tick writes a line, so 30 min of
+    # silence means the HyStar relay and watcher-down page are dead too.
+    "hystar_events":      ("cron_hystar_events_20*.log", 0.5),
 }
 
 #: Where the cron scripts write their per-day logs.

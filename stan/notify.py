@@ -86,16 +86,20 @@ is being woken at night about two-day-old failures. So:
     single-lab SQLite install) never holds anything: it has no PG to wait
     for.
   * **Every file read-modify-write is under a lock** on `<state>.lock`, so
-    two crons sharing the file cannot drop each other's rows.
+    two crons sharing the file cannot drop each other's rows. The wait for
+    it is bounded (10 s): every Hive alert cron shares one file on /quobyte,
+    and a hung holder must not freeze all of them.
 """
 
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import logging
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -431,6 +435,32 @@ def _state_path() -> Path:
     return Path.home() / ".stan" / "alert_state.json"
 
 
+#: Longest a write waits for another cron's lock on the state file before it
+#: writes without it. Holders keep it for milliseconds; anything past this is
+#: a hung holder, not a busy one.
+_LOCK_WAIT_SECONDS = 10.0
+_LOCK_POLL_SECONDS = 0.1
+
+
+def _flock_bounded(fh, wait_seconds: float) -> bool:
+    """``LOCK_EX`` on ``fh``, retried non-blocking for up to ``wait_seconds``.
+
+    True once held, False when the wait ran out. Any other OSError (a share
+    that does not support locks) propagates to the caller's handler.
+    """
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    while True:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError as e:
+            if e.errno not in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                raise
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_LOCK_POLL_SECONDS)
+
+
 #: Failures in a row after which a store stops asking PG for the rest of its
 #: life (one tick). One failure is a blip and worth retrying -- treating it as
 #: an outage is the 2026-10-25 bug. Two in a row is an outage, and asking again
@@ -594,6 +624,11 @@ class AlertStore:
         rows. A no-op where fcntl does not exist (Windows single-lab installs
         have one writer), and when the lock cannot be taken: writing without
         it risks a duplicate message, never a lost alert.
+
+        The wait is bounded (`_LOCK_WAIT_SECONDS`). Every alerting cron on
+        Hive shares one file on /quobyte, so a holder that hangs there would
+        otherwise freeze all of them at once: a pager that stops without a
+        word. After the bound this writes without the lock and says so.
         """
         lock_path = self._path.with_name(self._path.name + ".lock")
         fh = None
@@ -601,7 +636,12 @@ class AlertStore:
             try:
                 self._path.parent.mkdir(parents=True, exist_ok=True)
                 fh = open(lock_path, "a")  # held open across the yield
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                if not _flock_bounded(fh, _LOCK_WAIT_SECONDS):
+                    logger.warning("could not lock %s within %g s (another writer "
+                                   "holds it); writing without the lock",
+                                   lock_path, _LOCK_WAIT_SECONDS)
+                    fh.close()
+                    fh = None
             except OSError as e:
                 logger.warning("could not lock %s (%s); writing without the lock",
                                lock_path, type(e).__name__)

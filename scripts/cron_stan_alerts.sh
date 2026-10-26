@@ -44,6 +44,10 @@ mkdir -p "$LOGDIR" 2>/dev/null
 
 export STAN_DB_BACKEND=pg
 export STAN_PGFARM_TOKEN_FILE=/quobyte/proteomics-grp/brett/.pgfarm_token
+# One alert-memory fallback file for every alert cron (spec §4.5). This one
+# used to fall back to ~/.stan/alert_state.json and cron_evosep.sh to its own
+# file, so during a PG outage neither knew what the other had sent.
+export STAN_ALERT_STATE=/quobyte/proteomics-grp/STAN/alert_state.json
 
 # Cache the published documents between ticks. Every tick is a new process,
 # so without this each one downloaded the whole Evosep (864 KB) and Bruker

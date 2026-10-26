@@ -8262,6 +8262,40 @@ def instrument_watch(
         raise typer.Exit(1)
 
 
+@app.command()
+def hystar_events(
+    root: str = typer.Option(
+        None, "--root",
+        help="Event root holding the TIMS-10878/ folder (default "
+             "/quobyte/proteomics-grp/STAN/hystar_events).",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Report what would be relayed without posting, recording or "
+             "moving anything.",
+    ),
+) -> None:
+    """Relay and record the HyStar watcher's events; page if it goes quiet.
+
+    Hive's half of the TIMS-10878 queue-stopped alerts, run every minute by
+    cron_hystar_events.sh. An event the PC could not post goes to Slack from
+    here; every stop marks the hourly alerts' keys so they stay quiet about
+    it; no heartbeat for 10 min pages once. Prints a one-line JSON summary.
+    Exits 1 while a relay is failing, so the cron log shows it.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    from stan.reports.hystar_events import DEFAULT_EVENT_ROOT, run_hystar_tick
+
+    result = run_hystar_tick(root=_Path(root) if root else DEFAULT_EVENT_ROOT,
+                             dry_run=dry_run)
+    # One line: this runs every minute and the log should stay readable.
+    print(_json.dumps(result, default=str, sort_keys=True))
+    if result.get("pending"):
+        raise typer.Exit(1)
+
+
 # Allow `python -m stan.cli ...` to actually invoke the typer app.
 # Without this, the subprocess form (used by remote actions like
 # _action_backfill_from_dir) imports the module but never calls

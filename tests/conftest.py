@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -128,3 +129,48 @@ def config_dir_with_files(tmp_path: Path, sample_instruments_config, sample_thre
     community_path.write_text(yaml.dump({"hf_token": "", "display_name": "Test Lab"}))
 
     return config_dir
+
+
+# ── Slack capture ────────────────────────────────────────────────
+
+#: Webhook the `posted` fixture installs. tests/test_notify.py compares
+#: against the same string.
+SLACK_TEST_HOOK = "https://hooks.slack.com/services/T000/B000/xxxxxxxxxxxxxxxxxxxxxxxx"
+
+#: Member ID the `posted` fixture installs, so an @mention renders.
+SLACK_TEST_MEMBER = "U0ABC1234"
+
+
+class _SlackResp:
+    def __init__(self, status=200):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.fixture
+def posted(monkeypatch):
+    """Capture what would have gone to Slack. No socket is ever opened.
+
+    Each call is ``{"url", "body", "headers"}``. Also sets
+    ``STAN_SLACK_MENTION``, so an alert with ``mention=True`` renders
+    ``<@U0ABC1234>``; a test that needs no member ID unsets it itself.
+    """
+    from stan import notify
+
+    calls = []
+
+    def _fake(req, timeout=None):
+        calls.append({"url": req.full_url,
+                      "body": json.loads(req.data.decode()),
+                      "headers": dict(req.headers)})
+        return _SlackResp(200)
+
+    monkeypatch.setattr(notify.urllib.request, "urlopen", _fake)
+    monkeypatch.setenv(notify.WEBHOOK_ENV, SLACK_TEST_HOOK)
+    monkeypatch.setenv(notify.MENTION_ENV, SLACK_TEST_MEMBER)
+    return calls

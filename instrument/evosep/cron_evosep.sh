@@ -176,7 +176,8 @@ fi
 
 # --- STAN instrument alerting (Slack). Owned by the slack-alerts change. ---
 # Reads the document you just wrote; writes nothing to PG except alert_state.
-export STAN_ALERT_STATE=/quobyte/proteomics-grp/STAN/evosep/alert_state.json
+# The fallback file every alert cron shares (spec §4.5), not a private one.
+export STAN_ALERT_STATE=/quobyte/proteomics-grp/STAN/alert_state.json
 if [ -r /quobyte/proteomics-grp/brett/.stan_slack_webhook ]; then
     export STAN_SLACK_WEBHOOK="$(cat /quobyte/proteomics-grp/brett/.stan_slack_webhook)"
 fi
