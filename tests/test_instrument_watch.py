@@ -26,6 +26,7 @@ from stan.reports.instrument_watch import (
     STANDING_COOLOFF_HOURS,
     check_bruker,
     check_column_wear,
+    check_evosep_episodes,
     check_evosep,
     is_critical,
     log_clog_events,
@@ -634,3 +635,25 @@ def test_the_sub_ceiling_run_a_flat_threshold_cannot_see():
               peak=520.1, pct=29.0, pct_over_expected=61.9),
     ]
     assert any(a.kind == "clog" for a in check_evosep(_doc(flags), now=NOW))
+
+
+def test_evotip_alert_leads_with_vial_sample_time(monkeypatch):
+    monkeypatch.setattr("stan.reports.instrument_watch.find_run_near",
+                        lambda vial, at, window_s=180: "10212026_HE50_100-spd-dia_S1-A5_1_25352.d")
+    doc = {"flags": [{"run": "100-samples-per-day_2026-10-24_02-03-36",
+                      "method": "100-samples-per-day", "start": "2026-10-24T02:03:36",
+                      "kinds": ["tip"], "severity": "warning", "well": "S1-A5",
+                      "tip_pressure_max_bar": 70.1}]}
+    now = datetime(2026, 10, 24, 3, 0, tzinfo=timezone.utc)
+    a = [x for x in check_evosep_episodes(doc, now=now) if x.kind == "evotip"][0]
+    assert a.detail[0] == "*S1-A5 · 10212026_HE50_100-spd-dia · 02:03*"
+    assert any("100-samples-per-day_2026-10-24_02-03-36" in d for d in a.detail[1:])
+
+
+def test_bruker_alert_leads_with_vial_sample_time():
+    doc = {"failures_recent": [{"category": "Evotip missing / not picked up",
+           "start_date": "2026-10-23 12:32", "well": "S4-E1",
+           "fname": "23oct26_2jourHeL50-Ker2Anly-newEvoNoodl-tf9d0_100spd_S4-E1_1_25301.d",
+           "message": "Critical Error in ICF System - 'Evosep One: No Evotip was present'"}]}
+    a = check_bruker(doc, now=datetime(2026, 10, 23, 22, 0, tzinfo=timezone.utc))[0]
+    assert a.detail[0] == "*S4-E1 · 23oct26_2jourHeL50-Ker2Anly-newEvoNoodl-tf9d0_100spd · 12:32*"

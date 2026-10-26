@@ -48,6 +48,8 @@ from datetime import datetime, timedelta, timezone
 from stan.metrics.peg_trends import is_blank_or_wash
 from stan.instrument_time import INSTRUMENT_TZ, parse_local as _parse_local, parse_raw as _parse_raw  # noqa: F401
 from stan.notify import Alert
+from stan.reports.injection_identity import (
+    find_run_near, identity_line, sample_from_run_name)
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +340,24 @@ def check_evosep(doc: dict, now: datetime | None = None,
             + check_column_wear(doc, station=station))
 
 
+def _flag_identity(vial: str | None, start) -> str:
+    """Bold ``vial · sample · HH:MM`` for an Evosep flag.
+
+    The clock time is the wall time as written in the document (instrument
+    local); the sample comes from PG when it can be found, never failing the
+    alert over it.
+    """
+    sample = None
+    try:
+        local = _parse_local(start)
+        if local is not None:
+            sample, run_vial = sample_from_run_name(find_run_near(vial, local))
+            vial = vial or run_vial
+    except Exception:
+        logger.debug("identity lookup failed", exc_info=True)
+    return f"*{identity_line(vial, sample, _parse_raw(start))}*"
+
+
 def check_evosep_episodes(doc: dict, now: datetime | None = None,
                           station: str = DEFAULT_STATION,
                           lookback_hours: float = LOOKBACK_HOURS) -> list[Alert]:
@@ -484,7 +504,8 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
                     instrument=label,
                     severity="warning",
                     headline="Evotip not seated — injection aborted",
-                    detail=[f"*Run:* `{f.get('run')}`   *Method:* {f.get('method')}",
+                    detail=[_flag_identity(f.get("well"), f.get("start")),
+                            f"Evosep log: `{f.get('run')}`   *Method:* {f.get('method')}",
                             f"*Low-pressure-side peak:* "
                             f"{f.get('tip_pressure_max_bar')} bar"],
                     at=f_at.strftime("%Y-%m-%d %H:%M") if f_at else None,
@@ -498,7 +519,8 @@ def check_evosep_episodes(doc: dict, now: datetime | None = None,
                     instrument=label,
                     severity="warning",
                     headline="run aborted part-way",
-                    detail=[f"*Run:* `{f.get('run')}`   *Method:* {f.get('method')}",
+                    detail=[_flag_identity(f.get("well"), f.get("start")),
+                            f"Evosep log: `{f.get('run')}`   *Method:* {f.get('method')}",
                             f"*Ran for* {f.get('duration_min')} min. "
                             + "; ".join(f.get("reasons") or [])],
                     at=f_at.strftime("%Y-%m-%d %H:%M") if f_at else None,
@@ -644,6 +666,8 @@ def check_bruker(doc: dict, now: datetime | None = None,
         if at is None or at < cutoff:
             continue
         msg = (f.get("message") or "").strip()
+        sample, fvial = sample_from_run_name(f.get("fname"))
+        ident = f"*{identity_line(f.get('well') or fvial, sample, _parse_raw(f.get('start_date')))}*"
         alerts.append(Alert(
             key=f"{kind}:{station}:{_bucket(at)}",
             kind=kind,
@@ -651,8 +675,9 @@ def check_bruker(doc: dict, now: datetime | None = None,
             severity=severity,
             headline=cat,
             detail=[
-                f"*Well:* {f.get('well')}   *File:* `{f.get('fname')}`",
+                ident,
                 f"> {msg[:220]}" if msg else "",
+                f"*File:* `{f.get('fname')}`",
             ],
             at=at.strftime("%Y-%m-%d %H:%M"),
             extra={"fname": f.get("fname"), "category": cat},

@@ -1089,6 +1089,7 @@ def flag_runs(runs: list[dict], methods: dict, envelopes: dict) -> list[dict]:
                 "baseline_bar": base, "pct_over_baseline": r.get("pct_over_baseline"),
                 "duration_min": r["duration_min"],
                 "tip_pressure_max_bar": r.get("tip_pressure_max_bar"),
+                "well": r.get("well"),
                 "envelope_breach_min": r.get("envelope_breach_min"),
                 "envelope_lead_min": r.get("envelope_lead_min"),
             })

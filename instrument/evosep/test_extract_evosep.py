@@ -1426,3 +1426,11 @@ def test_the_lifetime_distribution_excludes_floors():
     assert dist is None or all(
         c["boundary_provenance"] != "start-of-record"
         for c in out["columns"][:dist["n_columns"]] if not c["is_current"])
+
+
+def test_tip_flag_carries_the_journal_well():
+    run = {"method": "100spd", "start": "2026-10-24T02:03:36", "run": "100spd_x",
+           "duration_min": 14.0, "plateau_bar": 300.0, "peak_bar": 310.0,
+           "curve": [300.0] * 8, "tip_pressure_max_bar": 70.1, "well": "S1-A5"}
+    flags = ex.flag_runs([run], {"100spd": {"analytical": True}}, {})
+    assert [f["well"] for f in flags if "tip" in f["kinds"]] == ["S1-A5"]
