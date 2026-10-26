@@ -30,7 +30,7 @@ BOM), the `.bat` is CRLF without a BOM. Full guide: `docs/user_guide.md`,
 
 ---
 
-## dump_bruker_db.ps1## dump_bruker_db.ps1  — run ON the instrument
+## dump_bruker_db.ps1  — run ON the instrument
 
 Read-only survey + dump of Bruker's HyStar PostgreSQL database, written to
 the share. Answers whether that database holds the acquisition sample table;

@@ -232,7 +232,7 @@ naming the vial, sample and time. Design:
   can neither fake freshness nor staleness.
 - **A PC reboot at night pages once** ("watcher down" after 10 min). That is
   the call most likely to be revisited; `/pause 8h` covers planned downtime.
-- Tests: `pwsh -NoProfile -File tests/test_watch_hystar_errors.ps1` and
+- Tests: `pwsh -NoProfile -File tests/test_hystar_watcher.ps1` and
   `tests/test_hystar_events.py`. Bump `$ScriptVersion` with `stan/__init__.py`.
 
 **The Evosep mirror is incremental by memory, not by scanning.** The
@@ -407,6 +407,17 @@ nothing, and the alerting died with it — eight days of silence that
 looked exactly like "nothing is wrong". The alarm was wired to the thing
 it was meant to alarm about.
 
+It is now `cron_stan_alerts.sh`, on its own crontab entry, and the
+crontab line invokes it as **`bash <script>`** rather than executing it
+— so a lost execute bit cannot repeat the failure on the watchdog
+itself. Worth considering for the other entries.
+
+It still shares a crontab, and a host, with everything it watches. From
+18:15 on 2026-09-28 to 10:00 the next day nothing on login2's crontab ran
+— the watchdog included — and nothing said so. No check on that host can
+report the host stopping; that needs something elsewhere watching for the
+`stan_alerts` heartbeat.
+
 **Update 2026-10-26: the PC now watches Hive back.** When the HyStar
 watcher can post to Slack directly, it also reads the newest
 `cron_stan_alerts_*.log` and says (no @mention) when that log is more than
@@ -424,17 +435,6 @@ and syncs pending rows back to PG; with a PG-configured store and PG down
 it holds point events older than 1 h and posts a single notice saying how
 many are held. A fallback that is empty looks identical to "nothing has
 been sent", which is the whole bug.
-
-It is now `cron_stan_alerts.sh`, on its own crontab entry, and the
-crontab line invokes it as **`bash <script>`** rather than executing it
-— so a lost execute bit cannot repeat the failure on the watchdog
-itself. Worth considering for the other entries.
-
-It still shares a crontab, and a host, with everything it watches. From
-18:15 on 2026-09-28 to 10:00 the next day nothing on login2's crontab ran
-— the watchdog included — and nothing said so. No check on that host can
-report the host stopping; that needs something elsewhere watching for the
-`stan_alerts` heartbeat.
 
 **Four different questions, and all are needed:**
 

@@ -20,7 +20,7 @@ with 97 tests. That gap is what this directory closes.
 | `evosep/cron_evosep.sh` | The 30-minute tick: cheap window + alerting every time, full extract and publish only when the published document is over ~20 h old. |
 | `bruker/extract.sql`, `extract_bruker.sh` | Restores the nightly Compass backup into a throwaway postgres and aggregates it. |
 | `scripts/watch_hystar_errors.ps1`, `.bat` | Self-installing queue-stop watcher for TIMS-10878 (task `STAN HyStar watcher`, every minute, no window). Reads HyStar's error logbook and @mentions Brett in Slack on every `EmergencyShutdown`. Hive's half is `scripts/cron_hystar_events.sh`. |
-| `scripts/*.ps1`, `*.bat` || `scripts/*.ps1`, `*.bat` | Windows-side collectors that run **on the instrument PC** and copy logs to the share. |
+| `scripts/*.ps1`, `*.bat` | Windows-side collectors that run **on the instrument PC** and copy logs to the share. |
 | `scripts/*.py` | Submission linking, rerun exports, QC scans. |
 
 ## Two things that will bite
