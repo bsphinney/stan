@@ -7,9 +7,11 @@
     logbook and alerts on every EmergencyShutdown, the event that stops the
     acquisition queue.
 
-    THIS FILE IS BUILT IN PARTS. This part holds only the reading and parsing
-    functions; the top level is a stub that returns. Later parts add the
-    state file, de-duplication, the Slack post and the share writer.
+    THIS FILE IS BUILT IN PARTS. Present: reading and parsing the logbook,
+    deciding and formatting alerts, and the tick (state, rotation, the Slack
+    post, event files and heartbeat on the share, watching Hive's alerting).
+    Under -Scheduled the top level runs one tick. Still to come: the install
+    surface (scheduled task, config, the stored webhook, -Pause, -Test).
 
     Log format, as measured on real files (see the design spec, section 3):
       * UTF-16LE with a BOM (FF FE).
@@ -570,6 +572,1081 @@ function Format-HiveQuietPayload {
     return @{ text = $text; blocks = @(, (New-SectionBlock $text)) }
 }
 
+# ======================================================================= tick
+# One tick, once a minute: read what is new in the logbook, decide, deliver,
+# report. StateDir (C:\ProgramData\STAN\hystar_watch) holds state.json, the
+# queue of event files the share could not take (pending\) and watch.log.
+# ShareDir (Y:\STAN\hystar_events\<COMPUTERNAME>) gets the event files and
+# heartbeat.json, which Hive reads (stan/reports/hystar_events.py).
+#
+# Nothing written here may carry the Slack webhook: every line bound for a
+# log, an event file or the heartbeat goes through Get-ScrubbedText.
+
+function Get-ScrubbedText {
+    # Replaces anything shaped like a Slack webhook (and the exact Secret, when
+    # given) with <webhook>. Same pattern as stan.notify._scrub.
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Text,
+        [string]$Secret = ""
+    )
+    if ([string]::IsNullOrEmpty($Text)) { return "" }
+    $out = $Text
+    if (-not [string]::IsNullOrEmpty($Secret)) { $out = $out.Replace($Secret, '<webhook>') }
+    return [regex]::Replace($out, 'https://hooks\.slack\.com/\S+', '<webhook>')
+}
+
+function ConvertTo-IsoLocal {
+    # Instrument-local naive ISO (2026-10-24T02:04:24), as every STAN document
+    # writes times. $null stays $null.
+    param($Value)
+    $d = ConvertTo-WatchDate $Value
+    if ($null -eq $d) { return $null }
+    return $d.ToString("yyyy-MM-dd'T'HH:mm:ss", [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Write-Utf8File {
+    # UTF-8 WITHOUT a BOM (ruling R14). PS 5.1's Set-Content -Encoding UTF8
+    # writes a BOM, and Hive's json.loads refuses one.
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text
+    )
+    [System.IO.File]::WriteAllText($Path, $Text, (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Publish-JsonFile {
+    <#
+    Writes Text to Dir\<BaseName>.json by way of Dir\<BaseName>.tmp and a
+    rename, so a reader that globs *.json (Hive) never sees half a file. The
+    temp name must not end in .json for the same reason.
+    -NoOverwrite: an existing target is left as it is and 'exists' comes back,
+    because an event file, once on the share, may already have been relayed
+    and is never rewritten. Returns 'written' or 'exists'; throws when the
+    folder cannot be written.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Dir,
+        [Parameter(Mandatory = $true)][string]$BaseName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [switch]$NoOverwrite
+    )
+    $target = Join-Path $Dir "$BaseName.json"
+    $tmp = Join-Path $Dir "$BaseName.tmp"
+    if ($NoOverwrite -and [System.IO.File]::Exists($target)) { return 'exists' }
+    Write-Utf8File -Path $tmp -Text $Text
+    try {
+        if ([System.IO.File]::Exists($target)) {
+            if ($NoOverwrite) {
+                [System.IO.File]::Delete($tmp)
+                return 'exists'
+            }
+            try {
+                # [NullString]: a plain $null reaches .NET as "" and Replace refuses it.
+                [System.IO.File]::Replace($tmp, $target, [NullString]::Value)
+            }
+            catch {
+                # Some SMB servers do not support ReplaceFile.
+                [System.IO.File]::Delete($target)
+                [System.IO.File]::Move($tmp, $target)
+            }
+        }
+        else {
+            [System.IO.File]::Move($tmp, $target)
+        }
+    }
+    catch {
+        try { [System.IO.File]::Delete($tmp) } catch { }
+        throw
+    }
+    return 'written'
+}
+
+function Get-NextOffset {
+    <#
+    The logbook offset after one read (ruling R10): the byte the text started
+    at, plus the bytes the splitter consumed. Read-NewLogText returns no start
+    offset, and at offset 0 its text starts at byte 2 (after the BOM), so the
+    start is NewOffset less the text's bytes (UTF-16: 2 per char; a bad code
+    unit decodes to one U+FFFD, so the count holds).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Read,
+        [Parameter(Mandatory = $true)][long]$ConsumedChars
+    )
+    $start = [long]$Read.NewOffset - (2 * [long]$Read.Text.Length)
+    return ($start + (2 * $ConsumedChars))
+}
+
+function Get-LogFingerprint {
+    <#
+    SHA-256 of the first Bytes bytes of a file (fewer when it is shorter):
+    @{ Hash; Length }, or $null when it cannot be read. HyStar's logbook opens
+    with a header and a timestamped S: line, so its first 200 bytes tell one
+    logbook file from the next. The share mode also lets HyStar rename the
+    file (rotation) while it is open here.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [int]$Bytes = 200
+    )
+    try {
+        $share = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+        $fs = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read, $share)
+        try {
+            $n = [int][Math]::Min([long]$Bytes, $fs.Length)
+            $buf = New-Object byte[] $n
+            $got = 0
+            while ($got -lt $n) {
+                $r = $fs.Read($buf, $got, $n - $got)
+                if ($r -le 0) { break }
+                $got += $r
+            }
+        }
+        finally { $fs.Dispose() }
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try { $h = $sha.ComputeHash($buf, 0, $got) }
+        finally { $sha.Dispose() }
+        return @{ Hash = ([System.BitConverter]::ToString($h)).Replace('-', ''); Length = $got }
+    }
+    catch { return $null }
+}
+
+function Find-RotatedLogbook {
+    <#
+    The file HyStar rotated the logbook to: among <name>_*.log beside it,
+    newest first, the first whose opening bytes match the saved fingerprint.
+    With no fingerprint saved, the newest. $null when there is none, so a
+    stranger's old file is never replayed. Lists one folder, on rotation only.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$LogbookPath,
+        $Hash = $null,
+        $HashLength = $null
+    )
+    $dir = [System.IO.Path]::GetDirectoryName($LogbookPath)
+    $stem = [System.IO.Path]::GetFileNameWithoutExtension($LogbookPath)
+    $ext = [System.IO.Path]::GetExtension($LogbookPath)
+    $found = [System.IO.Directory]::GetFiles($dir, "$($stem)_*$ext")
+    $n = $found.Length
+    if ($n -eq 0) { return $null }
+    $times = New-Object 'System.DateTime[]' $n
+    $paths = New-Object 'System.String[]' $n
+    for ($i = 0; $i -lt $n; $i++) {
+        $paths[$i] = $found[$i]
+        $times[$i] = [System.IO.File]::GetLastWriteTimeUtc($found[$i])
+    }
+    [Array]::Sort($times, $paths)
+    $checked = 0
+    for ($i = $n - 1; $i -ge 0; $i--) {
+        if ([string]::IsNullOrEmpty([string]$Hash)) { return $paths[$i] }
+        $fp = Get-LogFingerprint -Path $paths[$i] -Bytes ([int]$HashLength)
+        if ($null -ne $fp -and $fp.Hash -eq [string]$Hash) { return $paths[$i] }
+        $checked++
+        if ($checked -ge 10) { break }
+    }
+    return $null
+}
+
+function Read-LogbookSegment {
+    <#
+    One read of one logbook file from Offset: @{ Records = <parsed records>;
+    NewOffset; Length; Held; Consumed }. Held: a last record was left for the
+    next tick. -Final releases it anyway (a rotated file will not grow).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [long]$Offset = 0,
+        $PendingSince = $null,
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [switch]$Final
+    )
+    $r = Read-NewLogText -Path $Path -Offset $Offset
+    $since = $PendingSince
+    if ($Final) { $since = $Now.AddMinutes(-10) }
+    $s = Split-LogRecords -Text $r.Text -PendingSince $since -Now $Now
+    $parsed = New-Object System.Collections.ArrayList
+    foreach ($rec in $s.Records) {
+        $p = ConvertFrom-LogRecord -Record $rec
+        if ($null -ne $p) { [void]$parsed.Add($p) }
+    }
+    return @{
+        Records   = $parsed.ToArray()
+        NewOffset = (Get-NextOffset -Read $r -ConsumedChars $s.ConsumedChars)
+        Length    = $r.Length
+        Held      = ($s.ConsumedChars -lt $r.Text.Length)
+        Consumed  = $s.ConsumedChars
+    }
+}
+
+function Get-LogbookRecords {
+    <#
+    Everything new in the logbook since the saved state, as parsed records in
+    order: @{ Records; Seeded; Rotated }. Updates the State's offset, length,
+    fingerprint and pendingSince only once every read has succeeded, so a
+    failed read is simply retried next tick.
+
+    First run (no offset saved, or the saved one is for another logbook):
+    start at the current end and return nothing; history is never replayed.
+
+    Rotation (the file is shorter than the saved offset, or its first bytes
+    changed): finish the rotated file from the saved offset, then read the
+    new file from 0. In that tick, records at or before lastRecordAt are
+    dropped from the new file: the backstop against reading one file twice.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$State,
+        [Parameter(Mandatory = $true)][string]$LogbookPath,
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log
+    )
+    $out = New-Object System.Collections.ArrayList
+    $len = (New-Object System.IO.FileInfo $LogbookPath).Length
+    $savedOffset = $State['offset']
+    if ($null -eq $savedOffset -or [string]$State['logbook'] -ne $LogbookPath) {
+        $fp = Get-LogFingerprint -Path $LogbookPath
+        $State['logbook'] = $LogbookPath
+        $State['offset'] = [long]$len
+        $State['length'] = [long]$len
+        $State['pendingSince'] = $null
+        $State['fingerprint'] = $null
+        $State['fingerprintLength'] = $null
+        if ($null -ne $fp) {
+            $State['fingerprint'] = $fp.Hash
+            $State['fingerprintLength'] = $fp.Length
+        }
+        [void]$Log.Add("first run: starting at the end of $LogbookPath (byte $len); history is not replayed")
+        return @{ Records = @(); Seeded = $true; Rotated = $false }
+    }
+    $offset = [long]$savedOffset
+    $savedHash = [string]$State['fingerprint']
+    $savedHashLen = 0
+    if ($null -ne $State['fingerprintLength']) { $savedHashLen = [int]$State['fingerprintLength'] }
+
+    $rotated = $false
+    if ($len -lt $offset) { $rotated = $true }
+    elseif ($savedHash -ne "" -and $savedHashLen -gt 0) {
+        $now_fp = Get-LogFingerprint -Path $LogbookPath -Bytes $savedHashLen
+        if ($null -ne $now_fp -and ($now_fp.Length -ne $savedHashLen -or $now_fp.Hash -ne $savedHash)) {
+            $rotated = $true
+        }
+    }
+
+    $pendingSince = ConvertTo-WatchDate $State['pendingSince']
+    # Clock went back (DST fall-back): restart the 2-min wait, not an hour's.
+    if ($null -ne $pendingSince -and $pendingSince -gt $Now) { $pendingSince = $Now }
+    if ($rotated) {
+        [void]$Log.Add("logbook rotated (now $len bytes, saved offset $offset)")
+        $old = Find-RotatedLogbook -LogbookPath $LogbookPath -Hash $savedHash -HashLength $savedHashLen
+        if ($null -ne $old) {
+            $seg = Read-LogbookSegment -Path $old -Offset $offset -Now $Now -Final
+            foreach ($p in $seg.Records) { [void]$out.Add($p) }
+            [void]$Log.Add("finished $([System.IO.Path]::GetFileName($old)) from byte $($offset): $($seg.Records.Count) record(s)")
+        }
+        else {
+            [void]$Log.Add("rotated logbook not found next to $LogbookPath; anything written just before the rotation is missed")
+        }
+        $offset = 0
+        $pendingSince = $null
+    }
+
+    $seg = Read-LogbookSegment -Path $LogbookPath -Offset $offset -PendingSince $pendingSince -Now $Now
+    $backstop = ConvertTo-WatchDate $State['lastRecordAt']
+    foreach ($p in $seg.Records) {
+        if ($rotated -and $null -ne $backstop -and $p.At -le $backstop) {
+            [void]$Log.Add("skipped a $($p.Type) at $(ConvertTo-IsoLocal $p.At): not after the last record seen")
+            continue
+        }
+        [void]$out.Add($p)
+    }
+
+    # A held tail starts its 2-min clock when it first appears; progress
+    # (consumed > 0) means the held record is a new one.
+    if ($seg.Held) {
+        if ($null -eq $pendingSince -or $seg.Consumed -gt 0) { $pendingSince = $Now }
+    }
+    else { $pendingSince = $null }
+
+    $State['offset'] = [long]$seg.NewOffset
+    $State['length'] = [long]$seg.Length
+    $State['pendingSince'] = $pendingSince
+    if ($rotated -or $savedHashLen -lt 200) {
+        $fp = Get-LogFingerprint -Path $LogbookPath
+        if ($null -ne $fp) {
+            $State['fingerprint'] = $fp.Hash
+            $State['fingerprintLength'] = $fp.Length
+        }
+    }
+    return @{ Records = $out.ToArray(); Seeded = $false; Rotated = $rotated }
+}
+
+function Test-InjectionSince {
+    <#
+    True when an Evosep procedure (an injection attempt) started after Since
+    and at or before Until. Ruling R13: a stop that repeats inside the 5-min
+    fold window after such a start is a new stop (someone restarted the queue
+    in between), not one more of a storm. Folder names only
+    (<method>_yyyy-MM-dd_HH-mm-ss), listed per day by pattern, so a serial
+    folder of 31,000 procedures costs a name filter, not a walk, and nothing
+    is opened or stat'ed. Never throws.
+    #>
+    param(
+        [string]$ProcedureRoot = "",
+        $Since = $null,
+        $Until = $null
+    )
+    try {
+        if ([string]::IsNullOrEmpty($ProcedureRoot)) { return $false }
+        $from = ConvertTo-WatchDate $Since
+        $to = ConvertTo-WatchDate $Until
+        if ($null -eq $from -or $null -eq $to) { return $false }
+        if ($to -le $from) { return $false }
+        if (-not [System.IO.Directory]::Exists($ProcedureRoot)) { return $false }
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+        $patterns = New-Object System.Collections.ArrayList
+        if (($to.Date - $from.Date).TotalDays -gt 2) { [void]$patterns.Add('*') }
+        else {
+            $day = $from.Date
+            while ($day -le $to.Date) {
+                [void]$patterns.Add("*_$($day.ToString('yyyy-MM-dd', $inv))_*")
+                $day = $day.AddDays(1)
+            }
+        }
+        foreach ($serial in [System.IO.Directory]::GetDirectories($ProcedureRoot)) {
+            foreach ($pattern in $patterns) {
+                foreach ($dir in [System.IO.Directory]::GetDirectories($serial, $pattern)) {
+                    $name = [System.IO.Path]::GetFileName($dir)
+                    $m = [regex]::Match($name, '_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$')
+                    if (-not $m.Success) { continue }
+                    $start = [datetime]::MinValue
+                    $ok = [datetime]::TryParseExact($m.Groups[1].Value, 'yyyy-MM-dd_HH-mm-ss', $inv,
+                        [System.Globalization.DateTimeStyles]::None, [ref]$start)
+                    if (-not $ok) { continue }
+                    if ($start -gt $from -and $start -le $to) { return $true }
+                }
+            }
+        }
+        return $false
+    }
+    catch { return $false }
+}
+
+function New-WatchEvent {
+    <#
+    One event in the file contract Hive reads (schema 1). The id is
+    <host>_<at yyyyMMddTHHmmss>_<n>, n a counter kept in State, so no two
+    events share an id even within one second (Hive keys its memory on it).
+    posted_by_pc / posted_at are filled in by Send-WatchEvent.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$State,
+        [Parameter(Mandatory = $true)][string]$Type,
+        [Parameter(Mandatory = $true)][string]$HostName,
+        [Parameter(Mandatory = $true)][datetime]$At,
+        $Source = $null,
+        $Category = $null,
+        $Title = $null,
+        $Message = $null,
+        $Vial = $null,
+        $Sample = $null,
+        $DedupKey = $null,
+        [int]$Count = 1,
+        $FirstAt = $null,
+        [Parameter(Mandatory = $true)]$Payload,
+        [string]$Version = ""
+    )
+    $seq = 1
+    if ($null -ne $State['eventSeq']) { $seq = [int]$State['eventSeq'] + 1 }
+    $State['eventSeq'] = $seq
+    $stamp = $At.ToString("yyyyMMdd'T'HHmmss", [System.Globalization.CultureInfo]::InvariantCulture)
+    $station = [regex]::Replace($HostName.ToLowerInvariant(), '[^a-z0-9]', '')
+    $first = ConvertTo-IsoLocal $FirstAt
+    if ($null -eq $first) { $first = ConvertTo-IsoLocal $At }
+    return [ordered]@{
+        schema          = 1
+        id              = "$($HostName)_$($stamp)_$seq"
+        type            = $Type
+        host            = $HostName
+        station         = $station
+        at              = (ConvertTo-IsoLocal $At)
+        source          = $Source
+        category        = $Category
+        title           = $Title
+        message         = $Message
+        vial            = $Vial
+        sample          = $Sample
+        dedup_key       = $DedupKey
+        count           = $Count
+        first_at        = $first
+        payload         = $Payload
+        posted_by_pc    = $false
+        posted_at       = $null
+        watcher_version = $Version
+    }
+}
+
+function Invoke-Sender {
+    # Runs the sender on a payload; whatever it does (returns junk, throws),
+    # the answer is @{ Ok = <bool>; Status = <scrubbed string> }.
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Sender,
+        [Parameter(Mandatory = $true)]$Payload
+    )
+    try {
+        $out = & $Sender $Payload
+        $res = $null
+        foreach ($o in @($out)) {
+            if ($o -is [System.Collections.IDictionary] -and $o.Contains('Ok')) { $res = $o }
+        }
+        if ($null -eq $res) { return @{ Ok = $false; Status = 'the sender returned no result' } }
+        return @{ Ok = ($res['Ok'] -eq $true); Status = (Get-ScrubbedText ([string]$res['Status'])) }
+    }
+    catch {
+        $why = Get-ScrubbedText "$($_.Exception.GetType().Name): $($_.Exception.Message)"
+        return @{ Ok = $false; Status = $why }
+    }
+}
+
+function Get-PendingFiles {
+    # The queued event files, oldest first (their names start with a counter).
+    param([Parameter(Mandatory = $true)][string]$PendingDir)
+    if (-not [System.IO.Directory]::Exists($PendingDir)) { return @() }
+    $files = [System.IO.Directory]::GetFiles($PendingDir, '*.json')
+    [Array]::Sort($files, [System.StringComparer]::Ordinal)
+    return $files
+}
+
+function Save-EventFile {
+    <#
+    Puts one event file on the share; when the share cannot take it, or older
+    events are still queued (order matters), queues it in StateDir\pending\
+    instead. Returns 'written', 'exists', 'queued' or 'lost' (not even the
+    local queue could take it).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Id,
+        [Parameter(Mandatory = $true)][string]$Text,
+        [string]$ShareDir = "",
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log
+    )
+    $pendingDir = Join-Path $StateDir 'pending'
+    $queued = @(Get-PendingFiles -PendingDir $pendingDir)
+    if ($queued.Count -eq 0 -and -not [string]::IsNullOrEmpty($ShareDir)) {
+        try {
+            [void][System.IO.Directory]::CreateDirectory($ShareDir)
+            return (Publish-JsonFile -Dir $ShareDir -BaseName $Id -Text $Text -NoOverwrite)
+        }
+        catch {
+            [void]$Log.Add("share not writable for $Id ($($_.Exception.GetType().Name): $($_.Exception.Message)); queued")
+        }
+    }
+    try {
+        [void][System.IO.Directory]::CreateDirectory($pendingDir)
+        $next = 1
+        foreach ($q in $queued) {
+            $m = [regex]::Match([System.IO.Path]::GetFileName($q), '^(\d+)_')
+            if ($m.Success -and ([int]$m.Groups[1].Value) -ge $next) { $next = [int]$m.Groups[1].Value + 1 }
+        }
+        $name = '{0:D6}_{1}' -f $next, $Id
+        [void](Publish-JsonFile -Dir $pendingDir -BaseName $name -Text $Text)
+        return 'queued'
+    }
+    catch {
+        [void]$Log.Add("could not queue $Id either ($($_.Exception.GetType().Name): $($_.Exception.Message))")
+        return 'lost'
+    }
+}
+
+function Invoke-PendingFlush {
+    <#
+    Moves queued event files to the share, oldest first, and stops at the
+    first share failure so the share sees them in order. An event already
+    there is not rewritten. A queued file that cannot be read here is set
+    aside as .bad rather than holding every later event behind it forever.
+    Returns how many are still queued.
+    #>
+    param(
+        [string]$ShareDir = "",
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log
+    )
+    $files = @(Get-PendingFiles -PendingDir (Join-Path $StateDir 'pending'))
+    $left = $files.Count
+    if ($left -eq 0 -or [string]::IsNullOrEmpty($ShareDir)) { return $left }
+    try { [void][System.IO.Directory]::CreateDirectory($ShareDir) }
+    catch {
+        [void]$Log.Add("share still unavailable; $left event file(s) queued")
+        return $left
+    }
+    foreach ($f in $files) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($f)
+        $id = $name.Substring($name.IndexOf('_') + 1)
+        $text = $null
+        try { $text = [System.IO.File]::ReadAllText($f) }
+        catch {
+            [void]$Log.Add("queued $id unreadable ($($_.Exception.GetType().Name)); set aside as .bad")
+            try { [System.IO.File]::Move($f, "$f.bad") } catch { }
+            $left--
+            continue
+        }
+        try { $r = Publish-JsonFile -Dir $ShareDir -BaseName $id -Text $text -NoOverwrite }
+        catch {
+            [void]$Log.Add("share still unavailable ($($_.Exception.GetType().Name)); $left event file(s) queued")
+            break
+        }
+        $left--
+        [void]$Log.Add("queued $id -> share ($r)")
+        # On the share now; a copy left here would only be found 'exists'
+        # (or, once Hive has moved it, rewritten and recorded as 'already').
+        try { [System.IO.File]::Delete($f) }
+        catch { [void]$Log.Add("could not remove queued $id ($($_.Exception.GetType().Name))") }
+    }
+    return $left
+}
+
+function Send-WatchEvent {
+    <#
+    Delivers one event: the direct Slack post first, so posted_by_pc is final
+    before the file exists, then the event file. A failed post is not retried
+    from here: posted_by_pc false is Hive's cue to relay it. Skip: why no post
+    is tried (an earlier post this tick failed).
+    Returns @{ Posted; Status; Filed; Tried }.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Event,
+        [scriptblock]$Sender = $null,
+        [string]$Skip = "",
+        [string]$ShareDir = "",
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log
+    )
+    $posted = $false
+    $status = 'no webhook configured'
+    if (-not [string]::IsNullOrEmpty($Skip)) { $status = $Skip }
+    elseif ($null -ne $Sender) {
+        $res = Invoke-Sender -Sender $Sender -Payload $Event['payload']
+        $posted = $res.Ok
+        $status = $res.Status
+    }
+    $Event['posted_by_pc'] = $posted
+    if ($posted) { $Event['posted_at'] = ConvertTo-IsoLocal $Now }
+    $text = ConvertTo-Json -InputObject $Event -Depth 10
+    $filed = Save-EventFile -Id $Event['id'] -Text $text -ShareDir $ShareDir -StateDir $StateDir -Log $Log
+    $how = "posted ($status)"
+    if (-not $posted) { $how = "NOT posted ($status); Hive will relay it" }
+    $what = "$($Event['type'])"
+    if ($null -ne $Event['title']) { $what = "$what '$($Event['title'])'" }
+    [void]$Log.Add("$what at $($Event['at']) id $($Event['id']): $how; file $filed")
+    $tried = ($null -ne $Sender -and [string]::IsNullOrEmpty($Skip))
+    return @{ Posted = $posted; Status = $status; Filed = $filed; Tried = $tried }
+}
+
+function Invoke-RecordAlert {
+    <#
+    Turns one parsed record into the event to deliver, or $null.
+    Stop: category, dedup key, Get-AlertDecision; then ruling R13: a 'fold'
+    (or 'reminder') becomes 'new' when an Evosep procedure started after the
+    key's last occurrence, because the queue was restarted in between.
+    lastShutdownAt is recorded for every stop, folded or not.
+    Restart: an event only when no shutdown came in the 5 min before.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$State,
+        [Parameter(Mandatory = $true)]$Record,
+        [string]$ProcedureRoot = "",
+        [string]$SampleLogPath = "",
+        [Parameter(Mandatory = $true)][string]$HostName,
+        [string]$MemberId = "",
+        [string]$Version = "",
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()]$Log
+    )
+    $at = [datetime]$Record.At
+    if ($Record.Type -eq 'restart') {
+        if (-not (Test-UnexpectedRestart -State $State -At $at)) {
+            [void]$Log.Add("HyStar session start at $(ConvertTo-IsoLocal $at) follows a shutdown: no alert")
+            return $null
+        }
+        $payload = Format-RestartPayload -Event @{ At = $at } -MemberId $MemberId -Host $HostName
+        return (New-WatchEvent -State $State -Type 'restart' -HostName $HostName -At $at `
+                -Source $Record.Source -Title 'HyStar restarted' -Message $Record.Message `
+                -DedupKey (Get-DedupKey ([string]$Record.Message)) -Payload $payload -Version $Version)
+    }
+    if ($Record.Type -ne 'stop') { return $null }
+
+    $cat = Get-StopCategory ([string]$Record.Message)
+    $key = Get-DedupKey ([string]$Record.Message)
+    # An empty message still stops the queue; it must not become an empty
+    # key, which Get-AlertDecision refuses (and the stop would never page).
+    if ([string]::IsNullOrEmpty($key)) { $key = "(no message) $($Record.Source)" }
+    if ($null -eq $State['keys']) { $State['keys'] = @{} }
+    $prevLast = $null
+    if ($State['keys'].ContainsKey($key)) { $prevLast = $State['keys'][$key].LastAt }
+    if ($null -ne $prevLast -and $at -lt $prevLast) {
+        # The clock went back (DST fall-back repeats 01:00-02:00 local): a gap
+        # that reads negative is not "under 5 min", so decide as for a new key.
+        [void]$State['keys'].Remove($key)
+        $prevLast = $null
+    }
+    $decision = Get-AlertDecision -State $State -Key $key -At $at
+    if ($decision -ne 'new' -and $null -ne $prevLast) {
+        if (Test-InjectionSince -ProcedureRoot $ProcedureRoot -Since $prevLast -Until $at) {
+            $State['keys'][$key] = @{ FirstAt = $at; LastAt = $at; Count = 1; ReminderSent = $false }
+            [void]$Log.Add("an injection started since the last '$($cat.Title)' at $(ConvertTo-IsoLocal $prevLast): a new stop, not a repeat")
+            $decision = 'new'
+        }
+    }
+    $lastStop = ConvertTo-WatchDate $State['lastShutdownAt']
+    if ($null -eq $lastStop -or $at -gt $lastStop) { $State['lastShutdownAt'] = $at }
+
+    $entry = $State['keys'][$key]
+    if ($decision -eq 'fold') {
+        [void]$Log.Add("'$($cat.Title)' at $(ConvertTo-IsoLocal $at) folded into the alert of $(ConvertTo-IsoLocal $entry.FirstAt) (x$($entry.Count))")
+        return $null
+    }
+    if ($decision -eq 'reminder') {
+        $payload = Format-ReminderPayload -Event @{ Title = $cat.Title; Count = $entry.Count; FirstAt = $entry.FirstAt } `
+            -MemberId $MemberId -Host $HostName
+        return (New-WatchEvent -State $State -Type 'reminder' -HostName $HostName -At $at `
+                -Source $Record.Source -Category $cat.Category -Title $cat.Title -Message $Record.Message `
+                -DedupKey $key -Count ([int]$entry.Count) -FirstAt $entry.FirstAt -Payload $payload -Version $Version)
+    }
+    $vial = $null
+    if (-not [string]::IsNullOrEmpty($ProcedureRoot)) { $vial = Get-EvosepVial -ProcedureRoot $ProcedureRoot -At $at }
+    $sample = $null
+    if (-not [string]::IsNullOrEmpty($SampleLogPath)) { $sample = Get-HyStarSample -LogbookPath $SampleLogPath -At $at }
+    $info = @{
+        Category = $cat.Category; Title = $cat.Title; At = $at
+        Message = $Record.Message; Vial = $vial; Sample = $sample
+    }
+    $payload = Format-StopPayload -Event $info -MemberId $MemberId -Host $HostName
+    return (New-WatchEvent -State $State -Type 'stop' -HostName $HostName -At $at `
+            -Source $Record.Source -Category $cat.Category -Title $cat.Title -Message $Record.Message `
+            -Vial $vial -Sample $sample -DedupKey $key -Count 1 -FirstAt $at -Payload $payload -Version $Version)
+}
+
+function Get-NewestFileTime {
+    # LastWriteTimeUtc of the newest file matching Pattern in Dir, or $null.
+    # UTC, so the repeated local hour at DST fall-back cannot skew an age.
+    param([string]$Dir = "", [Parameter(Mandatory = $true)][string]$Pattern)
+    if ([string]::IsNullOrEmpty($Dir)) { return $null }
+    if (-not [System.IO.Directory]::Exists($Dir)) { return $null }
+    $newest = $null
+    foreach ($f in [System.IO.Directory]::GetFiles($Dir, $Pattern)) {
+        $t = [System.IO.File]::GetLastWriteTimeUtc($f)
+        if ($null -eq $newest -or $t -gt $newest) { $newest = $t }
+    }
+    return $newest
+}
+
+function Get-HiveWatchNote {
+    <#
+    Watches Hive's own alerting from off Hive. The newest
+    cron_stan_alerts_*.log older than 45 min gives one 'hive_quiet'; once a
+    fresh one appears, one 'hive_back'. Only with a sender: with no route to
+    Slack the PC has no one to tell. A log folder it cannot see (share down)
+    decides nothing. Returns @{ Kind; LastAt } or $null; updates State.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$State,
+        [string]$HiveLogsDir = "",
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [scriptblock]$Sender = $null
+    )
+    if ($null -eq $Sender) { return $null }
+    $newestUtc = $null
+    try { $newestUtc = Get-NewestFileTime -Dir $HiveLogsDir -Pattern 'cron_stan_alerts_*.log' }
+    catch { return $null }
+    if ($null -eq $newestUtc) { return $null }
+    $newest = $newestUtc.ToLocalTime()
+    $quiet = (($Now.ToUniversalTime() - $newestUtc).TotalMinutes -gt 45)
+    $wasQuiet = ($State['hiveQuiet'] -eq $true)
+    if ($quiet -and -not $wasQuiet) {
+        $State['hiveQuiet'] = $true
+        $State['hiveQuietSince'] = $newest
+        return @{ Kind = 'hive_quiet'; LastAt = $newest }
+    }
+    if ($wasQuiet -and -not $quiet) {
+        $State['hiveQuiet'] = $false
+        $State['hiveQuietSince'] = $null
+        return @{ Kind = 'hive_back'; LastAt = $newest }
+    }
+    return $null
+}
+
+function Read-WatchState {
+    # state.json in the hashtable form, or $null when there is none. Throws
+    # when it cannot be parsed; the tick then starts again at the end.
+    param([Parameter(Mandatory = $true)][string]$StateDir)
+    $path = Join-Path $StateDir 'state.json'
+    if (-not [System.IO.File]::Exists($path)) { return $null }
+    $raw = ConvertFrom-Json ([System.IO.File]::ReadAllText($path))
+    if ($null -eq $raw) { return $null }
+    $st = ConvertTo-WatchState $raw
+    foreach ($n in @('lastRecordAt', 'pendingSince', 'hiveQuietSince')) {
+        $st[$n] = ConvertTo-WatchDate $st[$n]
+    }
+    return $st
+}
+
+function Save-WatchState {
+    <#
+    Writes state.json (UTF-8, no BOM, temp + rename). Dates go out as local
+    ISO strings: PS 5.1 would write them as /Date(ms)/. Keys not seen for a
+    day are dropped: past 5 min a key only decides 'new', which a missing
+    key decides too.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [Parameter(Mandatory = $true)][hashtable]$State,
+        [Parameter(Mandatory = $true)][datetime]$Now
+    )
+    $keys = [ordered]@{}
+    $src = $State['keys']
+    if ($null -ne $src) {
+        # get_Keys(): a dedup key spelled "keys" must not shadow the property.
+        foreach ($k in @($src.get_Keys())) {
+            $e = $src[$k]
+            $last = ConvertTo-WatchDate $e.LastAt
+            if ($null -ne $last -and $last -lt $Now.AddDays(-1)) { continue }
+            $keys[[string]$k] = [ordered]@{
+                FirstAt      = (ConvertTo-IsoLocal $e.FirstAt)
+                LastAt       = (ConvertTo-IsoLocal $last)
+                Count        = [int]$e.Count
+                ReminderSent = ($e.ReminderSent -eq $true)
+            }
+        }
+    }
+    $offset = $null
+    if ($null -ne $State['offset']) { $offset = [long]$State['offset'] }
+    $length = $null
+    if ($null -ne $State['length']) { $length = [long]$State['length'] }
+    $fpLen = $null
+    if ($null -ne $State['fingerprintLength']) { $fpLen = [int]$State['fingerprintLength'] }
+    $seq = 0
+    if ($null -ne $State['eventSeq']) { $seq = [int]$State['eventSeq'] }
+    $doc = [ordered]@{
+        schema            = 1
+        logbook           = $State['logbook']
+        offset            = $offset
+        length            = $length
+        fingerprint       = $State['fingerprint']
+        fingerprintLength = $fpLen
+        lastRecordAt      = (ConvertTo-IsoLocal $State['lastRecordAt'])
+        lastShutdownAt    = (ConvertTo-IsoLocal $State['lastShutdownAt'])
+        pendingSince      = (ConvertTo-IsoLocal $State['pendingSince'])
+        hiveQuiet         = ($State['hiveQuiet'] -eq $true)
+        hiveQuietSince    = (ConvertTo-IsoLocal $State['hiveQuietSince'])
+        eventSeq          = $seq
+        keys              = $keys
+    }
+    [void](Publish-JsonFile -Dir $StateDir -BaseName 'state' -Text (ConvertTo-Json -InputObject $doc -Depth 10))
+}
+
+function Write-Heartbeat {
+    # heartbeat.json on the share, every tick: what makes a dead watcher
+    # visible. Hive ages it by the file's mtime; at/utc are for display.
+    param(
+        [Parameter(Mandatory = $true)][string]$ShareDir,
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [string]$Version = "",
+        [string]$LogbookPath = "",
+        $Offset = $null,
+        $LastError = $null
+    )
+    [void][System.IO.Directory]::CreateDirectory($ShareDir)
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $doc = [ordered]@{
+        at         = (ConvertTo-IsoLocal $Now)
+        utc        = $Now.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", $inv)
+        version    = $Version
+        logbook    = $LogbookPath
+        offset     = $Offset
+        last_error = $LastError
+    }
+    [void](Publish-JsonFile -Dir $ShareDir -BaseName 'heartbeat' -Text (ConvertTo-Json -InputObject $doc -Depth 10))
+}
+
+function Write-WatchLog {
+    # Appends Lines (scrubbed, each stamped) to StateDir\watch.log. Past 1 MB
+    # the log becomes watch.log.1 first: this runs 1,440 times a day.
+    # Never throws.
+    param(
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [AllowEmptyCollection()]$Lines = @()
+    )
+    try {
+        $path = Join-Path $StateDir 'watch.log'
+        if ([System.IO.File]::Exists($path)) {
+            if ((New-Object System.IO.FileInfo $path).Length -gt 1048576) {
+                $old = Join-Path $StateDir 'watch.log.1'
+                if ([System.IO.File]::Exists($old)) { [System.IO.File]::Delete($old) }
+                [System.IO.File]::Move($path, $old)
+            }
+        }
+        $stamp = $Now.ToString('yyyy-MM-dd HH:mm:ss', [System.Globalization.CultureInfo]::InvariantCulture)
+        $sb = New-Object System.Text.StringBuilder
+        foreach ($l in @($Lines)) {
+            [void]$sb.AppendLine("$stamp $(Get-ScrubbedText ([string]$l))")
+        }
+        [System.IO.File]::AppendAllText($path, $sb.ToString(), (New-Object System.Text.UTF8Encoding $false))
+    }
+    catch { }
+}
+
+function Invoke-WatchTick {
+    <#
+    One full tick. Never throws. Returns a summary hashtable
+    @{ Seeded; Records; Events; Posted; Filed; Queued; Errors }.
+
+      1. state.json from StateDir (missing or unreadable: start at the end)
+      2. queued event files go to the share first, oldest first
+      3. new logbook records, through rotation (Get-LogbookRecords)
+      4. each record decided (Invoke-RecordAlert); an event is posted through
+         Sender (@{ Ok; Status }) and filed on the share or queued
+      5. Hive's alerting watched (only with a Sender)
+      6. state saved, heartbeat.json written, watch.log appended
+
+    Sender: a scriptblock taking the payload hashtable and returning
+    @{ Ok = <bool>; Status = <int|string> }, or $null for no direct post
+    (every event then carries posted_by_pc false and Hive relays it).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [Parameter(Mandatory = $true)][string]$LogbookPath,
+        [string]$ShareDir = "",
+        [string]$ProcedureRoot = "",
+        [string]$HiveLogsDir = "",
+        [datetime]$Now = (Get-Date),
+        [scriptblock]$Sender = $null,
+        [string]$MemberId = "",
+        [string]$HostName = "",
+        [string]$SampleLogPath = "",
+        [string]$Version = ""
+    )
+    $summary = @{ Seeded = $false; Records = 0; Events = 0; Posted = 0; Filed = 0; Queued = 0; Errors = 0 }
+    $log = New-Object System.Collections.ArrayList
+    $lastError = $null
+    $state = $null
+    # After one failed post, the rest of this tick goes to files only (Hive
+    # relays them): with no route, each post would wait out its 10 s timeout
+    # and a backlog could outlast the scheduled task's time limit.
+    $skipPost = ""
+    try {
+        if ([string]::IsNullOrEmpty($Version)) { $Version = [string]$ScriptVersion }
+        if ([string]::IsNullOrEmpty($HostName)) { $HostName = [string]$env:COMPUTERNAME }
+        if ([string]::IsNullOrEmpty($HostName)) { $HostName = 'TIMS-10878' }
+        if ([string]::IsNullOrEmpty($SampleLogPath)) {
+            $logDir = [System.IO.Path]::GetDirectoryName($LogbookPath)
+            if (-not [string]::IsNullOrEmpty($logDir)) { $SampleLogPath = Join-Path $logDir 'CompassHyStarLogbook.log' }
+        }
+        [void][System.IO.Directory]::CreateDirectory($StateDir)
+        try { $state = Read-WatchState -StateDir $StateDir }
+        catch {
+            [void]$log.Add("state.json unreadable ($($_.Exception.GetType().Name)); starting again at the end of the logbook")
+            $state = $null
+        }
+        if ($null -eq $state) { $state = ConvertTo-WatchState $null }
+
+        $null = Invoke-PendingFlush -ShareDir $ShareDir -StateDir $StateDir -Log $log
+
+        $records = @()
+        try {
+            if ([System.IO.File]::Exists($LogbookPath)) {
+                $got = Get-LogbookRecords -State $state -LogbookPath $LogbookPath -Now $Now -Log $log
+                $records = @($got.Records)
+                $summary['Seeded'] = $got.Seeded
+            }
+            else {
+                $lastError = "logbook not found: $LogbookPath"
+                [void]$log.Add($lastError)
+            }
+        }
+        catch {
+            # Offsets are untouched, so the same bytes are read next tick.
+            $summary['Errors'] = $summary['Errors'] + 1
+            $lastError = "logbook not read: $($_.Exception.GetType().Name): $($_.Exception.Message)"
+            [void]$log.Add($lastError)
+        }
+
+        foreach ($rec in $records) {
+            $summary['Records'] = $summary['Records'] + 1
+            $recAt = ConvertTo-WatchDate $rec.At
+            $lastRec = ConvertTo-WatchDate $state['lastRecordAt']
+            if ($null -ne $recAt -and ($null -eq $lastRec -or $recAt -gt $lastRec)) { $state['lastRecordAt'] = $recAt }
+            try {
+                $ev = Invoke-RecordAlert -State $state -Record $rec -ProcedureRoot $ProcedureRoot `
+                    -SampleLogPath $SampleLogPath -HostName $HostName -MemberId $MemberId -Version $Version -Log $log
+                if ($null -eq $ev) { continue }
+                $sent = Send-WatchEvent -Event $ev -Sender $Sender -Skip $skipPost -ShareDir $ShareDir -StateDir $StateDir -Now $Now -Log $log
+                $summary['Events'] = $summary['Events'] + 1
+                if ($sent.Posted) { $summary['Posted'] = $summary['Posted'] + 1 }
+                elseif ($sent.Tried) {
+                    $lastError = "Slack post failed: $($sent.Status)"
+                    $skipPost = "not tried: a post failed earlier this tick"
+                }
+                if ($sent.Filed -eq 'queued') { $summary['Queued'] = $summary['Queued'] + 1 }
+                elseif ($sent.Filed -ne 'lost') { $summary['Filed'] = $summary['Filed'] + 1 }
+            }
+            catch {
+                $summary['Errors'] = $summary['Errors'] + 1
+                $lastError = "record at $(ConvertTo-IsoLocal $rec.At) failed: $($_.Exception.GetType().Name): $($_.Exception.Message)"
+                [void]$log.Add($lastError)
+            }
+        }
+
+        try {
+            $note = Get-HiveWatchNote -State $state -HiveLogsDir $HiveLogsDir -Now $Now -Sender $Sender
+            if ($null -ne $note) {
+                if ($note.Kind -eq 'hive_quiet') {
+                    $payload = Format-HiveQuietPayload -At $note.LastAt
+                    $title = "STAN's Hive alerting has gone quiet"
+                }
+                else {
+                    $payload = Format-HiveQuietPayload -Back
+                    $title = "STAN's Hive alerting is back"
+                }
+                $ev = New-WatchEvent -State $state -Type $note.Kind -HostName $HostName -At $Now `
+                    -Source 'watcher' -Title $title -Message $payload.text -Payload $payload -Version $Version
+                $sent = Send-WatchEvent -Event $ev -Sender $Sender -Skip $skipPost -ShareDir $ShareDir -StateDir $StateDir -Now $Now -Log $log
+                $summary['Events'] = $summary['Events'] + 1
+                if ($sent.Posted) { $summary['Posted'] = $summary['Posted'] + 1 }
+            }
+        }
+        catch {
+            $summary['Errors'] = $summary['Errors'] + 1
+            $lastError = "Hive watch failed: $($_.Exception.GetType().Name): $($_.Exception.Message)"
+            [void]$log.Add($lastError)
+        }
+    }
+    catch {
+        $summary['Errors'] = $summary['Errors'] + 1
+        $lastError = "tick failed: $($_.Exception.GetType().Name): $($_.Exception.Message)"
+        [void]$log.Add($lastError)
+    }
+    finally {
+        if ($null -ne $state) {
+            try { Save-WatchState -StateDir $StateDir -State $state -Now $Now }
+            catch {
+                $summary['Errors'] = $summary['Errors'] + 1
+                $lastError = "state not saved: $($_.Exception.GetType().Name): $($_.Exception.Message)"
+                [void]$log.Add($lastError)
+            }
+        }
+        if (-not [string]::IsNullOrEmpty($ShareDir)) {
+            $offset = $null
+            if ($null -ne $state) { $offset = $state['offset'] }
+            $errText = $null
+            if ($null -ne $lastError) { $errText = Get-ScrubbedText $lastError }
+            try {
+                Write-Heartbeat -ShareDir $ShareDir -Now $Now -Version $Version -LogbookPath $LogbookPath `
+                    -Offset $offset -LastError $errText
+            }
+            catch {
+                [void]$log.Add("heartbeat not written ($($_.Exception.GetType().Name): $($_.Exception.Message))")
+            }
+        }
+        $off = ''
+        if ($null -ne $state) { $off = $state['offset'] }
+        # The version banner, once per tick, last so a quiet tick is one line.
+        [void]$log.Add("watch_hystar_errors v$($Version): offset $off, $($summary['Records']) record(s), $($summary['Events']) event(s), $($summary['Posted']) posted, $($summary['Filed']) filed, $($summary['Queued']) queued, $($summary['Errors']) error(s)")
+        Write-WatchLog -StateDir $StateDir -Now $Now -Lines $log
+    }
+    return $summary
+}
+
+function Send-SlackPayload {
+    <#
+    Posts Payload to a Slack incoming webhook. Returns @{ Ok; Status }:
+    Status is the HTTP status code, or the error's type and message with the
+    URL scrubbed out. Never throws, and never puts the URL in Status.
+    The body is sent as UTF-8 bytes (ruling R14): PS 5.1 would otherwise
+    encode a string body in the system code page and mangle the dot and the
+    dash. -Depth 10: PS 5.1's default of 2 truncates Slack blocks.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$WebhookUrl,
+        [Parameter(Mandatory = $true)]$Payload
+    )
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $ProgressPreference = 'SilentlyContinue'
+        $json = ConvertTo-Json -InputObject $Payload -Depth 10 -Compress
+        $body = [System.Text.Encoding]::UTF8.GetBytes($json)
+        $resp = Invoke-WebRequest -Uri $WebhookUrl -Method Post -ContentType 'application/json; charset=utf-8' `
+            -Body $body -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+        $code = [int]$resp.StatusCode
+        $ok = $false
+        if ($code -ge 200 -and $code -lt 300) { $ok = $true }
+        return @{ Ok = $ok; Status = $code }
+    }
+    catch {
+        $caught = $_
+        $code = 0
+        try {
+            $r = $caught.Exception.Response
+            if ($null -ne $r) { $code = [int]$r.StatusCode }
+        }
+        catch { $code = 0 }
+        if ($code -gt 0) { return @{ Ok = $false; Status = $code } }
+        $why = Get-ScrubbedText -Text "$($caught.Exception.GetType().Name): $($caught.Exception.Message)" -Secret $WebhookUrl
+        if ($why.Length -gt 300) { $why = $why.Substring(0, 300) }
+        return @{ Ok = $false; Status = $why }
+    }
+}
+
+function Get-WatchConfig {
+    <#
+    The watcher's paths: config.json in the state dir (non-secret, written at
+    install: logbook, memberId, shareDir, procedureRoot, hiveLogsDir), with
+    defaults for anything missing. The share is Y:\STAN when the operator's
+    mapped drive is there, else its UNC path, the same folder.
+    #>
+    param([Parameter(Mandatory = $true)][string]$StateDir)
+    $root = '\\128.120.208.42\proteomics-grp\STAN'
+    if ([System.IO.Directory]::Exists('Y:\STAN')) { $root = 'Y:\STAN' }
+    $cfg = @{
+        logbook       = 'C:\BDalSystemData\HyStar\LogFiles\CompassHyStarErrorLogbook.log'
+        memberId      = ''
+        shareDir      = (Join-Path (Join-Path $root 'hystar_events') ([string]$env:COMPUTERNAME))
+        procedureRoot = 'C:\ProgramData\Evosep\EvosepOne\Procedure logs'
+        hiveLogsDir   = (Join-Path $root 'logs')
+    }
+    try {
+        $path = Join-Path $StateDir 'config.json'
+        if ([System.IO.File]::Exists($path)) {
+            $doc = ConvertFrom-Json ([System.IO.File]::ReadAllText($path))
+            foreach ($k in @('logbook', 'memberId', 'shareDir', 'procedureRoot', 'hiveLogsDir')) {
+                $v = Get-StateField $doc $k
+                if (-not [string]::IsNullOrEmpty([string]$v)) { $cfg[$k] = [string]$v }
+            }
+        }
+    }
+    catch { }
+    return $cfg
+}
+
 # ----------------------------------------------------------------- top level
-# Stub: later parts of this script fill this in. Running it does nothing.
-return
+# Without -Scheduled nothing runs yet: the install surface (-Uninstall,
+# -Pause, -Test, config.json, the DPAPI-protected webhook) is the next part of
+# this script. Under -Scheduled: one tick, then exit.
+if (-not $Scheduled) { return }
+
+$watchStateDir = Join-Path $env:ProgramData 'STAN\hystar_watch'
+$watchConfig = Get-WatchConfig -StateDir $watchStateDir
+# The install part stores the webhook (DPAPI, CurrentUser) and loads it here.
+# Until it does there is no direct post: every event carries posted_by_pc
+# false and Hive relays it. No GetNewClosure: a closure would not see this
+# script's functions.
+$script:WatchWebhook = $null
+$watchSender = $null
+if (-not [string]::IsNullOrEmpty($script:WatchWebhook)) {
+    $watchSender = { param($p) Send-SlackPayload -WebhookUrl $script:WatchWebhook -Payload $p }
+}
+$null = Invoke-WatchTick -StateDir $watchStateDir -LogbookPath $watchConfig.logbook `
+    -ShareDir $watchConfig.shareDir -ProcedureRoot $watchConfig.procedureRoot `
+    -HiveLogsDir $watchConfig.hiveLogsDir -Now (Get-Date) -Sender $watchSender `
+    -MemberId $watchConfig.memberId
+exit 0
