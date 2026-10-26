@@ -29,10 +29,15 @@ filesystem). That keeps Quobyte's one-writer-per-file rule.
 
 EVERY TIME HERE IS INSTRUMENT-LOCAL
 -----------------------------------
-Event and heartbeat times are naive local ISO, like the other documents.
-Ages are measured with `parse_local`. Keys are built the way the hourly path
-builds them (`instrument_watch._parse`, naive read as UTC) so that they are
-equal strings; a key built in real UTC would suppress the wrong hour.
+Event and heartbeat times are naive local ISO, like the other documents,
+read with `parse_local`. Keys are built the way the hourly path builds them
+(`instrument_watch._parse`, naive read as UTC) so that they are equal
+strings; a key built in real UTC would suppress the wrong hour.
+
+The one exception: whether the watcher is alive is judged by when
+``heartbeat.json`` *landed* (its mtime, on the Hive server's clock), not by
+the time written inside it. That is the clock the cron's bash fast path
+reads too, and the PC's clock cannot then fake an outage or a live watcher.
 """
 
 from __future__ import annotations
@@ -309,20 +314,33 @@ def relay_event(event: dict, store: AlertStore, now: datetime) -> bool:
 # ── heartbeat ────────────────────────────────────────────────────
 
 
-def _last_heartbeat(path: Path) -> datetime | None:
-    """When the watcher last reported: ``at`` (local), else ``utc``, else mtime."""
-    try:
-        doc = _read_json(path)
-    except (OSError, ValueError):
-        doc = None
-    if isinstance(doc, dict):
-        at = parse_local(doc.get("at")) or _parse(doc.get("utc"))
-        if at is not None:
-            return at
+def _mtime(path: Path) -> datetime | None:
     try:
         return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
     except OSError:
         return None
+
+
+def _heartbeat_times(path: Path) -> tuple[datetime | None, datetime | None]:
+    """``(landed, reported)`` for the heartbeat file.
+
+    ``landed`` decides freshness: the file's mtime, on the Hive server's
+    clock -- the same clock the cron's bash fast path reads, so the two never
+    disagree, and a PC clock running slow or fast can fake neither an outage
+    nor a live watcher. (Review round 1: a PC 15 min slow made a live watcher
+    page every minute.) Only if the mtime cannot be read does it fall back to
+    the PC's ``utc``, then ``at``.
+
+    ``reported`` is what the PC said (``at``, else ``utc``), for display only.
+    """
+    try:
+        doc = _read_json(path)
+    except (OSError, ValueError):
+        doc = None
+    doc = doc if isinstance(doc, dict) else {}
+    reported = parse_local(doc.get("at")) or _parse(doc.get("utc"))
+    landed = _mtime(path) or _parse(doc.get("utc")) or parse_local(doc.get("at"))
+    return landed, reported
 
 
 def _paused_until(host_dir: Path, now: datetime) -> datetime | None:
@@ -338,29 +356,38 @@ def _paused_until(host_dir: Path, now: datetime) -> datetime | None:
     return until if until is not None and _utc(until) > _utc(now) else None
 
 
-def _read_marker(marker: Path) -> str:
+def _marker_doc(marker: Path) -> dict:
     try:
-        sent = json.loads(marker.read_text()).get("down_last_sent")
-        if sent:
-            return str(sent)
+        doc = json.loads(marker.read_text())
+        return doc if isinstance(doc, dict) else {}
     except Exception:  # noqa: BLE001
-        pass
-    try:
-        return _stamp(datetime.fromtimestamp(marker.stat().st_mtime, tz=timezone.utc))
-    except OSError:
-        return "unknown"
+        return {}
+
+
+def _read_marker(marker: Path) -> str:
+    sent = _marker_doc(marker).get("down_last_sent")
+    if sent:
+        return str(sent)
+    stamp = _mtime(marker)
+    return _stamp(stamp) if stamp else "unknown"
+
+
+#: Tolerated gap between the PC's clock and the server's before the down page
+#: mentions it. Display only.
+_SKEW_WORTH_SAYING = timedelta(minutes=5)
 
 
 def _watcher_state(host_dir: Path, now: datetime) -> dict:
     hb = Path(host_dir) / HEARTBEAT
     state: dict = {"installed": hb.exists(), "last_heartbeat": None,
-                   "down": False, "paused_until": None,
+                   "reported": None, "down": False, "paused_until": None,
                    "down_alerted": (Path(host_dir) / DOWN_MARKER).exists()}
     if not state["installed"]:
         return state
-    last = _last_heartbeat(hb)
-    state["last_heartbeat"] = last
-    state["down"] = last is not None and _utc(now) - _utc(last) > WATCHER_DOWN_AFTER
+    landed, reported = _heartbeat_times(hb)
+    state["last_heartbeat"] = landed
+    state["reported"] = reported
+    state["down"] = landed is not None and _utc(now) - _utc(landed) > WATCHER_DOWN_AFTER
     state["paused_until"] = _paused_until(host_dir, now)
     return state
 
@@ -369,35 +396,49 @@ def check_watcher_heartbeat(host_dir: Path, now: datetime,
                             station: str = DEFAULT_STATION) -> list[Alert]:
     """A page when the watcher has gone quiet; a note when it is back.
 
-    No heartbeat file at all means the watcher was never installed, which is
-    not an outage. A ``pause_until.json`` in the future silences the page.
-    The page's signature is the last heartbeat, so a second outage the same
-    day is a new message rather than a repeat inside the 24 h cool-off.
+    Freshness is the heartbeat file's mtime on the Hive server's clock (see
+    `_heartbeat_times`). No heartbeat file at all means the watcher was never
+    installed, which is not an outage. A ``pause_until.json`` in the future
+    silences the page.
+
+    The page's signature names the episode and stays fixed for it: the
+    ``since`` recorded in ``.down_alerted`` once the page has gone out, else
+    the last heartbeat's arrival. A repeat inside the 24 h cool-off is
+    therefore never "escalated", while a second outage the same day (marker
+    cleared by the recovery note) is a new message.
     """
     st = _watcher_state(host_dir, now)
     if not st["installed"] or st["last_heartbeat"] is None:
         return []
     last = st["last_heartbeat"]
     last_local = _utc(last).astimezone(INSTRUMENT_TZ)
+    marker = Path(host_dir) / DOWN_MARKER
     if st["down"]:
         if st["paused_until"] is not None:
             return []
+        since = (str(_marker_doc(marker).get("since") or "") if st["down_alerted"]
+                 else "") or f"{last_local:%Y%m%dT%H%M%S}"
         mins = int((_utc(now) - _utc(last)).total_seconds() // 60)
         ago = f"{mins} min" if mins < 120 else f"{mins // 60} h {mins % 60:02d} min"
+        seen = f"*Last heartbeat:* {last_local:%Y-%m-%d %H:%M} ({ago} ago)"
+        reported = st["reported"]
+        if reported is not None and abs(_utc(reported) - _utc(last)) > _SKEW_WORTH_SAYING:
+            seen += (f"; the PC's clock said "
+                     f"{_utc(reported).astimezone(INSTRUMENT_TZ):%H:%M}")
         return [Alert(
             key=_down_key(station), kind="watcher_down", instrument=HOST,
             severity="critical", mention=True,
             cool_off_hours=WATCHER_COOLOFF_HOURS,
-            signature=f"since:{last_local:%Y%m%dT%H%M%S}",
+            signature=f"since:{since}",
             headline=DOWN_HEADLINE,
             detail=[DOWN_DETAIL,
-                    f"*Last heartbeat:* {last_local:%Y-%m-%d %H:%M} ({ago} ago). "
-                    "Planned downtime: `watch_hystar_errors.bat -Pause 8h` "
+                    f"{seen}. Planned downtime: `watch_hystar_errors.bat -Pause 8h` "
                     "silences this."],
-            extra={"last_heartbeat": last_local.isoformat(timespec="seconds")},
+            extra={"since": since,
+                   "last_heartbeat": last_local.isoformat(timespec="seconds")},
         )]
     if st["down_alerted"]:
-        sent = _read_marker(Path(host_dir) / DOWN_MARKER)
+        sent = _read_marker(marker)
         return [Alert(
             key=f"hystar_watcher_back:{station}:{sent}", kind="watcher_back",
             instrument=HOST, severity="info",

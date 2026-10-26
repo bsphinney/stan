@@ -24,6 +24,8 @@
 # event file waiting, a heartbeat older than 10 min, or a watcher-down page
 # whose recovery has not been announced (.down_alerted). A missing folder or
 # a missing heartbeat means the watcher is not installed yet, also idle.
+# Python judges the heartbeat by the same mtime (the server's clock, never
+# the PC's), so the two can never disagree about whether the watcher is up.
 # Even the idle line matters: CRON_LOGS watches this log's mtime (30 min).
 #
 # The PC writes the event files; Hive only renames them into processed/ or

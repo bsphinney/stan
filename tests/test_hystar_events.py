@@ -21,7 +21,7 @@ import os
 import shutil
 import subprocess
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -67,10 +67,19 @@ def _copy_fixture(root, name, processed=False):
     return host
 
 
-def _write_heartbeat(host, at):
+def _write_heartbeat(host, at, written=None):
+    """A heartbeat saying ``at`` (PC clock), landing on the share at ``written``.
+
+    Freshness is judged on the Hive server's clock, the file's mtime (R8), so
+    the mtime is what makes a heartbeat old or new. By default the PC clock is
+    right and the file lands when it says.
+    """
     doc = _load("heartbeat.json")
     doc["at"] = at
-    (host / "heartbeat.json").write_text(json.dumps(doc))
+    path = host / "heartbeat.json"
+    path.write_text(json.dumps(doc))
+    t = (written or datetime.fromisoformat(at).replace(tzinfo=PT, fold=1)).timestamp()
+    os.utime(path, (t, t))
 
 
 def _host_dir(root, heartbeat_at=None):
@@ -344,10 +353,70 @@ def test_ten_minutes_is_not_yet_down(tmp_path):
     assert check_watcher_heartbeat(host, _pdt(2026, 10, 24, 2, 10)) == []
 
 
-def test_the_heartbeat_is_read_in_instrument_time(tmp_path):
-    """A naive local `at` read as UTC would look 7 h old and page at once."""
+def test_the_heartbeat_is_shown_in_instrument_time(tmp_path):
+    """The page names the last heartbeat on the instrument's clock face."""
     host = _host_dir(tmp_path, heartbeat_at="2026-10-24T02:00:00")
     assert check_watcher_heartbeat(host, datetime(2026, 10, 24, 9, 5, tzinfo=timezone.utc)) == []
+    (a,) = check_watcher_heartbeat(host, datetime(2026, 10, 24, 9, 20, tzinfo=timezone.utc))
+    assert "2026-10-24 02:00 (20 min ago)" in a.detail[1]
+
+
+# ── R8: the server's clock decides, never the PC's ───────────────
+
+
+def test_a_slow_pc_clock_does_not_fake_an_outage(tmp_path, posted, store):
+    """Review round 1: a PC 15 min slow, watcher alive. Its `at` looks stale,
+    but the file keeps landing every minute; nobody must be paged."""
+    host = _copy_fixture(tmp_path, "stop_saturday.json")       # wakes Python
+    t0 = _pdt(2026, 10, 24, 2, 20)
+    for i in range(6):
+        now = t0 + timedelta(minutes=i)
+        _write_heartbeat(host, (now - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%S"),
+                         written=now)
+        run_hystar_tick(tmp_path, store=store, now=now)
+    assert not [p for p in posted if "No heartbeat" in p["body"]["text"]]
+    assert not (host / ".down_alerted").exists()
+
+
+def test_a_fast_pc_clock_does_not_fake_freshness(tmp_path):
+    """The watcher died 30 min ago; a PC clock running ahead must not hide it."""
+    host = _host_dir(tmp_path)
+    now = _pdt(2026, 10, 24, 3, 0)
+    _write_heartbeat(host, "2026-10-24T03:05:00", written=now - timedelta(minutes=30))
+    (a,) = check_watcher_heartbeat(host, now)
+    assert a.kind == "watcher_down"
+
+
+def test_one_outage_pages_once_whatever_the_heartbeat_text_says(tmp_path, posted, store):
+    """The signature is fixed for the episode, so nothing about the file's
+    content can turn a repeat into an 'escalated' page."""
+    host = _host_dir(tmp_path)
+    t0 = _pdt(2026, 10, 24, 2, 20)
+    stale = t0 - timedelta(minutes=15)
+    for i in range(6):
+        now = t0 + timedelta(minutes=i)
+        _write_heartbeat(host, now.strftime("%Y-%m-%dT%H:%M:%S"), written=stale)
+        run_hystar_tick(tmp_path, store=store, now=now)
+    assert len([p for p in posted if "No heartbeat" in p["body"]["text"]]) == 1
+
+
+def test_the_episode_signature_comes_from_the_marker(tmp_path):
+    host = _host_dir(tmp_path)
+    now = _pdt(2026, 10, 24, 3, 0)
+    _write_heartbeat(host, "2026-10-24T02:00:00", written=now - timedelta(minutes=30))
+    (host / ".down_alerted").write_text(json.dumps(
+        {"down_last_sent": "20261024T091100Z", "since": "20261024T015900"}))
+    (a,) = check_watcher_heartbeat(host, now)
+    assert a.signature == "since:20261024T015900"
+
+
+def test_without_an_mtime_the_utc_field_is_used(tmp_path, monkeypatch):
+    import stan.reports.hystar_events as he
+
+    host = _host_dir(tmp_path, heartbeat_at="2026-10-24T02:00:00")   # utc 09:05Z in fixture
+    monkeypatch.setattr(he, "_mtime", lambda path: None)
+    assert check_watcher_heartbeat(host, datetime(2026, 10, 24, 9, 10, tzinfo=timezone.utc)) == []
+    assert check_watcher_heartbeat(host, datetime(2026, 10, 24, 9, 30, tzinfo=timezone.utc)) != []
 
 
 def test_an_expired_pause_no_longer_silences(tmp_path):
@@ -389,7 +458,7 @@ def test_no_marker_is_written_when_the_page_did_not_go(tmp_path, monkeypatch, st
     assert store.last("hystar_watcher_down:tims10878") is None, "retried next tick"
 
 
-def test_an_unreadable_heartbeat_falls_back_to_its_mtime(tmp_path):
+def test_an_unreadable_heartbeat_is_still_judged_by_its_mtime(tmp_path):
     host = _host_dir(tmp_path)
     hb = host / "heartbeat.json"
     hb.write_text("{half")
