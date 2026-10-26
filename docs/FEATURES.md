@@ -156,8 +156,10 @@ keeps the per-instrument SQLites mirrored to PG every 30 min.
 - `instrument/scripts/watch_hystar_errors.ps1` + `.bat` on the TIMS-10878
   PC: self-installing task `STAN HyStar watcher`, every minute, no window.
   Tails `CompassHyStarErrorLogbook.log`; every `EmergencyShutdown`
-  @mentions Brett in Slack with vial, sample and time. Storms fold; a stop
-  after a restart always pages; an unexpected HyStar restart pages.
+  @mentions Brett in Slack with vial, sample and time. Storms fold (< 5 min
+  apart; one reminder after 4 h); a stop after a restart always pages; an
+  unexpected HyStar restart is reported without an @mention; stops read
+  over 2 h late get one un-mentioned summary instead of a page each.
 - Hive side: `stan hystar-events` (`stan/reports/hystar_events.py`) via
   `scripts/cron_hystar_events.sh` (every minute, `bash`, `flock`). Relays
   events the PC could not post, silences the hourly Evosep/Bruker

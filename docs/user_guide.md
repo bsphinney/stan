@@ -819,9 +819,12 @@ When HyStar stops the acquisition queue, for any reason, a Slack message that @m
 
 ### What the alert looks like
 
-It @mentions you, says what stopped (Evotip not seated, pressure limit, MS connection lost, HyStar restarted unexpectedly, and so on), and names the **vial, the sample and the time**, with one line on what to check. Every stop is treated as critical. A mockup is at <https://claude.ai/artifact/PSBhFWAAPWgzBuAAVsWFER> (private to Brett; ask him for a screenshot if you cannot open it).
+It @mentions you, says what stopped (Evotip not seated, pressure limit, MS connection lost, Evosep hardware fault, and so on), and names the **vial, the sample and the time**, with one line on what to check. Every stop is treated as critical. A mockup is at <https://claude.ai/artifact/PSBhFWAAPWgzBuAAVsWFER> (private to Brett; ask him for a screenshot if you cannot open it).
 
-- A storm of the same error (a fan fault can log 1,000 lines) folds into one message. A second stop after a restart always pages again, because a new Evosep procedure has started.
+- **Storms fold.** The same error again less than **5 minutes** after the last one is folded into the first message (a fan fault can log 1,000 lines). A gap of 5 minutes or more pages again. If a storm is still going **4 hours** after it started, you get **one** reminder ("still stopping: N times since 02:04"). A second stop after a restart always pages again, because a new Evosep procedure has started.
+- **The vial is named only where it can be right.** For a missing Evotip, only when the Evosep procedure started within **10 minutes** before the stop (an older one is the previous, finished sample). For a pressure limit or an MS error, within **90 minutes** (a run is under way). Evosep hardware faults, HyStar crashes and other stops never name a vial. During the hour that repeats when the clocks go back (01:00-02:00 on the first Sunday of November), no vial or sample is named, because either pass of that hour could be the right one.
+- **HyStar restarting with no shutdown logged** is reported **without** an @mention. It only happens when someone is already restarting HyStar, and a reboot at night already wakes you once through "watcher down" (below).
+- **Old stops are not paged one by one.** A stop the watcher reads more than **2 hours** after it happened (the PC was off, or the watcher was reinstalled after a long gap) is recorded but not paged. Each minute's check sends at most one summary for them, with no @mention: "N older stops while the watcher wasn't running (latest HH:MM)".
 - The hourly Evosep and nightly Bruker alerts stay quiet about a stop already reported, and lead with `vial · sample · time` rather than a log folder name.
 - The QC summary for an aborted injection says `no data: injection aborted (<reason>), see the HH:MM alert` instead of a red IPS 0.
 
@@ -832,7 +835,7 @@ It @mentions you, says what stopped (Evotip not seated, pressure limit, MS conne
 3. Paste your **Slack member ID** (Slack, your profile, the three dots, *Copy member ID*) and the **Slack webhook** when asked. The webhook is not echoed; it is encrypted for the installing account and readable only by that account and Administrators. It never appears in a log, an event file or on the share.
 4. A test message arrives with your @mention. **Confirm your phone buzzes.** Read back the route and auto-logon lines the installer prints.
 
-The installer registers the scheduled task `STAN HyStar watcher`, which runs once a minute with **no window** (through a small `.vbs` shim; if VBScript is missing it falls back to a hidden PowerShell and says so in red). The first install starts at the end of the logbook, so history is not replayed. Running the `.bat` again updates an older install or re-checks the settings (Enter keeps each answer). The watcher only reads HyStar's and the Evosep's files; it never touches the queue.
+The installer registers the scheduled task `STAN HyStar watcher`, which runs once a minute with **no window** (through a small `.vbs` shim; if VBScript is missing it falls back to a hidden PowerShell and says so in red). The every-minute trigger is scheduled in **UTC**, so the night the clocks go back cannot pause it for an hour; the installer reads the trigger back and says in red if Windows refused UTC and it had to use local time. The first install starts at the end of the logbook, so history is not replayed. Running the `.bat` again updates an older install or re-checks the settings (Enter keeps each answer). The watcher only reads HyStar's and the Evosep's files; it never touches the queue.
 
 ### Allow it through on your phone
 
@@ -860,6 +863,7 @@ Hive checks the watcher's heartbeat. If it is 10 minutes old, you get one "watch
 
 - **A HyStar hang that writes nothing** (process alive, queue frozen, no logbook line) is not caught, and neither is HyStar closed by hand.
 - **No internet on the PC *and* Hive down at the same time** means no alert. With internet the PC posts directly; without it, delivery depends on Hive's cron and the share.
+- **If the PC cannot write its state folder** (`C:\ProgramData\STAN\hystar_watch`: a full C: drive, or broken permissions), the watcher posts nothing itself, because it could not remember having posted. Every stop still reaches the share and Hive relays it, once, up to a minute later; `heartbeat.json`'s `last_error` and `watch.log` say why. When the folder is writable again, a stop from that spell that is under 2 hours old can be posted once more.
 - **Thermo instruments are not covered.**
 - **A PC reboot at night pages once**, as above.
 - The webhook's file permissions are the installing user plus Administrators; anyone with those rights on the PC can read it.

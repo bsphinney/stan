@@ -232,6 +232,32 @@ naming the vial, sample and time. Design:
   can neither fake freshness nor staleness.
 - **A PC reboot at night pages once** ("watcher down" after 10 min). That is
   the call most likely to be revisited; `/pause 8h` covers planned downtime.
+  The "HyStar restarted (no shutdown logged)" message is therefore posted
+  **without** an @mention (R18): an `S:` line means someone is already
+  restarting HyStar, and a night reboot must not page twice.
+- **The vial is named only where it can be right** (R20): Evotip only if the
+  Evosep procedure started <= 10 min before the stop (older = the previous,
+  finished sample); pressure / MS-connection / MS-error <= 90 min; every
+  other category never. No vial or sample at an ambiguous local time (the
+  01:00-02:00 hour that repeats at DST fall-back); `Get-EvosepVial` and
+  `Get-HyStarSample` take a `-TimeZone` seam so the tests do not depend on
+  the Mac's zone. Procedure names are listed per day
+  (`Get-ProcedureDayPatterns`), never all 31,000.
+- **Age cap** (R19): a stop read more than 2 h after it happened (PC off,
+  reinstall after a long gap) is filed `"stale": true` with `posted_by_pc:
+  true` and never paged or relayed; the tick posts ONE un-mentioned
+  `stale_summary` ("N older stops while the watcher wasn't running (latest
+  HH:MM)"). Hive's `_wants_relay` refuses `stale` events too.
+- **A state folder it cannot write posts nothing directly.** `state.json` and
+  `delivered.txt` share it, so a full C: or a broken ACL loses both and the
+  same stop used to page every minute. Each tick probes it
+  (`Test-StateDirWritable`); on failure every event goes to the share with
+  `posted_by_pc: false` (same id each tick, so Hive relays it once) and
+  heartbeat `last_error` says why.
+- **The every-minute trigger has a UTC `StartBoundary`** (R21, ends in `Z`):
+  a local `-Once` trigger can stop ticking for an hour at fall-back. If Task
+  Scheduler refuses it, the installer registers the local one with a red
+  warning, and its read-back (`Get-TaskRepeatBoundary`) says which it got.
 - Tests: `pwsh -NoProfile -File tests/test_hystar_watcher.ps1` and
   `tests/test_hystar_events.py`. Bump `$ScriptVersion` with `stan/__init__.py`.
 
