@@ -23,8 +23,9 @@ This is the day-to-day manual for STAN — the Standardized proteomic Throughput
 9. [Remote viewing — Tailscale and phone access](#remote-viewing--tailscale-and-phone-access)
 10. [STAN Godmode — multi-instrument view](#stan-godmode--multi-instrument-view)
 11. [Common workflows — recipes](#common-workflows--recipes)
-12. [Troubleshooting](#troubleshooting)
-13. [Where to get help](#where-to-get-help)
+12. [Instant queue-stop alerts](#instant-queue-stop-alerts)
+13. [Troubleshooting](#troubleshooting)
+14. [Where to get help](#where-to-get-help)
 
 ---
 
@@ -807,6 +808,61 @@ Updating STAN through `stan.bat`, git or pip never changes DIA-NN or Sage; keep 
 - **Mode B:** fetch and check out the new commit in the git clone, reinstall with the same extra, and restart the services. The commands are in [Mode B, section 12](INSTALL_MODE_B_LINUX.md#12-operating-the-box).
 - **Mode C:** rebase the site branch of the git clone onto `origin/main`, and re-check the site patch. The next job to start runs the new code ([Mode C, step 2.2](INSTALL_MODE_C_HPC.md#22-stan-from-a-git-clone-editable)).
 - **Any other pip install:** `pip install --upgrade "stan-proteomics[peg] @ https://github.com/bsphinney/stan/archive/refs/heads/main.zip"`, with the extra you installed originally. STAN is not on PyPI, so a bare `pip install stan-proteomics` will not find it.
+
+---
+
+## Instant queue-stop alerts
+
+*UC Davis timsTOF (TIMS-10878) only, v1.2.23 and later. The Thermo instruments are not covered.*
+
+When HyStar stops the acquisition queue, for any reason, a Slack message that @mentions you arrives within about a minute. It exists because of Saturday 2026-10-24: an Evotip was missing, the Evosep aborted the injection at 02:04, HyStar stopped the queue for the rest of the weekend, and the only message was a Slack post with no @mention, so nothing buzzed a phone.
+
+### What the alert looks like
+
+It @mentions you, says what stopped (Evotip not seated, pressure limit, MS connection lost, HyStar restarted unexpectedly, and so on), and names the **vial, the sample and the time**, with one line on what to check. Every stop is treated as critical. A mockup is at <https://claude.ai/artifact/PSBhFWAAPWgzBuAAVsWFER> (private to Brett; ask him for a screenshot if you cannot open it).
+
+- A storm of the same error (a fan fault can log 1,000 lines) folds into one message. A second stop after a restart always pages again, because a new Evosep procedure has started.
+- The hourly Evosep and nightly Bruker alerts stay quiet about a stop already reported, and lead with `vial · sample · time` rather than a log folder name.
+- The QC summary for an aborted injection says `no data: injection aborted (<reason>), see the HH:MM alert` instead of a red IPS 0.
+
+### Install (once, on the instrument PC)
+
+1. Copy `watch_hystar_errors.ps1` and `watch_hystar_errors.bat` together to the PC (from the share, for example `Y:\brett\scripts\`).
+2. Double-click `watch_hystar_errors.bat` and say **Yes** to the administrator prompt.
+3. Paste your **Slack member ID** (Slack, your profile, the three dots, *Copy member ID*) and the **Slack webhook** when asked. The webhook is not echoed; it is encrypted for the installing account and readable only by that account and Administrators. It never appears in a log, an event file or on the share.
+4. A test message arrives with your @mention. **Confirm your phone buzzes.** Read back the route and auto-logon lines the installer prints.
+
+The installer registers the scheduled task `STAN HyStar watcher`, which runs once a minute with **no window** (through a small `.vbs` shim; if VBScript is missing it falls back to a hidden PowerShell and says so in red). The first install starts at the end of the logbook, so history is not replayed. Running the `.bat` again updates an older install or re-checks the settings (Enter keeps each answer). The watcher only reads HyStar's and the Evosep's files; it never touches the queue.
+
+### Allow it through on your phone
+
+A message that @mentions you is only as loud as your phone lets it be. Check all three:
+
+- **Slack mobile notifications** are set to alert you for *mentions* (Slack, Preferences, Notifications).
+- **Slack's notification schedule** (Do not disturb hours inside Slack) does not cover nights and weekends.
+- **The phone's own sleep, Focus or Do Not Disturb mode** lets Slack through, since that is when queues tend to stop.
+
+### Switches
+
+Run these from the same folder, on the PC:
+
+| Command | What it does |
+|---|---|
+| `watch_hystar_errors.bat /pause 8h` | Planned downtime (service visit, Windows Update). No "watcher down" page for 8 h (`2d` works too, up to 31 days; `0h` ends a pause). **Queue-stop alerts are not paused.** |
+| `watch_hystar_errors.bat /test` | Sends the test message again and says which route it took. |
+| `watch_hystar_errors.bat /uninstall` | Removes the scheduled task. The state folder is left in place and its path printed. Hive pages "watcher down" in about 10 minutes unless you paused first. |
+
+### If the watcher itself stops
+
+Hive checks the watcher's heartbeat. If it is 10 minutes old, you get one "watcher down" page with an @mention, a recovery line when it returns, and no repeats for 24 h. **A PC reboot at night (for example Windows Update) therefore wakes you once**, and after a reboot the watcher waits until someone logs on. When the PC can reach Slack it also watches Hive: if Hive's alerting log goes quiet for 45 minutes it says so (no @mention), and says again when Hive is back.
+
+### Known limits
+
+- **A HyStar hang that writes nothing** (process alive, queue frozen, no logbook line) is not caught, and neither is HyStar closed by hand.
+- **No internet on the PC *and* Hive down at the same time** means no alert. With internet the PC posts directly; without it, delivery depends on Hive's cron and the share.
+- **Thermo instruments are not covered.**
+- **A PC reboot at night pages once**, as above.
+- The webhook's file permissions are the installing user plus Administrators; anyone with those rights on the PC can read it.
 
 ---
 

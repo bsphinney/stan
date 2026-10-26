@@ -494,6 +494,7 @@ What ships today vs. what's still planned.
 | Outlier detection (amount / SPD mismatch) | Planned | Flag submissions whose metrics don't match the declared cohort. |
 | Maintenance & downtime log | Done | Calendar view; downtime recorded as a span. Hosted writes need UC Davis sign-in and record who logged it and when. |
 | Community downtime / reliability leaderboard | Groundwork | Schema carries downtime spans + a per-entry `share_community` opt-in. MTBF / availability / recovery-time and the relay side are still to build. |
+| Instant timsTOF queue-stop alerts (v1.2.23) | Done | `instrument/scripts/watch_hystar_errors.ps1` on the instrument PC (self-installing, every minute, no window) tails HyStar's error logbook and @mentions the operator in Slack within a minute of every `EmergencyShutdown`. Hive relays what the PC cannot post and pages if the watcher goes quiet (`stan hystar-events`, `scripts/cron_hystar_events.sh`). Hourly Evosep/Bruker alerts lead with `vial · sample · time`; an aborted injection's QC line reads `no data: injection aborted`. Alert memory fixed (`stan/notify.py`). timsTOF only. See the user guide, "Instant queue-stop alerts". |
 | PyPI release | Planned | `pip install stan-proteomics` not yet published. |
 | Auto-start `stan watch` as a Windows service | Planned | `stan.bat` supervises the watcher when running, but still requires the operator to double-click it. A Windows Scheduled Task (`stan install-service`) that starts at login/boot without any manual step is not yet shipped. |
 | Mobile PWA (install) | Partial | Installable PWA shipped — `manifest.json` + icons + iOS "Add to Home Screen" meta (full-screen, app icon). Service worker (offline) + push-on-FAIL not yet shipped. Setup in `docs/user_guide.md`. |
@@ -519,6 +520,8 @@ The shortlist of things actively being worked on or queued. (Bug fixes and shipp
 - [ ] **Integration tests on Hive.** Pre-push gate (`stan dev smoke-test`) that runs the real pipeline against real `.d` / `.raw` files. Would have caught most of the v0.2.147–0.2.161 regressions.
 - [ ] **Investigate jaggy Bruker TIC artifact.** STAN's "Today's TIC overlay" sometimes renders ~30 sharp evenly-spaced peaks where Compass shows a smooth chromatogram. Diagnose first (raw resolution vs downsample artifact); fix per finding.
 - [ ] **Fleet `disk_free_gb`.** Today reports the user-config drive (usually C:) instead of the watch_dir's drive. Report one entry per watch_dir.
+
+- [ ] **Off-host watchdog: partly done.** Since v1.2.23 the timsTOF PC watches Hive's alerting back when it can post to Slack. Still open: a check for sites with no PC route to Slack, Thermo instruments, a HyStar hang that writes nothing to its logbook, and the false "stopped arriving 52 days ago" critical of 2026-10-23.
 
 **Medium priority**
 

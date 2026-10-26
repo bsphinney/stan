@@ -151,6 +151,26 @@ keeps the per-instrument SQLites mirrored to PG every 30 min.
 
 ---
 
+## Instant timsTOF queue-stop alerts (v1.2.23)
+
+- `instrument/scripts/watch_hystar_errors.ps1` + `.bat` on the TIMS-10878
+  PC: self-installing task `STAN HyStar watcher`, every minute, no window.
+  Tails `CompassHyStarErrorLogbook.log`; every `EmergencyShutdown`
+  @mentions Brett in Slack with vial, sample and time. Storms fold; a stop
+  after a restart always pages; an unexpected HyStar restart pages.
+- Hive side: `stan hystar-events` (`stan/reports/hystar_events.py`) via
+  `scripts/cron_hystar_events.sh` (every minute, `bash`, `flock`). Relays
+  events the PC could not post, silences the hourly Evosep/Bruker
+  duplicates, pages when the watcher heartbeat is 10 min old.
+- `stan/notify.py`: PG retry, one shared file mirror
+  (`STAN_ALERT_STATE`), held point events when PG is down. @mention from
+  `STAN_SLACK_MENTION`, `community.yml` `slack_mention_user`, or
+  `~/.stan/slack_mention`.
+- User guide: "Instant queue-stop alerts". Spec:
+  `docs/superpowers/specs/2026-10-26-hystar-instant-alerts-design.md`.
+
+---
+
 ## Recovery + repair
 
 - `stan ingest-orphans` — walks `/quobyte/proteomics-grp/STAN/processing/`,

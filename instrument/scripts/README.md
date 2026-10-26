@@ -6,7 +6,31 @@ Working copies of the high-throughput helper scripts. Canonical source is
 Reachable from the timsTOF as `Y:\brett\scripts\` (Y: = proteomics-grp),
 and from Hive as `/quobyte/proteomics-grp/brett/scripts/`.
 
-## dump_bruker_db.ps1  — run ON the instrument
+## watch_hystar_errors.ps1  - run ON the instrument (installs itself)
+
+Instant Slack alert, with an @mention, when HyStar stops the acquisition
+queue (v1.2.23, timsTOF TIMS-10878 only). Copy BOTH files together, double-click
+`watch_hystar_errors.bat` and accept the UAC prompt; paste the Slack member ID
+and webhook when asked. It registers the task `STAN HyStar watcher` (every
+minute, no window, through a wscript `.vbs` shim) and sends a test message.
+
+```bat
+watch_hystar_errors.bat              install, update, or re-check
+watch_hystar_errors.bat /test        the test message again
+watch_hystar_errors.bat /pause 8h    planned downtime: no watcher-down page
+watch_hystar_errors.bat /uninstall   remove the scheduled task
+```
+
+Read-only on HyStar's and the Evosep's files. State, queue and the
+DPAPI-encrypted webhook live in `C:\ProgramData\STAN\hystar_watch`; events and
+the heartbeat go to `Y:\STAN\hystar_events\<COMPUTERNAME>` on the share, which
+`scripts/cron_hystar_events.sh` on Hive reads. The `.ps1` is pure ASCII (no
+BOM), the `.bat` is CRLF without a BOM. Full guide: `docs/user_guide.md`,
+"Instant queue-stop alerts".
+
+---
+
+## dump_bruker_db.ps1## dump_bruker_db.ps1  — run ON the instrument
 
 Read-only survey + dump of Bruker's HyStar PostgreSQL database, written to
 the share. Answers whether that database holds the acquisition sample table;

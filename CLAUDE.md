@@ -145,6 +145,7 @@ Canonical copies live in `scripts/`.
 | `cron_bruker_maintenance.sh` | daily 22:30 | Compass BACKUP → maintenance document. **After the copy, which lands by ~22:10** — at 20:00 it read yesterday's backup. **Runs via `bash`** |
 | `cron_stan_db_backup.sh` | daily 03:17 | pg_dump PG Farm → Flinders. **Runs via `bash`, not as an executable** |
 | `cron_stan_alerts.sh` | */20 min | Feed + publish staleness → Slack. **Runs via `bash`, not as an executable** |
+| `cron_hystar_events.sh` | every minute | Relays timsTOF queue-stop events the PC could not post; pages if the PC watcher goes quiet. **Runs via `bash`, under `flock`; an idle tick starts no Python** |
 
 `export STAN_DB_BACKEND=pg` is set inside these scripts — that is what
 `use_pg()` keys off. A script that forgets it silently writes SQLite.
@@ -192,6 +193,47 @@ files get copied onto instrument PCs and then live there alone, so "is
 the copy in front of me current?" has to be answerable without a git
 checkout, and a banner that has rotted answers it wrongly and
 confidently. Bump both when you touch either script.
+
+**The HyStar queue-stop watcher is the third self-installing copy** (v1.2.23).
+`instrument/scripts/watch_hystar_errors.ps1` + `.bat` register the task
+`STAN HyStar watcher` on first run, every minute, as the desktop user,
+not elevated. It tails HyStar's `CompassHyStarErrorLogbook.log` and
+@mentions Brett in Slack within a minute of every `EmergencyShutdown`,
+naming the vial, sample and time. Design:
+`docs/superpowers/specs/2026-10-26-hystar-instant-alerts-design.md`.
+
+- **It exists because of 2026-10-24.** An Evotip was missing, the Evosep
+  aborted at 02:04, and HyStar stopped the queue for the rest of the
+  weekend. The existing path posted at 03:00 with no @mention (so no
+  push), and Brett learned of it on Sunday. The hourly log copy plus the
+  30 min check made an Evosep stop about an hour late; Bruker-only faults
+  waited for the nightly backup.
+- **The task runs through a hidden `wscript` shim**
+  (`C:\ProgramData\STAN\watch_hystar_errors.vbs`), not
+  `powershell.exe -WindowStyle Hidden`. Even hidden, powershell.exe flashes
+  a console, 1,440 times a day, on a PC operators use and where it may take
+  focus from HyStar. A window every minute on an acquisition PC is
+  unacceptable. Where VBScript is missing the installer falls back to
+  `-WindowStyle Hidden` and prints a warning.
+- **Read-only on everything Bruker and Evosep own**, and every read opens
+  with `FileShare ReadWrite, Delete` so HyStar can still rename the
+  logbook on rotation. Its own state is `C:\ProgramData\STAN\hystar_watch`.
+- **The Slack webhook is DPAPI-encrypted** (`webhook.dpapi`, user +
+  Administrators only), never in config.json, a log, an event file or on
+  the share. The member ID is not secret and lives in config.json.
+- **The .ps1 stays pure ASCII** (PS 5.1 reads a BOM-less file as ANSI); the
+  middle dot and em dash are built with `[char]` at runtime, and a test
+  asserts it. What it writes for Hive is UTF-8 without a BOM.
+- **Hive's half** is `scripts/cron_hystar_events.sh` -> `stan hystar-events`
+  (`stan/reports/hystar_events.py`): relay, suppression keys (so the hourly
+  Evosep/Bruker alerts stay quiet about a stop already reported), and the
+  watcher-down page. The heartbeat is judged by `heartbeat.json`'s **mtime
+  on Hive's clock**, never the timestamp the PC wrote, so a skewed PC clock
+  can neither fake freshness nor staleness.
+- **A PC reboot at night pages once** ("watcher down" after 10 min). That is
+  the call most likely to be revisited; `/pause 8h` covers planned downtime.
+- Tests: `pwsh -NoProfile -File tests/test_watch_hystar_errors.ps1` and
+  `tests/test_hystar_events.py`. Bump `$ScriptVersion` with `stan/__init__.py`.
 
 **The Evosep mirror is incremental by memory, not by scanning.** The
 source is `<serial>\<method>_YYYY-MM-DD_HH-MM-SS\` with ~28 files
@@ -364,6 +406,24 @@ that script lost its execute bit, cron answered `Permission denied` into
 nothing, and the alerting died with it — eight days of silence that
 looked exactly like "nothing is wrong". The alarm was wired to the thing
 it was meant to alarm about.
+
+**Update 2026-10-26: the PC now watches Hive back.** When the HyStar
+watcher can post to Slack directly, it also reads the newest
+`cron_stan_alerts_*.log` and says (no @mention) when that log is more than
+45 min old, and again when it recovers. That is the first check on Hive's
+alerting that does not run on Hive. It does nothing without a route to
+Slack, and a log folder it cannot see (share down) decides nothing.
+
+**One alert memory, shared.** `cron_evosep.sh`, `cron_stan_alerts.sh` and
+`cron_hystar_events.sh` all export
+`STAN_ALERT_STATE=/quobyte/proteomics-grp/STAN/alert_state.json`. On
+2026-10-25 21:30 the PG `alert_state` lookup failed, the file fallback was
+a different, empty file per cron, and Friday's two failures were re-sent
+as new. `stan/notify.py` now retries PG, writes through to this one file
+and syncs pending rows back to PG; with a PG-configured store and PG down
+it holds point events older than 1 h and posts a single notice saying how
+many are held. A fallback that is empty looks identical to "nothing has
+been sent", which is the whole bug.
 
 It is now `cron_stan_alerts.sh`, on its own crontab entry, and the
 crontab line invokes it as **`bash <script>`** rather than executing it
