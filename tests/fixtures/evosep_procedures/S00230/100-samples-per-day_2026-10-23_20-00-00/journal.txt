@@ -1,0 +1,5 @@
+53621
+Version:1.0
+Procedure.Name:100 samples per day
+Procedure.Logname:100-samples-per-day_2026-10-24_02-03-36
+Procedure.Vialposition:Slot1:15 (S1-B3)

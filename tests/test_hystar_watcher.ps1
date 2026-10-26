@@ -230,6 +230,151 @@ Check "numbers ignored"     $k1 $k2
 Check "lower-cased, N runs" $k1 "evosep one: fan detection fault (fan n, n rpm)"
 Check "different text differs" ((Get-DedupKey "Evosep One: mcu reset") -ne $k1) "True"
 
+# ------------------------------------------------- 12. burst rule / restart
+Write-Host ""
+Write-Host "12. burst rule and restart detection"
+$storm = Parse-Fixture "fan_storm.log"
+# The fixture holds unrelated stops from other days too; the fan-fault storm
+# is the contiguous run of "fan detection" stops, 2 min apart.
+$fan = @()
+foreach ($e in $storm) { if ($e.Type -eq "stop" -and $e.Message -match "fan detection") { $fan += $e } }
+Check "storm: fan stops seen > 100" ($fan.Count -gt 100) "True"
+$st = @{ keys = @{}; lastShutdownAt = $null }
+$nNew = 0; $nRem = 0
+for ($i = 0; $i -lt 100; $i++) {
+    $d = Get-AlertDecision -State $st -Key (Get-DedupKey $fan[$i].Message) -At $fan[$i].At
+    if ($d -eq "new") { $nNew++ }
+    if ($d -eq "reminder") { $nRem++ }
+}
+Check "storm (first 100, under 4h): exactly 1 new" $nNew 1
+Check "storm (first 100, under 4h): 0 reminders"   $nRem 0
+$stAll = @{ keys = @{}; lastShutdownAt = $null }
+$nNew = 0; $nRem = 0
+foreach ($e in $fan) {
+    $d = Get-AlertDecision -State $stAll -Key (Get-DedupKey $e.Message) -At $e.At
+    if ($d -eq "new") { $nNew++ }
+    if ($d -eq "reminder") { $nRem++ }
+}
+Check "whole storm: 1 new"       $nNew 1
+Check "whole storm: 1 reminder"  $nRem 1
+
+# the same storm stretched: one event every 2 min for 4h10m
+$st2 = @{ keys = @{}; lastShutdownAt = $null }
+$t0 = [datetime]"2026-10-24 02:00:00"
+$nNew = 0; $nRem = 0
+for ($i = 0; $i -le 125; $i++) {
+    $d = Get-AlertDecision -State $st2 -Key "fan" -At $t0.AddMinutes(2 * $i)
+    if ($d -eq "new") { $nNew++ }
+    if ($d -eq "reminder") { $nRem++ }
+}
+Check "long storm: 1 new"       $nNew 1
+Check "long storm: 1 reminder"  $nRem 1
+Check "long storm: count"       $st2.keys["fan"].Count 126
+
+$st3 = @{ keys = @{}; lastShutdownAt = $null }
+$k = Get-DedupKey "Evosep One: No Evotip was present"
+Check "evotip 02:04 new"        (Get-AlertDecision -State $st3 -Key $k -At ([datetime]"2026-10-24 02:04:24")) "new"
+Check "evotip 02:06 folds"      (Get-AlertDecision -State $st3 -Key $k -At ([datetime]"2026-10-24 02:06:00")) "fold"
+Check "evotip 03:15 new again"  (Get-AlertDecision -State $st3 -Key $k -At ([datetime]"2026-10-24 03:15:00")) "new"
+Check "new resets count"        $st3.keys[$k].Count 1
+Check "different key is new"    (Get-AlertDecision -State $st3 -Key "other" -At ([datetime]"2026-10-24 03:15:30")) "new"
+
+# state survives a JSON round trip (PS 5.1 loads PSCustomObjects + string dates)
+$json = ConvertTo-Json $st2 -Depth 6
+$loaded = ConvertTo-WatchState (ConvertFrom-Json $json)
+Check "roundtrip: key kept"     $loaded.keys.ContainsKey("fan") "True"
+Check "roundtrip: count"        $loaded.keys["fan"].Count 126
+Check "roundtrip: reminder"     $loaded.keys["fan"].ReminderSent "True"
+Check "roundtrip: LastAt type"  ($loaded.keys["fan"].LastAt -is [datetime]) "True"
+Check "roundtrip: decision"     (Get-AlertDecision -State $loaded -Key "fan" -At $loaded.keys["fan"].LastAt.AddMinutes(2)) "fold"
+$strState = ConvertFrom-Json '{"keys":{"x":{"FirstAt":"2026-10-24T02:00:00","LastAt":"2026-10-24T02:01:00","Count":2,"ReminderSent":false}},"lastShutdownAt":"2026-10-24T02:00:00"}'
+$ws = ConvertTo-WatchState $strState
+Check "string dates: fold"      (Get-AlertDecision -State $ws -Key "x" -At ([datetime]"2026-10-24 02:03:00")) "fold"
+Check "empty state ok"          (ConvertTo-WatchState $null).keys.Count 0
+
+$rs = @{ keys = @{}; lastShutdownAt = [datetime]"2026-10-24 02:00:00" }
+Check "restart 2 min after shutdown expected"  (Test-UnexpectedRestart -State $rs -At ([datetime]"2026-10-24 02:02:00")) "False"
+Check "restart 30 min after shutdown is not"   (Test-UnexpectedRestart -State $rs -At ([datetime]"2026-10-24 02:30:00")) "True"
+Check "restart with no shutdown ever"          (Test-UnexpectedRestart -State @{ keys = @{}; lastShutdownAt = $null } -At ([datetime]"2026-10-24 02:30:00")) "True"
+
+# ------------------------------------------------------------- 13. vial lookup
+Write-Host ""
+Write-Host "13. Evosep vial lookup"
+$procRoot = Join-Path $repoRoot "tests/fixtures/evosep_procedures"
+Check "vial at 02:04:24"        (Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:04:24")) "S1-A5"
+Check "newest folder > 90 min"  ((Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 04:00:00")) -eq $null) "True"
+Check "older folder, its vial"  (Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-23 20:10:00")) "S1-B3"
+Check "start after At ignored"  ((Get-EvosepVial -ProcedureRoot $procRoot -At ([datetime]"2026-10-24 02:00:00")) -eq $null) "True"
+Check "missing root -> null"    ((Get-EvosepVial -ProcedureRoot (Join-Path $repoRoot "nope") -At ([datetime]"2026-10-24 02:04:24")) -eq $null) "True"
+
+# --------------------------------------------------------- 14. sample (tail)
+Write-Host ""
+Write-Host "14. sample name from the HyStar logbook (best effort)"
+$tmpLog = Join-Path ([System.IO.Path]::GetTempPath()) ("hystar_sample_" + [guid]::NewGuid().ToString("N") + ".log")
+$lines = "2026/10/24 01:50:00,100 something else`r`n2026/10/24 02:03:40,100 PHASE.INJECTED D:\Data\10212026_HE50_100-spd-dia_S1-A5_1_4821.d`r`n"
+[System.IO.File]::WriteAllText($tmpLog, $lines, [System.Text.Encoding]::Unicode)
+Check "sample found"            (Get-HyStarSample -LogbookPath $tmpLog -At ([datetime]"2026-10-24 02:04:24")) "10212026_HE50_100-spd-dia"
+Check "too old -> null"         ((Get-HyStarSample -LogbookPath $tmpLog -At ([datetime]"2026-10-24 03:30:00")) -eq $null) "True"
+Remove-Item -LiteralPath $tmpLog -Force
+Check "missing log -> null"     ((Get-HyStarSample -LogbookPath $tmpLog -At ([datetime]"2026-10-24 02:04:24")) -eq $null) "True"
+
+# ------------------------------------------------------------- 15. payloads
+Write-Host ""
+Write-Host "15. Slack payloads"
+$dot = [string][char]0x00B7
+$dash = [string][char]0x2014
+$ev = @{
+    Category = "evotip"; Title = "No Evotip"; At = [datetime]"2026-10-24 02:04:24"
+    Message = "Evosep One: No Evotip was present during the analysis and the sample was aborted. Please check if the Evotip position in the autosampler matches the sample list."
+    Vial = "S1-A5"; Sample = "10212026_HE50_100-spd-dia"
+}
+$pl = Format-StopPayload -Event $ev -MemberId "U0ABC1234" -Host "TIMS-10878"
+Check "text" $pl.text "<@U0ABC1234> :red_circle: TIMS-10878 queue STOPPED $dash No Evotip $dot S1-A5 $dot 10212026_HE50_100-spd-dia $dot 02:04"
+Check "block 1" $pl.blocks[0].text.text "<@U0ABC1234> :red_circle: *TIMS-10878 queue STOPPED $dash No Evotip*`n*S1-A5 $dot 10212026_HE50_100-spd-dia $dot 02:04*"
+Check "block 2 quote"   $pl.blocks[1].text.text.StartsWith("> Evosep One: No Evotip was present") "True"
+Check "block 2 check"   $pl.blocks[1].text.text.Contains("*Check:* the Evotip in S1-A5, and that the tray matches the sample list. The queue stays stopped until someone restarts it.") "True"
+Check "block 2 footer"  $pl.blocks[1].text.text.Contains("_HyStar stopped the queue at 2026-10-24 02:04:24 $dot posted by the TIMS-10878 watcher_") "True"
+Check "context"         $pl.blocks[2].elements[0].text "<https://ucd.stan-proteomics.org|STAN dashboard> $dot Maintenance tab"
+Check "block count"     $pl.blocks.Count 3
+
+$ev2 = @{ Category = "evotip"; Title = "No Evotip"; At = [datetime]"2026-10-24 02:04:24"; Message = "m"; Vial = $null; Sample = $null }
+$pl2 = Format-StopPayload -Event $ev2 -MemberId "U0ABC1234" -Host "TIMS-10878"
+Check "no vial/sample text" $pl2.text "<@U0ABC1234> :red_circle: TIMS-10878 queue STOPPED $dash No Evotip $dot 02:04"
+Check "no vial: R11 check"  $pl2.blocks[1].text.text.Contains("*Check:* the Evotip position, and that the tray matches the sample list. The queue stays stopped until someone restarts it.") "True"
+$pl3 = Format-StopPayload -Event $ev2 -MemberId "" -Host "TIMS-10878"
+Check "no member: no mention" $pl3.text ":red_circle: TIMS-10878 queue STOPPED $dash No Evotip $dot 02:04"
+$ev3 = @{ Category = "overpressure"; Title = "Pressure limit"; At = [datetime]"2026-10-24 02:04:24"; Message = "p"; Vial = "S1-A5"; Sample = $null }
+$pl4 = Format-StopPayload -Event $ev3 -MemberId "U1" -Host "TIMS-10878"
+Check "generic check" $pl4.blocks[1].text.text.Contains("`nThe queue stays stopped until someone restarts it.`n") "True"
+Check "identity vial only" $pl4.text.EndsWith("Pressure limit $dot S1-A5 $dot 02:04") "True"
+
+$rem = Format-ReminderPayload -Event @{ Title = "No Evotip"; Count = 126; FirstAt = [datetime]"2026-10-24 02:04:24" } -MemberId "U1"
+Check "reminder" $rem.text "<@U1> :red_circle: TIMS-10878 still stopping $dash No Evotip: 126 times since 02:04"
+$rst = Format-RestartPayload -Event @{ At = [datetime]"2026-10-24 09:05:00" } -MemberId "U1"
+Check "restart" $rst.text "<@U1> :red_circle: TIMS-10878 HyStar restarted $dash no shutdown logged $dot 09:05"
+$hq = Format-HiveQuietPayload -At ([datetime]"2026-10-24 09:05:00")
+Check "hive quiet" $hq.text ":large_orange_diamond: STAN's Hive alerting has gone quiet $dash last check 09:05"
+Check "hive back" (Format-HiveQuietPayload -Back).text ":white_check_mark: STAN's Hive alerting is back"
+Check "payload is JSON-able" ((ConvertTo-Json $pl -Depth 8).Contains("U0ABC1234")) "True"
+
+# identity line must equal Python identity_line
+$py = & python3 -c "from datetime import datetime; from stan.reports.injection_identity import identity_line as i; print(i('S1-A5','smp',datetime(2026,10,24,2,4)))" 2>$null
+if ($LASTEXITCODE -eq 0 -and $py) {
+    Check "identity equals Python" ([string]$py).Trim() (Get-IdentityLine "S1-A5" "smp" ([datetime]"2026-10-24 02:04:00"))
+}
+
+# ---------------------------------------------------------------- 16. ASCII
+Write-Host ""
+Write-Host "16. shipped script is pure ASCII, no BOM"
+$bytes = [System.IO.File]::ReadAllBytes((Join-Path $repoRoot $scriptRel))
+$bad = 0
+foreach ($b in $bytes) { if ($b -gt 0x7F) { $bad++ } }
+Check "no byte > 0x7F"  $bad 0
+$tb = [System.IO.File]::ReadAllBytes((Join-Path $repoRoot "tests/test_hystar_watcher.ps1"))
+$bad = 0
+foreach ($b in $tb) { if ($b -gt 0x7F) { $bad++ } }
+Check "test file ASCII" $bad 0
+
 # ---------------------------------------------------------------- 11. version
 Write-Host ""
 Write-Host "11. version"
