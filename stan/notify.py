@@ -147,6 +147,45 @@ def slack_webhook() -> str | None:
     return None
 
 
+MENTION_ENV = "STAN_SLACK_MENTION"
+MENTION_FILE = "slack_mention"
+_MENTION_ID = re.compile(r"^[UW][A-Z0-9]{6,}$")
+
+
+def slack_mention_id() -> str | None:
+    """The Slack member ID to @mention on urgent alerts, or None.
+
+    Order: ``$STAN_SLACK_MENTION`` -> ``slack_mention_user`` in community.yml
+    -> ``~/.stan/slack_mention``. A value that is not a member ID (``U...`` or
+    ``W...``) is ignored, so ``@channel`` or a typo never pages a whole channel.
+    """
+    env = (os.environ.get(MENTION_ENV) or "").strip()
+    if env:
+        return env if _MENTION_ID.match(env) else None
+
+    try:
+        from stan.config import load_community
+
+        val = str((load_community() or {}).get("slack_mention_user") or "").strip()
+        if val:
+            return val if _MENTION_ID.match(val) else None
+    except FileNotFoundError:
+        pass
+    except Exception:
+        logger.debug("could not read community.yml for a Slack mention", exc_info=True)
+
+    try:
+        path = Path.home() / ".stan" / MENTION_FILE
+        if path.exists():
+            val = path.read_text().strip()
+            if val:
+                return val if _MENTION_ID.match(val) else None
+    except OSError:
+        logger.debug("could not read %s", MENTION_FILE, exc_info=True)
+
+    return None
+
+
 def _looks_like_webhook(url: str) -> bool:
     return url.startswith(_SLACK_HOST_PREFIX)
 
@@ -279,6 +318,7 @@ class Alert:
     at: str | None = None              # ISO timestamp of the event, if any
     extra: dict = field(default_factory=dict)
     thread_key: str | None = None      # incident this belongs to
+    mention: bool = False              # @mention the configured member
 
 
 _SEVERITY_ICON = {"critical": ":red_circle:", "warning": ":large_orange_diamond:",
@@ -298,7 +338,13 @@ def render_alerts(alerts: list[Alert]) -> tuple[str, list[dict]]:
     worst = ordered[0]
     icon = _SEVERITY_ICON.get(worst.severity, ":large_orange_diamond:")
 
-    text = f"{icon} {worst.instrument} — {worst.headline}"
+    mention = ""
+    if any(a.mention for a in ordered):
+        member = slack_mention_id()
+        if member:
+            mention = f"<@{member}> "
+
+    text = f"{mention}{icon} {worst.instrument} — {worst.headline}"
     if len(ordered) > 1:
         text += f"  (+{len(ordered) - 1} more)"
 
@@ -306,7 +352,7 @@ def render_alerts(alerts: list[Alert]) -> tuple[str, list[dict]]:
         # header blocks are plain_text and truncate at 150 chars; keep the
         # emoji in the section body where mrkdwn works instead.
         {"type": "section",
-         "text": {"type": "mrkdwn", "text": f"{icon} *{worst.instrument} — {worst.headline}*"}},
+         "text": {"type": "mrkdwn", "text": f"{mention}{icon} *{worst.instrument} — {worst.headline}*"}},
     ]
     for a in ordered:
         lines = []

@@ -44,9 +44,9 @@ import shutil
 import subprocess
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from stan.metrics.peg_trends import is_blank_or_wash
+from stan.instrument_time import INSTRUMENT_TZ, parse_local as _parse_local, parse_raw as _parse_raw  # noqa: F401
 from stan.notify import Alert
 
 logger = logging.getLogger(__name__)
@@ -185,25 +185,6 @@ def _parse(ts) -> datetime | None:
     if dt is None:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
-def _parse_raw(ts) -> datetime | None:
-    """Parse either document's timestamp, keeping its zone -- usually none."""
-    if not ts:
-        return None
-    if isinstance(ts, datetime):
-        return ts
-    s = str(ts).strip().replace("Z", "+00:00")
-    for parse in (
-        lambda v: datetime.fromisoformat(v),
-        lambda v: datetime.strptime(v, "%Y-%m-%d %H:%M"),
-        lambda v: datetime.strptime(v, "%Y-%m-%d %H:%M:%S"),
-    ):
-        try:
-            return parse(s)
-        except (ValueError, TypeError):
-            continue
-    return None
 
 
 def _bucket(dt: datetime | None) -> str:
@@ -701,16 +682,6 @@ def check_bruker(doc: dict, now: datetime | None = None,
 EVOSEP_STALE_DAYS = 3.0
 BRUKER_STALE_DAYS = 2.5
 
-#: The instruments' clock. Both documents write naive local times, which
-#: `_parse` calls UTC -- harmless when they are compared with each other, but
-#: an AGE measured against the real `now` came out 7-8 h too old.
-try:
-    INSTRUMENT_TZ = ZoneInfo("America/Los_Angeles")
-except ZoneInfoNotFoundError:   # no tz database on this host
-    logger.warning("no tz database; reading instrument times as UTC, "
-                   "which ages both feeds by 7-8 h")
-    INSTRUMENT_TZ = timezone.utc
-
 #: How far the last Compass acquisition may trail the last Evosep log and
 #: still be "the same last run". Each acquisition's Evosep procedure starts
 #: minutes before it; an hour absorbs that and any drift between the clocks.
@@ -728,19 +699,6 @@ EVOSEP_REFRESH_SLACK = timedelta(hours=2)
 #: Compass names each backup folder for the moment it was taken:
 #: .../daily/2026-10-18_180000/compass.backup.
 _BACKUP_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})(\d{2})")
-
-
-def _parse_local(ts) -> datetime | None:
-    """`_parse`, except that a naive time is instrument-local, not UTC.
-
-    Only for measuring an age against the real clock. The failure checks keep
-    `_parse`, because their alert keys are built from the parsed time and a
-    shifted key would re-send every event already reported.
-    """
-    dt = _parse_raw(ts)
-    if dt is None:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=INSTRUMENT_TZ)
 
 
 def bruker_backup_time(doc: dict | None) -> datetime | None:

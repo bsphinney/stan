@@ -321,3 +321,25 @@ def test_pg_failure_falls_back_to_the_file(monkeypatch, tmp_path, posted):
     assert store._use_pg is False, "stop trying PG once it has failed"
     store.record(_standing(), now=NOW)
     assert (tmp_path / "s.json").exists()
+
+
+def test_mention_prefixes_text_and_first_block(monkeypatch, unconfigured):
+    monkeypatch.setenv("STAN_SLACK_MENTION", "U0ABC1234")
+    a = Alert(key="k", kind="evotip", instrument="TIMS-10878",
+              headline="queue STOPPED — No Evotip", severity="critical", mention=True)
+    text, blocks = render_alerts([a])
+    assert text.startswith("<@U0ABC1234> ")
+    assert blocks[0]["text"]["text"].startswith("<@U0ABC1234> ")
+
+def test_no_mention_without_an_id_or_flag(monkeypatch, unconfigured):
+    monkeypatch.delenv("STAN_SLACK_MENTION", raising=False)
+    monkeypatch.setattr(notify.Path, "home", lambda: unconfigured.parent)
+    a = Alert(key="k", kind="x", instrument="i", headline="h", mention=True)
+    assert "<@" not in render_alerts([a])[0]
+    monkeypatch.setenv("STAN_SLACK_MENTION", "U0ABC1234")
+    b = Alert(key="k", kind="x", instrument="i", headline="h")   # mention False
+    assert "<@" not in render_alerts([b])[0]
+
+def test_a_malformed_mention_id_is_ignored(monkeypatch, unconfigured):
+    monkeypatch.setenv("STAN_SLACK_MENTION", "@channel")
+    assert notify.slack_mention_id() is None
