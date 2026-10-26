@@ -437,6 +437,33 @@ def test_a_second_outage_the_same_day_pages_again(tmp_path, posted, store):
     assert "No heartbeat" in texts[0] and "reporting again" in texts[1] and "No heartbeat" in texts[2]
 
 
+def test_files_the_watcher_tick_wrote_are_relayed_and_read(tmp_path, posted, store):
+    """The two ``watcher_tick_*`` fixtures are the real PowerShell tick's output
+    (UTF-8 without a BOM, the PC's own payload), for a stop Slack refused with
+    403; only the heartbeat's logbook path was changed from a temp folder.
+    tests/test_hystar_watcher.ps1 section 28 checks the same thing live."""
+    host = tmp_path / HOST
+    host.mkdir()
+    ev = _load("watcher_tick_stop.json")
+    shutil.copy(FIX / "watcher_tick_stop.json", host / f"{ev['id']}.json")
+    shutil.copy(FIX / "watcher_tick_heartbeat.json", host / "heartbeat.json")
+    landed = SAT_0206 - timedelta(minutes=1)
+    os.utime(host / "heartbeat.json", (landed.timestamp(), landed.timestamp()))
+    assert not (FIX / "watcher_tick_stop.json").read_bytes().startswith(b"\xef\xbb\xbf")
+
+    assert [e["id"] for e in load_new_events(host)] == [ev["id"]]
+    res = run_hystar_tick(tmp_path, store=store, now=SAT_0206)
+
+    assert res["relayed"] == [ev["id"]] and res["rejected"] == [] and res["errors"] == []
+    assert len(posted) == 1
+    assert posted[0]["body"]["text"] == ev["payload"]["text"]
+    assert posted[0]["body"]["blocks"][:3] == ev["payload"]["blocks"]
+    assert "Relayed by Hive" in json.dumps(posted[0]["body"]["blocks"][3])
+    assert store.last("evotip:tims10878:20261024T0200") is not None
+    assert res["watcher"]["installed"] is True and res["watcher"]["down"] is False
+    assert check_watcher_heartbeat(host, SAT_0206) == []
+
+
 def test_the_down_marker_tracks_the_episode(tmp_path, posted, store):
     host = _host_dir(tmp_path, heartbeat_at="2026-10-24T02:00:00")
     run_hystar_tick(tmp_path, store=store, now=_pdt(2026, 10, 24, 2, 11))
