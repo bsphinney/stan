@@ -1,17 +1,35 @@
 <#
 .SYNOPSIS
-    Read-only watcher for HyStar's error logbook (CompassHyStarErrorLogbook.log).
+    Read-only watcher for HyStar's error logbook (CompassHyStarErrorLogbook.log):
+    @mentions Brett in Slack within a minute when HyStar stops the
+    acquisition queue.
 
 .DESCRIPTION
     Runs once a minute on the timsTOF instrument PC (PowerShell 5.1), tails the
     logbook and alerts on every EmergencyShutdown, the event that stops the
-    acquisition queue.
+    acquisition queue. Each alert is posted to Slack directly when the PC can
+    reach it, and always written as an event file on the share. Hive
+    (scripts/cron_hystar_events.sh) relays whatever the PC could not post, and
+    pages when the watcher's heartbeat stops.
 
-    THIS FILE IS BUILT IN PARTS. Present: reading and parsing the logbook,
-    deciding and formatting alerts, and the tick (state, rotation, the Slack
-    post, event files and heartbeat on the share, watching Hive's alerting).
-    Under -Scheduled the top level runs one tick. Still to come: the install
-    surface (scheduled task, config, the stored webhook, -Pause, -Test).
+    IT INSTALLS ITSELF. Double-click watch_hystar_errors.bat and say Yes to
+    the administrator prompt. The install finds the logbook, asks for the
+    Slack member ID and the Slack webhook, copies this script to
+    C:\ProgramData\STAN, registers the scheduled task 'STAN HyStar watcher'
+    (every minute, as the desktop's user, not elevated) and sends a test
+    message with the @mention: the phone should buzz. Running the .bat again
+    updates an older install, or re-checks the settings (Enter keeps each).
+
+    THE WEBHOOK is asked for without echo and kept only in
+    C:\ProgramData\STAN\hystar_watch\webhook.dpapi, encrypted with DPAPI for
+    the account that installed it (the one the task runs as) and readable by
+    that account and Administrators alone. It never appears in a log, an
+    event file, config.json or on the share.
+
+    STATE lives in C:\ProgramData\STAN\hystar_watch: config.json (non-secret
+    settings, written at install), state.json and delivered.txt (the tick's
+    own, seeded by its first run), pending\ (event files the share has not
+    taken yet) and watch.log.
 
     Log format, as measured on real files (see the design spec, section 3):
       * UTF-16LE with a BOM (FF FE).
@@ -23,12 +41,54 @@
     Read-only: every Bruker and Evosep file is opened for reading with
     FileShare ReadWrite + Delete, so HyStar can keep writing it AND rename it
     (logbook rotation) while it is open here; nothing of theirs is written.
+
+.PARAMETER Scheduled
+    Set by the scheduled task only. Never type it: one tick, no console.
+
+.PARAMETER Uninstall
+    Remove the scheduled task. The state folder (config.json, the stored
+    webhook) is left in place, and its path printed.
+
+.PARAMETER Pause
+    Planned downtime, in hours or days: 8h, 2d (up to 31d; 0h ends a pause).
+    Writes pause_until.json next to the event files, and Hive does not page
+    "watcher down" before then. Queue-stop alerts are not paused.
+
+.PARAMETER Test
+    Send the install test message again, and say which route it took.
+
+.PARAMETER SlackMemberId
+    The Slack member ID to @mention (U...), instead of being asked.
+
+.PARAMETER LogbookPath
+    HyStar's error logbook, when it is not under C:\ or D:\BDalSystemData.
+
+.EXAMPLE
+    watch_hystar_errors.bat              # install, update, or re-check
+    watch_hystar_errors.bat /test        # the test message again
+    watch_hystar_errors.bat /pause 8h    # service visit: no watcher-down page for 8 h
+    watch_hystar_errors.bat /uninstall   # remove the scheduled task
 #>
+[CmdletBinding()]
 param(
-    [switch]$Scheduled
+    [switch]$Scheduled,
+    [switch]$Uninstall,
+    [string]$Pause = "",
+    [switch]$Test,
+    [string]$SlackMemberId = "",
+    [string]$LogbookPath = "",
+    # The elevated half of the self-install re-launches the script with
+    # this. It MUST be a declared parameter: under [CmdletBinding()]
+    # PowerShell rejects an unknown named parameter outright, so the
+    # elevated child would die on parameter binding. Not for typing.
+    [switch]$InstallOnly
 )
 
-$ScriptVersion = '1.2.22'
+# Kept in step with stan/__init__.py by tests/test_hystar_watcher.ps1 and
+# tests/test_instrument_copy_scripts.ps1, which fail if they drift. This
+# script lives on the instrument PC on its own, so "is the copy in front of
+# me current?" has to be answerable without a git checkout.
+$ScriptVersion = '1.2.23'
 
 function Read-NewLogText {
     <#
@@ -1751,51 +1811,991 @@ function Get-WatchConfig {
     The watcher's paths: config.json in the state dir (non-secret, written at
     install: logbook, memberId, shareDir, procedureRoot, hiveLogsDir), with
     defaults for anything missing. The share is Y:\STAN when the operator's
-    mapped drive is there, else its UNC path, the same folder.
+    mapped drive is there, else its UNC path, the same folder; it is chosen
+    afresh on every call unless config.json names a folder.
+    -StoredOnly: only the values config.json itself holds, no defaults (what
+    a re-install keeps).
     #>
-    param([Parameter(Mandatory = $true)][string]$StateDir)
-    $root = '\\128.120.208.42\proteomics-grp\STAN'
-    if ([System.IO.Directory]::Exists('Y:\STAN')) { $root = 'Y:\STAN' }
-    $cfg = @{
-        logbook       = 'C:\BDalSystemData\HyStar\LogFiles\CompassHyStarErrorLogbook.log'
-        memberId      = ''
-        shareDir      = (Join-Path (Join-Path $root 'hystar_events') ([string]$env:COMPUTERNAME))
-        procedureRoot = 'C:\ProgramData\Evosep\EvosepOne\Procedure logs'
-        hiveLogsDir   = (Join-Path $root 'logs')
-    }
+    param(
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [switch]$StoredOnly
+    )
+    $stored = @{}
     try {
         $path = Join-Path $StateDir 'config.json'
         if ([System.IO.File]::Exists($path)) {
             $doc = ConvertFrom-Json ([System.IO.File]::ReadAllText($path))
             foreach ($k in @('logbook', 'memberId', 'shareDir', 'procedureRoot', 'hiveLogsDir')) {
                 $v = Get-StateField $doc $k
-                if (-not [string]::IsNullOrEmpty([string]$v)) { $cfg[$k] = [string]$v }
+                if (-not [string]::IsNullOrEmpty([string]$v)) { $stored[$k] = [string]$v }
             }
         }
     }
     catch { }
+    if ($StoredOnly) { return $stored }
+    $cfg = @{
+        logbook       = 'C:\BDalSystemData\HyStar\LogFiles\CompassHyStarErrorLogbook.log'
+        memberId      = ''
+        shareDir      = ''
+        procedureRoot = 'C:\ProgramData\Evosep\EvosepOne\Procedure logs'
+        hiveLogsDir   = ''
+    }
+    foreach ($k in @($stored.Keys)) { $cfg[$k] = $stored[$k] }
+    # The share's defaults only for what config.json leaves unset. Join-Path
+    # asks the drive's provider, so it throws on a drive that is not there:
+    # Y: only once it is known to exist.
+    if ([string]::IsNullOrEmpty($cfg['shareDir']) -or [string]::IsNullOrEmpty($cfg['hiveLogsDir'])) {
+        $root = '\\128.120.208.42\proteomics-grp\STAN'
+        if ([System.IO.Directory]::Exists('Y:\STAN')) { $root = 'Y:\STAN' }
+        if ([string]::IsNullOrEmpty($cfg['shareDir'])) {
+            $cfg['shareDir'] = (Join-Path (Join-Path $root 'hystar_events') ([string]$env:COMPUTERNAME))
+        }
+        if ([string]::IsNullOrEmpty($cfg['hiveLogsDir'])) { $cfg['hiveLogsDir'] = (Join-Path $root 'logs') }
+    }
     return $cfg
 }
 
-# ----------------------------------------------------------------- top level
-# Without -Scheduled nothing runs yet: the install surface (-Uninstall,
-# -Pause, -Test, config.json, the DPAPI-protected webhook) is the next part of
-# this script. Under -Scheduled: one tick, then exit.
-if (-not $Scheduled) { return }
+# ===================================================================== install
+# Everything below runs only when a person runs the script (the .bat), never
+# under -Scheduled: the top level dispatches the tick first and exits.
+#
+# The install is split in two, like the copy scripts'. What needs
+# administrator rights (the scheduled task, and the state folder's ACL) runs
+# in an elevated copy of this script (-InstallOnly). What belongs to the
+# desktop's user (the questions, config.json, the webhook, the test message)
+# runs in the window the .bat opened, as that user. DPAPI ties the webhook to
+# the account that stores it, and the task runs as the desktop's user, so a
+# webhook stored from the elevated window would be unreadable to the task
+# whenever the administrator prompt was answered with another account.
 
-$watchStateDir = Join-Path $env:ProgramData 'STAN\hystar_watch'
-$watchConfig = Get-WatchConfig -StateDir $watchStateDir
-# The install part stores the webhook (DPAPI, CurrentUser) and loads it here.
-# Until it does there is no direct post: every event carries posted_by_pc
-# false and Hive relays it. No GetNewClosure: a closure would not see this
-# script's functions.
-$script:WatchWebhook = $null
-$watchSender = $null
-if (-not [string]::IsNullOrEmpty($script:WatchWebhook)) {
-    $watchSender = { param($p) Send-SlackPayload -WebhookUrl $script:WatchWebhook -Payload $p }
+function Say($m, $c = 'Gray') {
+    if ($Scheduled) {
+        # A scheduled run has no console; the tick keeps its own log.
+        Write-WatchLog -StateDir (Join-Path $env:ProgramData 'STAN\hystar_watch') -Now (Get-Date) -Lines @(, [string]$m)
+        return
+    }
+    Write-Host $m -ForegroundColor $c
 }
-$null = Invoke-WatchTick -StateDir $watchStateDir -LogbookPath $watchConfig.logbook `
-    -ShareDir $watchConfig.shareDir -ProcedureRoot $watchConfig.procedureRoot `
-    -HiveLogsDir $watchConfig.hiveLogsDir -Now (Get-Date) -Sender $watchSender `
-    -MemberId $watchConfig.memberId
-exit 0
+
+function Pause-IfInteractive {
+    # A scheduled run has no console. ReadKey there does not "wait for a key",
+    # it throws or blocks, holding the task open until its time limit, which
+    # is why this is gated rather than simply left at the end of the file.
+    if ($Scheduled) { return }
+    Say ''
+    Say 'Press any key to continue . . .'
+    try { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { }
+}
+
+function Test-Task {
+    $t = Get-ScheduledTask -TaskName $TaskName -EA SilentlyContinue
+    if ($t) { return $true }
+    return $false
+}
+
+function Test-Elevated {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p = New-Object Security.Principal.WindowsPrincipal($id)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-InstalledVersion {
+    # Reads $ScriptVersion out of the installed copy without executing it.
+    if (-not (Test-Path -LiteralPath $InstalledPath)) { return "" }
+    foreach ($line in (Get-Content -LiteralPath $InstalledPath -EA SilentlyContinue)) {
+        # No leading $ in the pattern: in a double-quoted PowerShell string
+        # "$ScriptVersion" INTERPOLATES, so the pattern would match nothing
+        # and the task would reinstall on every single run.
+        if ($line -match "ScriptVersion\s*=\s*'([^']+)'") { return $Matches[1] }
+    }
+    return ""
+}
+
+function Remove-Task {
+    if (-not (Test-Task)) { Say "No scheduled task named '$TaskName'." 'Yellow'; return $true }
+    if (-not (Test-Elevated)) {
+        Say 'Removing the scheduled task needs administrator rights.' 'Yellow'
+        # The installed copy is on C:, which the elevated window can see; a
+        # mapped drive the .bat may sit on is not visible to it.
+        $self = $PSCommandPath
+        if (Test-Path -LiteralPath $InstalledPath) { $self = $InstalledPath }
+        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $self), '-Uninstall')
+        try { Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait -ErrorAction Stop }
+        catch { Say 'The administrator prompt was refused.' 'Red'; return $false }
+        return (-not (Test-Task))
+    }
+    try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop }
+    catch { Say "Could not remove the scheduled task: $($_.Exception.Message)" 'Red'; return $false }
+    Say "Removed scheduled task '$TaskName'." 'Green'
+    return $true
+}
+
+function Get-CurrentAccount {
+    # DOMAIN\user of this process.
+    try { return [Security.Principal.WindowsIdentity]::GetCurrent().Name }
+    catch { return "$env:USERDOMAIN\$env:USERNAME" }
+}
+
+function Get-InteractiveUser {
+    <#
+    The account that owns this session's desktop (explorer.exe), as
+    @{ Name = 'DOMAIN\user'; Sid = 'S-1-5-...' }, or $null when it cannot be
+    told. Answering the administrator prompt with another account's password
+    changes who runs the elevated window, not whose desktop it is: this is
+    the account the watcher has to run as.
+    #>
+    try {
+        $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+        foreach ($p in @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction Stop)) {
+            if ([int]$p.SessionId -ne $session) { continue }
+            $o = Invoke-CimMethod -InputObject $p -MethodName GetOwner -ErrorAction Stop
+            if ($o.ReturnValue -ne 0 -or [string]::IsNullOrEmpty([string]$o.User)) { continue }
+            $sid = ''
+            try {
+                $s = Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction Stop
+                if ($s.ReturnValue -eq 0) { $sid = [string]$s.Sid }
+            }
+            catch { }
+            return @{ Name = "$($o.Domain)\$($o.User)"; Sid = $sid }
+        }
+    }
+    catch { }
+    return $null
+}
+
+function Test-SameAccount {
+    # DOMAIN\user against DOMAIN\user, or a bare user name against either
+    # (Task Scheduler may report a local account without its domain).
+    param([string]$A = "", [string]$B = "")
+    if ([string]::IsNullOrEmpty($A) -or [string]::IsNullOrEmpty($B)) { return $false }
+    $x = $A.Trim().ToLowerInvariant()
+    $y = $B.Trim().ToLowerInvariant()
+    if ($x -eq $y) { return $true }
+    if ($x.Contains('\') -and $y.Contains('\')) { return $false }
+    $xn = $x.Substring($x.LastIndexOf('\') + 1)
+    $yn = $y.Substring($y.LastIndexOf('\') + 1)
+    return ($xn -eq $yn)
+}
+
+function Get-TaskAccount {
+    # The account the scheduled task runs as, as Task Scheduler reports it;
+    # "" when it cannot be read.
+    try {
+        $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        return [string]$t.Principal.UserId
+    }
+    catch { return "" }
+}
+
+function Get-AccountWarning {
+    <#
+    "" when the task runs as the desktop's user (Desktop), else what to tell
+    the installer (ruling R16): a task under another account runs only while
+    that account is logged on, and cannot read the webhook, which DPAPI ties
+    to the account that stored it.
+    #>
+    param([string]$TaskAccount = "", [string]$Desktop = "")
+    if ([string]::IsNullOrEmpty($TaskAccount)) {
+        return "Could not read which account the task '$TaskName' runs as. It must be $Desktop (Task Scheduler shows it)."
+    }
+    if ([string]::IsNullOrEmpty($Desktop)) { return "" }
+    if (Test-SameAccount $TaskAccount $Desktop) { return "" }
+    return "WARNING: the task runs as $TaskAccount, but this desktop belongs to $Desktop. It will only run while $TaskAccount is logged on, and cannot read the webhook stored for $Desktop. Run /uninstall, then install again as $Desktop."
+}
+
+function Initialize-StateDir {
+    <#
+    Ruling R16. The install runs elevated; the every-minute task does not.
+    Creates StateDir if it is missing and grants Account Modify on it,
+    inherited by every file and folder below, so the task can always write
+    its own state there. Creates no file in it: the first scheduled tick,
+    running as Account, seeds state.json and delivered.txt itself and so
+    owns them. Run elevated. Returns @{ Ok; Why }.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        $Account = $null
+    )
+    try {
+        $who = $null
+        if ($null -ne $Account -and -not [string]::IsNullOrEmpty([string]$Account.Sid)) {
+            $who = New-Object System.Security.Principal.SecurityIdentifier([string]$Account.Sid)
+        }
+        elseif ($null -ne $Account -and -not [string]::IsNullOrEmpty([string]$Account.Name)) {
+            $who = New-Object System.Security.Principal.NTAccount([string]$Account.Name)
+        }
+        else {
+            return @{ Ok = $false; Why = 'no account to grant' }
+        }
+        [void][System.IO.Directory]::CreateDirectory($StateDir)
+        $di = New-Object System.IO.DirectoryInfo $StateDir
+        $sec = $di.GetAccessControl()
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($who,
+            [System.Security.AccessControl.FileSystemRights]'Modify',
+            [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [System.Security.AccessControl.PropagationFlags]::None,
+            [System.Security.AccessControl.AccessControlType]::Allow)
+        $sec.AddAccessRule($rule)
+        $di.SetAccessControl($sec)
+        return @{ Ok = $true; Why = '' }
+    }
+    catch {
+        return @{ Ok = $false; Why = "$($_.Exception.GetType().Name): $($_.Exception.Message)" }
+    }
+}
+
+function Install-Task {
+    <#
+    Copies this script to C:\ProgramData\STAN and registers the scheduled
+    task. Not elevated: re-launches the installed copy elevated with
+    -InstallOnly (one administrator prompt) and checks the task appeared.
+    Elevated: prepares the state folder (R16), then registers the task to
+    run every minute as the desktop's user, not elevated, and only while
+    that user is logged on (HyStar needs the session anyway). Returns
+    $true when the task exists afterwards.
+    #>
+    # Copy to a stable path first. A task registered against wherever the
+    # .bat was double-clicked from (Downloads, a USB stick, a share) works
+    # today and silently stops the day that folder moves.
+    if (-not (Test-Path -LiteralPath $InstallDir)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    }
+    if ($PSCommandPath -ne $InstalledPath) {
+        try { Copy-Item -LiteralPath $PSCommandPath -Destination $InstalledPath -Force -ErrorAction Stop }
+        catch {
+            Say "Could not copy the watcher to $InstalledPath ($($_.Exception.Message))." 'Red'
+            return $false
+        }
+    }
+
+    if (-not (Test-Elevated)) {
+        Say ''
+        Say 'Setting up the every-minute task needs administrator rights.'
+        Say 'Say Yes to the Windows prompt that is about to appear.'
+        $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $InstalledPath), '-InstallOnly')
+        try {
+            Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait -ErrorAction Stop
+        }
+        catch {
+            Say ''
+            Say 'The administrator prompt was refused or cancelled.' 'Red'
+            return $false
+        }
+        if (Test-Task) { Say "Scheduled task '$TaskName' created: every minute." 'Green'; return $true }
+        Say 'The task still is not there after elevating.' 'Red'
+        return $false
+    }
+
+    $desk = Get-InteractiveUser
+    if ($null -eq $desk) {
+        $desk = @{ Name = (Get-CurrentAccount); Sid = '' }
+        Say "Could not tell whose desktop this is; the task will run as $($desk.Name)." 'Yellow'
+    }
+    $prep = Initialize-StateDir -StateDir $WatchStateDir -Account $desk
+    if (-not $prep.Ok) {
+        Say "Could not give $($desk.Name) write access to $WatchStateDir ($($prep.Why))." 'Red'
+        Say 'Without it the every-minute task could not keep its state, so it was not created.' 'Red'
+        return $false
+    }
+    # Runs as the desktop's user ON PURPOSE, never SYSTEM and never elevated:
+    # SYSTEM cannot see the mapped Y: drive or read the user's DPAPI secret,
+    # and an elevated run would own state files the next run cannot replace.
+    $argline = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstalledPath`" -Scheduled"
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argline
+    $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $desk.Name
+    $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+        -RepetitionInterval (New-TimeSpan -Minutes 1) `
+        -RepetitionDuration (New-TimeSpan -Days 3650)
+    # IgnoreNew: a slow tick is skipped, never stacked. 5 min: a tick is a
+    # stat, a seek and a few KB; one that runs longer is stuck.
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
+        -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
+        -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries
+    $principal = New-ScheduledTaskPrincipal -UserId $desk.Name -LogonType Interactive -RunLevel Limited
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($atLogon, $repeat) `
+            -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+    }
+    catch {
+        Say ''
+        Say "Could not create the scheduled task: $($_.Exception.Message)" 'Red'
+        return $false
+    }
+    # Never claim success without looking.
+    if (-not (Test-Task)) { Say 'The task did not appear after registering.' 'Red'; return $false }
+    Say "Scheduled task '$TaskName' created: every minute, as $($desk.Name)." 'Green'
+    return $true
+}
+
+function Get-LogbookCandidates {
+    # Where the install looks for HyStar's error logbook, in order: the path
+    # given (or remembered in config.json), then C:, then D:. No duplicates.
+    param([string]$LogbookPath = "")
+    $list = New-Object System.Collections.ArrayList
+    foreach ($c in @($LogbookPath,
+            'C:\BDalSystemData\HyStar\LogFiles\CompassHyStarErrorLogbook.log',
+            'D:\BDalSystemData\HyStar\LogFiles\CompassHyStarErrorLogbook.log')) {
+        if ([string]::IsNullOrEmpty($c)) { continue }
+        $dup = $false
+        foreach ($have in $list) {
+            if ([string]::Equals([string]$have, $c, [System.StringComparison]::OrdinalIgnoreCase)) { $dup = $true }
+        }
+        if (-not $dup) { [void]$list.Add($c) }
+    }
+    return $list.ToArray()
+}
+
+function Find-ErrorLogbook {
+    # The first candidate (Get-LogbookCandidates) that is a file, or $null.
+    # Install only: the scheduled tick reads the path from config.json and
+    # never searches.
+    param([string]$LogbookPath = "")
+    foreach ($c in @(Get-LogbookCandidates -LogbookPath $LogbookPath)) {
+        if ([System.IO.File]::Exists($c)) { return $c }
+    }
+    return $null
+}
+
+function Test-SlackMemberId {
+    # The rule Hive applies (stan.notify._MENTION_ID), case and all: a member
+    # ID is what makes Slack notify the phone.
+    param([AllowNull()][AllowEmptyString()][string]$MemberId)
+    if ([string]::IsNullOrEmpty($MemberId)) { return $false }
+    return ($MemberId -cmatch '^[UW][A-Z0-9]{6,}$')
+}
+
+function Test-WebhookUrl {
+    # A Slack incoming webhook: https://hooks.slack.com/ and something after
+    # it, no whitespace. Anything else is refused, so a mistyped paste is
+    # caught at install, not at the first failure.
+    param([AllowNull()][AllowEmptyString()][string]$Url)
+    if ([string]::IsNullOrEmpty($Url)) { return $false }
+    if ($Url -match '\s') { return $false }
+    $prefix = 'https://hooks.slack.com/'
+    if ($Url.Length -le $prefix.Length) { return $false }
+    return $Url.StartsWith($prefix, [System.StringComparison]::Ordinal)
+}
+
+function Get-PlainText {
+    # SecureString -> string, through a BSTR that is zeroed and freed
+    # whatever happens. "" for $null.
+    param($Secure)
+    if ($null -eq $Secure) { return "" }
+    $bstr = [IntPtr]::Zero
+    try {
+        $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+        return [System.Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    }
+    finally {
+        if ($bstr -ne [IntPtr]::Zero) { [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+    }
+}
+
+function Test-WebhookSecure {
+    # Test-WebhookUrl on a SecureString (what Read-Host -AsSecureString gave).
+    param($Secure)
+    return (Test-WebhookUrl ((Get-PlainText $Secure).Trim()))
+}
+
+function Set-SecretFileAcl {
+    # Path readable by the current user (who stored it, and who alone can
+    # decrypt it) and Administrators, nobody else: inheritance cut, every
+    # inherited entry dropped. Throws when it cannot be set.
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $self = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $admins = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')
+    $sec = New-Object System.Security.AccessControl.FileSecurity
+    $sec.SetAccessRuleProtection($true, $false)
+    foreach ($who in @($self, $admins)) {
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($who,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.Security.AccessControl.AccessControlType]::Allow)
+        $sec.AddAccessRule($rule)
+    }
+    (New-Object System.IO.FileInfo $Path).SetAccessControl($sec)
+}
+
+function Save-Webhook {
+    <#
+    Stores the webhook in StateDir\webhook.dpapi: ConvertFrom-SecureString
+    with no key is DPAPI in the CurrentUser scope, so only this Windows
+    account on this PC can decrypt it (the task runs as this account). The
+    file's ACL then admits this account and Administrators only. Refused,
+    with nothing written, unless it starts with https://hooks.slack.com/; a
+    file whose ACL cannot be set is removed again. Returns @{ Ok; Why }; Why
+    never carries the URL.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][System.Security.SecureString]$Webhook,
+        [Parameter(Mandatory = $true)][string]$StateDir
+    )
+    $plain = (Get-PlainText $Webhook).Trim()
+    if (-not (Test-WebhookUrl $plain)) {
+        return @{ Ok = $false; Why = 'not a Slack incoming webhook: it must start with https://hooks.slack.com/' }
+    }
+    $path = Join-Path $StateDir 'webhook.dpapi'
+    try {
+        [void][System.IO.Directory]::CreateDirectory($StateDir)
+        $secure = ConvertTo-SecureString -String $plain -AsPlainText -Force
+        $blob = ConvertFrom-SecureString -SecureString $secure
+        if ([System.IO.File]::Exists($path)) { [System.IO.File]::Delete($path) }
+        Write-Utf8File -Path $path -Text $blob
+        Set-SecretFileAcl -Path $path
+        return @{ Ok = $true; Why = '' }
+    }
+    catch {
+        $why = Get-ScrubbedText -Text "$($_.Exception.GetType().Name): $($_.Exception.Message)" -Secret $plain
+        try {
+            if ([System.IO.File]::Exists($path)) { [System.IO.File]::Delete($path) }
+        }
+        catch { }
+        return @{ Ok = $false; Why = $why }
+    }
+}
+
+function Get-Webhook {
+    <#
+    The stored webhook, decrypted, or $null: none stored, stored by another
+    account (DPAPI, CurrentUser: only the account that stored it can read
+    it), unreadable, or not a Slack webhook. Never throws, never logs it.
+    #>
+    param([Parameter(Mandatory = $true)][string]$StateDir)
+    try {
+        $path = Join-Path $StateDir 'webhook.dpapi'
+        if (-not [System.IO.File]::Exists($path)) { return $null }
+        $blob = ([System.IO.File]::ReadAllText($path)).Trim()
+        if ($blob -eq '') { return $null }
+        $secure = ConvertTo-SecureString -String $blob -ErrorAction Stop
+        $url = (Get-PlainText $secure).Trim()
+        if (Test-WebhookUrl $url) { return $url }
+    }
+    catch { }
+    return $null
+}
+
+function Save-WatchConfig {
+    <#
+    config.json in StateDir (non-secret, never the webhook): logbook and
+    memberId as the install found them. shareDir, procedureRoot and
+    hiveLogsDir are kept when config.json already sets them, else written as
+    null, so Get-WatchConfig keeps choosing Y:\STAN or its UNC path on every
+    tick rather than freezing whichever one answered during the install.
+    UTF-8 without a BOM, temp file and rename.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [Parameter(Mandatory = $true)][string]$LogbookPath,
+        [Parameter(Mandatory = $true)][string]$MemberId
+    )
+    $stored = Get-WatchConfig -StateDir $StateDir -StoredOnly
+    $doc = [ordered]@{
+        logbook       = $LogbookPath
+        memberId      = $MemberId
+        shareDir      = $null
+        procedureRoot = $null
+        hiveLogsDir   = $null
+    }
+    foreach ($k in @('shareDir', 'procedureRoot', 'hiveLogsDir')) {
+        if ($stored.ContainsKey($k)) { $doc[$k] = $stored[$k] }
+    }
+    [void][System.IO.Directory]::CreateDirectory($StateDir)
+    [void](Publish-JsonFile -Dir $StateDir -BaseName 'config' -Text (ConvertTo-Json -InputObject $doc -Depth 10))
+}
+
+# ------------------------------------------------------------------- pause
+# Planned downtime (service visit, holiday, planned shutdown): Hive does not
+# page "watcher down" until pause_until.json says so. The watcher never reads
+# that file, so a pause never silences a queue-stop alert.
+
+function ConvertTo-PauseUntil {
+    <#
+    '8h' (hours) or '2d' (days) after Now, up to 31 days; $null for anything
+    else. Hours are real elapsed hours (counted in UTC, so 8h across a DST
+    change is still 8 hours); days are calendar days (the same clock time).
+    '0h' ends a pause now.
+    #>
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory = $true)][datetime]$Now
+    )
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
+    $m = [regex]::Match($Text.Trim(), '^(\d{1,4})([hHdD])$')
+    if (-not $m.Success) { return $null }
+    $n = [int]$m.Groups[1].Value
+    if ($m.Groups[2].Value.ToLowerInvariant() -eq 'd') {
+        if ($n -gt 31) { return $null }
+        return $Now.AddDays($n)
+    }
+    if ($n -gt 744) { return $null }
+    return $Now.ToUniversalTime().AddHours($n).ToLocalTime()
+}
+
+function Write-PauseFile {
+    <#
+    pause_until.json in the share's event folder (ShareDir; by default the
+    one Get-WatchConfig resolves, Y:\STAN or its UNC path):
+    {until, by, reason}, until in instrument-local naive ISO, UTF-8 without
+    a BOM (R14), temp file and rename. Replaces an earlier pause. Returns its
+    path; throws when the share cannot be written.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][datetime]$Until,
+        [string]$ShareDir = "",
+        [string]$By = "",
+        [string]$Reason = ""
+    )
+    $dir = $ShareDir
+    if ([string]::IsNullOrEmpty($dir)) {
+        $dir = (Get-WatchConfig -StateDir (Join-Path $env:ProgramData 'STAN\hystar_watch')).shareDir
+    }
+    [void][System.IO.Directory]::CreateDirectory($dir)
+    $doc = [ordered]@{
+        until  = (ConvertTo-IsoLocal $Until)
+        by     = $By
+        reason = $Reason
+    }
+    [void](Publish-JsonFile -Dir $dir -BaseName 'pause_until' -Text (ConvertTo-Json -InputObject $doc -Depth 10))
+    return (Join-Path $dir 'pause_until.json')
+}
+
+function Set-WatcherPause {
+    # -Pause: Duration against Now, then pause_until.json. Returns the end,
+    # or $null (nothing written) for a duration it does not understand.
+    # Throws when the share cannot be written.
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Duration,
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [string]$ShareDir = "",
+        [string]$By = "",
+        [string]$Reason = ""
+    )
+    $until = ConvertTo-PauseUntil -Text $Duration -Now $Now
+    if ($null -eq $until) { return $null }
+    [void](Write-PauseFile -Until $until -ShareDir $ShareDir -By $By -Reason $Reason)
+    return $until
+}
+
+# -------------------------------------------------------------- auto-logon
+
+function ConvertTo-AutoLogonStatus {
+    # Winlogon's AutoAdminLogon value: '1' on; absent or '0' off; else unknown.
+    param($Value)
+    if ($null -eq $Value) { return 'off' }
+    $t = ([string]$Value).Trim()
+    if ($t -eq '1') { return 'on' }
+    if ($t -eq '0' -or $t -eq '') { return 'off' }
+    return 'unknown'
+}
+
+function Get-AutoLogonStatus {
+    # 'on', 'off' or 'unknown': whether the PC logs a user on by itself after
+    # a reboot. The task runs only while its user is logged on.
+    param([string]$RegistryPath = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon')
+    try {
+        if (-not (Test-Path -LiteralPath $RegistryPath)) { return 'unknown' }
+        $item = Get-ItemProperty -LiteralPath $RegistryPath -ErrorAction Stop
+        $v = $null
+        $prop = $item.PSObject.Properties['AutoAdminLogon']
+        if ($null -ne $prop) { $v = $prop.Value }
+        return (ConvertTo-AutoLogonStatus $v)
+    }
+    catch { return 'unknown' }
+}
+
+# ---------------------------------------------------------- the test message
+
+function Format-TestPayload {
+    param(
+        [string]$MemberId = "",
+        [Alias('Host')][string]$HostName = 'TIMS-10878',
+        [string]$Version = ""
+    )
+    $text = "$(Get-MentionPrefix $MemberId)STAN HyStar watcher v$Version is installed on $HostName. If your phone buzzed, queue-stop alerts will reach you."
+    return @{ text = $text; blocks = @(, (New-SectionBlock $text)) }
+}
+
+function Send-InstallTest {
+    <#
+    The test message with the @mention, so "does my phone buzz?" is answered
+    on day one. Posted directly when it can be (Sender, else WebhookUrl);
+    otherwise it becomes a 'test' event with posted_by_pc false, which Hive
+    relays like any other, through the tick's own local queue and flush.
+    Touches neither state.json nor the delivered-ids ledger (R16: the tick's
+    first run seeds those, as the task's account).
+    Returns @{ Route = 'direct' | 'hive' | 'queued' | 'lost'; Status; Lines }.
+    #>
+    param(
+        [string]$WebhookUrl = "",
+        [string]$MemberId = "",
+        [Parameter(Mandatory = $true)][string]$HostName,
+        [string]$ShareDir = "",
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [Parameter(Mandatory = $true)][datetime]$Now,
+        [string]$Version = "",
+        [scriptblock]$Sender = $null
+    )
+    $payload = Format-TestPayload -MemberId $MemberId -HostName $HostName -Version $Version
+    $status = 'no webhook stored'
+    $res = $null
+    if ($null -ne $Sender) { $res = Invoke-Sender -Sender $Sender -Payload $payload }
+    elseif (-not [string]::IsNullOrEmpty($WebhookUrl)) { $res = Send-SlackPayload -WebhookUrl $WebhookUrl -Payload $payload }
+    if ($null -ne $res) {
+        if ($res.Ok -eq $true) { return @{ Route = 'direct'; Status = $res.Status; Lines = @() } }
+        $status = Get-ScrubbedText -Text ([string]$res.Status) -Secret $WebhookUrl
+    }
+    $log = New-Object System.Collections.ArrayList
+    $ev = New-WatchEvent -State @{ eventSeq = 0 } -Type 'test' -HostName $HostName -At $Now -Source 'watcher' `
+        -Title 'Install test' -Message $payload.text -Payload $payload -Version $Version
+    $stamp = $Now.ToString("yyyyMMdd'T'HHmmss", [System.Globalization.CultureInfo]::InvariantCulture)
+    $ev['id'] = "$($HostName)_$($stamp)_test"
+    $ev['posted_by_pc'] = $false
+    $text = ConvertTo-Json -InputObject $ev -Depth 10
+    $filed = Save-EventFile -Id $ev['id'] -Text $text -ShareDir $ShareDir -StateDir $StateDir -Log $log
+    $route = 'lost'
+    if ($filed -eq 'written' -or $filed -eq 'exists') { $route = 'hive' }
+    elseif ($filed -eq 'queued') {
+        $fl = Invoke-PendingFlush -ShareDir $ShareDir -StateDir $StateDir -Log $log
+        if ($fl.Left -eq 0) { $route = 'hive' }
+        else { $route = 'queued' }
+    }
+    $lines = @()
+    foreach ($l in $log) { $lines += (Get-ScrubbedText -Text ([string]$l) -Secret $WebhookUrl) }
+    return @{ Route = $route; Status = $status; Lines = $lines }
+}
+
+function Get-TestRouteText {
+    param([Parameter(Mandatory = $true)]$Result)
+    $r = [string]$Result.Route
+    if ($r -eq 'direct') { return 'direct' }
+    if ($r -eq 'hive') { return 'via Hive (the PC could not reach Slack)' }
+    if ($r -eq 'queued') {
+        return 'via Hive once the share is reachable (the PC could not reach Slack or the share: it is queued on this PC)'
+    }
+    return 'NOT SENT: Slack, the share and the queue on this PC all failed'
+}
+
+function Show-TestResult {
+    param([Parameter(Mandatory = $true)]$Result)
+    $color = 'Green'
+    if ($Result.Route -ne 'direct') { $color = 'Yellow' }
+    if ($Result.Route -eq 'lost') { $color = 'Red' }
+    Say ''
+    Say "Test message route: $(Get-TestRouteText $Result)" $color
+    if ($Result.Route -ne 'direct') {
+        Say "  direct post: $($Result.Status)"
+        foreach ($l in @($Result.Lines)) { Say "  $l" }
+        if ($Result.Route -eq 'hive') { Say '  Hive posts it within a minute or two.' }
+    }
+    Say ''
+    Say 'Your phone should buzz with an @mention. If it does not, check once:'
+    Say '  * Slack on the phone: notifications on for mentions'
+    Say "  * Slack's notification schedule does not silence nights"
+    Say "  * the phone's sleep / Do Not Disturb mode lets Slack through"
+}
+
+# --------------------------------------------------------------- questions
+# The only two places this script waits for a person. Never reached under
+# -Scheduled.
+
+function Read-MemberIdInput {
+    # Asks for the Slack member ID. Enter keeps Stored.
+    param([string]$Stored = "")
+    Say ''
+    Say 'Your Slack member ID: in Slack, open your profile, click the three dots, then "Copy member ID".'
+    $prompt = 'Slack member ID'
+    if (-not [string]::IsNullOrEmpty($Stored)) { $prompt = "Slack member ID (Enter keeps $Stored)" }
+    $answer = Read-Host -Prompt $prompt
+    if ([string]::IsNullOrEmpty($answer)) { return $Stored }
+    return $answer.Trim()
+}
+
+function Read-WebhookInput {
+    # Asks for the webhook without echoing it. An empty answer keeps the
+    # stored one (when HaveStored).
+    param([switch]$HaveStored)
+    Say ''
+    Say 'Paste the Slack incoming webhook (it starts with https://hooks.slack.com/).'
+    Say 'It is not shown as you paste, and it is never logged or copied to the share.'
+    if ($HaveStored) { Say 'One is stored already: press Enter to keep it.' }
+    return (Read-Host -Prompt 'Slack webhook' -AsSecureString)
+}
+
+# ------------------------------------------------------------- the install
+
+function Invoke-Install {
+    <#
+    The install, run by a person from the .bat. In order, and nothing is
+    registered or stored until every answer has checked out:
+      1. find the logbook (-LogbookPath, else the one config.json remembers,
+         then C:, then D:); none: print every path tried and stop
+      2. this window must be the desktop's user's: the webhook is encrypted
+         for whoever stores it, and the task runs as the desktop's user
+      3. the Slack member ID (-SlackMemberId, else asked; Enter keeps the
+         stored one), checked as Hive checks it
+      4. the webhook (asked, never shown; Enter keeps the stored one); it
+         must start with https://hooks.slack.com/
+      5. the scheduled task (Install-Task, one administrator prompt), unless
+         TaskReady (installed and up to date already)
+      6. config.json and the webhook, stored as the desktop's user
+      7. the account the task runs as (R16: warned when it is not the
+         desktop's), auto-logon, then the test message and its route
+    Never creates state.json or delivered.txt (R16). Returns $true when the
+    watcher is installed.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$StateDir,
+        [string]$LogbookPath = "",
+        [string]$SlackMemberId = "",
+        [switch]$TaskReady
+    )
+    $stored = Get-WatchConfig -StateDir $StateDir -StoredOnly
+
+    $hint = $LogbookPath
+    if ([string]::IsNullOrEmpty($hint) -and $stored.ContainsKey('logbook')) { $hint = [string]$stored['logbook'] }
+    $logbook = Find-ErrorLogbook -LogbookPath $hint
+    if ($null -eq $logbook) {
+        Say "Could not find HyStar's error logbook. Tried:" 'Red'
+        foreach ($c in @(Get-LogbookCandidates -LogbookPath $hint)) { Say "  $c" 'Red' }
+        Say 'Nothing was installed. If HyStar writes it somewhere else, run:' 'Yellow'
+        Say '  powershell -ExecutionPolicy Bypass -File watch_hystar_errors.ps1 -LogbookPath <path to CompassHyStarErrorLogbook.log>' 'Yellow'
+        return $false
+    }
+    Say "HyStar error logbook: $logbook" 'Green'
+
+    $me = Get-CurrentAccount
+    $desk = Get-InteractiveUser
+    $deskName = $me
+    if ($null -ne $desk) { $deskName = [string]$desk.Name }
+    if (-not (Test-SameAccount $me $deskName)) {
+        Say "This window runs as $me, but this desktop belongs to $deskName." 'Red'
+        Say "The watcher runs as $deskName, and only the account that stores the webhook can read it." 'Red'
+        Say "Install it as ${deskName}: double-click the .bat as that user and say Yes to the prompt" 'Red'
+        Say "(not 'Run as administrator' with another account). Nothing was installed." 'Red'
+        return $false
+    }
+    if ($null -eq $desk) { Say "Could not tell whose desktop this is; installing for $me." 'Yellow' }
+
+    $member = ""
+    if (-not [string]::IsNullOrEmpty($SlackMemberId)) {
+        $member = $SlackMemberId.Trim()
+        if (-not (Test-SlackMemberId $member)) {
+            Say "'$member' is not a Slack member ID (one looks like U0123ABCD). Nothing was installed." 'Red'
+            return $false
+        }
+    }
+    else {
+        $storedMember = ""
+        if ($stored.ContainsKey('memberId')) { $storedMember = [string]$stored['memberId'] }
+        for ($try = 1; $try -le 3; $try++) {
+            $answer = Read-MemberIdInput -Stored $storedMember
+            if (Test-SlackMemberId $answer) { $member = $answer; break }
+            Say "'$answer' is not a Slack member ID (one looks like U0123ABCD)." 'Red'
+        }
+        if ([string]::IsNullOrEmpty($member)) {
+            Say 'No Slack member ID: nothing was installed.' 'Red'
+            return $false
+        }
+    }
+
+    $haveStored = ($null -ne (Get-Webhook -StateDir $StateDir))
+    $newHook = $null
+    $hookOk = $false
+    for ($try = 1; $try -le 3; $try++) {
+        $sec = Read-WebhookInput -HaveStored:$haveStored
+        if ($null -eq $sec -or $sec.Length -eq 0) {
+            if ($haveStored) { $hookOk = $true; break }
+            Say 'Nothing was pasted.' 'Red'
+            continue
+        }
+        if (Test-WebhookSecure $sec) { $newHook = $sec; $hookOk = $true; break }
+        Say 'That is not a Slack incoming webhook: it must start with https://hooks.slack.com/' 'Red'
+    }
+    if (-not $hookOk) {
+        Say 'No webhook: nothing was installed.' 'Red'
+        return $false
+    }
+
+    if (-not $TaskReady) {
+        if (-not (Install-Task)) {
+            Say 'The scheduled task was not created, so nothing was stored.' 'Red'
+            return $false
+        }
+    }
+
+    try { Save-WatchConfig -StateDir $StateDir -LogbookPath $logbook -MemberId $member }
+    catch {
+        Say "Could not write config.json in $StateDir ($($_.Exception.GetType().Name): $($_.Exception.Message))." 'Red'
+        return $false
+    }
+    Say "Settings saved in $(Join-Path $StateDir 'config.json') (member ID $member)."
+    if ($null -ne $newHook) {
+        $saved = Save-Webhook -Webhook $newHook -StateDir $StateDir
+        if ($saved.Ok) { Say "Webhook stored, encrypted for $me and readable only by it and Administrators." 'Green' }
+        else {
+            Say "The webhook was NOT stored: $($saved.Why)" 'Red'
+            Say 'Every alert will reach Slack through Hive instead, up to a minute later.' 'Yellow'
+        }
+    }
+
+    Say ''
+    $taskUser = Get-TaskAccount
+    if (-not [string]::IsNullOrEmpty($taskUser)) {
+        Say "The watcher runs as: $taskUser (every minute, while that account is logged on)."
+    }
+    $warn = Get-AccountWarning -TaskAccount $taskUser -Desktop $deskName
+    if (-not [string]::IsNullOrEmpty($warn)) {
+        $warnColor = 'Yellow'
+        if ($warn.StartsWith('WARNING')) { $warnColor = 'Red' }
+        Say $warn $warnColor
+    }
+    $auto = Get-AutoLogonStatus
+    Say "Auto-logon after a reboot: $auto"
+    if ($auto -eq 'off') {
+        Say "  After a reboot nobody is logged on, so the watcher waits until someone logs on; Hive pages 'watcher down' after 10 minutes." 'Yellow'
+    }
+    elseif ($auto -eq 'unknown') { Say '  (Winlogon could not be read.)' 'Yellow' }
+
+    $cfg = Get-WatchConfig -StateDir $StateDir
+    $url = Get-Webhook -StateDir $StateDir
+    if ($null -eq $url) { Say "No webhook $me can read is stored: the test goes through Hive." 'Yellow' }
+    $result = Send-InstallTest -WebhookUrl ([string]$url) -MemberId $member -HostName ([string]$env:COMPUTERNAME) `
+        -ShareDir $cfg['shareDir'] -StateDir $StateDir -Now (Get-Date) -Version ([string]$ScriptVersion)
+    Show-TestResult $result
+    return $true
+}
+
+function Invoke-PauseCommand {
+    # -Pause 8h: write the pause, say when it ends. Returns the exit code.
+    param(
+        [Parameter(Mandatory = $true)][string]$Duration,
+        [Parameter(Mandatory = $true)][string]$StateDir
+    )
+    $cfg = Get-WatchConfig -StateDir $StateDir
+    $now = Get-Date
+    $until = $null
+    try {
+        $until = Set-WatcherPause -Duration $Duration -Now $now -ShareDir $cfg['shareDir'] -By (Get-CurrentAccount) `
+            -Reason "planned downtime: -Pause $Duration on $env:COMPUTERNAME"
+    }
+    catch {
+        Say "Could not write the pause to $($cfg['shareDir']) ($($_.Exception.GetType().Name): $($_.Exception.Message))." 'Red'
+        return 1
+    }
+    if ($null -eq $until) {
+        Say "'$Duration' is not a pause length. Use hours or days: 8h, 2d (up to 31d; 0h ends a pause)." 'Red'
+        return 1
+    }
+    if ($until -le $now) { Say "Pause ended: Hive pages 'watcher down' again from now on." 'Green' }
+    else {
+        $when = $until.ToString('ddd yyyy-MM-dd HH:mm', [System.Globalization.CultureInfo]::InvariantCulture)
+        Say "Paused until $when. Hive will not page 'watcher down' before then." 'Green'
+    }
+    Say 'Queue-stop alerts still go out as usual: the watcher itself never pauses.'
+    Say "  ($(Join-Path $cfg['shareDir'] 'pause_until.json'))"
+    return 0
+}
+
+function Invoke-TestCommand {
+    # -Test: the install test message again. Returns the exit code.
+    param([Parameter(Mandatory = $true)][string]$StateDir)
+    $cfg = Get-WatchConfig -StateDir $StateDir
+    if (-not (Test-SlackMemberId $cfg['memberId'])) {
+        Say 'No Slack member ID is stored: install first (double-click watch_hystar_errors.bat).' 'Red'
+        return 1
+    }
+    $url = Get-Webhook -StateDir $StateDir
+    if ($null -eq $url) { Say "No webhook $(Get-CurrentAccount) can read is stored: the test goes through Hive." 'Yellow' }
+    $result = Send-InstallTest -WebhookUrl ([string]$url) -MemberId $cfg['memberId'] -HostName ([string]$env:COMPUTERNAME) `
+        -ShareDir $cfg['shareDir'] -StateDir $StateDir -Now (Get-Date) -Version ([string]$ScriptVersion)
+    Show-TestResult $result
+    if ($result.Route -eq 'lost') { return 1 }
+    return 0
+}
+
+# ----------------------------------------------------------------- top level
+$TaskName = 'STAN HyStar watcher'
+$InstallDir = Join-Path $env:ProgramData 'STAN'
+$InstalledPath = Join-Path $InstallDir 'watch_hystar_errors.ps1'
+$WatchStateDir = Join-Path $InstallDir 'hystar_watch'
+
+# THE TICK, first and on its own: a scheduled run never reaches a question,
+# the install or the key-press below. No GetNewClosure for the sender: a
+# closure would not see this script's functions.
+if ($Scheduled) {
+    $watchConfig = Get-WatchConfig -StateDir $WatchStateDir
+    # $null when none is stored (or this account cannot decrypt it): then
+    # every event carries posted_by_pc false and Hive relays it.
+    $script:WatchWebhook = Get-Webhook -StateDir $WatchStateDir
+    $watchSender = $null
+    if (-not [string]::IsNullOrEmpty($script:WatchWebhook)) {
+        $watchSender = { param($p) Send-SlackPayload -WebhookUrl $script:WatchWebhook -Payload $p }
+    }
+    $null = Invoke-WatchTick -StateDir $WatchStateDir -LogbookPath $watchConfig['logbook'] `
+        -ShareDir $watchConfig['shareDir'] -ProcedureRoot $watchConfig['procedureRoot'] `
+        -HiveLogsDir $watchConfig['hiveLogsDir'] -Now (Get-Date) -Sender $watchSender `
+        -MemberId $watchConfig['memberId']
+    exit 0
+}
+
+Say "STAN HyStar watcher  v$ScriptVersion" 'Cyan'
+Say "  running from: $PSCommandPath"
+Say ''
+
+if ($Uninstall) {
+    $removed = Remove-Task
+    Say ''
+    Say "Left in place: $WatchStateDir (state, config.json and the stored webhook)."
+    Say 'Delete that folder as well to remove them.'
+    if ($removed) { Say "Hive pages 'watcher down' in about 10 minutes unless it was paused first (/pause)." 'Yellow' }
+    Pause-IfInteractive
+    if ($removed) { exit 0 }
+    exit 1
+}
+if ($InstallOnly) {
+    $ok = Install-Task
+    if ($ok) { exit 0 }
+    # This elevated window closes on exit: keep the reason on screen.
+    Pause-IfInteractive
+    exit 1
+}
+if (-not [string]::IsNullOrEmpty($Pause)) {
+    $code = Invoke-PauseCommand -Duration $Pause -StateDir $WatchStateDir
+    Pause-IfInteractive
+    exit $code
+}
+if ($Test) {
+    $code = Invoke-TestCommand -StateDir $WatchStateDir
+    Pause-IfInteractive
+    exit $code
+}
+
+# THE INSTALL. The task is registered only when it is absent or older than
+# this script: a re-run of an up-to-date install re-checks the settings
+# (Enter keeps each) and sends the test again, without touching the task.
+$installedVersion = Get-InstalledVersion
+$ok = $false
+if (Test-Task) {
+    if ($installedVersion -eq $ScriptVersion) {
+        Say "The watcher is installed and up to date (v$ScriptVersion, every minute)." 'Green'
+        Say 'Checking its settings (Enter keeps each one), then the test message.'
+        $ok = Invoke-Install -StateDir $WatchStateDir -LogbookPath $LogbookPath -SlackMemberId $SlackMemberId -TaskReady
+    }
+    else {
+        # The task runs the copy under ProgramData, taken when it was
+        # registered: updating the .bat's folder changes nothing that runs
+        # until the installed copy is refreshed and re-registered.
+        $was = $installedVersion
+        if (-not $was) { $was = 'unknown' }
+        Say "The watcher is at v$was; this is v$ScriptVersion -- updating it." 'Yellow'
+        $ok = Invoke-Install -StateDir $WatchStateDir -LogbookPath $LogbookPath -SlackMemberId $SlackMemberId
+    }
+}
+else {
+    Say 'No watcher installed -- setting it up.' 'Yellow'
+    $ok = Invoke-Install -StateDir $WatchStateDir -LogbookPath $LogbookPath -SlackMemberId $SlackMemberId
+}
+Say ''
+Say 'Also: watch_hystar_errors.bat /test, /pause 8h, /uninstall'
+Pause-IfInteractive
+if ($ok) { exit 0 }
+exit 1

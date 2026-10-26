@@ -1,6 +1,8 @@
 # test_hystar_watcher.ps1
 #
-# Tests for the reading and parsing half of instrument/scripts/watch_hystar_errors.ps1
+# Tests for instrument/scripts/watch_hystar_errors.ps1: reading and parsing the
+# logbook, deciding and formatting, the tick, and (sections 32-41) the install
+# surface, the stored webhook, -Pause and the install test message.
 #
 #     pwsh -NoProfile -File tests/test_hystar_watcher.ps1
 #
@@ -1239,6 +1241,730 @@ for ($i = 0; $i -lt $tickLines.Count; $i++) {
     if ($iShare -lt 0 -and $tickLines[$i].Contains("share")) { $iShare = $i }
 }
 Check "post logged before any share step" (($iPost -ge 0) -and ($iShare -gt $iPost)) "True"
+
+# =============================================================================
+# Task 9: install, secrets, pause, release. Task Scheduler, the registry,
+# DPAPI and ACLs do not exist here (macOS), so none of them is called for
+# real: their calls are checked through the AST, the logic around them
+# through small pure helpers, and the install flow with the few functions
+# that would touch Windows (or wait for a person) stubbed. Task 10 checks the
+# real calls on TIMS-10878.
+
+function Get-FunctionAst([string]$name) {
+    foreach ($fa in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+        if ($fa.Name -eq $name) { return $fa }
+    }
+    return $null
+}
+# Unrolled on return: callers wrap it in @() (a "return ,$x" here would nest
+# an empty result inside a one-element array).
+function Find-Commands($node, [string]$cmd) {
+    $found = New-Object System.Collections.ArrayList
+    if ($null -ne $node) {
+        foreach ($c in $node.FindAll({ $args[0] -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+            if ($c.GetCommandName() -eq $cmd) { [void]$found.Add($c) }
+        }
+    }
+    return $found.ToArray()
+}
+# What follows -Name in one command: the argument's text, "<switch>" for a
+# bare switch, "" when the parameter is absent.
+function Get-CommandArg($cmdAst, [string]$name) {
+    $els = $cmdAst.CommandElements
+    for ($i = 0; $i -lt $els.Count; $i++) {
+        $e = $els[$i]
+        if ($e -is [System.Management.Automation.Language.CommandParameterAst] -and $e.ParameterName -eq $name) {
+            if ($null -ne $e.Argument) { return $e.Argument.Extent.Text }
+            if (($i + 1) -lt $els.Count -and -not ($els[$i + 1] -is [System.Management.Automation.Language.CommandParameterAst])) {
+                return $els[$i + 1].Extent.Text
+            }
+            return "<switch>"
+        }
+    }
+    return ""
+}
+function Get-OwnerFunction($node) {
+    $p = $node.Parent
+    while ($null -ne $p) {
+        if ($p -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $p.Name }
+        $p = $p.Parent
+    }
+    return "<top level>"
+}
+function Get-FunctionParamDefault($fnAst, [string]$paramName) {
+    if ($null -eq $fnAst -or $null -eq $fnAst.Body.ParamBlock) { return "" }
+    foreach ($pp in $fnAst.Body.ParamBlock.Parameters) {
+        if ($pp.Name.VariablePath.UserPath -eq $paramName -and $null -ne $pp.DefaultValue) {
+            return $pp.DefaultValue.Extent.Text.Trim("'", '"')
+        }
+    }
+    return ""
+}
+# Runs a scriptblock; returns @{ Value = <its output>; Text = <what it
+# printed with Write-Host> }. The locals are odd names so the scriptblock
+# sees the caller's variables, not these.
+function Invoke-Captured([scriptblock]$__sb) {
+    $__value = New-Object System.Collections.ArrayList
+    $__text = New-Object System.Text.StringBuilder
+    foreach ($__o in @(& $__sb 6>&1)) {
+        if ($__o -is [System.Management.Automation.InformationRecord]) { [void]$__text.AppendLine("$($__o.MessageData)") }
+        else { [void]$__value.Add($__o) }
+    }
+    return @{ Value = $__value.ToArray(); Text = $__text.ToString() }
+}
+function Last-Value($cap) {
+    if ($cap.Value.Count -eq 0) { return "<none>" }
+    return "$($cap.Value[$cap.Value.Count - 1])"
+}
+function Secure([string]$s) { return (ConvertTo-SecureString -String $s -AsPlainText -Force) }
+function Run-HivePython([string]$code, [string[]]$pyArgs) {
+    # The JSON line python printed, parsed; $null (and a note) when python3
+    # with stan is not importable here.
+    $out = $null; $exit = 1; $json = $null
+    $eap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    Push-Location $repoRoot
+    try { $out = & python3 -c $code @pyArgs 2>&1; $exit = $LASTEXITCODE } catch { $out = $_.Exception.Message }
+    Pop-Location
+    $ErrorActionPreference = $eap
+    foreach ($line in @($out)) { if ("$line".StartsWith("{")) { $json = "$line" } }
+    if ($exit -eq 0 -and $json) { return (ConvertFrom-Json $json) }
+    Write-Host "  skip Hive cross-check (python3 with stan not importable): $out"
+    return $null
+}
+$GoodHook = "https://hooks.slack.com/T0STAN/B0STAN/notarealtoken"
+$env:COMPUTERNAME = "TIMS-10878"
+$Now0 = [datetime]"2026-10-24 12:00:00"
+$TestText = "<@U0ABC1234> STAN HyStar watcher v$ScriptVersion is installed on TIMS-10878. If your phone buzzed, queue-stop alerts will reach you."
+$CLog = 'C:\BDalSystemData\HyStar\LogFiles\CompassHyStarErrorLogbook.log'
+$DLog = 'D:\BDalSystemData\HyStar\LogFiles\CompassHyStarErrorLogbook.log'
+
+# ------------------------------------------------------ 32. install surface
+Write-Host ""
+Write-Host "32. install surface: parameters, functions, and prompts only where a person is"
+$declared = @{}
+foreach ($pp in $ast.ParamBlock.Parameters) { $declared[$pp.Name.VariablePath.UserPath] = $pp.StaticType.Name }
+Check "-Scheduled is a switch"      $declared["Scheduled"] "SwitchParameter"
+Check "-Uninstall is a switch"      $declared["Uninstall"] "SwitchParameter"
+Check "-Test is a switch"           $declared["Test"] "SwitchParameter"
+Check "-InstallOnly is a switch"    $declared["InstallOnly"] "SwitchParameter"
+Check "-Pause takes a string"       $declared["Pause"] "String"
+Check "-SlackMemberId takes a string" $declared["SlackMemberId"] "String"
+Check "-LogbookPath takes a string" $declared["LogbookPath"] "String"
+$missingFns = @()
+foreach ($w in @("Say", "Pause-IfInteractive", "Test-Task", "Test-Elevated", "Remove-Task",
+                 "Get-InstalledVersion", "Install-Task", "Find-ErrorLogbook", "Save-Webhook",
+                 "Get-Webhook", "Write-PauseFile", "Get-AutoLogonStatus", "Send-InstallTest",
+                 "Invoke-Install", "Initialize-StateDir", "Set-SecretFileAcl")) {
+    if ($null -eq (Get-FunctionAst $w)) { $missingFns += $w }
+}
+Check "install functions present" ($missingFns -join ",") ""
+# A Read-Host reached by a scheduled run would hold the task open until its
+# 5 min limit, every minute. The prompts live in two functions the install
+# alone calls.
+$readHosts = @(Find-Commands $ast "Read-Host")
+$owners = @()
+foreach ($rh in $readHosts) { $owners += (Get-OwnerFunction $rh) }
+Check "Read-Host only in the two prompt functions" (($owners | Sort-Object -Unique) -join ",") "Read-MemberIdInput,Read-WebhookInput"
+$secureAsk = $false
+foreach ($rh in $readHosts) {
+    if ((Get-OwnerFunction $rh) -eq "Read-WebhookInput" -and (Get-CommandArg $rh "AsSecureString") -eq "<switch>") { $secureAsk = $true }
+}
+Check "the webhook is asked for with -AsSecureString" $secureAsk "True"
+# The top level dispatches -Scheduled first, and that branch exits: a tick
+# never reaches the install, a prompt, or the key-press.
+$top = @($ast.EndBlock.Statements)
+$iSched = -1; $iInstall = -1
+for ($i = 0; $i -lt $top.Count; $i++) {
+    $s = $top[$i]
+    if ($s -is [System.Management.Automation.Language.FunctionDefinitionAst]) { continue }
+    if ($iSched -lt 0 -and $s -is [System.Management.Automation.Language.IfStatementAst] -and
+        $s.Clauses[0].Item1.Extent.Text -eq '$Scheduled') { $iSched = $i }
+    if ($iInstall -lt 0 -and $s.Extent.Text -match 'Invoke-Install|Pause-IfInteractive|Say ') { $iInstall = $i }
+}
+Check "-Scheduled is dispatched before any install step" (($iSched -ge 0) -and ($iSched -lt $iInstall)) "True"
+$schedExits = $false
+if ($iSched -ge 0) { $schedExits = ($top[$iSched].Clauses[0].Item2.Extent.Text -match '\bexit\b') }
+Check "and that branch exits" $schedExits "True"
+Check "the tick loads the stored webhook" (($iSched -ge 0) -and ($top[$iSched].Extent.Text -match 'Get-Webhook')) "True"
+
+# ------------------------------------------------- 33. the scheduled task
+Write-Host ""
+Write-Host "33. the scheduled task: every minute, never stacked, not elevated, as the desktop's user"
+$taskName = ""
+foreach ($a in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] }, $false)) {
+    if ($a.Left.Extent.Text -eq '$TaskName') { $taskName = $a.Right.Extent.Text.Trim("'", '"') }
+}
+Check "task name"                          $taskName "STAN HyStar watcher"
+$it = Get-FunctionAst "Install-Task"
+$rep = ""; $once = $false; $logon = $false
+foreach ($t in (Find-Commands $it "New-ScheduledTaskTrigger")) {
+    $r = Get-CommandArg $t "RepetitionInterval"
+    if ($r -ne "") { $rep = $r; $once = ((Get-CommandArg $t "Once") -eq "<switch>") }
+    if ((Get-CommandArg $t "AtLogOn") -eq "<switch>") { $logon = $true }
+}
+Check "repeats every 1 minute"             $rep "(New-TimeSpan -Minutes 1)"
+Check "the repeat is a -Once trigger"      $once "True"
+Check "plus an AtLogOn trigger"            $logon "True"
+$sets = @(Find-Commands $it "New-ScheduledTaskSettingsSet")
+Check "one settings set"                   $sets.Count 1
+if ($sets.Count -eq 1) {
+    Check "MultipleInstances IgnoreNew"    (Get-CommandArg $sets[0] "MultipleInstances") "IgnoreNew"
+    Check "StartWhenAvailable"             (Get-CommandArg $sets[0] "StartWhenAvailable") "<switch>"
+    Check "ExecutionTimeLimit 5 min"       (Get-CommandArg $sets[0] "ExecutionTimeLimit") "(New-TimeSpan -Minutes 5)"
+}
+$regs = @(Find-Commands $it "Register-ScheduledTask")
+Check "registered in one place"            $regs.Count 1
+if ($regs.Count -eq 1) {
+    Check "under the task name"            (Get-CommandArg $regs[0] "TaskName") '$TaskName'
+    Check "with both triggers"             (Get-CommandArg $regs[0] "Trigger") '@($atLogon, $repeat)'
+    Check "with an explicit principal"     (Get-CommandArg $regs[0] "Principal") '$principal'
+}
+$prs = @(Find-Commands $it "New-ScheduledTaskPrincipal")
+Check "one principal"                      $prs.Count 1
+if ($prs.Count -eq 1) {
+    Check "runs only while that user is logged on" (Get-CommandArg $prs[0] "LogonType") "Interactive"
+    Check "never elevated (R16)"           (Get-CommandArg $prs[0] "RunLevel") "Limited"
+}
+$acts = @(Find-Commands $it "New-ScheduledTaskAction")
+Check "one action"                         $acts.Count 1
+if ($acts.Count -eq 1) {
+    Check "runs powershell.exe"            (Get-CommandArg $acts[0] "Execute") "'powershell.exe'"
+    Check "with the argument line"         (Get-CommandArg $acts[0] "Argument") '$argline'
+}
+$argText = ""
+foreach ($a in $it.FindAll({ $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
+    if ($a.Left.Extent.Text -eq '$argline') { $argText = $a.Right.Extent.Text }
+}
+Check "the action runs the installed copy with -Scheduled" ($argText -match '-File `"\$InstalledPath`" -Scheduled"$') "True"
+Check "R16: Install-Task prepares the state folder" (@(Find-Commands $it "Initialize-StateDir").Count -ge 1) "True"
+$isd = Get-FunctionAst "Initialize-StateDir"
+$isdText = ""
+if ($isd) { $isdText = $isd.Extent.Text }
+Check "R16: grants Modify"                 ($isdText -match "'Modify'") "True"
+Check "R16: inherited by files and folders" ($isdText -match "'ContainerInherit, ObjectInherit'") "True"
+# Code, not prose: its comment explains that the tick seeds those files.
+$isdBad = @()
+if ($isd) {
+    foreach ($sc in $isd.FindAll({ $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)) {
+        if ($sc.Value -match 'state\.json|delivered\.txt') { $isdBad += $sc.Value }
+    }
+    foreach ($cn in @("Publish-JsonFile", "Write-Utf8File", "Set-Content", "Out-File", "Add-Content", "New-Item")) {
+        if (@(Find-Commands $isd $cn).Count -gt 0) { $isdBad += $cn }
+    }
+}
+Check "R16: creates no state file itself"  ($isdBad -join ",") ""
+
+# -------------------------------------------------- 34. finding the logbook
+Write-Host ""
+Write-Host "34. finding the logbook: -LogbookPath, then C:, then D:"
+Check "candidates in order"                (@(Get-LogbookCandidates -LogbookPath 'E:\elsewhere\x.log') -join "|") "E:\elsewhere\x.log|$CLog|$DLog"
+Check "no -LogbookPath: C: then D:"        (@(Get-LogbookCandidates) -join "|") "$CLog|$DLog"
+Check "a given C: path is not tried twice" (@(Get-LogbookCandidates -LogbookPath $CLog.ToLowerInvariant()) -join "|") "$($CLog.ToLowerInvariant())|$DLog"
+$lbDir = Join-Path $TickRoot "lb"
+[void][System.IO.Directory]::CreateDirectory($lbDir)
+$lbFile = Join-Path $lbDir "CompassHyStarErrorLogbook.log"
+Write-Logbook $lbFile (Rec-Header)
+Check "an existing -LogbookPath is used"   (Find-ErrorLogbook -LogbookPath $lbFile) $lbFile
+Check "nothing there: null"                ($null -eq (Find-ErrorLogbook -LogbookPath (Join-Path $lbDir "missing.log"))) "True"
+Check "a folder is not a logbook"          ($null -eq (Find-ErrorLogbook -LogbookPath $lbDir)) "True"
+$fe = Get-FunctionAst "Get-LogbookCandidates"
+Check "C: before D: in what ships"         ($fe.Extent.Text.IndexOf($CLog) -lt $fe.Extent.Text.IndexOf($DLog) -and $fe.Extent.Text.IndexOf($CLog) -gt 0) "True"
+
+# -------------------------------------------------------- 35. member ID
+Write-Host ""
+Write-Host "35. Slack member ID: the rule Hive uses"
+Check "U id"                       (Test-SlackMemberId "U0ABC1234") "True"
+Check "W id"                       (Test-SlackMemberId "W0ABC12") "True"
+Check "lower case refused"         (Test-SlackMemberId "u0abc1234") "False"
+Check "too short refused"          (Test-SlackMemberId "U12345") "False"
+Check "another prefix refused"     (Test-SlackMemberId "B0ABC1234") "False"
+Check "a mention is not an id"     (Test-SlackMemberId "<@U0ABC1234>") "False"
+Check "a name is not an id"        (Test-SlackMemberId "Brett") "False"
+Check "empty refused"              (Test-SlackMemberId "") "False"
+$sm = Get-FunctionAst "Test-SlackMemberId"
+$smText = ""
+if ($sm) { $smText = $sm.Extent.Text }
+Check "the same pattern as stan.notify" ($smText.Contains("'^[UW][A-Z0-9]{6,}$'")) "True"
+Check "case-sensitive, like Python's re" ($smText -match '-cmatch') "True"
+
+# ---------------------------------------------------------- 36. webhook
+Write-Host ""
+Write-Host "36. webhook: refused unless it is Slack's, DPAPI-stored, never in the script"
+Check "a Slack webhook is accepted"     (Test-WebhookUrl $GoodHook) "True"
+Check "http://example.com refused"      (Test-WebhookUrl "http://example.com") "False"
+Check "plain http refused"              (Test-WebhookUrl "http://hooks.slack.com/T0/B0/x") "False"
+Check "a lookalike host refused"        (Test-WebhookUrl "https://hooks.slack.com.evil.example/x") "False"
+Check "the bare prefix refused"         (Test-WebhookUrl "https://hooks.slack.com/") "False"
+Check "inner space refused"             (Test-WebhookUrl "https://hooks.slack.com/T0/B0 x") "False"
+Check "empty refused"                   (Test-WebhookUrl "") "False"
+$whDir = Join-Path $TickRoot "webhook"
+[void][System.IO.Directory]::CreateDirectory($whDir)
+$whFile = Join-Path $whDir "webhook.dpapi"
+$r = Save-Webhook -Webhook (Secure "http://example.com") -StateDir $whDir
+Check "Save-Webhook refuses http://example.com" $r.Ok "False"
+Check "and says what it must start with" ([string]$r.Why).Contains("https://hooks.slack.com/") "True"
+Check "nothing stored"                  ([System.IO.File]::Exists($whFile)) "False"
+if (-not $IsWindows) {
+    # The ACL step cannot run here (no Windows ACLs), which is the case of an
+    # ACL that cannot be set: the file must not stay behind unprotected.
+    $r = Save-Webhook -Webhook (Secure $GoodHook) -StateDir $whDir
+    Check "unprotectable: not stored, not left behind" "$($r.Ok)|$([System.IO.File]::Exists($whFile))" "False|False"
+    Check "the reason carries no URL" ([string]$r.Why).Contains("T0STAN") "False"
+}
+Check "Get-Webhook: none stored -> null" ($null -eq (Get-Webhook -StateDir $whDir)) "True"
+Write-Utf8File -Path $whFile -Text "not a protected string"
+Check "garbage -> null, no throw"       ($null -eq (Get-Webhook -StateDir $whDir)) "True"
+# What ConvertFrom-SecureString wrote, Get-Webhook reads back. On Windows that
+# is DPAPI (CurrentUser); here pwsh only encodes it, so this checks the
+# plumbing, not the protection.
+Write-Utf8File -Path $whFile -Text (ConvertFrom-SecureString (Secure $GoodHook))
+Check "round trip"                      (Get-Webhook -StateDir $whDir) $GoodHook
+Write-Utf8File -Path $whFile -Text (ConvertFrom-SecureString (Secure "https://example.com/x"))
+Check "a stored non-Slack URL is not used" ($null -eq (Get-Webhook -StateDir $whDir)) "True"
+$sw = Get-FunctionAst "Save-Webhook"
+$cf = @(Find-Commands $sw "ConvertFrom-SecureString")
+Check "Save-Webhook protects with ConvertFrom-SecureString" $cf.Count 1
+if ($cf.Count -eq 1) {
+    Check "with no key: DPAPI, CurrentUser" "$(Get-CommandArg $cf[0] 'Key')$(Get-CommandArg $cf[0] 'SecureKey')" ""
+}
+Check "into webhook.dpapi"              ($sw.Extent.Text.Contains("'webhook.dpapi'")) "True"
+Check "then locks the file down"        (@(Find-Commands $sw "Set-SecretFileAcl").Count) 1
+$gw = Get-FunctionAst "Get-Webhook"
+$ct = @(Find-Commands $gw "ConvertTo-SecureString")
+Check "Get-Webhook decrypts with ConvertTo-SecureString" $ct.Count 1
+if ($ct.Count -eq 1) {
+    Check "with no key, not as plain text" "$(Get-CommandArg $ct[0] 'Key')$(Get-CommandArg $ct[0] 'SecureKey')$(Get-CommandArg $ct[0] 'AsPlainText')" ""
+}
+Check "through the BSTR helper"         (@(Find-Commands $gw "Get-PlainText").Count) 1
+$pt = Get-FunctionAst "Get-PlainText"
+$zero = $false
+if ($pt) {
+    foreach ($tr in $pt.FindAll({ $args[0] -is [System.Management.Automation.Language.TryStatementAst] }, $true)) {
+        if ($null -ne $tr.Finally -and $tr.Finally.Extent.Text -match 'ZeroFreeBSTR') { $zero = $true }
+    }
+}
+Check "the BSTR is zeroed in a finally" $zero "True"
+Check "Get-PlainText round trip"        (Get-PlainText (Secure "abc")) "abc"
+$acl = Get-FunctionAst "Set-SecretFileAcl"
+$aclText = ""
+if ($acl) { $aclText = $acl.Extent.Text }
+Check "ACL: inheritance cut, inherited entries dropped" ($aclText -match 'SetAccessRuleProtection\(\$true, \$false\)') "True"
+Check "ACL: Administrators"             ($aclText.Contains("'S-1-5-32-544'")) "True"
+Check "ACL: the account that stored it" ($aclText -match 'WindowsIdentity\]::GetCurrent\(\)\.User') "True"
+$lits = @()
+foreach ($sl in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] -or
+                               $args[0] -is [System.Management.Automation.Language.ExpandableStringExpressionAst] }, $true)) {
+    if ($sl.Value -match 'hooks\.slack\.com/services') { $lits += $sl.Extent.Text }
+}
+Check "no string literal holds a webhook path" $lits.Count 0
+Check "nor does any comment"            ($ast.Extent.Text -match 'hooks\.slack\.com/services') "False"
+
+# ------------------------------------------------------------- 37. pause
+Write-Host ""
+Write-Host "37. -Pause: pause_until.json silences Hive's watcher-down page, nothing else"
+function PU([string]$t, [datetime]$now = $Now0) {
+    $u = ConvertTo-PauseUntil -Text $t -Now $now
+    if ($null -eq $u) { return "<null>" }
+    return $u.ToString("s")
+}
+Check "8h"                       (PU "8h") "2026-10-24T20:00:00"
+Check "2d"                       (PU "2d") "2026-10-26T12:00:00"
+Check "upper case and spaces"    (PU " 8H ") "2026-10-24T20:00:00"
+Check "0h ends a pause"          (PU "0h") "2026-10-24T12:00:00"
+Check "744h is the most"         (PU "744h" ([datetime]"2026-12-01 12:00:00")) "2027-01-01T12:00:00"
+Check "31d is the most"          (PU "31d") "2026-11-24T12:00:00"
+Check "745h refused"             (PU "745h") "<null>"
+Check "32d refused"              (PU "32d") "<null>"
+Check "no unit refused"          (PU "8") "<null>"
+Check "minutes refused"          (PU "8m") "<null>"
+Check "negative refused"         (PU "-1h") "<null>"
+Check "words refused"            (PU "tomorrow") "<null>"
+Check "empty refused"            (PU "") "<null>"
+if ([TimeZoneInfo]::Local.Id -eq "America/Los_Angeles") {
+    # DST ends Sun 2026-11-01 (02:00 -> 01:00). Hours are real hours; days
+    # are calendar days.
+    Check "8h across the fall-back is 8 real hours" (PU "8h" ([datetime]"2026-10-31 20:00:00")) "2026-11-01T03:00:00"
+    Check "1d across it keeps the clock time"       (PU "1d" ([datetime]"2026-10-31 20:00:00")) "2026-11-01T20:00:00"
+}
+else {
+    Write-Host "  skip DST cases (this machine is not on Pacific time)"
+}
+$pShare = Join-Path $TickRoot "pause_share/TIMS-10878"
+$pf = Join-Path $pShare "pause_until.json"
+$u = Set-WatcherPause -Duration "8h" -Now $Now0 -ShareDir $pShare -By "TIMS-10878\brett" -Reason "service visit"
+Check "-Pause 8h returns the end"        $u.ToString("s") "2026-10-24T20:00:00"
+Check "pause_until.json written"         ([System.IO.File]::Exists($pf)) "True"
+Check "until = Now + 8 h, local ISO"     (JStr $pf "until") "2026-10-24T20:00:00"
+Check "by"                               (JStr $pf "by") "TIMS-10878\brett"
+Check "reason"                           (JStr $pf "reason") "service visit"
+$pb = [System.IO.File]::ReadAllBytes($pf)
+Check "UTF-8 without a BOM (R14)"        ($pb[0] -eq 0x7B) "True"
+Check "no temp file left"                ([System.IO.File]::Exists((Join-Path $pShare "pause_until.tmp"))) "False"
+[System.IO.File]::Delete($pf)
+$u = Set-WatcherPause -Duration "soon" -Now $Now0 -ShareDir $pShare -By "x" -Reason "y"
+Check "a bad duration: null, nothing written" "$($null -eq $u)|$([System.IO.File]::Exists($pf))" "True|False"
+$null = Write-PauseFile -Until ([datetime]"2026-12-24 08:00:00") -ShareDir $pShare -By "b" -Reason "r"
+Check "Write-PauseFile -Until"           (JStr $pf "until") "2026-12-24T08:00:00"
+$null = Write-PauseFile -Until ([datetime]"2026-12-25 09:30:00") -ShareDir $pShare -By "b" -Reason "r"
+Check "a second pause replaces the first" (JStr $pf "until") "2026-12-25T09:30:00"
+$pBlock = Join-Path $TickRoot "pause_blocker"
+Write-Utf8File -Path $pBlock -Text "x"
+$threw = $false
+try { $null = Set-WatcherPause -Duration "8h" -Now $Now0 -ShareDir (Join-Path $pBlock "TIMS-10878") -By "x" -Reason "y" } catch { $threw = $true }
+Check "an unwritable share is an error, not a silent pass" $threw "True"
+# Pausing silences Hive's down page only: the watcher still posts stops.
+$d = New-TickDirs "paused"
+Write-Logbook $d.Logbook (Rec-Header)
+Reset-Posts
+$null = Run-Tick $d ([datetime]"2026-10-24 12:00:00")
+$null = Set-WatcherPause -Duration "8h" -Now ([datetime]"2026-10-24 12:00:00") -ShareDir $d.Share -By "x" -Reason "y"
+Add-Logbook $d.Logbook (Rec-Stop ([datetime]"2026-10-24 12:04:24") $EvotipMsg)
+$null = Run-Tick $d ([datetime]"2026-10-24 12:05:00")
+Check "paused: a stop still pages"       (Count-Posts "*queue STOPPED*") 1
+Check "and is still filed"               (Get-EventFiles $d.Share).Count 1
+Check "the tick leaves the pause alone"  (JStr (Join-Path $d.Share "pause_until.json") "until") "2026-10-24T20:00:00"
+
+# --------------------------------------------------------- 38. auto-logon
+Write-Host ""
+Write-Host "38. auto-logon: on / off / unknown"
+Check "1 -> on"                    (ConvertTo-AutoLogonStatus "1") "on"
+Check "0 -> off"                   (ConvertTo-AutoLogonStatus "0") "off"
+Check "absent -> off"              (ConvertTo-AutoLogonStatus $null) "off"
+Check "anything else -> unknown"   (ConvertTo-AutoLogonStatus "yes") "unknown"
+Check "an unreadable key -> unknown, no throw" (Get-AutoLogonStatus -RegistryPath "HKLM:\SOFTWARE\NoSuchKey\Winlogon") "unknown"
+$al = Get-FunctionAst "Get-AutoLogonStatus"
+Check "reads Winlogon"             (Get-FunctionParamDefault $al "RegistryPath") 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+Check "reads AutoAdminLogon"       ($al.Extent.Text.Contains("'AutoAdminLogon'")) "True"
+
+# ------------------------------------------------- 39. install test message
+Write-Host ""
+Write-Host "39. the install test message: direct, or a 'test' event Hive relays"
+$tp = Format-TestPayload -MemberId "U0ABC1234" -HostName "TIMS-10878" -Version $ScriptVersion
+Check "the text, word for word"          $tp.text $TestText
+Check "blocks carry the same text"       $tp.blocks[0].text.text $TestText
+Check "ASCII only"                       ([regex]::IsMatch($tp.text, '[^\x00-\x7F]')) "False"
+function R16-Clean($d) {
+    return "$([System.IO.File]::Exists((Join-Path $d.State 'state.json')))|$([System.IO.File]::Exists((Join-Path $d.State 'delivered.txt')))"
+}
+function Pending-Count($d) {
+    $pd = Join-Path $d.State "pending"
+    if (-not [System.IO.Directory]::Exists($pd)) { return 0 }
+    return [System.IO.Directory]::GetFiles($pd, "*.json").Count
+}
+$t1 = New-TickDirs "installtest_direct"
+Reset-Posts
+$r = Send-InstallTest -MemberId "U0ABC1234" -HostName "TIMS-10878" -ShareDir $t1.Share -StateDir $t1.State `
+    -Now $Now0 -Version $ScriptVersion -Sender $FakeSender
+Check "posted: route direct"             $r.Route "direct"
+Check "printed as 'direct'"              (Get-TestRouteText $r) "direct"
+Check "one post, the test text"          "$($script:Posts.Count)|$($script:Posts[0].text)" "1|$TestText"
+Check "direct: no event file"            (Get-EventFiles $t1.Share).Count 0
+Check "R16: no state.json, no delivered.txt" (R16-Clean $t1) "False|False"
+
+$t2 = New-TickDirs "installtest_refused"
+Reset-Posts
+$script:SendOk = $false; $script:SendStatus = 403
+$r = Send-InstallTest -MemberId "U0ABC1234" -HostName "TIMS-10878" -ShareDir $t2.Share -StateDir $t2.State `
+    -Now $Now0 -Version $ScriptVersion -Sender $FakeSender
+Check "refused: route via Hive"          $r.Route "hive"
+Check "printed as the brief says"        (Get-TestRouteText $r) "via Hive (the PC could not reach Slack)"
+Check "the status is kept"               "$($r.Status)" "403"
+$tf = @(Get-EventFiles $t2.Share)
+Check "one event file on the share"      $tf.Count 1
+if ($tf.Count -eq 1) {
+    Check "type test"                    (JStr $tf[0] "type") "test"
+    Check "posted_by_pc false"           (JStr $tf[0] "posted_by_pc") "false"
+    Check "host"                         (JStr $tf[0] "host") "TIMS-10878"
+    Check "station"                      (JStr $tf[0] "station") "tims10878"
+    Check "at"                           (JStr $tf[0] "at") "2026-10-24T12:00:00"
+    Check "watcher_version"              (JStr $tf[0] "watcher_version") $ScriptVersion
+    Check "the payload is the test text" ((Read-JsonFile $tf[0]).payload.text) $TestText
+    Check "a test id of its own"         ((JStr $tf[0] "id") -like "TIMS-10878_20261024T120000_test") "True"
+    Check "UTF-8 without a BOM"          ([System.IO.File]::ReadAllBytes($tf[0])[0] -eq 0x7B) "True"
+}
+Check "nothing left in the queue"        (Pending-Count $t2) 0
+Check "R16: no state.json, no delivered.txt" (R16-Clean $t2) "False|False"
+
+$t3 = New-TickDirs "installtest_nohook"
+Reset-Posts
+$r = Send-InstallTest -MemberId "U0ABC1234" -HostName "TIMS-10878" -ShareDir $t3.Share -StateDir $t3.State `
+    -Now $Now0 -Version $ScriptVersion
+Check "no webhook: via Hive"             "$($r.Route)|$($script:Posts.Count)" "hive|0"
+Check "and says why"                     "$($r.Status)" "no webhook stored"
+
+$t4 = New-TickDirs "installtest_shareless"
+$blocker = Join-Path $t4.Root "blocker"
+Write-Utf8File -Path $blocker -Text "x"
+Reset-Posts
+$script:SendOk = $false; $script:SendStatus = "WebException: no route"
+$r = Send-InstallTest -MemberId "U0ABC1234" -HostName "TIMS-10878" -ShareDir (Join-Path $blocker "TIMS-10878") `
+    -StateDir $t4.State -Now $Now0 -Version $ScriptVersion -Sender $FakeSender
+Check "share down too: queued here"      $r.Route "queued"
+Check "printed as queued"                ((Get-TestRouteText $r) -match "queued on this PC") "True"
+Check "one file queued"                  (Pending-Count $t4) 1
+Check "R16: still no state.json, no delivered.txt" (R16-Clean $t4) "False|False"
+# The first scheduled tick (share back) seeds its own state and delivers it.
+Write-Logbook $t4.Logbook (Rec-Header)
+Reset-Posts
+$null = Run-Tick $t4 ([datetime]"2026-10-24 12:01:00")
+$qf = @(Get-EventFiles $t4.Share)
+Check "the first tick delivers the queued test" "$($qf.Count)|$(Pending-Count $t4)" "1|0"
+if ($qf.Count -eq 1) { Check "as a test event, unposted" "$(JStr $qf[0] 'type')|$(JStr $qf[0] 'posted_by_pc')" "test|false" }
+Check "and nothing is re-posted from the PC" $script:Posts.Count 0
+
+# Hive's side: the test event is relayed (not a failure: no hourly keys), the
+# pause is honoured until it ends and is not mistaken for an event.
+$hp = Join-Path $TickRoot "py9/TIMS-10878"
+[void][System.IO.Directory]::CreateDirectory($hp)
+foreach ($ff in (Get-EventFiles $t2.Share)) { Copy-Item -LiteralPath $ff -Destination $hp }
+$null = Write-PauseFile -Until ([datetime]"2026-10-24 20:00:00") -ShareDir $hp -By "TIMS-10878\brett" -Reason "service visit"
+$py9 = @'
+import json, sys
+from pathlib import Path
+from stan.instrument_time import parse_local
+from stan.reports.hystar_events import load_new_events, suppression_keys, _relay_payload, _paused_until
+host = Path(sys.argv[1])
+evs = load_new_events(host)
+during = _paused_until(host, parse_local("2026-10-24T13:00:00"))
+after = _paused_until(host, parse_local("2026-10-24T21:00:00"))
+print(json.dumps({
+    "n": len(evs),
+    "rejected": (host / "rejected").exists(),
+    "type": evs[0]["type"] if evs else None,
+    "relayed": bool(evs) and evs[0].get("posted_by_pc") is not True,
+    "keys": sum(len(suppression_keys(e)) for e in evs),
+    "text_kept": all(_relay_payload(e)["text"] == e["payload"]["text"] for e in evs),
+    "during": during.strftime("%Y%m%d%H%M%S") if during else None,
+    "after": after is None,
+}))
+'@
+$pr = Run-HivePython $py9 @($hp)
+if ($null -ne $pr) {
+    Check "Hive reads the test event, and only it" "$($pr.n)|$($pr.rejected)|$($pr.type)" "1|False|test"
+    Check "Hive relays it (posted_by_pc false)"    $pr.relayed "True"
+    Check "a test marks no hourly keys"            $pr.keys 0
+    Check "relayed with the PC's text"             $pr.text_kept "True"
+    Check "Hive: paused until 20:00"               $pr.during "20261024200000"
+    Check "Hive: not paused after it"              $pr.after "True"
+}
+
+# --------------------------------------------- 40. who the watcher runs as
+Write-Host ""
+Write-Host "40. the account: the task's, the desktop's, the one holding the webhook"
+Check "same name"                        (Test-SameAccount "TIMS-10878\brett" "TIMS-10878\brett") "True"
+Check "case does not matter"             (Test-SameAccount "tims-10878\Brett" "TIMS-10878\brett") "True"
+Check "a bare name matches its domain form" (Test-SameAccount "brett" "TIMS-10878\brett") "True"
+Check "another user"                     (Test-SameAccount "TIMS-10878\labadmin" "TIMS-10878\brett") "False"
+Check "same name, another domain"        (Test-SameAccount "UCDAVIS\brett" "TIMS-10878\brett") "False"
+Check "empty is never the same"          (Test-SameAccount "" "TIMS-10878\brett") "False"
+Check "no warning when they match"       (Get-AccountWarning -TaskAccount "brett" -Desktop "TIMS-10878\brett") ""
+$wn = Get-AccountWarning -TaskAccount "labadmin" -Desktop "TIMS-10878\brett"
+Check "a warning when they differ"       ($wn.Contains("labadmin") -and $wn.Contains("TIMS-10878\brett")) "True"
+Check "a warning when it cannot be read" ((Get-AccountWarning -TaskAccount "" -Desktop "TIMS-10878\brett") -ne "") "True"
+
+# ------------------------------------------------- 41. the install, stubbed
+Write-Host ""
+Write-Host "41. the install: refuses before registering anything; R16 leaves the tick's files to the tick"
+$Stubbed = @{}
+foreach ($n in @("Install-Task", "Get-InteractiveUser", "Get-CurrentAccount", "Get-TaskAccount",
+                 "Read-MemberIdInput", "Read-WebhookInput", "Save-Webhook", "Get-Webhook",
+                 "Send-SlackPayload", "Get-AutoLogonStatus")) {
+    $Stubbed[$n] = (Get-Item "function:$n").ScriptBlock
+}
+$script:HookAnswers = New-Object System.Collections.Queue
+$script:MemberAnswers = New-Object System.Collections.Queue
+$script:Slack = New-Object System.Collections.ArrayList
+Set-Item function:script:Install-Task { $script:InstallCalls++; return $true }
+Set-Item function:script:Get-InteractiveUser { return @{ Name = "TIMS-10878\brett"; Sid = "S-1-5-21-1-2-3-1001" } }
+Set-Item function:script:Get-CurrentAccount { return $script:Me }
+Set-Item function:script:Get-TaskAccount { return $script:TaskUser }
+Set-Item function:script:Get-AutoLogonStatus { return "off" }
+Set-Item function:script:Read-MemberIdInput {
+    param([string]$Stored = "")
+    $script:Prompts++
+    if ($script:MemberAnswers.Count -gt 0) {
+        $a = [string]$script:MemberAnswers.Dequeue()
+        if ($a -ne "") { return $a }
+    }
+    return $Stored
+}
+Set-Item function:script:Read-WebhookInput {
+    param([switch]$HaveStored)
+    $script:Prompts++
+    if ($script:HookAnswers.Count -gt 0) {
+        $a = [string]$script:HookAnswers.Dequeue()
+        if ($a -ne "") { return (Secure $a) }
+    }
+    return (New-Object System.Security.SecureString)
+}
+Set-Item function:script:Save-Webhook {
+    param($Webhook, $StateDir)
+    $plain = (Get-PlainText $Webhook).Trim()
+    if (-not (Test-WebhookUrl $plain)) { return @{ Ok = $false; Why = "refused" } }
+    $script:StoredHook = $plain
+    return @{ Ok = $true; Why = "" }
+}
+Set-Item function:script:Get-Webhook { param($StateDir) return $script:StoredHook }
+Set-Item function:script:Send-SlackPayload {
+    param($WebhookUrl, $Payload)
+    [void]$script:Slack.Add($Payload)
+    if ($script:SlackOk) { return @{ Ok = $true; Status = 200 } }
+    return @{ Ok = $false; Status = 404 }
+}
+function New-InstallCase([string]$name) {
+    $d = New-TickDirs $name
+    [void][System.IO.Directory]::CreateDirectory($d.State)
+    # Share folders set in config.json are kept: the test event lands there.
+    Write-Utf8File -Path (Join-Path $d.State "config.json") -Text (ConvertTo-Json -InputObject ([ordered]@{ shareDir = $d.Share; hiveLogsDir = $d.Hive }) -Depth 10)
+    Write-Logbook $d.Logbook (Rec-Header)
+    $script:InstallCalls = 0; $script:Prompts = 0; $script:StoredHook = $null
+    $script:HookAnswers.Clear(); $script:MemberAnswers.Clear(); $script:Slack.Clear()
+    $script:Me = "TIMS-10878\brett"; $script:TaskUser = "brett"; $script:SlackOk = $true
+    return $d
+}
+function Config-Field($d, [string]$name) {
+    $obj = Read-JsonFile (Join-Path $d.State "config.json")
+    $p = $obj.PSObject.Properties[$name]
+    if ($null -eq $p) { return "<absent>" }
+    if ($null -eq $p.Value) { return "<null>" }
+    return [string]$p.Value
+}
+
+$d = New-InstallCase "inst_nolog"
+$miss = Join-Path $d.Logs "nope.log"
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -LogbookPath $miss -SlackMemberId "U0ABC1234" }
+Check "no logbook: refused"                (Last-Value $cap) "False"
+Check "no logbook: no task registered"     $script:InstallCalls 0
+Check "no logbook: nothing asked"          $script:Prompts 0
+Check "prints the -LogbookPath it tried"   ($cap.Text.Contains($miss)) "True"
+Check "prints the C: path it tried"        ($cap.Text.Contains($CLog)) "True"
+Check "prints the D: path it tried"        ($cap.Text.Contains($DLog)) "True"
+Check "says nothing was installed"         ($cap.Text -match "Nothing was installed") "True"
+
+$d = New-InstallCase "inst_badid"
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -LogbookPath $d.Logbook -SlackMemberId "brett" }
+Check "bad -SlackMemberId: refused"        (Last-Value $cap) "False"
+Check "... before any prompt or task"      "$($script:Prompts)|$($script:InstallCalls)" "0|0"
+Check "... and says what an ID looks like" ($cap.Text -match "member ID") "True"
+
+$d = New-InstallCase "inst_badid_asked"
+foreach ($x in @("brett", "U1", "<@U0ABC1234>")) { $script:MemberAnswers.Enqueue($x) }
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -LogbookPath $d.Logbook }
+Check "three bad answers: refused"         (Last-Value $cap) "False"
+Check "... asked three times, no task"     "$($script:Prompts)|$($script:InstallCalls)" "3|0"
+
+$d = New-InstallCase "inst_badhook"
+foreach ($x in @("http://example.com", "http://example.com", "http://example.com")) { $script:HookAnswers.Enqueue($x) }
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -LogbookPath $d.Logbook -SlackMemberId "U0ABC1234" }
+Check "http://example.com: install refused" (Last-Value $cap) "False"
+Check "... no task registered"             $script:InstallCalls 0
+Check "... says what it must start with"   ($cap.Text.Contains("https://hooks.slack.com/")) "True"
+Check "... never echoes what was pasted"   ($cap.Text.Contains("example.com")) "False"
+Check "... no config written"              (Config-Field $d "memberId") "<absent>"
+
+$d = New-InstallCase "inst_nohook"
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -LogbookPath $d.Logbook -SlackMemberId "U0ABC1234" }
+Check "nothing pasted, none stored: refused" "$(Last-Value $cap)|$($script:InstallCalls)" "False|0"
+
+$d = New-InstallCase "inst_wronguser"
+$script:Me = "TIMS-10878\labadmin"
+$script:HookAnswers.Enqueue($GoodHook)
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -LogbookPath $d.Logbook -SlackMemberId "U0ABC1234" }
+Check "run as another account: refused"    (Last-Value $cap) "False"
+Check "... before asking for anything"     $script:Prompts 0
+Check "... no task, no webhook stored"     "$($script:InstallCalls)|$($null -eq $script:StoredHook)" "0|True"
+Check "... names both accounts"            ($cap.Text.Contains("labadmin") -and $cap.Text.Contains("TIMS-10878\brett")) "True"
+
+$d = New-InstallCase "inst_ok"
+$script:HookAnswers.Enqueue($GoodHook)
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -LogbookPath $d.Logbook -SlackMemberId "U0ABC1234" }
+Check "installed"                          (Last-Value $cap) "True"
+Check "the task registered once"           $script:InstallCalls 1
+Check "config: logbook"                    (Config-Field $d "logbook") $d.Logbook
+Check "config: member ID"                  (Config-Field $d "memberId") "U0ABC1234"
+Check "config: the share folders kept"     "$(Config-Field $d 'shareDir')|$(Config-Field $d 'hiveLogsDir')" "$($d.Share)|$($d.Hive)"
+Check "config: an unset path left to its default" (Config-Field $d "procedureRoot") "<null>"
+$cfgText = [System.IO.File]::ReadAllText((Join-Path $d.State "config.json"))
+Check "config.json holds no webhook"       ($cfgText -match "hooks\.slack\.com|T0STAN") "False"
+Check "the webhook stored"                 $script:StoredHook $GoodHook
+Check "the test went out, with the mention" "$($script:Slack.Count)|$($script:Slack[0].text)" "1|$TestText"
+Check "printed: route direct"              ($cap.Text -match "Test message route: direct") "True"
+Check "printed: the task's account"        ($cap.Text -match "runs as: brett") "True"
+Check "no account warning"                 ($cap.Text -match "WARNING") "False"
+Check "printed: auto-logon"                ($cap.Text -match "Auto-logon after a reboot: off") "True"
+Check "printed: the phone settings"        ($cap.Text -match "Do Not Disturb") "True"
+Check "never prints the webhook"           ($cap.Text.Contains("T0STAN")) "False"
+Check "R16: no state.json, no delivered.txt" (R16-Clean $d) "False|False"
+
+# Run again when up to date: Enter keeps both answers; no task change.
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -LogbookPath "" -TaskReady }
+Check "re-run: fine"                       (Last-Value $cap) "True"
+Check "re-run: no task change"             $script:InstallCalls 1
+Check "re-run: the remembered logbook"     (Config-Field $d "logbook") $d.Logbook
+Check "re-run: Enter kept the member ID"   (Config-Field $d "memberId") "U0ABC1234"
+Check "re-run: Enter kept the webhook"     $script:StoredHook $GoodHook
+Check "re-run: the test again"             $script:Slack.Count 2
+$cfgText = [System.IO.File]::ReadAllText((Join-Path $d.State "config.json"))
+Check "re-run, a webhook stored: config.json still holds none" ($cfgText -match "hooks\.slack\.com|T0STAN") "False"
+
+# The task turns out to run as someone else: said loudly.
+$script:TaskUser = "labadmin"
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -TaskReady }
+Check "a task under another account is a WARNING" ($cap.Text -match "WARNING.*labadmin") "True"
+$script:TaskUser = "brett"
+
+# Slack refuses the webhook: the test still reaches Brett, through Hive.
+$d = New-InstallCase "inst_hive"
+$script:HookAnswers.Enqueue($GoodHook)
+$script:SlackOk = $false
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -LogbookPath $d.Logbook -SlackMemberId "U0ABC1234" }
+Check "Slack refused: still installed"     (Last-Value $cap) "True"
+Check "printed: via Hive"                  ($cap.Text -match "Test message route: via Hive \(the PC could not reach Slack\)") "True"
+$hf = @(Get-EventFiles $d.Share)
+$hfWhat = "$($hf.Count)"
+if ($hf.Count -ge 1) { $hfWhat = "$hfWhat|$(JStr $hf[0] 'type')|$(JStr $hf[0] 'posted_by_pc')" }
+Check "a test event for Hive to relay"     $hfWhat "1|test|false"
+Check "R16: no state.json, no delivered.txt" (R16-Clean $d) "False|False"
+
+foreach ($n in $Stubbed.Keys) { Set-Item "function:script:$n" $Stubbed[$n] }
+
+# ------------------------------------------------------------- 42. the .bat
+Write-Host ""
+Write-Host "42. watch_hystar_errors.bat: what Brett double-clicks"
+$batPath = Join-Path $repoRoot "instrument/scripts/watch_hystar_errors.bat"
+Check "the .bat ships next to the script" ([System.IO.File]::Exists($batPath)) "True"
+if ([System.IO.File]::Exists($batPath)) {
+    $bb = [System.IO.File]::ReadAllBytes($batPath)
+    $nonAscii = 0; $lf = 0; $crlf = 0
+    for ($i = 0; $i -lt $bb.Length; $i++) {
+        if ($bb[$i] -gt 0x7F) { $nonAscii++ }
+        if ($bb[$i] -eq 0x0A) { $lf++; if ($i -gt 0 -and $bb[$i - 1] -eq 0x0D) { $crlf++ } }
+    }
+    Check ".bat is ASCII"                     $nonAscii 0
+    # .gitattributes keeps *.bat byte-for-byte; CMD mis-reads goto labels in
+    # a file with bare LF line ends.
+    Check ".bat lines end CR LF"              "$($lf -gt 0)|$($crlf -eq $lf)" "True|True"
+    $bat = [System.IO.File]::ReadAllText($batPath)
+    Check "runs the script beside it"         ($bat.Contains('set "PS1=%~dp0watch_hystar_errors.ps1"')) "True"
+    Check "with -NoProfile -ExecutionPolicy Bypass" ($bat -match 'powershell\.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %EXTRA%') "True"
+    Check "/test -> -Test"                    ($bat -match '(?im)^if /i "%~1"=="/test" set "EXTRA=-Test"\r?$') "True"
+    Check "/uninstall -> -Uninstall"          ($bat -match '(?im)^if /i "%~1"=="/uninstall" set "EXTRA=-Uninstall"\r?$') "True"
+    Check "/pause 8h -> -Pause 8h"             ($bat -match '(?im)^if /i "%~1"=="/pause" set "EXTRA=-Pause %~2"\r?$') "True"
+    Check "/pause with no length -> usage"    ($bat -match '(?im)^if /i "%~1"=="/pause" if "%~2"=="" goto :usage\r?$') "True"
+    Check "an unknown option -> usage, not an install" ($bat -match '(?im)^if not "%~1"=="" if not defined EXTRA goto :usage\r?$') "True"
+    # Every flag the .bat hands the script must be one it declares: under
+    # [CmdletBinding()] an unknown one kills the run before a line of it.
+    $declaredFlags = @()
+    foreach ($pp in $ast.ParamBlock.Parameters) { $declaredFlags += ("-" + $pp.Name.VariablePath.UserPath) }
+    $undeclared = @()
+    foreach ($m in [regex]::Matches($bat, 'EXTRA=(-[A-Za-z]+)')) {
+        if ($declaredFlags -notcontains $m.Groups[1].Value) { $undeclared += $m.Groups[1].Value }
+    }
+    Check "every flag it passes is declared"  ($undeclared -join ",") ""
+    Check "the script is [CmdletBinding()]"   ($null -ne $ast.ParamBlock -and @($ast.ParamBlock.Attributes | ForEach-Object { $_.TypeName.Name }) -contains "CmdletBinding") "True"
+}
+
 
 Remove-Item -LiteralPath $TickRoot -Recurse -Force -ErrorAction SilentlyContinue
 

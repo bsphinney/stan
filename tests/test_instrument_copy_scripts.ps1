@@ -1,13 +1,15 @@
 # test_instrument_copy_scripts.ps1
 #
-# Tests for the two self-installing instrument copiers:
+# Tests for the self-installing instrument scripts:
 #   instrument/scripts/copy_evosep_logs.ps1
 #   instrument/scripts/copy_bruker_backup.ps1
+#   instrument/scripts/watch_hystar_errors.ps1  (the install surface only; the
+#     watcher's own behaviour is in tests/test_hystar_watcher.ps1)
 #
 #     pwsh -NoProfile -File tests/test_instrument_copy_scripts.ps1
 #
 # Not part of the pytest suite (CI is Python-only) -- run it by hand after
-# touching either script. There is no PowerShell on the dev Mac; a portable
+# touching any of them. There is no PowerShell on the dev Mac; a portable
 # pwsh from the PowerShell/PowerShell release tarball runs it without
 # installing anything.
 #
@@ -47,18 +49,25 @@ function Load-Script($relPath) {
 
 # ---------------------------------------------------------------- 1. parse
 Write-Host ""
-Write-Host "1. both scripts parse"
+Write-Host "1. all three scripts parse"
 $evAst = Load-Script "instrument/scripts/copy_evosep_logs.ps1"
 $brAst = Load-Script "instrument/scripts/copy_bruker_backup.ps1"
+$whAst = Load-Script "instrument/scripts/watch_hystar_errors.ps1"
 Check "evosep parses"  ($evAst -ne $null) "True"
 Check "bruker parses"  ($brAst -ne $null) "True"
+Check "watcher parses" ($whAst -ne $null) "True"
+# The checks below that are about the install machinery run over all three:
+# the HyStar watcher installs itself the same way, and every bug these
+# sections pin (an ungated ReadKey, an undeclared relaunch flag, a version
+# regex that interpolates, a stale installed copy) would bite it the same way.
+$allScripts = @(@("evosep", $evAst), @("bruker", $brAst), @("watcher", $whAst))
 
 # ------------------------------------------------- 2. self-install surface
 # The whole point is that no flag has to be remembered, so the pieces that
 # make that work must actually be present in what ships.
 Write-Host ""
-Write-Host "2. self-install machinery is present in both"
-foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+Write-Host "2. self-install machinery is present in all three"
+foreach ($pair in $allScripts) {
     $name = $pair[0]; $ast = $pair[1]
     $funcs = @()
     foreach ($f in $ast.FindAll({
@@ -92,6 +101,17 @@ foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
         if ($rk -gt $gate.Extent.StartOffset -and $rk -lt $gate.Extent.EndOffset) { $inGate = $true }
     }
     Check "$name ReadKey is inside the gate" $inGate "True"
+    # ...and the gate must actually close: its first statement returns under
+    # -Scheduled. A ReadKey "inside the gate" is no protection if the gate
+    # never returns early.
+    $gateFirst = ""
+    if ($gate -and $gate.Body.EndBlock.Statements.Count -gt 0) {
+        $st = $gate.Body.EndBlock.Statements[0]
+        if ($st -is [System.Management.Automation.Language.IfStatementAst] -and
+            $st.Clauses[0].Item1.Extent.Text -eq '$Scheduled' -and
+            $st.Clauses[0].Item2.Extent.Text -match '^\{\s*return\s*\}$') { $gateFirst = "returns" }
+    }
+    Check "$name gate returns first under -Scheduled" $gateFirst "returns"
     # Registration must be conditional on absence, or a manual run stomps the
     # task settings every time someone double-clicks it.
     Check "$name installs only when absent" `
@@ -161,7 +181,7 @@ Check "mirror dir is <HOST>_mirror" `
 # have shipped as real bugs in this repo's PowerShell before.
 Write-Host ""
 Write-Host "5. PowerShell 5.1 house rules"
-foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+foreach ($pair in $allScripts) {
     $name = $pair[0]; $t = $pair[1].Extent.Text
     Check "$name has no Where-Object pipeline" ($t -match "\|\s*Where-Object") "False"
 }
@@ -181,7 +201,7 @@ foreach ($line in (Get-Content -LiteralPath $initPath)) {
 }
 Check "found package version" ($pkgVersion -ne "") "True"
 
-foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+foreach ($pair in $allScripts) {
     $name = $pair[0]; $ast = $pair[1]
     $scriptVersion = ""
     foreach ($a in $ast.FindAll({
@@ -213,7 +233,7 @@ Write-Host "7. self-relaunch flags are declared parameters"
 # Flags belonging to powershell.exe itself, not to our script.
 $hostFlags = @("-NoProfile", "-ExecutionPolicy", "-File", "-WindowStyle",
                "-Bypass", "-Hidden", "-Command", "-NoExit")
-foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+foreach ($pair in $allScripts) {
     $name = $pair[0]; $ast = $pair[1]
     $declared = @()
     if ($ast.ParamBlock) {
@@ -241,7 +261,7 @@ foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
 # silent-staleness shape as every other failure in this system.
 Write-Host ""
 Write-Host "8. a re-run refreshes a stale installed copy"
-foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+foreach ($pair in $allScripts) {
     $name = $pair[0]; $ast = $pair[1]; $t = $ast.Extent.Text
     $funcs = @()
     foreach ($f in $ast.FindAll({
@@ -267,11 +287,13 @@ foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
 }
 
 # And prove the extraction actually works, rather than merely existing.
-$verLine = ""
-foreach ($line in (Get-Content -LiteralPath (Join-Path $repoRoot "instrument/scripts/copy_evosep_logs.ps1"))) {
-    if ($line -match "ScriptVersion\s*=\s*'([^']+)'") { $verLine = $Matches[1]; break }
+foreach ($rel in @("copy_evosep_logs.ps1", "copy_bruker_backup.ps1", "watch_hystar_errors.ps1")) {
+    $verLine = ""
+    foreach ($line in (Get-Content -LiteralPath (Join-Path $repoRoot "instrument/scripts/$rel"))) {
+        if ($line -match "ScriptVersion\s*=\s*'([^']+)'") { $verLine = $Matches[1]; break }
+    }
+    Check "extraction returns the real version ($rel)" $verLine $pkgVersion
 }
-Check "extraction returns the real version" $verLine $pkgVersion
 
 # ------------------------------------- 9. no local variable is a parameter
 # PowerShell variable names are case-insensitive, so `$all = @(...)` in
@@ -285,7 +307,7 @@ Check "extraction returns the real version" $verLine $pkgVersion
 # it was a different variable.
 Write-Host ""
 Write-Host "9. no local variable reuses a parameter's name"
-foreach ($pair in @(@("evosep", $evAst), @("bruker", $brAst))) {
+foreach ($pair in $allScripts) {
     $name = $pair[0]; $ast = $pair[1]
     $params = @{}
     $switches = @{}
