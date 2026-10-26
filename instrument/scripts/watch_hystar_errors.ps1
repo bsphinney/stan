@@ -20,6 +20,13 @@
     message with the @mention: the phone should buzz. Running the .bat again
     updates an older install, or re-checks the settings (Enter keeps each).
 
+    NO WINDOW, EVER. The task starts wscript.exe on a small .vbs shim
+    (C:\ProgramData\STAN\watch_hystar_errors.vbs) that runs each tick with
+    no window, because powershell.exe -WindowStyle Hidden still flashes a
+    console, 1,440 times a day, on the PC the operators use. Where
+    wscript.exe or VBScript is missing, the task starts powershell.exe
+    itself and the install says so in red. One tick runs at a time.
+
     THE WEBHOOK is asked for without echo and kept only in
     C:\ProgramData\STAN\hystar_watch\webhook.dpapi, encrypted with DPAPI for
     the account that installed it (the one the task runs as) and readable by
@@ -1987,6 +1994,17 @@ function Get-TaskAccount {
     catch { return "" }
 }
 
+function Get-TaskExecute {
+    # The program the scheduled task starts, as Task Scheduler reports it;
+    # "" when it cannot be read.
+    try {
+        $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        foreach ($a in @($t.Actions)) { return [string]$a.Execute }
+    }
+    catch { }
+    return ""
+}
+
 function Get-AccountWarning {
     <#
     "" when the task runs as the desktop's user (Desktop), else what to tell
@@ -2042,6 +2060,129 @@ function Initialize-StateDir {
     catch {
         return @{ Ok = $false; Why = "$($_.Exception.GetType().Name): $($_.Exception.Message)" }
     }
+}
+
+function Get-HiddenShimText {
+    <#
+    The .vbs the task hands to wscript.exe (ruling R17). Run(command, 0,
+    True): 0 opens no window at all; True waits for the tick, so the task's
+    IgnoreNew and its 5-minute limit still see a tick that is running.
+    WScript.Quit passes the tick's exit code on to Task Scheduler. Inside a
+    VBS string a quote is written twice, so the path is wrapped in "" "".
+    ASCII, CRLF line ends.
+    #>
+    param([Parameter(Mandatory = $true)][string]$ScriptPath)
+    $q = '""'
+    $command = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $q$ScriptPath$q -Scheduled"
+    $lines = @(
+        "' STAN HyStar watcher: runs one tick with no window at all.",
+        "' Written by watch_hystar_errors.ps1 at install; a re-install rewrites it.",
+        "' Run(..., 0, True): 0 = no window; True = wait for the tick to end, so the",
+        "' task's IgnoreNew and its 5-minute limit still apply while it runs.",
+        "WScript.Quit CreateObject(`"WScript.Shell`").Run(`"$command`", 0, True)"
+    )
+    $text = $lines -join "`r`n"
+    return "$text`r`n"
+}
+
+function Get-TaskLaunch {
+    <#
+    What the scheduled task starts (ruling R17): wscript.exe //B //Nologo on
+    the .vbs shim at ShimPath, so a tick never shows a window. Falls back to
+    powershell.exe -WindowStyle Hidden (which flashes a console each run),
+    with the reason in Why, when wscript.exe or VBScript is missing (VBScript
+    is an optional feature on recent Windows 11), when a path is not plain
+    ASCII (the shim is written as ASCII), or when Fallback gives a reason.
+    Returns @{ Execute; Argument; Shim (its text, or $null); Why }. Writes
+    nothing.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptPath,
+        [Parameter(Mandatory = $true)][string]$ShimPath,
+        [AllowEmptyString()][string]$SystemRoot = $env:SystemRoot,
+        [string]$Fallback = ""
+    )
+    $why = $Fallback
+    $wscript = ""
+    if ([string]::IsNullOrEmpty($why)) {
+        if ([string]::IsNullOrEmpty($SystemRoot)) { $why = 'SystemRoot is not set' }
+        else {
+            $sys32 = Join-Path $SystemRoot 'System32'
+            $wscript = Join-Path $sys32 'wscript.exe'
+            if (-not [System.IO.File]::Exists($wscript)) { $why = "$wscript is missing" }
+            elseif (-not [System.IO.File]::Exists((Join-Path $sys32 'vbscript.dll'))) {
+                $why = 'VBScript is not installed (an optional feature on recent Windows 11)'
+            }
+        }
+    }
+    $shim = $null
+    if ([string]::IsNullOrEmpty($why)) {
+        $shim = Get-HiddenShimText -ScriptPath $ScriptPath
+        if ($shim -match '[^\x00-\x7F]' -or $ShimPath -match '[^\x00-\x7F]') {
+            $why = 'the install path is not plain ASCII'
+            $shim = $null
+        }
+    }
+    if (-not [string]::IsNullOrEmpty($why)) {
+        return @{
+            Execute  = 'powershell.exe'
+            Argument = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ScriptPath`" -Scheduled"
+            Shim     = $null
+            Why      = $why
+        }
+    }
+    return @{ Execute = $wscript; Argument = "//B //Nologo `"$ShimPath`""; Shim = $shim; Why = '' }
+}
+
+function Test-TaskLaunchCurrent {
+    <#
+    Whether the registered task starts what this version would register
+    (Launch, from Get-TaskLaunch): the same program and, for the shim, the
+    same shim text on disk. False means register again, even when the
+    version is the same. A registered program that cannot be read
+    (RegisteredExecute "") forces nothing.
+    #>
+    param(
+        [string]$RegisteredExecute = "",
+        [Parameter(Mandatory = $true)]$Launch,
+        [Parameter(Mandatory = $true)][string]$ShimPath
+    )
+    if ([string]::IsNullOrEmpty($RegisteredExecute)) { return $true }
+    if (-not [string]::Equals($RegisteredExecute, [string]$Launch.Execute, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+    if ($null -eq $Launch.Shim) { return $true }
+    try {
+        if (-not [System.IO.File]::Exists($ShimPath)) { return $false }
+        return ([System.IO.File]::ReadAllText($ShimPath) -ceq [string]$Launch.Shim)
+    }
+    catch { return $false }
+}
+
+function Enter-TickLock {
+    <#
+    One tick at a time. The task's 5-minute limit ends wscript.exe, not the
+    PowerShell it started, and IgnoreNew then lets the next tick start
+    beside a tick that is still running. A named mutex, held until this
+    process exits, makes the next one leave instead. $false when another
+    tick holds it; $true otherwise (also when the lock cannot be made at
+    all: a tick that runs beats one that never does).
+    #>
+    param([string]$Name = 'Local\STAN_HyStar_watcher_tick')
+    $m = $null
+    try { $m = New-Object System.Threading.Mutex($false, $Name) }
+    catch { return $true }
+    $got = $false
+    # An exception here is AbandonedMutexException: its last holder died
+    # without releasing it, and it is ours now.
+    try { $got = $m.WaitOne(0) }
+    catch { $got = $true }
+    if (-not $got) {
+        $m.Dispose()
+        return $false
+    }
+    $script:WatchTickMutex = $m
+    return $true
 }
 
 function Install-Task {
@@ -2100,14 +2241,32 @@ function Install-Task {
     # Runs as the desktop's user ON PURPOSE, never SYSTEM and never elevated:
     # SYSTEM cannot see the mapped Y: drive or read the user's DPAPI secret,
     # and an elevated run would own state files the next run cannot replace.
-    $argline = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstalledPath`" -Scheduled"
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argline
+    # Ruling R17: no window, ever. powershell.exe -WindowStyle Hidden still
+    # flashes a console (and can take focus from HyStar) 1,440 times a day,
+    # so the task starts wscript.exe on a .vbs shim that runs the tick with
+    # no window at all.
+    $shimPath = Join-Path $InstallDir 'watch_hystar_errors.vbs'
+    $launch = Get-TaskLaunch -ScriptPath $InstalledPath -ShimPath $shimPath
+    if ($null -ne $launch.Shim) {
+        try { [System.IO.File]::WriteAllText($shimPath, $launch.Shim, [System.Text.Encoding]::ASCII) }
+        catch {
+            $launch = Get-TaskLaunch -ScriptPath $InstalledPath -ShimPath $shimPath -Fallback "could not write $shimPath ($($_.Exception.GetType().Name))"
+        }
+    }
+    if (-not [string]::IsNullOrEmpty($launch.Why)) {
+        Say "WARNING: no hidden launcher ($($launch.Why)). The task starts powershell.exe itself, so a console window may flash every minute." 'Red'
+    }
+    $action = New-ScheduledTaskAction -Execute $launch.Execute -Argument $launch.Argument
     $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $desk.Name
     $repeat = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
         -RepetitionInterval (New-TimeSpan -Minutes 1) `
         -RepetitionDuration (New-TimeSpan -Days 3650)
     # IgnoreNew: a slow tick is skipped, never stacked. 5 min: a tick is a
-    # stat, a seek and a few KB; one that runs longer is stuck.
+    # stat, a seek and a few KB; one that runs longer is stuck. The shim
+    # waits for the tick, so both see it running; but the limit ends
+    # wscript.exe, not the PowerShell it started, so the tick also takes a
+    # lock (Enter-TickLock) and a still-running one is never joined by the
+    # next. A tick that hangs writes no heartbeat: Hive pages after 10 min.
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew `
         -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
         -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries
@@ -2648,6 +2807,13 @@ function Invoke-Install {
         if ($warn.StartsWith('WARNING')) { $warnColor = 'Red' }
         Say $warn $warnColor
     }
+    # R17, read back from the registered task: the elevated window that chose
+    # the launcher has closed, and its warning with it.
+    $exe = Get-TaskExecute
+    if ($exe -like '*wscript.exe') { Say 'Each tick starts through wscript.exe: no window appears.' }
+    elseif (-not [string]::IsNullOrEmpty($exe)) {
+        Say "WARNING: each tick starts $exe itself (no wscript.exe or VBScript here), so a console window may flash every minute." 'Red'
+    }
     $auto = Get-AutoLogonStatus
     Say "Auto-logon after a reboot: $auto"
     if ($auto -eq 'off') {
@@ -2717,11 +2883,18 @@ $TaskName = 'STAN HyStar watcher'
 $InstallDir = Join-Path $env:ProgramData 'STAN'
 $InstalledPath = Join-Path $InstallDir 'watch_hystar_errors.ps1'
 $WatchStateDir = Join-Path $InstallDir 'hystar_watch'
+$InstalledShim = Join-Path $InstallDir 'watch_hystar_errors.vbs'
 
 # THE TICK, first and on its own: a scheduled run never reaches a question,
 # the install or the key-press below. No GetNewClosure for the sender: a
 # closure would not see this script's functions.
 if ($Scheduled) {
+    # A tick still running (one the task's time limit could not end) is
+    # never joined by the next: that one leaves at once.
+    if (-not (Enter-TickLock)) {
+        Write-WatchLog -StateDir $WatchStateDir -Now (Get-Date) -Lines @(, "watch_hystar_errors v$($ScriptVersion): skipped, the previous tick is still running")
+        exit 0
+    }
     $watchConfig = Get-WatchConfig -StateDir $WatchStateDir
     # $null when none is stored (or this account cannot decrypt it): then
     # every event carries posted_by_pc false and Hive relays it.
@@ -2769,16 +2942,25 @@ if ($Test) {
     exit $code
 }
 
-# THE INSTALL. The task is registered only when it is absent or older than
-# this script: a re-run of an up-to-date install re-checks the settings
-# (Enter keeps each) and sends the test again, without touching the task.
+# THE INSTALL. The task is registered only when it is absent, older than
+# this script, or not started the way this script would start it (the R17
+# launcher, and the shim on disk): the version alone would leave a task
+# registered without the shim at this version as it is. A re-run of an
+# up-to-date install re-checks the settings (Enter keeps each) and sends the
+# test again, without touching the task.
 $installedVersion = Get-InstalledVersion
 $ok = $false
 if (Test-Task) {
-    if ($installedVersion -eq $ScriptVersion) {
+    $launchOk = Test-TaskLaunchCurrent -RegisteredExecute (Get-TaskExecute) `
+        -Launch (Get-TaskLaunch -ScriptPath $InstalledPath -ShimPath $InstalledShim) -ShimPath $InstalledShim
+    if ($installedVersion -eq $ScriptVersion -and $launchOk) {
         Say "The watcher is installed and up to date (v$ScriptVersion, every minute)." 'Green'
         Say 'Checking its settings (Enter keeps each one), then the test message.'
         $ok = Invoke-Install -StateDir $WatchStateDir -LogbookPath $LogbookPath -SlackMemberId $SlackMemberId -TaskReady
+    }
+    elseif ($installedVersion -eq $ScriptVersion) {
+        Say "The watcher is v$ScriptVersion, but its task does not start the way this version starts it -- registering it again." 'Yellow'
+        $ok = Invoke-Install -StateDir $WatchStateDir -LogbookPath $LogbookPath -SlackMemberId $SlackMemberId
     }
     else {
         # The task runs the copy under ProgramData, taken when it was

@@ -1429,14 +1429,13 @@ if ($prs.Count -eq 1) {
 $acts = @(Find-Commands $it "New-ScheduledTaskAction")
 Check "one action"                         $acts.Count 1
 if ($acts.Count -eq 1) {
-    Check "runs powershell.exe"            (Get-CommandArg $acts[0] "Execute") "'powershell.exe'"
-    Check "with the argument line"         (Get-CommandArg $acts[0] "Argument") '$argline'
+    # R17: what starts the tick is Get-TaskLaunch's choice (section 43).
+    Check "R17: the action is the chosen launcher" "$(Get-CommandArg $acts[0] 'Execute')|$(Get-CommandArg $acts[0] 'Argument')" '$launch.Execute|$launch.Argument'
 }
-$argText = ""
-foreach ($a in $it.FindAll({ $args[0] -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true)) {
-    if ($a.Left.Extent.Text -eq '$argline') { $argText = $a.Right.Extent.Text }
-}
-Check "the action runs the installed copy with -Scheduled" ($argText -match '-File `"\$InstalledPath`" -Scheduled"$') "True"
+$gls = @(Find-Commands $it "Get-TaskLaunch")
+$glOk = $false
+foreach ($g in $gls) { if ((Get-CommandArg $g "ScriptPath") -eq '$InstalledPath' -and (Get-CommandArg $g "ShimPath") -eq '$shimPath') { $glOk = $true } }
+Check "R17: for the installed copy and its shim" $glOk "True"
 Check "R16: Install-Task prepares the state folder" (@(Find-Commands $it "Initialize-StateDir").Count -ge 1) "True"
 $isd = Get-FunctionAst "Initialize-StateDir"
 $isdText = ""
@@ -1767,7 +1766,7 @@ Check "a warning when it cannot be read" ((Get-AccountWarning -TaskAccount "" -D
 Write-Host ""
 Write-Host "41. the install: refuses before registering anything; R16 leaves the tick's files to the tick"
 $Stubbed = @{}
-foreach ($n in @("Install-Task", "Get-InteractiveUser", "Get-CurrentAccount", "Get-TaskAccount",
+foreach ($n in @("Install-Task", "Get-InteractiveUser", "Get-CurrentAccount", "Get-TaskAccount", "Get-TaskExecute",
                  "Read-MemberIdInput", "Read-WebhookInput", "Save-Webhook", "Get-Webhook",
                  "Send-SlackPayload", "Get-AutoLogonStatus")) {
     $Stubbed[$n] = (Get-Item "function:$n").ScriptBlock
@@ -1779,6 +1778,7 @@ Set-Item function:script:Install-Task { $script:InstallCalls++; return $true }
 Set-Item function:script:Get-InteractiveUser { return @{ Name = "TIMS-10878\brett"; Sid = "S-1-5-21-1-2-3-1001" } }
 Set-Item function:script:Get-CurrentAccount { return $script:Me }
 Set-Item function:script:Get-TaskAccount { return $script:TaskUser }
+Set-Item function:script:Get-TaskExecute { return $script:TaskExe }
 Set-Item function:script:Get-AutoLogonStatus { return "off" }
 Set-Item function:script:Read-MemberIdInput {
     param([string]$Stored = "")
@@ -1821,6 +1821,7 @@ function New-InstallCase([string]$name) {
     $script:InstallCalls = 0; $script:Prompts = 0; $script:StoredHook = $null
     $script:HookAnswers.Clear(); $script:MemberAnswers.Clear(); $script:Slack.Clear()
     $script:Me = "TIMS-10878\brett"; $script:TaskUser = "brett"; $script:SlackOk = $true
+    $script:TaskExe = 'C:\Windows\System32\wscript.exe'
     return $d
 }
 function Config-Field($d, [string]$name) {
@@ -1893,6 +1894,7 @@ Check "printed: route direct"              ($cap.Text -match "Test message route
 Check "printed: the task's account"        ($cap.Text -match "runs as: brett") "True"
 Check "no account warning"                 ($cap.Text -match "WARNING") "False"
 Check "printed: auto-logon"                ($cap.Text -match "Auto-logon after a reboot: off") "True"
+Check "R17 printed: no window"             ($cap.Text -match "through wscript\.exe: no window") "True"
 Check "printed: the phone settings"        ($cap.Text -match "Do Not Disturb") "True"
 Check "never prints the webhook"           ($cap.Text.Contains("T0STAN")) "False"
 Check "R16: no state.json, no delivered.txt" (R16-Clean $d) "False|False"
@@ -1907,6 +1909,12 @@ Check "re-run: Enter kept the webhook"     $script:StoredHook $GoodHook
 Check "re-run: the test again"             $script:Slack.Count 2
 $cfgText = [System.IO.File]::ReadAllText((Join-Path $d.State "config.json"))
 Check "re-run, a webhook stored: config.json still holds none" ($cfgText -match "hooks\.slack\.com|T0STAN") "False"
+
+# R17: a task that starts powershell.exe directly is said loudly.
+$script:TaskExe = "powershell.exe"
+$cap = Invoke-Captured { Invoke-Install -StateDir $d.State -TaskReady }
+Check "R17: a console-flashing task is a WARNING" ($cap.Text -match "WARNING.*powershell\.exe.*flash") "True"
+$script:TaskExe = 'C:\Windows\System32\wscript.exe'
 
 # The task turns out to run as someone else: said loudly.
 $script:TaskUser = "labadmin"
@@ -1965,6 +1973,120 @@ if ([System.IO.File]::Exists($batPath)) {
     Check "the script is [CmdletBinding()]"   ($null -ne $ast.ParamBlock -and @($ast.ParamBlock.Attributes | ForEach-Object { $_.TypeName.Name }) -contains "CmdletBinding") "True"
 }
 
+
+
+# ------------------------------------------------ 43. R17: no window, ever
+Write-Host ""
+Write-Host "43. R17: a tick starts with no window (wscript.exe + .vbs shim), or the install says why not"
+$sysRoot = Join-Path $TickRoot "Windows"
+$sys32 = Join-Path $sysRoot "System32"
+[void][System.IO.Directory]::CreateDirectory($sys32)
+$fakeWscript = Join-Path $sys32 "wscript.exe"
+$fakeVbs = Join-Path $sys32 "vbscript.dll"
+Write-Utf8File -Path $fakeWscript -Text "x"
+Write-Utf8File -Path $fakeVbs -Text "x"
+$inst = 'C:\ProgramData\STAN\watch_hystar_errors.ps1'
+$shimP = 'C:\ProgramData\STAN\watch_hystar_errors.vbs'
+# A VBS string literal is well formed when every quote inside it is doubled.
+function Get-RunLine([string]$shim) {
+    foreach ($ln in ($shim -split "`r`n")) { if ($ln.StartsWith("WScript.Quit")) { return $ln } }
+    return ""
+}
+function Test-VbsLiteral([string]$line) {
+    $m = [regex]::Match($line, '\.Run\("(.*)", 0, True\)$')
+    if (-not $m.Success) { return $false }
+    return (-not $m.Groups[1].Value.Replace('""', '').Contains('"'))
+}
+$L = Get-TaskLaunch -ScriptPath $inst -ShimPath $shimP -SystemRoot $sysRoot
+Check "wscript.exe starts it"                $L.Execute $fakeWscript
+Check "//B //Nologo and the shim, quoted"    $L.Argument '//B //Nologo "C:\ProgramData\STAN\watch_hystar_errors.vbs"'
+Check "no fallback reason"                   $L.Why ""
+$wantRun = 'WScript.Quit CreateObject("WScript.Shell").Run("powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""C:\ProgramData\STAN\watch_hystar_errors.ps1"" -Scheduled", 0, True)'
+Check "the shim: hidden (0), waits (True), the installed copy, -Scheduled" (Get-RunLine $L.Shim) $wantRun
+$stmts = 0
+foreach ($ln in ($L.Shim -split "`r`n")) { if ($ln.Trim() -ne "" -and -not $ln.StartsWith("'")) { $stmts++ } }
+Check "one statement, the rest comments"     $stmts 1
+Check "the VBS string literal is well formed" (Test-VbsLiteral (Get-RunLine $L.Shim)) "True"
+Check "the shim is ASCII"                    ([regex]::IsMatch($L.Shim, '[^\x00-\x7F]')) "False"
+Check "CRLF line ends throughout"            "$($L.Shim.Replace("`r`n", '').Contains("`n"))|$($L.Shim.EndsWith("`r`n"))" "False|True"
+$instSp = 'C:\Program Data\STAN tools\watch_hystar_errors.ps1'
+$shimSp = 'C:\Program Data\STAN tools\watch_hystar_errors.vbs'
+$Ls = Get-TaskLaunch -ScriptPath $instSp -ShimPath $shimSp -SystemRoot $sysRoot
+Check "spaces: the task argument quotes the shim" $Ls.Argument '//B //Nologo "C:\Program Data\STAN tools\watch_hystar_errors.vbs"'
+Check "spaces: the shim doubles the quotes"  ((Get-RunLine $Ls.Shim).Contains('-File ""C:\Program Data\STAN tools\watch_hystar_errors.ps1"" -Scheduled')) "True"
+Check "spaces: still a well-formed VBS literal" (Test-VbsLiteral (Get-RunLine $Ls.Shim)) "True"
+$direct = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ProgramData\STAN\watch_hystar_errors.ps1" -Scheduled'
+[System.IO.File]::Delete($fakeVbs)
+$Lf = Get-TaskLaunch -ScriptPath $inst -ShimPath $shimP -SystemRoot $sysRoot
+Check "no VBScript: powershell.exe, no shim" "$($Lf.Execute)|$($null -eq $Lf.Shim)" "powershell.exe|True"
+Check "no VBScript: the installed copy, -Scheduled" $Lf.Argument $direct
+Check "no VBScript: the reason says so"      ($Lf.Why -match "VBScript") "True"
+Write-Utf8File -Path $fakeVbs -Text "x"
+[System.IO.File]::Delete($fakeWscript)
+$Lw = Get-TaskLaunch -ScriptPath $inst -ShimPath $shimP -SystemRoot $sysRoot
+Check "no wscript.exe: powershell.exe"       "$($Lw.Execute)|$($Lw.Why -match 'wscript\.exe')" "powershell.exe|True"
+Write-Utf8File -Path $fakeWscript -Text "x"
+Check "no SystemRoot: powershell.exe"        (Get-TaskLaunch -ScriptPath $inst -ShimPath $shimP -SystemRoot "").Execute "powershell.exe"
+$La = Get-TaskLaunch -ScriptPath "C:\ProgramData\STAN$([char]0x00E9)\w.ps1" -ShimPath $shimP -SystemRoot $sysRoot
+Check "a non-ASCII path: powershell.exe"     "$($La.Execute)|$($La.Why -match 'ASCII')" "powershell.exe|True"
+$Lx = Get-TaskLaunch -ScriptPath $inst -ShimPath $shimP -SystemRoot $sysRoot -Fallback "the shim could not be written"
+Check "-Fallback: powershell.exe, that reason" "$($Lx.Execute)|$($Lx.Why)|$($Lx.Argument)" "powershell.exe|the shim could not be written|$direct"
+$itText = $it.Extent.Text
+Check "Install-Task writes the shim as ASCII" ($itText -match 'WriteAllText\(\$shimPath, \$launch\.Shim, \[System\.Text\.Encoding\]::ASCII\)') "True"
+Check "a failed shim write falls back"       ($itText -match 'Get-TaskLaunch -ScriptPath \$InstalledPath -ShimPath \$shimPath -Fallback') "True"
+Check "Install-Task warns when it falls back" ($itText -match '(?s)if \(-not \[string\]::IsNullOrEmpty\(\$launch\.Why\)\) \{\s*Say "WARNING') "True"
+
+# The update check looks at the launcher, not only the version: a task
+# registered at this version without the shim (or with a stale one) is
+# registered again.
+$shimDir = Join-Path $TickRoot "shim"
+[void][System.IO.Directory]::CreateDirectory($shimDir)
+$shimFile = Join-Path $shimDir "watch_hystar_errors.vbs"
+$Lc = Get-TaskLaunch -ScriptPath $inst -ShimPath $shimFile -SystemRoot $sysRoot
+[System.IO.File]::WriteAllText($shimFile, $Lc.Shim, [System.Text.Encoding]::ASCII)
+Check "as wanted, shim in place: current"    (Test-TaskLaunchCurrent -RegisteredExecute $Lc.Execute -Launch $Lc -ShimPath $shimFile) "True"
+Check "registered as powershell.exe: re-register" (Test-TaskLaunchCurrent -RegisteredExecute "powershell.exe" -Launch $Lc -ShimPath $shimFile) "False"
+[System.IO.File]::WriteAllText($shimFile, $Lc.Shim.Replace(", 0, True)", ", 1, False)"), [System.Text.Encoding]::ASCII)
+Check "a shim that differs: re-register"     (Test-TaskLaunchCurrent -RegisteredExecute $Lc.Execute -Launch $Lc -ShimPath $shimFile) "False"
+[System.IO.File]::Delete($shimFile)
+Check "the shim gone: re-register"           (Test-TaskLaunchCurrent -RegisteredExecute $Lc.Execute -Launch $Lc -ShimPath $shimFile) "False"
+Check "the task unreadable: no forced update" (Test-TaskLaunchCurrent -RegisteredExecute "" -Launch $Lc -ShimPath $shimFile) "True"
+Check "no VBScript here, powershell.exe registered: current" (Test-TaskLaunchCurrent -RegisteredExecute "powershell.exe" -Launch $Lf -ShimPath $shimFile) "True"
+$topText = ""
+foreach ($s in $ast.EndBlock.Statements) {
+    if (-not ($s -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $topText = "$topText`n$($s.Extent.Text)" }
+}
+Check "the update check uses it"             ($topText -match '\$installedVersion -eq \$ScriptVersion -and \$launchOk') "True"
+Check "on the registered task's program"     ($topText -match 'Test-TaskLaunchCurrent -RegisteredExecute \(Get-TaskExecute\)') "True"
+
+# The 5-minute limit kills wscript.exe, not the PowerShell it started, and
+# IgnoreNew then lets the next tick start: one tick at a time, by a lock.
+$lockName = "Local\STAN_tick_test_$PID"
+$ready = New-Object System.Threading.ManualResetEventSlim $false
+$release = New-Object System.Threading.ManualResetEventSlim $false
+$holder = [powershell]::Create().AddScript({
+    param($n, $ready, $release)
+    $m = New-Object System.Threading.Mutex($false, $n)
+    $null = $m.WaitOne(0)
+    $ready.Set()
+    $null = $release.Wait(10000)
+    $m.ReleaseMutex()
+    $m.Dispose()
+}).AddArgument($lockName).AddArgument($ready).AddArgument($release)
+$hh = $holder.BeginInvoke()
+$null = $ready.Wait(10000)
+Check "a tick still running: the next one skips" (Enter-TickLock -Name $lockName) "False"
+$release.Set()
+$null = $holder.EndInvoke($hh)
+$holder.Dispose()
+Check "once it has ended: the next one runs" (Enter-TickLock -Name $lockName) "True"
+if ($null -ne $script:WatchTickMutex) { $script:WatchTickMutex.ReleaseMutex(); $script:WatchTickMutex.Dispose(); $script:WatchTickMutex = $null }
+$schedText = ""
+if ($iSched -ge 0) { $schedText = $top[$iSched].Extent.Text }
+$iLock = $schedText.IndexOf("Enter-TickLock")
+$iTick = $schedText.IndexOf("Invoke-WatchTick")
+Check "the scheduled branch takes the lock before the tick" (($iLock -ge 0) -and ($iLock -lt $iTick)) "True"
+Check "and leaves without a tick when it is held" ($schedText -match '(?s)if \(-not \(Enter-TickLock\)\) \{.*?exit 0') "True"
 
 Remove-Item -LiteralPath $TickRoot -Recurse -Force -ErrorAction SilentlyContinue
 
